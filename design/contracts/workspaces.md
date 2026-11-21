@@ -7,8 +7,9 @@ description: Proposal to make the registry location a package is published from 
 
 > **Status: proposal awaiting review.** Nothing in this document is
 > implemented. It records the decision to use registry-based workspaces and
-> works out what that decision changes. The questions it leaves open are at the
-> end, each with a recommendation.
+> works out what that decision changes. The decisions taken during review are
+> listed under [Decisions](#decisions), and the one question still open is at
+> the end.
 
 ## Prerequisites
 
@@ -17,7 +18,7 @@ description: Proposal to make the registry location a package is published from 
 - [trellis-api-participants.md](./trellis-api-participants.md): how API,
   participant, and capability IDs are formed
 - [../auth/service-updates.md](../auth/service-updates.md): how a deployment
-  moves to a new build, including the waiting state after a force-replace
+  moves to a new build, including force-replace for an incompatible build
 
 ## The problem
 
@@ -56,8 +57,8 @@ The workspace becomes part of the package's identity. Whoever can push to
 already enforces who may push there, so Trellis needs no authority of its own.
 
 The cost, accepted with the decision: moving a package to another registry
-changes its identity. [Moving a package](#moving-a-package) describes the
-explicit path for that.
+changes its identity. [Changing a workspace](#changing-a-workspace) says what
+that means.
 
 ## Identity
 
@@ -81,6 +82,9 @@ location never become two identities:
   trailing slash, tag, or digest
 - no implicit registry: Docker Hub is written `docker.io/<org>`
 - at most 128 bytes
+- the single word `localhost` is the one workspace without a path segment;
+  it is reserved for packages that declare no workspace (see
+  [Unpublished packages](#unpublished-packages))
 
 ### How IDs are written
 
@@ -102,7 +106,8 @@ looks like today.
 A full ID splits without ambiguity. Everything before the last `/` is the
 workspace. Package names contain no `/` or `.`, so the package name runs from
 there to the first `.`. A capability's name follows the last `:`, which still
-works for a registry host with a port. An ID with no `/` has no workspace.
+works for a registry host with a port. Only the built-in `trellis` package has
+IDs with no `/`.
 
 The longest API ID the protocol accepts (`validate_api_id` in
 `crates/protocol/src/identifiers.rs`) grows from 128 bytes to 255 bytes, to
@@ -117,8 +122,8 @@ make room for the workspace.
 | Generated symbols and module names         | Short ID (see [Effects](#effects))             |
 | Generated descriptors, the wire, JWTs      | Full ID                                        |
 | Auth's storage, audit records, logs        | Full ID                                        |
-| CLI and Console text output                | Short ID when it is unique in the installation |
-| CLI `--format json`                        | Full ID                                        |
+| CLI and Console human-readable output      | Short ID while it is unique, else full ID      |
+| CLI `--format json` (what scripts read)    | Full ID                                        |
 | CLI input (grants, roles, `--participant`) | Either; a short ID must be unique              |
 
 IDL source never spells an ID, so it does not change. A file imports the
@@ -127,7 +132,9 @@ the compiler turns that into the full ID.
 
 The CLI and Console show the short ID until a second installed package has the
 same short ID. Then both are shown in full, and a short ID typed on the command
-line is refused with the full IDs it could mean. Logs always carry the full
+line is refused with the full IDs it could mean. `--format json` output
+always carries the full ID, so a script's parsing does not change when a
+second package with the same short ID is installed. Logs always carry the full
 ID, because a log line is often read without the installation at hand.
 
 ## Declaring a workspace
@@ -169,27 +176,37 @@ and records the workspace it was pulled from. `trellis update` writes it.
 
 ## Unpublished packages
 
-A package that declares no workspace has no workspace. Its IDs are short IDs,
-exactly as today: `krishi.SherpaService`. It can be a path dependency, it can be
-installed from source with `trellis svc create --source` or the Console's Add
-service form, and it can be used in tests. It cannot be published, and a
-published package cannot depend on it.
+A package that declares no `workspace` gets the workspace `localhost`. This
+follows container tooling: Docker fills in Docker Hub for an image name without
+a registry, and Podman names locally built images `localhost/<name>`. Every
+package then has the same ID shape. Krishi's service without a declared
+workspace is `localhost/krishi.SherpaService`, and its short ID is still
+`krishi.SherpaService`.
 
-Names without a workspace are one shared space with no owner, which is how
-every name works today. Two of them can still collide, and Auth reports the
-collision as it does now. That is fine for development and tests, which
-usually run against a fresh installation.
+A `localhost` package can be a path dependency, it can be installed from
+source with `trellis svc create --source` or the Console's Add service form,
+and it can be used in tests. It cannot be published, and a published package
+cannot depend on it. `localhost` names no shared location, so a release
+published under it would claim a name nobody owns. A developer who runs a
+registry on their own machine gives the package a real workspace such as
+`localhost:5000/dev`, which is an ordinary workspace and publishes normally.
+
+Every `localhost` package shares one unowned namespace. Two of them with the
+same name collide, and Auth reports the collision as it does today. That is
+fine for development and tests, which usually run against a fresh
+installation.
 
 A package that will be published should declare its workspace from the start.
 Its IDs are then final before the first release, and installing it from source
 in production gives it the same identity a later published release will have.
-Adding a workspace to a package that is already installed is a move.
+Adding a workspace later is a [workspace change](#changing-a-workspace).
 
 ## The built-in trellis package
 
 The `trellis` package ships inside `trellis-server`. Its
-authority is the server binary, not a registry, so it has no workspace. Its IDs
-stay as they are: `trellis.auth@v1`, `trellis.auth.v1:users.edit`. These are
+authority is the server binary, not a registry, so it has no workspace, not
+even `localhost`. It is the one exception to the common ID shape. Its IDs stay
+as they are: `trellis.auth@v1`, `trellis.auth.v1:users.edit`. These are
 the IDs that appear most often in grants and code, and they stay short.
 
 A dependency on `trellis` names no workspace. The CLI fetches it from where the
@@ -212,12 +229,12 @@ matches a digest the server trusts.
 ## Ownership checks
 
 Ownership is checked wherever a package comes from a registry. A package handed
-over directly carries a claim instead, described last.
+over directly is trusted as written, described last.
 
 **Publish.** `trellis publish` pushes to `<workspace>/<name>` from the
 manifest; there is no `--registry` flag. The registry refuses the push unless
 the publisher's credentials allow writes there. That refusal is the ownership
-check. A package without a workspace cannot be published.
+check. A `localhost` package cannot be published.
 
 **Pull into Auth.** `Auth.Packages.Pull` accepts a release only when the
 workspace it declares is the location Auth pulled it from, or a registry the
@@ -237,15 +254,13 @@ pull from the workspace the dependency names and apply the same comparison to
 everything they download.
 
 **Evidence supplied without a registry.** Source installs, the Console's Add
-service form, and service self-updates hand Auth package files directly. No
-registry is involved, so the workspace in those files is a claim. The
-administrator who installs from source vouches for it, as they vouch for the
-code. Auth records where each package came from (pulled from a named registry,
-or supplied by a named user) and the Console shows supplied packages that
-claim a workspace as not checked against their registry. A service's own
-update must name its deployment's participant by full ID, so a service cannot
-change its workspace by submitting an update. A changed workspace only arrives
-through an administrator's move.
+service form, and service self-updates hand Auth package files directly. Auth
+accepts the workspace in those files as written. This is not a security
+boundary. The workspace in a package's source is a name, used for
+compatibility and to keep IDs apart, and registry push permission is what
+protects published names. An administrator who installs from source already
+trusts the code, and trusting the name in it adds nothing new. Auth records
+nothing extra about these packages and shows no separate status for them.
 
 **What ownership does not cover.** Trellis trusts the registry's access
 control. If an organization loses its registry path and someone else takes it,
@@ -278,85 +293,20 @@ and is published under the forker's own workspace, with new IDs. Publishing a
 modified copy under the original workspace's identity at another location
 fails the pull check.
 
-## Moving a package
+## Changing a workspace
 
-### When it happens
+Changing a package's workspace means editing `workspace` in its `trellis.toml`
+and publishing again. There is no move command. The workspace is part of the
+identity, so the result is a new package with new participant, API, and
+capability IDs. Renaming a package is the same case.
 
-A package moves when its identity changes: it moves to another registry, its
-organization is renamed, or a package without a workspace gains one. Every
-existing installation on Trellis 0.100.0-rc.52 or earlier needs the last
-kind of move (see [Migration](#migration)).
-
-A renamed package is the same case with a different name. The move below
-handles both.
-
-### The move
-
-A move is an administrator action, applied together with the first release
-from the new identity:
-
-```sh
-trellis svc <deployment-id> apply \
-  --package ghcr.io/krishi-diagnostics/krishi@2.1.0 --move
-```
-
-The Console offers the same move when an administrator applies a release whose
-package identity differs from the one the deployment runs. The review lists
-everything the move changes before the administrator confirms.
-
-A package moves as a whole, because its APIs and participants share its
-identity. In one transaction, Auth:
-
-1. Compiles the new release and installs it, as a new revision under the new
-   participant ID, for every deployment of a participant in the old package.
-2. Accepts the release's APIs under their new IDs. Each one is checked against
-   the API it replaces exactly as a new revision is checked today, so a move
-   cannot slip in an incompatible change.
-3. Rewrites the old IDs to the new ones in Auth's current policy: deployments,
-   deployment capability selections, roles, direct grants, identity-provider
-   mappings, remembered consent, OAuth grants, and any other current-policy row
-   that names a moved ID. Capability identity generations and consent
-   revisions carry over unchanged.
-4. Keeps each deployment's resources, with their data and physical storage.
-5. Writes one audit record naming the old identity, the new one, and the
-   administrator.
-6. Reissues the sessions the change affects, as it does after a role change.
-
-Auth refuses the move if anything is already installed or accepted under the
-new identity. A move back is another move.
-
-### What happens to grants and consent
-
-Users and administrators keep everything they granted. A role that held
-`krishi.samples.v1:samples.read` now holds
-`ghcr.io/krishi-diagnostics/krishi.samples.v1:samples.read` at the same
-generation. A user who approved an app's request for it does not see a consent
-page again, because the consent revision carries over and the `grants` text is
-the same. If the new release changes a capability's `grants` text, the
-ordinary rule applies and users approve that capability again.
-
-### What does not move
-
-- **History.** Installed participant revisions, accepted package evidence, and
-  API verification snapshots are immutable in Auth's database. They keep the
-  old IDs and stay readable as history.
-- **Old builds.** A running build has the old IDs compiled into it. Its
-  instances wait the way instances wait after a force-replace (step 7 in
-  [service updates](../auth/service-updates.md#flow)): their sessions hold
-  only `serviceUpdates.submit` until a build from the new identity connects.
-- **Consumers in other packages.** A service or app in another package that
-  uses a moved API was compiled against the old API ID. It keeps its rewritten
-  selections, so its next build, made against the new workspace, asks for
-  nothing new and applies without approval. Until then its calls to the moved
-  API fail.
-- **Event history and work in flight.** Events published before the move are
-  stored under subjects derived from the old API ID. Consumers subscribe to
-  the new subjects and do not see them. Operations started before the move
-  belong to the old ID. A move belongs in a quiet period.
-
-The rebuild of consumers is the real cost of a move. The alternative, keeping
-old IDs as aliases for new ones, adds dual-read paths to admission, routing,
-and grants. This proposal leaves it out.
+Trellis handles the new identity with the mechanisms it already has. Applying
+the new build to an existing deployment is a breaking identity change, handled
+like any other incompatible change: the administrator force-replaces the
+deployment's build, or creates a new deployment for the new package. Grants and
+roles that named the old IDs do not carry over. The administrator grants the
+new capabilities, and users consent again under the new IDs. Consumers in other
+packages are rebuilt against the new workspace before they can call it.
 
 ## Effects
 
@@ -408,49 +358,47 @@ package that uses both `krishi` packages' `samples` APIs gets
 ### Resources
 
 A deployment's resources are identified today by a digest that includes the
-participant ID (`crates/runtime/src/platform/auth/resources.rs`). A move would
-give every resource a new ID and empty storage. Under this proposal a
-deployment's resources belong to the deployment: Auth finds a deployment's
-existing resource by deployment, kind, and local name, and keeps its stored ID
-and allocation across a move. A user-owned resource records the app request's
-participant ID, and the move rewrites that column.
+participant ID (`crates/runtime/src/platform/auth/resources.rs`). A
+force-replace with a build under a new identity would then give every resource
+a new ID and empty storage. Under this proposal a deployment's resources belong
+to the deployment: Auth finds a deployment's existing resource by deployment,
+kind, and local name, and keeps its stored ID and allocation when the
+deployment's build changes identity. The data stays with the deployment
+whatever its package is called.
 
 ### Package resolution in Auth
 
 `Auth.Packages.Resolve` satisfies a dependency by full identity and version.
-A dependency without a workspace matches only packages without one or the
+A dependency without a workspace matches only `localhost` packages or the
 built-in `trellis`.
 
 ## Migration
 
 Trellis is pre-release, so this is a clean break with no compatibility path
-for old formats. Two things still need care, because installations hold data
-people care about: user accounts, grants, and the data in each deployment's
-resources.
+for old formats or old IDs.
 
-**What stays valid.** Every package installed today has no workspace. Its IDs
-are short IDs, which remain valid as the IDs of workspace-less packages. If the
-canonical source prints nothing for an absent workspace, which this proposal
-requires, their semantic digests do not change either. Auth's stored
-deployments, grants, consent, and evidence therefore need no rewrite on
-upgrade, and the database schema does not change.
+**Every ID changes once.** Each installed package either declares a workspace
+or becomes a `localhost` package, so every ID outside the built-in package
+gains a workspace: `krishi.SherpaService` becomes
+`localhost/krishi.SherpaService` or
+`ghcr.io/krishi-diagnostics/krishi.SherpaService`. Semantic digests change with
+them. Stored IDs are not rewritten. Following the project's pre-release rule,
+the Auth schema's baseline migration is edited in place and the release starts
+from a fresh Auth database. Deployments, grants, roles, and consent are created
+again under the new IDs.
 
-**What breaks.**
+**What else breaks.**
 
 - RPC and Operation subjects change. Every service, device, and app has to be
   regenerated and rebuilt with the new SDK. Builds from rc.52 cannot reach the
   new release's APIs.
-- Auth derives every accepted action's stored route again on the first start
-  of the new release, from the evidence it retains. This rewrites derived data
-  only.
 - `trellis.lock` format 2, the `registry` dependency field, `[registries]`, and
   `default-registry` are no longer accepted. `trellis update` writes format 3
   after the manifest names workspaces.
 - Releases published before workspaces declare none, so Auth will not pull
   them. Packages are published again with a workspace.
 
-**What an installation such as Krishi's (on rc.52) does.** Every build has to
-be rebuilt anyway, so the cheapest path moves the packages in the same window:
+**What an installation such as Krishi's (on rc.52) does.**
 
 1. Upgrade the `trellis` CLI. Add `workspace = "ghcr.io/krishi-diagnostics"`
    to each package Krishi publishes, and name the workspace of each registry
@@ -458,17 +406,36 @@ be rebuilt anyway, so the cheapest path moves the packages in the same window:
    `trellis update`, then build and publish each package. The `qlever-llc`
    community does the same for its packages; Krishi's `krishi` can then
    depend on theirs.
-2. Upgrade `trellis-server`. Auth derives the stored routes again on its first
-   start. From here until step 4, rc.52 builds cannot call the new APIs.
-3. For each deployment, run `trellis svc <id> apply --package
-ghcr.io/krishi-diagnostics/<name>@<version> --move`. Grants, consent, and
-   resource data carry over.
-4. Roll out the new builds. Consumers and apps in other packages are rebuilt
-   against the new workspaces, and their updates apply without approval.
+2. Back up what has to survive, then upgrade `trellis-server` with a fresh
+   Auth database.
+3. Create each deployment again with `trellis svc create --package
+ghcr.io/krishi-diagnostics/<name>@<version>`, grant roles, and roll out the
+   new builds. Users consent again on first use.
 
-An installation can also upgrade without moving. Its packages keep working
-without a workspace once they are rebuilt with the new SDK, and they can move
-later.
+## Decisions
+
+These were open during review and are now settled.
+
+1. **Supplied evidence that claims a workspace is accepted.** Source installs,
+   the Console form, and service updates are trusted as written. The workspace
+   is naming, not a security boundary; registry push permission protects
+   published names. Auth records no origin and shows no "not checked" status.
+2. **There is no move.** Changing a workspace is editing `workspace` and
+   republishing, which produces a new package identity. An existing deployment
+   takes the new build through force-replace or is replaced by a new
+   deployment, and users consent again. There are no "moved to" records, no
+   move command, and no policy rewrite.
+3. **Packages without a declared workspace get `localhost`.** Every package
+   except the built-in `trellis` has the same ID shape. `localhost` packages
+   cannot be published at all, because `localhost` names no shared location. A
+   local registry uses a real workspace such as `localhost:5000/dev`.
+4. **Short IDs in human-readable output, full IDs for machines.** The CLI and
+   Console show the short ID while it is unique and the full ID when two
+   installed packages share it. `--format json`, the wire, Auth storage, and
+   logs always use the full ID.
+5. **The subject change ships with workspaces.** RPC and Operation subjects
+   carry the API identity token in the same release, so each installation
+   rebuilds once.
 
 ## Out of scope
 
@@ -476,37 +443,14 @@ later.
   control is the only ownership proof.
 - Mirrors for the CLI. `trellis add` and `update` pull from the workspace
   itself.
-- Following a move automatically in other installations.
-- Aliases that keep old IDs working after a move.
+- Aliases or rewrites that keep old IDs working after a workspace change.
 
 ## Open questions
 
-1. **Should Auth refuse supplied evidence that claims a workspace, when an
-   administrator installs from source?** Refusing would force a publish before
-   any production install. Recommendation: accept it, record the origin, and
-   show the package as not checked against its registry in the Console and in
-   `trellis svc <id> show`.
-
-2. **Should the old registry location carry a machine-readable "moved to"
-   record, so installations learn about a move?** Whoever controls the old path
-   could publish one there, so it would need no new authority. It would not
-   help when the old location is already gone, which is a common reason to
-   move. Recommendation: not now. Revisit if a widely used public package has
-   to move.
-
-3. **Should Auth refuse packages without a workspace in production
-   installations?** That would make collisions impossible there, but every
-   existing installation runs such packages today. Recommendation: allow them,
-   and label them "no workspace" in the Console and CLI.
-
-4. **Should the CLI show short IDs only while they are unique, or always show
-   full IDs?** Always showing full IDs is simpler to explain but makes every
-   grant and participant line long. Recommendation: short while unique, full
-   when two installed packages share a short ID, and full in JSON output.
-
-5. **Should the RPC and Operation subject change ship in its own release,
-   ahead of workspaces?** It fixes an existing collision between packages that
-   use the same API name, so it stands on its own. But it forces every service
-   to be rebuilt, and so does a move; two releases would mean two rebuilds for
-   an installation that moves. Recommendation: ship both in one release, so
-   each installation rebuilds once.
+1. **Does any installation's data have to survive the one-time ID change?**
+   This proposal starts from a fresh Auth database, which drops users, grants,
+   and the record of each deployment's resources. If Krishi's installation
+   needs its users and resource data carried across, the alternative is a
+   one-time step on first start that rewrites stored short IDs to
+   `localhost/...` IDs. That is migration code the project rules otherwise
+   avoid before the first release, so it needs an explicit decision.
