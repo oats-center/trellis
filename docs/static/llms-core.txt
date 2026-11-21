@@ -678,7 +678,10 @@ expiry, and `currentBuildOnly` (its instances' own `ServiceUpdates.Submit` is
 refused, so install builds with `svc <id> apply` first). At the cap a new
 enrollment replaces the secret's longest-offline instance, never a connected
 one or one enrolled within the first-connect grace (10 min) that has not
-connected yet; otherwise it is refused (`instance_limit`). Retrying an
+connected yet; otherwise it is refused (`instance_limit`). A cap lowered
+below the current count retires nothing and refuses every enrollment until the
+count drops to the cap. Enrollment and identity requests don't follow
+redirects: give the process the URL Trellis answers on. Retrying an
 enrollment with the same key returns the same instance, even at the cap or
 rate. A memory-only key enrolls a new instance per start and retires it at a
 graceful stop (`ServiceInstances.RetireOwn`); with a key file the process keeps

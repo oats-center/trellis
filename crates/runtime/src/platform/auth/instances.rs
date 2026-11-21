@@ -1049,7 +1049,12 @@ fn enroll(
             [&secret],
             |row| row.get(0),
         )?;
-        if live >= cap {
+        // A cap lowered below the roster admits nothing until the roster
+        // drains to it; at the cap a new key replaces one offline instance.
+        if live > cap {
+            return refuse("instance_limit");
+        }
+        if live == cap {
             let grace: i64 = connection.query_row(
                 "SELECT first_connect_grace FROM auth_instance_policy",
                 [],

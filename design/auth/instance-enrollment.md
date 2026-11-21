@@ -137,7 +137,10 @@ Each secret carries its own limits. All of them can be changed later with
   finished connecting. If no instance can be replaced, the enrollment is
   refused with `instance_limit`. Retiring the longest-offline one keeps a
   crash-looping pod from using up the cap with instances that will never come
-  back.
+  back. A cap lowered below the number of instances the secret already has
+  retires none of them, and replaces none either: every new enrollment is
+  refused with `instance_limit` until retirement, removal, or revocation brings
+  the count down to the cap. From there, replacement works as above.
 - **Rate limit** (`enrollmentsPerHour`). The most new instances this secret may
   create in any hour. New secrets take the installation default, 100 unless
   changed. Repeating an enrollment for a key that is already enrolled does not
@@ -193,9 +196,12 @@ many instances it has, when it was last used, and whether it is revoked.
 
 The Console adds an Enrollment section to each service page. Issuing opens a
 form with the limits filled in from the defaults, then shows the secret once
-with a copy button and the environment variable line to paste. Each secret row
-offers Edit and Revoke; Revoke asks whether to retire the secret's instances
-too.
+with a copy button and the environment variable line to paste. The section
+lists every secret of the service, reading all pages of
+`Auth.EnrollmentSecrets.List`. Each secret row offers Edit and Revoke; Revoke
+asks whether to retire the secret's instances too. The edit form shows the
+expiry as a date; a save that leaves the date unchanged keeps the exact expiry
+time, and a changed date expires the secret at the start of that day (UTC).
 
 ## Enrollment at startup
 
@@ -208,6 +214,12 @@ too.
    default), a request ID, and the time it was sent. The new identity key signs
    the whole body. The request goes over the same HTTPS connection, with the
    same certificate checks, that the SDK already uses to reach Trellis.
+   Enrollment requests don't follow redirects: the TypeScript and Rust SDKs
+   send this request and `POST /auth/service/identity` only to the Trellis
+   origin, and a redirect response fails the request with an error naming the
+   status and the location. The TypeScript device enrollment request
+   (`POST /auth/device/enroll`) does the same; the Rust one refuses the
+   redirect with its HTTP status.
 3. Auth checks the signature and that the send time is within a few minutes of
    its own clock, before it looks at the secret. That proves the process holds
    the private key it is registering.
@@ -641,14 +653,14 @@ the Trellis origin, the route, the key ID, and the canonical request without
 returns `{ instanceId, deploymentId, title }`. Refusals are
 `{ "error": { "code" } }`:
 
-| Status | Code                                                                                  | Meaning                                                                  |
-| ------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| 400    | `invalid_request`, `clock_skew`                                                       | Malformed or not signed by the key; send time outside the window         |
-| 403    | `enrollment_denied`                                                                   | No such secret (not audited)                                             |
-| 403    | `revoked`, `expired`, `deployment_disabled`, `participant_mismatch`, `build_mismatch` | A known secret refused (audited)                                         |
-| 409    | `key_in_use`                                                                          | The key belongs to another instance, a service claim, or has a tombstone |
-| 429    | `instance_limit`, `rate_limited`                                                      | At the cap with nothing to replace; the hourly rate is used up           |
-| 503    | `unavailable`                                                                         | Try again with the same key                                              |
+| Status | Code                                                                                  | Meaning                                                                    |
+| ------ | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| 400    | `invalid_request`, `clock_skew`                                                       | Malformed or not signed by the key; send time outside the window           |
+| 403    | `enrollment_denied`                                                                   | No such secret (not audited)                                               |
+| 403    | `revoked`, `expired`, `deployment_disabled`, `participant_mismatch`, `build_mismatch` | A known secret refused (audited)                                           |
+| 409    | `key_in_use`                                                                          | The key belongs to another instance, a service claim, or has a tombstone   |
+| 429    | `instance_limit`, `rate_limited`                                                      | Over the cap, or at it with nothing to replace; the hourly rate is used up |
+| 503    | `unavailable`                                                                         | Try again with the same key                                                |
 
 A repeated request for a key this secret already enrolled, whose key is still
 active, returns that instance before any limit or validity check. Auth
