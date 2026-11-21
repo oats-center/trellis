@@ -68,9 +68,11 @@ fn a_project_depending_on_trellis_resolves_to_the_evidence_the_cli_builds() {
             == "localhost/runtime-trellis.LiveV1Provider"
             && participant.kind == AuthDeploymentKind::Service));
 
+    // The CLI takes the participant's short ID, without its workspace, when
+    // it names one participant of the package.
     let built = trellis_cli::app::deploy::compile_participant_input(
         &project,
-        Some("localhost/runtime-trellis.LiveV1Provider"),
+        Some("runtime-trellis.LiveV1Provider"),
         Some(trellis_idl::ParticipantKind::Service),
     )
     .unwrap();
