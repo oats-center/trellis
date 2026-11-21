@@ -30,7 +30,9 @@ show`):
   longest. An instance that enrolled less than 10 minutes ago and has not
   connected yet is never replaced, so a rollout that starts many pods at once
   does not retire its own new pods. With nothing to replace, the enrollment
-  is refused.
+  is refused. If you lower the cap below the number of instances the secret
+  already has, none of them is retired, and new enrollments are refused until
+  the count drops to the new cap.
 - `--per-hour` (100): how many new instances it may create in any hour.
 - `--expires`: a date or a duration (`90d`). After it the secret creates no
   instances; the ones it created keep running.
@@ -39,7 +41,8 @@ show`):
   `trellis svc orders apply` before you roll it out.
 
 In the Console, the service page's Enrollment section issues secrets and shows
-the secret once with a copy button.
+the secret once with a copy button. Editing a secret there keeps its exact
+expiry unless you change the date.
 
 A secret belongs to one deployment and creates instances of nothing else. Its
 instances get the deployment's installed build, capabilities and resources.
@@ -47,7 +50,9 @@ instances get the deployment's installed build, capabilities and resources.
 ## Start processes with it
 
 Hand the secret to the process as `TRELLIS_ENROLLMENT_SECRET` and leave out the
-seed. In TypeScript:
+seed. The SDK sends the secret only to the Trellis URL it was given: enrollment
+requests don't follow redirects, so point the process at the address Trellis
+answers on, not one that redirects to it. In TypeScript:
 
 ```ts
 const service = await TrellisService.connect({

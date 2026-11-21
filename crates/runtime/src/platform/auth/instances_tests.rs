@@ -234,6 +234,57 @@ fn a_pod_enrolled_within_the_grace_period_is_not_replaced_until_it_could_have_co
 }
 
 #[test]
+fn a_cap_lowered_below_the_roster_admits_no_new_key_until_the_roster_drains_to_it() {
+    let f = fixture();
+    let deployment = service(&f);
+    let (secret_id, secret) = issue(&f, &deployment, 4, 100, None);
+    let instances: Vec<String> = (1..=4)
+        .map(|seed| enroll_as(&f, &secret, &key(seed), &deployment, NOW).unwrap())
+        .collect();
+    let current = f
+        .store
+        .read(|connection| read_secret(connection, &secret_id, NOW))
+        .unwrap();
+    let input = AuthEnrollmentSecretUpdateRequest {
+        secret_id: current.secret_id,
+        title: current.title,
+        expires_at: current.expires_at,
+        max_instances: AuthEnrollmentLimit(2),
+        enrollments_per_hour: current.enrollments_per_hour,
+        current_build_only: current.current_build_only,
+        expected_revision: current.revision,
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
+        extra: Default::default(),
+    };
+    update_secret(&f.store, &mutation(&f.admin, &input), &input, NOW + 700).unwrap();
+    // All four are offline past the grace period, so each could be replaced,
+    // yet with four enrolled and a cap of two a new key neither replaces one
+    // nor is added.
+    assert_eq!(
+        enroll_as(&f, &secret, &key(5), &deployment, NOW + 700),
+        Err("instance_limit".into())
+    );
+    for instance in &instances {
+        assert_eq!(instance_state(&f, instance).0, "active");
+    }
+    // Once the roster is down to the cap, one-for-one replacement resumes.
+    f.store
+        .transaction(|connection| {
+            for instance in &instances[..2] {
+                retire_in(connection, instance, "stopped", NOW + 701)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    enroll_as(&f, &secret, &key(5), &deployment, NOW + 702).unwrap();
+    assert_eq!(
+        instance_state(&f, &instances[2]),
+        ("retired".into(), Some("replaced".into()))
+    );
+    assert_eq!(instance_state(&f, &instances[3]).0, "active");
+}
+
+#[test]
 fn concurrent_enrollments_at_the_cap_cannot_both_take_the_last_slot() {
     let f = fixture();
     let deployment = Arc::new(service(&f));

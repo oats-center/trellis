@@ -130,6 +130,19 @@ async fn signed_post(
                 &crate::client::read_bounded_http_body(response, 64 * 1024).await?,
             )?);
         }
+        // The client follows no redirects: the body carries the signed
+        // request and, for enrollment, the secret.
+        if response.status().is_redirection() {
+            return Err(TrellisClientError::Bootstrap(format!(
+                "Trellis answered {path} with a {} redirect to {}; enrollment requests don't follow redirects",
+                response.status().as_u16(),
+                response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|location| location.to_str().ok())
+                    .unwrap_or("an unnamed location"),
+            )));
+        }
         if response.status().is_server_error() && attempt < 8 {
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(Duration::from_secs(5));
@@ -240,4 +253,107 @@ pub(crate) fn write_key_file(path: &Path, seed: &str) -> Result<(), TrellisClien
     write().map_err(|error| {
         TrellisClientError::Bootstrap(format!("cannot write {}: {error}", path.display()))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+
+    /// Read one HTTP/1.1 request with a `Content-Length` body.
+    async fn read_request(stream: &mut tokio::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert!(read > 0, "the request ends early");
+            request.extend_from_slice(&buffer[..read]);
+            let text = String::from_utf8_lossy(&request).into_owned();
+            if let Some(end) = text.find("\r\n\r\n") {
+                let length = text[..end]
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                if request.len() >= end + 4 + length {
+                    return text;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn enrollment_and_identity_requests_refuse_a_redirect_and_send_nothing_to_its_target() {
+        let elsewhere = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let elsewhere_url = format!("http://{}", elsewhere.local_addr().unwrap());
+        let received = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&received);
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = elsewhere.accept().await {
+                counted.fetch_add(1, Ordering::SeqCst);
+                read_request(&mut stream).await;
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                    )
+                    .await;
+            }
+        });
+        let trellis = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let trellis_url = format!("http://{}", trellis.local_addr().unwrap());
+        let target = elsewhere_url.clone();
+        tokio::spawn(async move {
+            for status in ["307 Temporary Redirect", "308 Permanent Redirect"] {
+                let (mut stream, _) = trellis.accept().await.unwrap();
+                let request = read_request(&mut stream).await;
+                let path = request.split_whitespace().nth(1).unwrap().to_owned();
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\nLocation: {target}{path}\r\n\
+                            Content-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let seed = super::new_seed().unwrap();
+        let enrolled = super::enroll(
+            &trellis_url,
+            &[],
+            "trellis-enroll-secret",
+            &seed,
+            "acme.Orders",
+            "digest",
+            "pod",
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            enrolled.contains(&format!(
+                "/auth/service/enroll with a 307 redirect to {elsewhere_url}/auth/service/enroll"
+            )),
+            "{enrolled}"
+        );
+        let status = super::identity_state(&trellis_url, &[], &seed)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            status.contains(&format!(
+                "/auth/service/identity with a 308 redirect to {elsewhere_url}/auth/service/identity"
+            )),
+            "{status}"
+        );
+        assert_eq!(received.load(Ordering::SeqCst), 0);
+    }
 }
