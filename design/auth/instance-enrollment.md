@@ -129,10 +129,15 @@ Each secret carries its own limits. All of them can be changed later with
   at once, counting every instance it created that is not yet retired or
   removed. New secrets take the installation default, 20 unless changed. When
   the secret is at its cap, a new enrollment first retires the secret's
-  instance that has been offline longest. If all of them are connected, the
-  enrollment is refused with `instance_limit`. Retiring the longest-offline one
-  keeps a crash-looping pod from using up the cap with instances that will
-  never come back.
+  instance that has been offline longest. An instance enrolled less than the
+  first-connect grace period ago (`firstConnectGrace`, 10 minutes by default)
+  that has not connected yet is not offline for this purpose: it cannot be
+  replaced until it has connected once or the grace period ends. Without that,
+  a rollout that starts many pods at once could retire a new pod before it
+  finished connecting. If no instance can be replaced, the enrollment is
+  refused with `instance_limit`. Retiring the longest-offline one keeps a
+  crash-looping pod from using up the cap with instances that will never come
+  back.
 - **Rate limit** (`enrollmentsPerHour`). The most new instances this secret may
   create in any hour. New secrets take the installation default, 100 unless
   changed. Repeating an enrollment for a key that is already enrolled does not
@@ -161,7 +166,11 @@ they connect with their own keys.
 `Auth.EnrollmentSecrets.Revoke` stops a secret from creating instances. By
 default it leaves the instances it created alone. With `retireInstances` it
 also retires every instance the secret created, which revokes their keys and
-disconnects them. That is the response to a leaked secret: revoke it with
+disconnects them. The revocation and the retirements commit in one
+transaction, and the disconnects are recorded with them as described under
+[what retired means](#what-retired-means). The CLI reports success once the
+revocation is committed and shows how many connections are still being
+closed. That is the response to a leaked secret: revoke it with
 `retireInstances`, issue a new one, and roll the processes. A revoked secret
 stays in the list, marked revoked, so later attempts to use it can be reported
 (see [alerts](#alerts)).
@@ -202,18 +211,24 @@ too.
 3. Auth checks the signature and that the send time is within a few minutes of
    its own clock, before it looks at the secret. That proves the process holds
    the private key it is registering.
-4. Auth checks the secret: it exists, is not revoked or expired, its rate and
-   cap allow one more, its deployment is enabled, and the participant ID
-   matches the deployment's. A mismatch catches a common mistake, such as
-   starting the billing service with the orders service's secret.
-5. In one transaction, Auth creates the principal, the instance, and the
-   identity key, exactly as `ServiceInstances.Provision` does. The instance
+4. Auth looks the public key up. If it is already registered to an instance
+   this secret enrolled, Auth returns that instance at once, before any cap or
+   rate check (see [retries](#retries)).
+5. Auth checks the secret: it exists, is not revoked or expired, its rate
+   allows one more, its deployment is enabled, and the participant ID matches
+   the deployment's. A mismatch catches a common mistake, such as starting the
+   billing service with the orders service's secret.
+6. In one Auth DB transaction, Auth checks the cap, retires an instance to make
+   room if the cap requires it, and creates the principal, the instance, and
+   the identity key, exactly as `ServiceInstances.Provision` does. Two
+   enrollments that race for the last slot therefore cannot both take it. The
+   instance
    gets the deployment's installed revision. Auth records that the instance was
    enrolled and which secret enrolled it, and writes an audit entry.
-6. Auth answers with the new instance's ID and title. The SDK logs them.
-7. The SDK connects with the new key through ordinary admission.
+7. Auth answers with the new instance's ID and title. The SDK logs them.
+8. The SDK connects with the new key through ordinary admission.
 
-From step 7 on, nothing is new. The instance is admitted like any provisioned
+From step 8 on, nothing is new. The instance is admitted like any provisioned
 instance, and admission does not need to know how the key was registered. That
 keeps the enrollment secret out of the NATS connect path entirely: it travels
 once, to Auth's HTTP listener, and never again.
@@ -226,9 +241,12 @@ the secret.
 
 ### Retries
 
-Enrollment is idempotent per key. If the response to step 6 is lost, the SDK
-sends the same request again and gets the same instance back. Auth refuses a
-key that is already registered to some other instance or deployment.
+Enrollment is idempotent per key. If the response to step 7 is lost, the SDK
+sends the same request again and gets the same instance back. Because step 4
+looks the key up before the cap and rate checks, the retry succeeds even when
+the lost enrollment filled the secret's last slot or its hourly rate. Auth
+refuses a key that is already registered to some other instance or
+deployment.
 
 ### Fit with service updates
 
@@ -241,7 +259,7 @@ an administrator, and the process waits with it, printing the review link.
 Instances of one deployment that run the same build share one pending update,
 so 30 new pods of a new build produce one review, not 30.
 
-With `currentBuildOnly`, step 4 also refuses a build whose digest differs from
+With `currentBuildOnly`, step 5 also refuses a build whose digest differs from
 the installed one, so the process fails at once instead of after admission.
 The process states that digest itself, so this early check only catches
 mistakes; the refusal of `ServiceUpdates.Submit` is what enforces the limit.
@@ -289,12 +307,21 @@ option. It suits a systemd service on a long-lived machine, where an operator
 may want instance settings overrides and history to survive a restart. The SDK
 writes the file with owner-only permissions before it enrolls, so a crash
 between the two steps cannot lose a key Auth has already registered. On every
-start it enrolls again with the stored key, which returns the same instance.
-If that instance was retired in the meantime, Auth says so, and the SDK makes
-a new key, replaces the file, and enrolls a new instance. If an administrator
-removed the instance, the SDK stops with an error instead. An administrator's
-removal is a decision about that process; quietly enrolling again would undo
-it.
+start the SDK works through these steps:
+
+1. It connects with the stored key through ordinary admission. The enrollment
+   secret is not used.
+2. If the connection fails for a transient reason, such as Trellis being
+   unreachable, it retries with the same key.
+3. If Auth reports that an administrator removed the instance, the process
+   stops with an error. An administrator's removal is a decision about that
+   process; quietly enrolling again would undo it.
+4. Only if Auth reports the key as unknown or retired does the SDK make a new
+   key, replace the file, and enroll a new instance with the enrollment
+   secret.
+
+A host that holds a valid key therefore restarts without the secret, so
+rotating or revoking the secret does not break its routine restarts.
 
 In either form, a running process that loses its connection for longer than
 the retirement period comes back to find its instance retired. The SDK still
@@ -384,13 +411,22 @@ retirement off. See [policy settings](#policy-settings).
 
 ### What "retired" means
 
-Retiring an instance, in one transaction:
+Retiring an instance, in one Auth DB transaction:
 
 1. sets its state to `retired` and records when and why;
 2. revokes its identity key, so admission refuses it from then on;
-3. revokes its sessions and disconnects any connection it still has (normally
-   none, since it was offline); and
+3. revokes its sessions and records the disconnects of any connection it still
+   has (normally none, since it was offline); and
 4. writes an audit entry.
+
+The disconnects themselves cannot happen inside the transaction, because they
+are actions on the NATS server. Auth records them durably with the change, in
+`auth_enforcement_work` and `auth_post_commit_actions`, the
+[enforcement pipeline](./trellis-auth.md#enforcement-pipeline) it already uses
+for other revocations. The pipeline retries each disconnect until it happens,
+so a crash right after the commit cannot leave a retired instance connected.
+Until then, the revoked key already keeps the instance from being admitted
+again.
 
 A retired instance cannot be enabled again. A process that comes back after
 its instance was retired enrolls again with a new key, if it still holds a
@@ -414,6 +450,15 @@ including any instance secrets, in transactions of at most 1,000 rows like
 other SQL retention. The principal row stays, because permanent records refer to
 it: every authorization context the instance was ever issued, and the audit
 log. This matches what happens to a deleted user account today.
+
+Auth also keeps a permanent tombstone for the identity key: its fingerprint
+and its terminal outcome, either removed by an administrator or retired
+automatically. Tombstones never expire. Each is a few bytes, and the principal
+row is kept forever anyway. With the tombstone, a host that returns after the
+rows are gone is still recognised. A removed key gets the removal answer, and
+the SDK stops. A retired key gets the retired answer, and the SDK makes a new
+key and enrolls. Without it, a removed host's key would read as unknown and
+the host would quietly enroll again.
 [data-retention.md](../core/data-retention.md) would gain a row for retired
 instances when this is built.
 
@@ -453,7 +498,7 @@ instance gets a full period to reconnect.
 
 ### Policy settings
 
-The retirement period and the secret defaults live in one Auth DB record, read
+The retirement period, the first-connect grace period, and the secret defaults live in one Auth DB record, read
 and changed with `Auth.InstancePolicy.Get` and `Auth.InstancePolicy.Set`. The
 record has an installation level and a per-deployment level. No server
 configuration file holds any of these values.
@@ -463,6 +508,7 @@ configuration file holds any of these values.
 | `retireOfflineAfter`       | installation and deployment | 24 hours |
 | `retireProvisioned`        | installation and deployment | off      |
 | `retiredRecordDays`        | installation                | 30       |
+| `firstConnectGrace`        | installation                | 10 min   |
 | `secretMaxInstances`       | installation                | 20       |
 | `secretEnrollmentsPerHour` | installation                | 100      |
 
@@ -474,6 +520,7 @@ changes to the installation level reach it. Changing the policy needs
 trellis instance-policy show
 trellis instance-policy set [--retire-offline-after <duration|off>]
                             [--retire-provisioned on|off] [--retired-record-days <n>]
+                            [--first-connect-grace <duration>]
                             [--secret-max-instances <n>] [--secret-per-hour <n>]
 trellis svc <id> instance-policy show
 trellis svc <id> instance-policy set [--retire-offline-after <duration|off|default>]
@@ -578,7 +625,9 @@ Each warning names the secret and links to the matching audit entries.
    environment variables, and the SDK already reads
    `TRELLIS_CERTIFICATE_FINGERPRINT` the same way. The explicit option still
    wins.
-7. **Should records of instances an administrator removed be deleted after
-   the same 30 days?** Recommendation: yes. They are the same kind of record
-   as a retired instance, they also pile up, and removal already revoked their
-   key. Today they are kept forever.
+7. **Should the rows of instances an administrator removed be deleted after
+   the same 30 days?** Recommendation: yes, keeping the key's tombstone as for
+   retired instances. They are the same kind of record as a retired instance,
+   they also pile up, and removal already revoked their key. The tombstone
+   keeps the removal in force: a returning host is still told to stop. Today
+   the rows are kept forever.
