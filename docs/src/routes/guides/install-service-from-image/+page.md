@@ -21,47 +21,46 @@ The detached login prints a Portal URL/QR code. Bind creates the CLI login and
 the CLI refreshes authorization for its installed `trellis-app.cli@v1`
 participant.
 
-## 2. Add the registry
+## 2. Sign in to a private registry
 
-Trellis pulls published packages from registries an administrator names. Add
-the one the service is published to once:
+A published package is named by its full identity, its workspace followed by
+its name, such as `ghcr.io/acme/acme-orders`. That is also where Trellis pulls
+it from, so a public registry needs nothing set up. For a private one, add the
+credentials Trellis signs in with for that workspace once:
 
 ```sh
-trellis registries set acme --prefix ghcr.io/acme
+trellis registries set acme --prefix ghcr.io/acme --username deploy --secret-file token.txt
 ```
 
-A package's repository is the prefix followed by its name, so `acme-orders`
-comes from `ghcr.io/acme/acme-orders`. A public registry needs nothing more.
-For a private one, add `--username` and give the password or token with
-`--secret-file PATH` (or `-` for standard input; a terminal asks). Trellis seals
-the secret with its storage key and never shows it again; `trellis registries
-list` shows only the user. In the Console the same list is under **Services**,
-**Package registries**.
+Give the password or token with `--secret-file PATH` (or `-` for standard
+input; a terminal asks). Trellis seals the secret with its storage key and
+never shows it again; `trellis registries list` shows only the user. In the
+Console the same list is under **Services**, **Package registries**.
 
 ## 3. Create the deployment
 
 Create the deployment from the published release. `my-service` is the
 deployment's display name; `--participant` names the service's identity,
-`<package>.<ServiceName>` from its IDL, and is asked for at a terminal when the
-package declares several:
+`<package>.<ServiceName>` from its IDL (the workspace may be left out while it
+is unambiguous), and is asked for at a terminal when the package declares
+several:
 
 ```sh
 trellis svc my-service create \
-  --package acme-orders@1.2.3 \
-  --registry acme \
+  --package ghcr.io/acme/acme-orders@1.2.3 \
   --participant acme-orders.MyService \
   --format json
 trellis svc "$DEPLOYMENT_ID" show --format json
 ```
 
-`--registry` can be left out when Trellis has only one. Auth pulls the release,
-checks the manifest, config, and source digests against what the registry
-returned, pulls each dependency by the exact digest the release was published
-with, and compiles the service from exactly those packages, never resolving
-them again. To install exactly the release someone reviewed, pin it by its
-manifest digest, which `trellis publish` prints: `--package
-acme-orders@sha256:…`. A release whose content doesn't match its digests is
-refused.
+Auth pulls the release from its workspace and accepts it only when it declares
+that same identity, checks the manifest, config, and source digests against
+what the registry returned, pulls each dependency from its own workspace by the
+exact digest the release was published with, and compiles the service from
+exactly those packages, never resolving them again. To install exactly the
+release someone reviewed, pin it by its manifest digest, which `trellis
+publish` prints: `--package ghcr.io/acme/acme-orders@sha256:…`. A release
+whose content doesn't match its digests is refused.
 
 `--source ./release/trellis-project` instead takes the project directory with
 its `trellis.toml`, `trellis.lock`, and `.trellis` files, and compiles it in the
@@ -78,8 +77,9 @@ submit its own build (below).
 ### From the Console
 
 **Add service** in the Console takes the same release. Give the service a
-name, choose **From a published package**, then the registry, the package name,
-and its version (or a `sha256:` digest), and **Look up package**. The form
+name, choose **From a published package**, then the package's full identity
+(`ghcr.io/acme/acme-orders`) and its version (or a `sha256:` digest), and
+**Look up package**. The form
 shows the release and the packages it was built with before anything is added;
 pick which service when the package declares several.
 
@@ -180,7 +180,7 @@ missing a required setting waits and prints a link to set it.
 The smoothest upgrade installs the new release before its image rolls out:
 
 ```sh
-trellis svc "$DEPLOYMENT_ID" apply --package acme-orders@1.3.0
+trellis svc "$DEPLOYMENT_ID" apply --package ghcr.io/acme/acme-orders@1.3.0
 ```
 
 Apply pulls and checks the release the same way create does, and installs the

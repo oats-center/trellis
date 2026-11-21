@@ -161,26 +161,33 @@ like `Create`, and changes nothing; `Create` still recompiles and checks the
 evidence it returns. See
 [server-side resolution](../contracts/trellis-idl.md#server-side-resolution).
 
-`Packages.Pull` is the path that does fetch: it takes a registry name, a
-package name, and a version or OCI manifest digest. Auth pulls the release
-from that registry, checks the manifest digest (and the requested one when
-pinned), the config and source-layer digests, that the layer is the
+`Packages.Pull` is the path that does fetch: it takes a package's full
+identity, such as `ghcr.io/acme/orders` (see
+[workspaces.md](../contracts/workspaces.md)), and a version or OCI manifest
+digest. The identity is also the repository, so Auth pulls the release from the
+package's own workspace. It checks the manifest digest (and the requested one
+when pinned), the config and source-layer digests, that the layer is the
 normalized source tar of exactly the manifest's sources and frozen resolution,
-and that the config names the requested package. It then pulls every package
-of the release's frozen resolution by the exact manifest digest recorded
-there, checks each one's semantic and distribution digests against the
-resolution, and compiles the release from only those packages, so nothing Auth
-holds stands in for one and no version is chosen again. The compiled digests
-must equal the frozen ones. The response carries the pinned release, its
-evidence, its participants with their settings, and its dependencies, for
-`Create` or `Apply`, which still recompile. A dependency under the chosen
-registry's prefix is pulled with that registry's credentials. One under another
-prefix uses the credentials of the one configured registry with that prefix, is
-pulled anonymously when none has it, and is refused when several do. Only
+and that the config and `trellis.toml` declare the requested identity. A
+release that declares another workspace was pushed somewhere it does not own
+and is refused. It then pulls every package of the release's frozen
+resolution from that package's own recorded workspace, by the exact manifest
+digest recorded there, checks each one's identity and its semantic and
+distribution digests against the resolution, and compiles the release from
+only those packages and the built-in `trellis` package the server ships, so
+nothing an installed participant holds stands in for one and no version is
+chosen again. The compiled digests must equal the frozen ones, the built-in
+package's included. The response carries the pinned release (its full
+identity, version, and manifest digest), its evidence, its participants with
+their settings, and its dependencies, for `Create` or `Apply`, which still
+recompile. Each workspace is pulled with the credentials of the one registry
+added for it, anonymously when there is none, and is refused when several name
+it. A `localhost` package names no shared location and is never pulled. Only
 loopback registries are reached over plain HTTP.
 
 `PackageRegistries.List/Put/Remove` keep the named registries in the Auth
-store, each a name, an OCI prefix, and optional credentials (a user name and a
+store, each a name, the workspace it signs in for (`prefix`, a canonical
+workspace such as `ghcr.io/acme`), and optional credentials (a user name and a
 secret sealed with the storage key to the registry's name). The secret is
 never returned and never written to the audit record or the idempotency
 result. `Packages.Pull` and the registry RPCs require

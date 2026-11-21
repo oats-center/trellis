@@ -198,9 +198,10 @@ pub struct PublishArgs {
 }
 
 #[derive(Debug, clap::Args)]
-/// Remove one API dependency by stable API ID.
+/// Remove one dependency by its alias, package name, or full identity.
 pub struct RmArgs {
-    /// Stable API ID such as `acme.orders@v1`.
+    /// Dependency alias, package name, or full identity such as
+    /// `ghcr.io/acme/orders`.
     pub api_id: String,
     #[command(flatten)]
     pub project: ProjectRootArgs,

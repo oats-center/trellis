@@ -382,7 +382,7 @@ once.
 
 The whole upgrade can then happen before build 2's image starts. Set its
 values, install its published package with `trellis svc <ID> apply --package
-NAME@VERSION` (or **Install a build** on the service's page), then roll out the
+WORKSPACE/NAME@VERSION` (or **Install a build** on the service's page), then roll out the
 image: its instances have their build and their settings, and nothing waits for
 approval. See [Upgrade](/guides/install-service-from-image#6-upgrade).
 
