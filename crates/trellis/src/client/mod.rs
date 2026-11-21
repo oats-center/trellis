@@ -72,7 +72,7 @@ pub use health::{
 };
 #[cfg(feature = "http")]
 pub(crate) use http_error::http_client_builder;
-#[cfg(feature = "device")]
+#[cfg(feature = "http")]
 pub(crate) use http_error::read_bounded_http_body;
 #[cfg(feature = "http")]
 pub use http_error::{decode_trellis_http_error, TrellisHttpError};
