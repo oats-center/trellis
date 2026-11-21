@@ -159,7 +159,10 @@ parameter or job key. There are no string formats: a UUID or email is a
 
 - `trellis add <path>` or `trellis add <workspace>/<name>` (such as
   `trellis add ghcr.io/acme/orders`) and `trellis rm` change dependency
-  declarations.
+  declarations. A dependency's alias is its package name; a second package of
+  the same name from another workspace needs `trellis add <source> --alias
+  <alias>`. `trellis rm` takes an alias, full identity, or package name, and
+  refuses a package name that fits several dependencies.
 - `trellis update` resolves dependencies and updates `trellis.lock`.
 - `trellis install` reproduces locked dependencies and generated outputs.
 - `trellis generate` compiles local IDL and generates packages using locally
@@ -419,9 +422,9 @@ next-step commands to stderr. Lists are aligned tables on a terminal and
 headerless tab-separated rows with raw values when piped, for `cut` and `awk`.
 `--format json` writes one JSON value to stdout instead and silences status
 lines, and is the interface for scripts; the human layout may change between
-releases. Color follows the terminal, `NO_COLOR` and `CLICOLOR_FORCE`. A secret
-the CLI prints, such as an instance seed, root secret, or setup code, is shown
-once and not kept. `svc|dev <name> remove` asks for the name unless given `-f`,
+releases. Color follows the terminal, `NO_COLOR`, `TERM=dumb` and
+`CLICOLOR_FORCE`. A secret the CLI prints, such as an instance seed, root
+secret, or setup code, is shown once and not kept. `svc|dev <name> remove` asks for the name unless given `-f`,
 and refuses without a terminal or with `--format json` unless given `-f`.
 
 Commands that need several values (`clients add|edit`, `apis force-replace
@@ -502,7 +505,8 @@ participants for `Create` or `Apply`. A release whose bytes don't match its
 digests is refused. Registry credentials are Auth state, not server config:
 `trellis registries set <name> --prefix <workspace> [--username <user>
 --secret-file <path|->]`, `registries list|remove`, or the Console's Services >
-Package registries (`Auth.PackageRegistries.*`). Trellis signs in to a
+Package registries (`Auth.PackageRegistries.*`); Docker Hub's prefix is
+`docker.io/<org>`. Trellis signs in to a
 workspace with the registry added for it and pulls anonymously when there is
 none; a private registry's secret is sealed with the storage key and never
 returned.
@@ -1839,7 +1843,10 @@ const order = await client.ordersCreate({ customerId: "customer-1" }).orThrow();
 ```
 
 Generated flat names depend on action names and alias collisions; inspect the
-generated participant when choosing names. Editor hover on a flat method
+generated participant when choosing names. An action whose flat name another
+action already gives, such as an RPC `OrdersGet` beside a qualified
+`orders.Get`, is qualified by its own API name too, so every flat method stays
+callable. Editor hover on a flat method
 (`client.ordersCreate`, `service.handleOrdersCreate`, `publish…`, `on…`) shows
 the action's `///` description, declared errors, and allowing capabilities.
 There is no `client.rpc.orders.create`

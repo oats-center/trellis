@@ -171,6 +171,14 @@ self-dependency check compares full identities, so the manifest above is
 valid. In imports the two `krishi` packages are told apart by their aliases,
 as any two dependencies are.
 
+`trellis add` names a dependency after its package, so the second `krishi`
+needs `--alias`. Without one, `add` refuses to replace a dependency whose
+identity differs, comparing the identity a path dependency's own
+`trellis.toml` declares, and leaves the manifest and lock as they were.
+`trellis rm` takes an alias, a full identity, or a package name. An exact
+alias or full identity wins; a package name that fits several dependencies is
+refused with each candidate's alias and full identity.
+
 `trellis.lock` moves to format 3, which keys each package by its full identity
 and records the workspace it was pulled from. `trellis update` writes it.
 
@@ -358,6 +366,16 @@ generators). Every other name stays readable. A participant or app that uses
 or serves two APIs of the same name takes its flat method names, such as
 `client.samplesGet`, from those generated names instead.
 
+The generator checks the flat methods themselves, not only the authored
+action names. A qualified action and a different action can still give the
+same method: `GhcrIoAlphaKrishiOrdersV1.Get` and an RPC named
+`GhcrIoAlphaKrishiOrdersV1Get` are both `ghcrIoAlphaKrishiOrdersV1Get`. Each
+action whose method is shared and is not yet qualified then takes its API's
+name as well, here `shopGhcrIoAlphaKrishiOrdersV1Get`, until every method is
+distinct (`facade_action_names` in `crates/codegen-ts/src/lib.rs`).
+Generation fails with the colliding actions named if no further qualification
+helps.
+
 ### Evidence
 
 Generated clients hand Auth a self-contained evidence bundle, and Auth compiles
@@ -539,7 +557,10 @@ The implementation settled these points the decisions left open.
   workspace, and optional credentials. `Packages.Pull` takes the package's full
   identity and signs in with the registry whose prefix is that workspace, or
   pulls anonymously; several registries naming one workspace are refused
-  rather than chosen between.
+  rather than chosen between. A prefix is checked against the registry host
+  as a workspace spells it, so Docker Hub's is `docker.io/<org>`; the
+  transport's endpoint for that host, `index.docker.io`, is used only to
+  connect.
 - **Short IDs in the CLI.** Listing tables (`svc list`, `apis list`,
   `resources list`) show each ID's short form on a terminal while no other row
   shares it. Detail views, piped tab-separated output, and `--format json`

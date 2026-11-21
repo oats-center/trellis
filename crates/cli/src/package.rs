@@ -86,7 +86,10 @@ pub async fn add(format: OutputFormat, args: &AddArgs) -> Result<()> {
             path: None,
         }
     };
-    let alias = dependency.package.replace('-', "_");
+    let alias = args
+        .alias
+        .clone()
+        .unwrap_or_else(|| dependency.package.replace('-', "_"));
     miette::ensure!(
         !manifest.sources.contains_key(&alias),
         "dependency alias '{alias}' collides with a source alias"
@@ -94,13 +97,11 @@ pub async fn add(format: OutputFormat, args: &AddArgs) -> Result<()> {
     // Two packages with one name from different workspaces need their own
     // aliases, which only the author can choose.
     if let Some(existing) = manifest.dependencies.get(&alias) {
+        let existing = dependency_identity(&root, existing)?;
         miette::ensure!(
-            existing.identity() == dependency.identity(),
-            "dependency alias '{alias}' already names {}; add {} to trellis.toml under \
-            another alias",
-            existing
-                .identity()
-                .unwrap_or_else(|| existing.package.clone()),
+            existing == dependency_identity(&root, &dependency)?,
+            "dependency alias '{alias}' already names {existing}; add {} with --alias \
+            <another alias>",
             args.source
         );
     }
@@ -132,16 +133,52 @@ pub async fn remove(format: OutputFormat, args: &RmArgs) -> Result<()> {
     let previous_manifest = fs::read(root.join("trellis.toml")).into_diagnostic()?;
     let previous_lock = read_optional(&root.join("trellis.lock"))?;
     let mut manifest = read_manifest(&root.join("trellis.toml"))?;
-    let alias = manifest
-        .dependencies
-        .iter()
-        .find_map(|(alias, dependency)| {
-            (dependency.package == args.api_id
-                || alias == &args.api_id
-                || dependency.identity().as_deref() == Some(args.api_id.as_str()))
-            .then(|| alias.clone())
-        })
-        .ok_or_else(|| miette!("package '{}' is not in trellis.toml", args.api_id))?;
+    // An alias or full identity names one dependency; a bare package name can
+    // name several from different workspaces, and then the author picks one.
+    let wanted = args.api_id.as_str();
+    let alias = if manifest.dependencies.contains_key(wanted) {
+        wanted.to_owned()
+    } else {
+        let identities = manifest
+            .dependencies
+            .iter()
+            .map(|(alias, dependency)| {
+                // A path dependency whose directory is gone can still be
+                // removed by its alias.
+                let identity = dependency_identity(&root, dependency).ok();
+                (alias, dependency, identity)
+            })
+            .collect::<Vec<_>>();
+        let by_identity = identities
+            .iter()
+            .filter(|(_, _, identity)| identity.as_deref() == Some(wanted))
+            .collect::<Vec<_>>();
+        let candidates = if by_identity.is_empty() {
+            identities
+                .iter()
+                .filter(|(_, dependency, _)| dependency.package == wanted)
+                .collect()
+        } else {
+            by_identity
+        };
+        match candidates.as_slice() {
+            [] => return Err(miette!("package '{wanted}' is not in trellis.toml")),
+            [(alias, _, _)] => (*alias).clone(),
+            several => {
+                return Err(miette!(
+                    "'{wanted}' names several dependencies; remove one by its alias: {}",
+                    several
+                        .iter()
+                        .map(|(alias, dependency, identity)| format!(
+                            "{alias} ({})",
+                            identity.as_deref().unwrap_or(&dependency.package)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            }
+        }
+    };
     manifest.dependencies.remove(&alias);
     let edited = edit_manifest_dependency(&previous_manifest, &alias, None)?;
     let lock = resolve_lock(&root, &manifest, Some(&edited)).await?;
@@ -1075,6 +1112,7 @@ mod tests {
             &AddArgs {
                 source: "child".into(),
                 version: None,
+                alias: None,
                 project: ProjectRootArgs {
                     root: root.path().to_path_buf(),
                 },

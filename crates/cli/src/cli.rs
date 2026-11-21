@@ -186,6 +186,11 @@ pub struct AddArgs {
     #[arg(long)]
     /// Semantic Version requirement; defaults to a caret of the exact release.
     pub version: Option<String>,
+    #[arg(long)]
+    /// Dependency alias imports name it by; defaults to the package name with
+    /// `-` as `_`. A second package with the same name, from another
+    /// workspace, needs its own.
+    pub alias: Option<String>,
     #[command(flatten)]
     pub project: ProjectRootArgs,
 }

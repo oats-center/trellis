@@ -98,12 +98,14 @@ fn registries(connection: &Connection, storage: &OAuthStorage) -> Result<Vec<Reg
 }
 
 /// A prefix is a workspace: a registry host and repository path, never a
-/// URL, so it names one place packages are pulled from.
+/// URL, so it names one place packages are pulled from. It is compared with
+/// the registry host as a workspace spells it, such as `docker.io`, not the
+/// endpoint the transport resolves that host to (`index.docker.io`).
 fn validate_prefix(prefix: &str) -> Result<(), AuthError> {
     let valid = prefix != trellis_protocol::LOCAL_WORKSPACE
         && trellis_protocol::validate_workspace(prefix).is_ok()
         && Reference::from_str(&format!("{prefix}/package"))
-            .is_ok_and(|reference| prefix.starts_with(reference.resolve_registry()));
+            .is_ok_and(|reference| prefix.starts_with(reference.registry()));
     if valid {
         Ok(())
     } else {
@@ -628,4 +630,51 @@ async fn pull(
         })
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::auth::tests::{mutation, open, NOW};
+    use ed25519_dalek::SigningKey;
+
+    /// A private Docker Hub workspace is added as `docker.io/<org>`, the
+    /// spelling package identities use, and a pull of a package there signs
+    /// in with its credentials.
+    #[test]
+    fn docker_hub_workspace_takes_private_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(open(&directory, SigningKey::from_bytes(&[51; 32])));
+        store.initialize_issuer(NOW).unwrap();
+        let admin = store
+            .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+            .map(|initialized| initialized.principal_id)
+            .unwrap();
+        let storage = OAuthStorage::new(store.clone(), &[23; 32]).unwrap();
+        let input = AuthPackageRegistryPutRequest {
+            name: AuthShortName("hub".into()),
+            prefix: AuthName("docker.io/acme".into()),
+            credentials: Some(AuthPackageRegistryCredentials {
+                username: AuthName("robot".into()),
+                secret: AuthRegistrySecret("hub token".into()),
+                extra: Default::default(),
+            }),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
+            extra: Default::default(),
+        };
+        put(&storage, &mutation(&admin, &input), &input, NOW).unwrap();
+
+        let opened = storage
+            .authority
+            .transaction(|connection| registries(connection, &storage))
+            .unwrap();
+        let identity = "docker.io/acme/orders";
+        let workspace = trellis_idl::project::package_source_workspace(identity).unwrap();
+        match workspace_auth(&opened, &workspace, identity).unwrap() {
+            RegistryAuth::Basic(username, secret) => {
+                assert_eq!((username.as_str(), secret.as_str()), ("robot", "hub token"));
+            }
+            _ => panic!("the pull signs in anonymously"),
+        }
+    }
 }

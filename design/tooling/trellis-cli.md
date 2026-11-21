@@ -13,7 +13,7 @@ Status: Revision 7 command and project-tooling model.
 ## Project Commands
 
 ```text
-trellis add <package> [--version <requirement>]
+trellis add <package> [--version <requirement>] [--alias <alias>]
 trellis rm <package>
 trellis check
 trellis update
@@ -39,7 +39,13 @@ published, and a published package depends only on registry packages.
 `add` takes a project directory or a published package's full identity, such
 as `trellis add ghcr.io/acme/orders`; `add`, `update`, and `install` pull each
 registry dependency from the workspace it names and accept a release only
-when it declares that same identity. A `trellis` dependency the CLI's own
+when it declares that same identity. A dependency's alias is its package
+name unless `--alias` names another, and a second package of the same name
+from another workspace needs one: `add` refuses to replace a dependency of a
+different identity and changes nothing. `rm` takes an alias, a full identity,
+or a package name; an exact alias or full identity is preferred, and a package
+name that fits several dependencies is refused with their aliases and
+identities. A `trellis` dependency the CLI's own
 build of the built-in package satisfies is taken from that build, which is the
 release published at `ghcr.io/oats-center/trellis`, without downloading it.
 
@@ -507,8 +513,9 @@ layout in `crates/cli/src/output.rs`:
   off or failed.
 - A secret the CLI generates (an instance seed, a device root secret, a setup
   code, a key seed) prints once with a warning that Trellis does not keep it.
-- Color appears on terminals unless `NO_COLOR` is set; `CLICOLOR_FORCE=1`
-  keeps it when piped.
+- Color appears on terminals unless `NO_COLOR` is set or `TERM=dumb`, even
+  when `CI` is set; `CLICOLOR_FORCE=1` keeps it when piped or on a dumb
+  terminal.
 - `svc|dev <name> remove` asks for the name before removing; `-f` skips the
   question, and without a terminal on stdin the command refuses and names `-f`.
 

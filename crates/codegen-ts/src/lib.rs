@@ -1317,15 +1317,7 @@ fn render_app_request(
         .join(", ");
     let mut use_types = Vec::new();
     let mut use_values = Vec::new();
-    let mut name_counts = BTreeMap::new();
-    for id in uses.keys() {
-        for action in find_api(graph, id)?.actions().keys() {
-            *name_counts
-                .entry(action.name.to_ascii_lowercase())
-                .or_insert(0usize) += 1;
-        }
-    }
-    let api_names = facade_api_names(graph, uses.keys(), &api_modules)?;
+    let action_names = facade_action_names(graph, uses.keys(), &api_modules)?;
     let mut name_types = Vec::new();
     let mut name_values = Vec::new();
     let mut names = BTreeMap::new();
@@ -1368,17 +1360,11 @@ fn render_app_request(
                 id.as_str(),
                 descriptor_name(&selected.action)
             ));
-            let name = if name_counts[&selected.action.name.to_ascii_lowercase()] > 1 {
-                format!("{}.{}", api_names[id.as_str()], selected.action.name)
-            } else {
-                selected.action.name.clone()
-            };
+            let full_key = format!("{}:{}", id.as_str(), descriptor_name(&selected.action));
+            let name = action_names[&full_key].clone();
             name_types.push(format!("readonly [{key}]: {};", js_string(&name)));
             name_values.push(format!("[{key}]: {}", js_string(&name)));
-            names.insert(
-                format!("{}:{}", id.as_str(), descriptor_name(&selected.action)),
-                name,
-            );
+            names.insert(full_key, name);
             let direction = js_string(direction(selected.direction));
             action_types.push(format!(
                 "{{ readonly descriptorName: {descriptor}; readonly direction: \
@@ -1710,28 +1696,7 @@ fn render_participant(
         ));
         aliases.insert(id.as_str(), alias);
     }
-    let mut action_name_counts = BTreeMap::new();
-    for id in &referenced {
-        for action in find_api(graph, id)?.actions().keys() {
-            *action_name_counts
-                .entry(action.name.to_ascii_lowercase())
-                .or_insert(0usize) += 1;
-        }
-    }
-    let api_names = facade_api_names(graph, referenced.iter().copied(), &api_modules)?;
-    let mut action_names = Vec::new();
-    for id in &referenced {
-        let api = find_api(graph, id)?;
-        for action in api.actions().keys() {
-            let descriptor = descriptor_name(action);
-            let name = if action_name_counts[&action.name.to_ascii_lowercase()] > 1 {
-                format!("{}.{}", api_names[id.as_str()], action.name)
-            } else {
-                action.name.clone()
-            };
-            action_names.push((format!("{}:{descriptor}", id.as_str()), name));
-        }
-    }
+    let action_names = facade_action_names(graph, referenced.iter().copied(), &api_modules)?;
     for package_id in participant_resource_packages(participant) {
         let module = &modules[package_id];
         lines.push(format!(
@@ -1758,7 +1723,7 @@ fn render_participant(
         graph,
         participant.implements(),
         &uses,
-        &action_names.iter().cloned().collect(),
+        &action_names,
     )?);
     lines.push("type __ActionNames = {".into());
     for (key, name) in &action_names {
@@ -2655,6 +2620,67 @@ fn type_union(types: Vec<String>) -> String {
 /// The API part of a participant's or app's facade method names: each API's
 /// own name, or its generated module name when another API the same
 /// participant uses or serves has that name too.
+/// The generated name of every action of `apis`, keyed
+/// `<API ID>:<descriptor>`. An action keeps its own name unless another
+/// action's name gives the same SDK method (`orders.Get` and `OrdersGet` both
+/// become `ordersGet`); then each such action not yet qualified takes its
+/// API's facade name, `orders.Get`, until every method is distinct.
+fn facade_action_names<'a>(
+    graph: &PackageGraph,
+    apis: impl IntoIterator<Item = &'a trellis_idl::ApiId>,
+    api_modules: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, CodegenTsError> {
+    let apis = apis.into_iter().collect::<Vec<_>>();
+    let api_names = facade_api_names(graph, apis.iter().copied(), api_modules)?;
+    let mut names = BTreeMap::new();
+    for id in apis {
+        for action in find_api(graph, id)?.actions().keys() {
+            names.insert(
+                format!("{}:{}", id.as_str(), descriptor_name(action)),
+                (
+                    action.name.clone(),
+                    format!("{}.{}", api_names[id.as_str()], action.name),
+                ),
+            );
+        }
+    }
+    loop {
+        let mut methods = BTreeMap::<String, Vec<&String>>::new();
+        for (key, (name, _)) in &names {
+            methods
+                .entry(surface_pascal(name).to_ascii_lowercase())
+                .or_default()
+                .push(key);
+        }
+        let shared = methods
+            .into_values()
+            .filter(|keys| keys.len() > 1)
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for key in &shared {
+            let (name, qualified) = names.get_mut(key).expect("named action");
+            if name != qualified {
+                name.clone_from(qualified);
+                changed = true;
+            }
+        }
+        if !changed {
+            if !shared.is_empty() {
+                return Err(CodegenTsError::ExportNameCollision(format!(
+                    "actions {} generate the same SDK methods",
+                    shared.join(", ")
+                )));
+            }
+            return Ok(names
+                .into_iter()
+                .map(|(key, (name, _))| (key, name))
+                .collect());
+        }
+    }
+}
+
 fn facade_api_names<'a>(
     graph: &PackageGraph,
     apis: impl IntoIterator<Item = &'a trellis_idl::ApiId>,
@@ -3429,5 +3455,149 @@ console.log(JSON.stringify({ errors, docs }));
         let error = write_generated_file(&target, "export const broken = ;\n").unwrap_err();
         assert!(matches!(error, CodegenTsError::InvalidTypeScript { .. }));
         assert!(!target.exists());
+    }
+
+    /// Two `orders` APIs from different workspaces are qualified by their
+    /// full IDs, and an RPC spelled as one of those qualified names gets its
+    /// own method instead of sharing it, so a client can call all three.
+    #[test]
+    fn qualified_and_plain_actions_get_distinct_methods() {
+        let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../builtin-contracts");
+        let manifest = trellis_idl::project::read_manifest(&runtime.join("trellis.toml")).unwrap();
+        let builtin = trellis_idl::compile_project(
+            &manifest,
+            trellis_idl::project::load_sources(&runtime, &manifest).unwrap(),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let dependency =
+            |package: &str, workspace: Option<&str>, path: &str| trellis_idl::project::Dependency {
+                package: package.into(),
+                workspace: workspace.map(str::to_owned),
+                version: None,
+                path: Some(path.into()),
+            };
+        let compile = |workspace: Option<&str>,
+                       name: &str,
+                       dependencies: BTreeMap<String, trellis_idl::project::Dependency>,
+                       graphs: BTreeMap<String, PackageGraph>,
+                       source: &str| {
+            trellis_idl::compile_project(
+                &PackageManifest {
+                    package: PackageMetadata {
+                        name: name.into(),
+                        workspace: workspace.map(str::to_owned),
+                        version: "1.0.0".parse().unwrap(),
+                    },
+                    sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
+                    dependencies,
+                    generate: GenerateConfig::default(),
+                },
+                vec![SourceUnit {
+                    alias: "main".into(),
+                    path: "main.trellis".into(),
+                    source: source.into(),
+                }],
+                graphs,
+            )
+            .unwrap()
+        };
+        // Each package names its model apart, since generated types share one
+        // namespace.
+        let orders = |workspace: &str, model: &str| {
+            compile(
+                Some(workspace),
+                "krishi",
+                BTreeMap::from([("trellis".into(), dependency("trellis", None, "../runtime"))]),
+                BTreeMap::from([("trellis".into(), builtin.clone())]),
+                &format!(
+                    "model {model} {{ id: string; }}\napi orders@v1 {{ title \"Orders\"; \
+                    description \"Orders.\"; rpc Get {{ input {model}; output {model}; }} \
+                    capabilities {{ public {{ allows {{ rpc Get; }} }} }} }}\n"
+                ),
+            )
+        };
+        let graph = compile(
+            None,
+            "shop",
+            BTreeMap::from([
+                ("trellis".into(), dependency("trellis", None, "../runtime")),
+                ("alpha".into(), dependency("krishi", None, "../alpha")),
+                ("beta".into(), dependency("krishi", None, "../beta")),
+            ]),
+            BTreeMap::from([
+                ("trellis".into(), builtin.clone()),
+                ("alpha".into(), orders("ghcr.io/alpha", "AlphaOrder")),
+                ("beta".into(), orders("ghcr.io/beta", "BetaOrder")),
+            ]),
+            r#"
+            import { orders } from alpha;
+            import { orders as betaOrders } from beta;
+            model Cart { cart: string; }
+            api shop@v1 {
+              title "Shop";
+              description "Shop.";
+              rpc GhcrIoAlphaKrishiOrdersV1Get { input Cart; output Cart; }
+              capabilities { public { allows { rpc GhcrIoAlphaKrishiOrdersV1Get; } } }
+            }
+            app Viewer {
+              use orders { required capability public; }
+              use betaOrders { required capability public; }
+              use shop { required capability public; }
+            }
+            "#,
+        );
+        let root = unique_temp_dir("qualified");
+        generate_ts_package(&graph, &root, "@example/generated").unwrap();
+        fs::write(
+            root.join("consumer.ts"),
+            r#"
+import { apps } from "./index.js";
+import type { ConnectedTrellisClient } from "@oatscenter/trellis";
+
+export async function call(client: ConnectedTrellisClient<typeof apps.Viewer.request>) {
+  const alpha: string = (await client.ghcrIoAlphaKrishiOrdersV1Get({ id: "a" })).orThrow().id;
+  const beta: string = (await client.ghcrIoBetaKrishiOrdersV1Get({ id: "b" })).orThrow().id;
+  const cart: string = (await client.shopGhcrIoAlphaKrishiOrdersV1Get({ cart: "c" })).orThrow().cart;
+  return [alpha, beta, cart];
+}
+"#,
+        )
+        .unwrap();
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert!(std::process::Command::new("node")
+            .args([
+                "-e",
+                "require('node:fs').symlinkSync(process.argv[1], process.argv[2], 'junction')"
+            ])
+            .arg(repo.join("node_modules"))
+            .arg(root.join("node_modules"))
+            .status()
+            .unwrap()
+            .success());
+        let output = std::process::Command::new("node")
+            .arg(repo.join("node_modules/typescript/bin/tsc"))
+            .args([
+                "--noEmit",
+                "--strict",
+                "--target",
+                "ES2022",
+                "--lib",
+                "ESNext,DOM,DOM.Iterable",
+                "--module",
+                "NodeNext",
+                "--allowImportingTsExtensions",
+                "--resolveJsonModule",
+            ])
+            .arg(root.join("consumer.ts"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }
