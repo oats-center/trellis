@@ -2483,7 +2483,8 @@ The generated provider has one method per webhook endpoint returning
 the returned `WebhookDecideHandle` is dropped. `webhook_hmac`,
 `verify_webhook_hmac`, `webhook_equal`, `within_webhook_window`, and
 `webhook_response` help decide handlers; the Rust helpers cover SHA-256 and
-SHA-512.
+SHA-512. In the testkit, `runtime.webhook_urls(&identity)` returns each
+endpoint's URL by name.
 
 #### Transfers
 
