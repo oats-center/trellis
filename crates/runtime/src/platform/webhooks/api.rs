@@ -1,6 +1,7 @@
 //! `trellis.webhooks@v1`: endpoints and request records. Trellis checks the
 //! caller's `attempts.*` capability before a handler runs.
 
+use serde_json::json;
 use trellis_idl::WebhookVerifier;
 use trellis_rs::service::{DeclaredRpcError, ServerError};
 use trellis_runtime_apis::apis::trellis_webhooks_v1::Provider;
@@ -80,17 +81,35 @@ impl Webhooks {
             .await
             .map_err(unexpected)?;
         let settings = &endpoint.settings;
+        let previous_urls: Vec<_> = record
+            .previous_urls
+            .iter()
+            .map(|id| self.url(endpoint, id))
+            .collect();
+        let mode = match definition.mode {
+            trellis_idl::WebhookMode::Async => "async",
+            trellis_idl::WebhookMode::Sync => "sync",
+        };
+        let verifiers: Vec<_> = definition
+            .verifiers
+            .iter()
+            .map(trellis_idl::webhook::describe_verifier)
+            .collect();
+        let recent: Vec<_> = recent
+            .into_iter()
+            .map(|(outcome, count)| json!({"outcome": outcome, "count": count.to_string()}))
+            .collect();
         Ok(serde_json::json!({
             "service": record.deployment_id,
             "endpoint": record.endpoint,
             "title": record.title,
             "description": record.description,
             "url": self.url(endpoint, &record.current_url),
-            "previousUrls": record.previous_urls.iter().map(|id| self.url(endpoint, id)).collect::<Vec<_>>(),
+            "previousUrls": previous_urls,
             "enabled": record.endpoint_enabled && record.deployment_enabled,
-            "mode": match definition.mode { trellis_idl::WebhookMode::Async => "async", trellis_idl::WebhookMode::Sync => "sync" },
+            "mode": mode,
             "methods": definition.methods,
-            "verifiers": definition.verifiers.iter().map(trellis_idl::webhook::describe_verifier).collect::<Vec<_>>(),
+            "verifiers": verifiers,
             "decides": definition.decide.is_some(),
             "unauthenticated": definition.verifiers.contains(&WebhookVerifier::None),
             "secrets": secrets,
@@ -107,7 +126,7 @@ impl Webhooks {
                 "intakeRetentionMs": settings.intake_retention_ms.to_string(),
                 "intakeMaxBytes": settings.intake_max_bytes.to_string(),
             },
-            "recent": recent.into_iter().map(|(outcome, count)| serde_json::json!({"outcome": outcome, "count": count.to_string()})).collect::<Vec<_>>(),
+            "recent": recent,
         }))
     }
 

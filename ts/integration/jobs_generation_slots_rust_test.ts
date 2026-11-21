@@ -123,7 +123,8 @@ async function verifyJobsSlots(cancelOverlap: boolean): Promise<void> {
         contract,
       });
       const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
-        capabilityId: "runtime-trellis.transport_growth.v1:growth.extend",
+        capabilityId:
+          "localhost/runtime-trellis.transport_growth.v1:growth.extend",
       });
       const grant = grants.items[0];
       assert(grant);
@@ -788,7 +789,8 @@ test("Rust retained G1 JobRefs read wait and cancel after physical G1 reap", asy
         contract,
       });
       const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
-        capabilityId: "runtime-trellis.transport_growth.v1:growth.extend",
+        capabilityId:
+          "localhost/runtime-trellis.transport_growth.v1:growth.extend",
       });
       const grant = grants.items[0];
       assert(grant);

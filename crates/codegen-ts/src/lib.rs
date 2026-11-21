@@ -2961,6 +2961,7 @@ mod tests {
             &PackageManifest {
                 package: PackageMetadata {
                     name: "example".into(),
+                    workspace: None,
                     version: "2.3.4".parse().unwrap(),
                 },
                 sources: BTreeMap::from([("main".into(), "contract.trellis".into())]),
@@ -2970,12 +2971,10 @@ mod tests {
                         package: "trellis".into(),
                         version: None,
                         path: Some("../runtime".into()),
-                        registry: None,
+                        workspace: None,
                     },
                 )]),
                 generate: GenerateConfig::default(),
-                default_registry: None,
-                registries: BTreeMap::new(),
             },
             vec![SourceUnit {
                 alias: "main".into(),

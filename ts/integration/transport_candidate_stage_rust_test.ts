@@ -463,7 +463,7 @@ async function reduceExtend(
   subjectId: string,
 ): Promise<void> {
   const page = await runtime.callAdminRpc("authCapabilityGrantsList", {
-    capabilityId: "runtime-trellis.transport_growth.v1:growth.extend",
+    capabilityId: "localhost/runtime-trellis.transport_growth.v1:growth.extend",
   });
   const grant = page.items[0];
   assert(grant, `missing optional capability for ${subjectId}`);

@@ -274,6 +274,10 @@
         "to": "/guides/upgrade-without-downtime"
       },
       {
+        "title": "Enroll service instances",
+        "to": "/guides/enroll-service-instances"
+      },
+      {
         "title": "Administer Jobs",
         "to": "/guides/administering-jobs"
       }

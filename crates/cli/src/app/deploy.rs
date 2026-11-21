@@ -57,6 +57,12 @@ async fn run_svc_resource(format: OutputFormat, command: SvcResourceCommand) -> 
         }
         SvcResourceAction::Instances(args) => service_instances(format, &command.id, &args).await,
         SvcResourceAction::Provision(args) => provision_service(format, &command.id, &args).await,
+        SvcResourceAction::Enrollment(enrollment) => {
+            super::enrollment::run(format, &command.id, enrollment).await
+        }
+        SvcResourceAction::InstancePolicy(policy) => {
+            super::enrollment::deployment_policy(format, &command.id, policy).await
+        }
         SvcResourceAction::Updates => service_updates(format, &command.id).await,
         SvcResourceAction::Approve(args) => {
             decide_service_update(format, &command.id, &args, true).await
@@ -474,63 +480,23 @@ async fn build_input(
     let package = build
         .package
         .as_deref()
-        .ok_or_else(|| miette::miette!("give --source DIR or --package NAME@VERSION"))?;
+        .ok_or_else(|| miette::miette!("give --source DIR or --package WORKSPACE/NAME@VERSION"))?;
     let (name, release) = package.rsplit_once('@').ok_or_else(|| {
         miette::miette!(
-            help = "Name a release as NAME@1.2.0, or pin it as NAME@sha256:<digest>.",
+            help = "Name a release as ghcr.io/acme/orders@1.2.0, or pin it as \
+            ghcr.io/acme/orders@sha256:<digest>.",
             "--package {package} names no release"
         )
     })?;
+    miette::WrapErr::wrap_err_with(trellis_idl::project::package_repository(name), || {
+        format!("--package {package} must name a published package by its full identity, such as ghcr.io/acme/orders@1.2.0")
+    })?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
         .trellis_auth_v1();
-    let registry = match &build.registry {
-        Some(registry) => registry.clone(),
-        None => {
-            let names = auth
-                .package_registries_list(&auth_types::AuthEmpty {
-                    extra: Default::default(),
-                })
-                .await
-                .into_diagnostic()?
-                .registries
-                .into_iter()
-                .map(|registry| registry.name.0)
-                .collect::<Vec<_>>();
-            match names.as_slice() {
-                [] => {
-                    return Err(miette::miette!(
-                        help = "Add one with `trellis registries set NAME --prefix HOST/PATH`.",
-                        "Trellis has no registry to pull {name} from"
-                    ))
-                }
-                [only] => only.clone(),
-                _ if crate::prompt::interactive() => {
-                    let choices = names
-                        .iter()
-                        .map(|name| (name.clone(), name.clone()))
-                        .collect::<Vec<_>>();
-                    crate::prompt::Form::new(true).choose(
-                        "Which registry?",
-                        "--registry",
-                        None,
-                        &choices,
-                        None,
-                    )?
-                }
-                _ => {
-                    return Err(miette::miette!(
-                        "choose a registry with --registry; registries: {}",
-                        names.join(", ")
-                    ))
-                }
-            }
-        }
-    };
     let pinned = release.starts_with("sha256:");
     let pulled = auth
         .packages_pull(&auth_types::AuthPackagePullRequest {
-            registry: wire(&registry)?,
-            name: wire(name)?,
+            package: wire(name)?,
             version: (!pinned).then(|| wire(release)).transpose()?,
             digest: pinned.then(|| wire(release)).transpose()?,
             extra: Default::default(),
@@ -553,10 +519,9 @@ async fn build_input(
         let published = &pulled.published;
         output::Details::new(format!(
             "{} {}",
-            output::strong(&published.name.0),
+            output::strong(&published.package.0),
             published.version.0
         ))
-        .field("Registry", &published.registry.0)
         .field("Digest", &published.digest.0)
         .field("Participant", &participant)
         .section("Built with")
@@ -1045,7 +1010,17 @@ async fn service_instances(
             }),
             extra: Default::default(),
         })
-        .try_filter(|item| std::future::ready(args.disabled || item.principal.enabled))
+        .try_filter(|item| {
+            let ended = matches!(
+                item.state,
+                auth_types::AuthInstanceState::Retired | auth_types::AuthInstanceState::Removed
+            );
+            std::future::ready(if ended {
+                args.all
+            } else {
+                args.disabled || args.all || item.principal.enabled
+            })
+        })
         .try_collect::<Vec<_>>()
         .await
         .into_diagnostic()?;
@@ -1119,7 +1094,10 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
                     }
             });
             let waiting = instance.get("waiting");
-            let state = if connected_at.is_none() {
+            let ended = output::field(&instance, "state");
+            let state = if ended == "retired" || ended == "removed" {
+                ended
+            } else if connected_at.is_none() {
                 "offline".to_owned()
             } else if let Some(report) = reporting {
                 report
@@ -1427,9 +1405,11 @@ fn print_service_instances_result<T: serde::Serialize>(
                 output::time_col("Connected", "status.connectedAt"),
                 output::time_col("Last heartbeat", "status.lastHeartbeat"),
                 output::state_col("Enabled", "principal.enabled"),
+                output::col("Origin", "origin.kind"),
                 output::muted("ID", "instanceId"),
             ],
-            "No instances. Provision one with `provision`.",
+            "No instances. Provision one with `provision`, or issue an enrollment secret with \
+            `enrollment issue`.",
         )?;
         // What a waiting instance needs and which checks fail, which the
         // table has no room for.
@@ -1635,7 +1615,7 @@ pub(super) async fn resolve_deployment_id(
         .map(str::to_owned)
 }
 
-async fn find_deployment(
+pub(super) async fn find_deployment(
     connected: &Client,
     deployment_id: &str,
     kind: DeploymentKind,

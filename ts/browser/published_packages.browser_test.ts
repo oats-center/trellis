@@ -5,9 +5,17 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  readdir,
+  readFile,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -15,8 +23,7 @@ import { chromium } from "playwright";
 import { codecs } from "@oatscenter/trellis/generated";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { participants as extendedParticipants } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
+import type { participants as FixtureParticipants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { TrellisService } from "../packages/trellis/service/mod.ts";
@@ -35,9 +42,6 @@ import { API as authApi } from "../packages/trellis/internal_sdk/generated/apis/
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const run = promisify(execFile);
-const PROVIDER = participants.Provider.participant;
-const EXTENDED = extendedParticipants.Provider.participant;
-const KEEPER = participants.GrantKeeper.participant;
 
 /**
  * A CNCF Distribution registry on a free loopback port, storing in `root`.
@@ -98,17 +102,24 @@ async function startRegistry(
 }
 
 /**
- * Publish the built-in `trellis` package, the runtime fixture as
- * runtime-trellis 0.100.0, and the pinned fixture as 0.100.1 to `prefix` with
- * the producer-built CLI, as a service's own pipeline would. The fixtures
- * depend on `trellis` from that registry, so each release's frozen
- * resolution names it there.
+ * The runtime fixture as runtime-trellis 0.100.0 and the pinned fixture as
+ * 0.100.1, both published to `workspace` with the producer-built CLI as a
+ * service's own pipeline would, and the participants each release generates.
+ * A published package's workspace is part of its identity, so the services
+ * run the builds generated here, not the checked-in `localhost` fixtures.
+ * Both depend on the built-in `trellis` package, which the CLI takes from its
+ * own build and Auth from the server's.
  */
 async function publishFixtures(
   workdir: string,
-  prefix: string,
+  workspace: string,
   login?: { username: string; password: string },
-): Promise<Record<string, string>> {
+): Promise<{
+  digests: Record<string, string>;
+  provider: (typeof FixtureParticipants)["Provider"]["participant"];
+  keeper: (typeof FixtureParticipants)["GrantKeeper"]["participant"];
+  extended: (typeof FixtureParticipants)["Provider"]["participant"];
+}> {
   const binary = process.env.TRELLIS_TEST_CLI_BIN;
   assert.ok(binary, "supply a producer-built CLI");
   // The publisher's own Docker login, never the machine's; without one it
@@ -120,7 +131,7 @@ async function publishFixtures(
       join(docker, "config.json"),
       JSON.stringify({
         auths: {
-          [prefix.split("/")[0]]: {
+          [workspace.split("/")[0]]: {
             auth: Buffer.from(`${login.username}:${login.password}`).toString(
               "base64",
             ),
@@ -133,20 +144,14 @@ async function publishFixtures(
     TRELLIS_CACHE: join(workdir, "package-cache"),
     DOCKER_CONFIG: docker,
   };
-  const builtin = join(workdir, "publish", "trellis");
-  await cp(join(repo, "crates/builtin-contracts/src"), join(builtin, "src"), {
-    recursive: true,
-  });
   const manifest = await readFile(
     join(repo, "crates/builtin-contracts/trellis.toml"),
     "utf8",
   );
   const version = /^version = "([^"]+)"/m.exec(manifest)?.[1];
   assert.ok(version);
-  await writeFile(
-    join(builtin, "trellis.toml"),
-    manifest.replace(/prefix = "[^"]+"/, `prefix = "${prefix}"`),
-  );
+  // The generated packages import the SDK the way the checked-in ones do.
+  await symlink(join(repo, "node_modules"), join(workdir, "node_modules"));
   const fixture = async (from: string, release: string) => {
     const directory = join(workdir, "publish", `runtime-${release}`);
     await mkdir(directory, { recursive: true });
@@ -156,13 +161,13 @@ async function publishFixtures(
     );
     await writeFile(
       join(directory, "trellis.toml"),
-      `default-registry = "local"\n\n[package]\nname = "runtime-trellis"\nversion = "${release}"\n\n[sources]\nruntime = "contract.trellis"\n\n[dependencies]\ntrellis = { package = "trellis", version = "=${version}", registry = "local" }\n\n[registries.local]\nprefix = "${prefix}"\n`,
+      `[package]\nname = "runtime-trellis"\nworkspace = "${workspace}"\nversion = "${release}"\n\n[sources]\nruntime = "contract.trellis"\n\n[generate.typescript]\noutput = "packages/runtime-trellis"\n\n[dependencies]\ntrellis = { package = "trellis", version = "=${version}" }\n`,
     );
     return directory;
   };
   const digests: Record<string, string> = {};
+  const generated: Array<typeof FixtureParticipants> = [];
   for (const directory of [
-    builtin,
     await fixture("integration/fixtures/runtime", "0.100.0"),
     await fixture("integration/fixtures/runtime-pinned", "0.100.1"),
   ]) {
@@ -179,8 +184,49 @@ async function publishFixtures(
       ).stdout,
     );
     digests[`${published.name}@${published.version}`] = published.digest;
+    const module = await import(
+      pathToFileURL(join(directory, "packages/runtime-trellis/index.js")).href
+    );
+    generated.push(module.participants);
   }
-  return digests;
+  return {
+    digests,
+    provider: generated[0].Provider.participant,
+    keeper: generated[0].GrantKeeper.participant,
+    extended: generated[1].Provider.participant,
+  };
+}
+
+/**
+ * Copy one release to another repository of the same registry, as someone who
+ * can push there but does not own the release's workspace could.
+ */
+async function copyRelease(
+  host: string,
+  from: string,
+  to: string,
+  tag: string,
+): Promise<void> {
+  const accept = { accept: "application/vnd.oci.image.manifest.v1+json" };
+  const manifest = await (
+    await fetch(`http://${host}/v2/${from}/manifests/${tag}`, {
+      headers: accept,
+    })
+  ).text();
+  const parsed = JSON.parse(manifest);
+  for (const { digest } of [parsed.config, ...parsed.layers]) {
+    const mounted = await fetch(
+      `http://${host}/v2/${to}/blobs/uploads/?mount=${digest}&from=${from}`,
+      { method: "POST" },
+    );
+    assert.equal(mounted.status, 201, `mounting ${digest}`);
+  }
+  const put = await fetch(`http://${host}/v2/${to}/manifests/${tag}`, {
+    method: "PUT",
+    headers: { "content-type": "application/vnd.oci.image.manifest.v1+json" },
+    body: manifest,
+  });
+  assert.equal(put.status, 201);
 }
 
 /** Whether the deployment has any service update, waiting or decided. */
@@ -198,8 +244,14 @@ test("the CLI installs a published package so its service connects at once, and 
     await withTrellisRuntime(async (runtime) => {
       const registry = await startRegistry(join(runtime.workdir, "registry"));
       stopRegistry = registry.stop;
-      const prefix = `${registry.host}/packages`;
-      const digests = await publishFixtures(runtime.workdir, prefix);
+      const workspace = `${registry.host}/packages`;
+      const package_ = `${workspace}/runtime-trellis`;
+      const {
+        digests,
+        provider: PROVIDER,
+        keeper: KEEPER,
+        extended: EXTENDED,
+      } = await publishFixtures(runtime.workdir, workspace);
 
       const browser = await chromium.launch({
         headless: true,
@@ -223,7 +275,7 @@ test("the CLI installs a published package so its service connects at once, and 
         return error;
       };
 
-      // Without a registry Trellis has nowhere to pull from.
+      // A package is pulled from its workspace, so a bare name names none.
       assert.match(
         await failing(
           "svc",
@@ -234,14 +286,7 @@ test("the CLI installs a published package so its service connects at once, and 
           "--participant",
           PROVIDER.identity,
         ),
-        /no registry/,
-      );
-      await cli.run("registries", "set", "local", "--prefix", prefix);
-      assert.deepEqual(
-        (await cli.run("registries", "list")).registries.map(
-          (item: { name: string; prefix: string }) => [item.name, item.prefix],
-        ),
-        [["local", prefix]],
+        /full identity/,
       );
 
       // The fixture declares many services; --participant picks one.
@@ -250,7 +295,7 @@ test("the CLI installs a published package so its service connects at once, and 
         "from-package",
         "create",
         "--package",
-        "runtime-trellis@0.100.0",
+        `${package_}@0.100.0`,
         "--participant",
         PROVIDER.identity,
       );
@@ -277,7 +322,7 @@ test("the CLI installs a published package so its service connects at once, and 
         "from-package",
         "apply",
         "--package",
-        "runtime-trellis@0.100.1",
+        `${package_}@0.100.1`,
       );
       assert.equal(applied.deployment.implementationDigest, EXTENDED.digest);
       const second = await cli.run("svc", "from-package", "provision", "--new");
@@ -298,23 +343,30 @@ test("the CLI installs a published package so its service connects at once, and 
         "pinned",
         "create",
         "--package",
-        `runtime-trellis@${digests["runtime-trellis@0.100.0"]}`,
+        `${package_}@${digests[`${package_}@0.100.0`]}`,
         "--participant",
         KEEPER.identity,
       );
       assert.equal(pinned.deployment.implementationDigest, KEEPER.digest);
-      // A digest that names another package's release is not this package.
+      // Whoever can push to another repository can copy the release there,
+      // but it still declares its own workspace, so it is not that package.
+      await copyRelease(
+        registry.host,
+        "packages/runtime-trellis",
+        "elsewhere/runtime-trellis",
+        "0.100.0",
+      );
       assert.match(
         await failing(
           "svc",
           "mismatched",
           "create",
           "--package",
-          `runtime-trellis@${Object.entries(digests).find(([release]) => release.startsWith("trellis@"))![1]}`,
+          `${registry.host}/elsewhere/runtime-trellis@0.100.0`,
           "--participant",
-          KEEPER.identity,
+          KEEPER.identity.replace("/packages/", "/elsewhere/"),
         ),
-        /couldn't pull/,
+        /not the release asked for/,
       );
 
       // Change the stored source layer of 0.100.0 under the registry; the
@@ -342,7 +394,7 @@ test("the CLI installs a published package so its service connects at once, and 
           "tampered",
           "create",
           "--package",
-          "runtime-trellis@0.100.0",
+          `${package_}@0.100.0`,
           "--participant",
           KEEPER.identity,
         ),
@@ -368,26 +420,17 @@ test("the Console adds a service from a published package and installs its next 
     await withTrellisRuntime(async (runtime) => {
       const registry = await startRegistry(join(runtime.workdir, "registry"));
       stopRegistry = registry.stop;
-      const prefix = `${registry.host}/packages`;
-      await publishFixtures(runtime.workdir, prefix);
+      const workspace = `${registry.host}/packages`;
+      const package_ = `${workspace}/runtime-trellis`;
+      const { provider: PROVIDER, extended: EXTENDED } = await publishFixtures(
+        runtime.workdir,
+        workspace,
+      );
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
         const wired = await wireNatsGate(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
-
-        await page.goto(
-          `${runtime.consoleUrl}/console/admin/services/registries`,
-          { waitUntil: "domcontentloaded" },
-        );
-        await waitForConsoleShell(page);
-        const add = page.getByRole("form", { name: "Add a registry" });
-        await add.getByLabel("Name", { exact: true }).fill("local");
-        await add.getByLabel("Address", { exact: true }).fill(prefix);
-        await add
-          .getByRole("button", { name: "Add registry", exact: true })
-          .click();
-        await page.getByRole("cell", { name: prefix }).waitFor();
 
         await page.goto(`${runtime.consoleUrl}/console/admin/services/new`, {
           waitUntil: "domcontentloaded",
@@ -395,16 +438,15 @@ test("the Console adds a service from a published package and installs its next 
         await waitForConsoleShell(page);
         await page.getByLabel("Name", { exact: true }).fill("console-package");
         await page.getByLabel("From a published package").check();
-        // The only registry is chosen already.
-        await page
-          .getByLabel("Package", { exact: true })
-          .fill("runtime-trellis");
+        // A public registry needs no registry added: the package's full
+        // identity says where it is pulled from.
+        await page.getByLabel("Package", { exact: true }).fill(package_);
         await page.getByLabel("Version", { exact: true }).fill("0.100.0");
         await page
           .getByRole("button", { name: "Look up package", exact: true })
           .click();
         const review = page.getByRole("region", { name: "Published package" });
-        await review.getByText("runtime-trellis 0.100.0").waitFor();
+        await review.getByText(`${package_} 0.100.0`).waitFor();
         await review.getByText(/Built with trellis /).waitFor();
         // Looking it up again, as after republishing that version, drops the
         // release found before until Auth answers again.
@@ -423,7 +465,7 @@ test("the Console adds a service from a published package and installs its next 
           "Add service stayed enabled while the release was looked up again",
         );
         wired.releaseToPage();
-        await review.getByText("runtime-trellis 0.100.0").waitFor();
+        await review.getByText(`${package_} 0.100.0`).waitFor();
         await page.getByLabel("Which service").selectOption(PROVIDER.identity);
         await page
           .getByRole("button", { name: "Add service", exact: true })
@@ -471,21 +513,19 @@ test("the Console adds a service from a published package and installs its next 
         const install = page.getByRole("form", {
           name: "Install a published build",
         });
-        await install
-          .getByLabel("Package", { exact: true })
-          .fill("runtime-trellis");
+        await install.getByLabel("Package", { exact: true }).fill(package_);
         await install.getByLabel("Version", { exact: true }).fill("0.100.1");
         await install
           .getByRole("button", { name: "Look up package", exact: true })
           .click();
         await install
           .getByRole("region", { name: "Published package" })
-          .getByText("runtime-trellis 0.100.1")
+          .getByText(`${package_} 0.100.1`)
           .waitFor();
         await install
           .getByRole("button", { name: "Install build", exact: true })
           .click();
-        await page.getByText("Installed runtime-trellis 0.100.1.").waitFor();
+        await page.getByText(`Installed ${package_} 0.100.1.`).waitFor();
         // That refresh finishes before the next one starts; the page still
         // shows the build just installed, not the one it read.
         const next = wired.gate.armNextReply(get);
@@ -528,10 +568,14 @@ test("Auth signs in to a private registry with the sealed secret an administrato
       const registry = await startRegistry(root, join(root, "htpasswd"));
       stopRegistry = registry.stop;
       const prefix = `${registry.host}/packages`;
-      await publishFixtures(runtime.workdir, prefix, {
-        username: USERNAME,
-        password: PASSWORD,
-      });
+      const { keeper: KEEPER } = await publishFixtures(
+        runtime.workdir,
+        prefix,
+        {
+          username: USERNAME,
+          password: PASSWORD,
+        },
+      );
       const browser = await chromium.launch({
         headless: true,
         env: browserTrustEnvironment(),
@@ -548,18 +592,13 @@ test("Auth signs in to a private registry with the sealed secret an administrato
           title,
           "create",
           "--package",
-          "runtime-trellis@0.100.0",
-          "--registry",
-          "private",
+          `${prefix}/runtime-trellis@0.100.0`,
           "--participant",
           KEEPER.identity,
         );
 
-      // Anonymous pulls are turned away. Another name for the same place,
-      // added first and without credentials, must not stand in for the
-      // registry chosen when its dependencies are pulled.
-      await cli.run("registries", "set", "mirror", "--prefix", prefix);
-      await cli.run("registries", "set", "private", "--prefix", prefix);
+      // Without a registry added for its workspace, Auth pulls anonymously
+      // and is turned away.
       await assert.rejects(create("anonymous"), /couldn't pull/);
 
       const secret = join(runtime.workdir, "registry-secret");

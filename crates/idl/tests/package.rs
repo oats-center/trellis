@@ -1,4 +1,4 @@
-//! Native format-2 package graph acceptance tests.
+//! Native package graph acceptance tests.
 
 use semver::Version;
 use std::{collections::BTreeMap, path::PathBuf};
@@ -17,6 +17,7 @@ fn manifest(sources: &[(&str, &str)]) -> PackageManifest {
     PackageManifest {
         package: PackageMetadata {
             name: "orders".into(),
+            workspace: Some("ghcr.io/acme".into()),
             version: Version::new(1, 2, 3),
         },
         sources: sources
@@ -25,8 +26,6 @@ fn manifest(sources: &[(&str, &str)]) -> PackageManifest {
             .collect(),
         dependencies: BTreeMap::new(),
         generate: GenerateConfig::default(),
-        default_registry: None,
-        registries: BTreeMap::new(),
     }
 }
 
@@ -156,12 +155,12 @@ fn resolves_explicit_imports_into_typed_package_graph() {
     assert_eq!(package.apis().len(), 1);
     assert_eq!(package.participants().len(), 1);
     let api = package.apis().values().next().unwrap();
-    assert_eq!(api.identity().as_str(), "orders.orders@v1");
+    assert_eq!(api.identity().as_str(), "ghcr.io/acme/orders.orders@v1");
     let action = api.actions().values().next().unwrap();
     let trellis_idl::ActionDefinition::Rpc { input, .. } = action else {
         panic!("expected RPC")
     };
-    assert_eq!(input.package.as_str(), "orders");
+    assert_eq!(input.package.as_str(), "ghcr.io/acme/orders");
     assert_eq!(input.id.as_str(), "GetInput");
 }
 
@@ -179,10 +178,10 @@ fn canonical_source_is_stable_and_evidence_recompiles() {
     .unwrap();
     let canonical = canonical_package(&graph, graph.root(), CanonicalMode::Presentation).unwrap();
     let evidence = PackageEvidence {
-        root_package: "orders".into(),
+        root_package: "ghcr.io/acme/orders".into(),
         root_digest: graph.root_digest().into(),
         packages: vec![PackageSourceEvidence {
-            name: "orders".into(),
+            name: "ghcr.io/acme/orders".into(),
             version: Version::new(1, 2, 3),
             digest: graph.root_digest().into(),
             source: canonical.clone(),
@@ -292,7 +291,7 @@ fn participant_digest_ignores_unrelated_package_declarations() {
         .root_package()
         .participants()
         .keys()
-        .find(|id| id.as_str() == "orders.Caller")
+        .find(|id| id.as_str() == "ghcr.io/acme/orders.Caller")
         .unwrap();
     assert_eq!(
         trellis_idl::participant_digest(&original, participant).unwrap(),
@@ -346,11 +345,11 @@ model Order { id: OrderId; note?: OrderNote; }
     .unwrap();
 
     assert_eq!(
-        schema["$defs"]["orders.Order"]["additionalProperties"],
+        schema["$defs"]["ghcr.io/acme/orders.Order"]["additionalProperties"],
         true
     );
     assert_eq!(
-        schema["$defs"]["orders.OrderId"]["properties"]["value"]["pattern"],
+        schema["$defs"]["ghcr.io/acme/orders.OrderId"]["properties"]["value"]["pattern"],
         "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     );
 }
@@ -443,10 +442,10 @@ service Observer { use orders { required capability public; } }
     let original = compile(TYPES);
     let changed = compile(&TYPES.replace("max_length=200", "max_length=201"));
     let verified = compile_evidence(PackageEvidence {
-        root_package: package_manifest.package.name.clone(),
+        root_package: package_manifest.identity(),
         root_digest: changed.root_digest().into(),
         packages: vec![PackageSourceEvidence {
-            name: package_manifest.package.name.clone(),
+            name: package_manifest.identity(),
             version: package_manifest.package.version.clone(),
             digest: changed.root_digest().into(),
             source: canonical_package(&changed, changed.root(), CanonicalMode::Presentation)
@@ -553,7 +552,7 @@ fn resource_and_companion_evidence_recompiles_without_changing_meaning() {
             package: "trellis".into(),
             version: None,
             path: Some("../runtime".into()),
-            registry: None,
+            workspace: None,
         },
     );
     let graph = compile_project(
@@ -639,47 +638,62 @@ fn preserves_integer_bounds_without_floating_point_rounding() {
 }
 
 #[test]
-fn format_two_lock_rejects_cycles_and_inexact_edges() {
+fn format_three_lock_rejects_cycles_inexact_edges_and_mirrors() {
     let digest = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     let distribution = format!("sha256:{}", "0".repeat(64));
     let mut lock = PackageLock {
-        format: 2,
-        root: "a".into(),
+        format: 3,
+        root: "localhost/a".into(),
         packages: vec![
             LockedPackage {
-                name: "a".into(),
-                version: Version::new(1, 0, 0),
-                digest: digest.into(),
-                distribution_digest: distribution.clone(),
-                dependencies: vec![LockedDependency {
-                    name: "b".into(),
-                    version: Version::new(1, 0, 0),
-                    digest: digest.into(),
-                }],
-                source: LockedSource::Path { path: "a".into() },
-            },
-            LockedPackage {
-                name: "b".into(),
+                id: "ghcr.io/acme/b".into(),
                 version: Version::new(1, 0, 0),
                 digest: digest.into(),
                 distribution_digest: distribution.clone(),
                 dependencies: vec![],
-                source: LockedSource::Path { path: "b".into() },
+                source: LockedSource::Registry {
+                    workspace: "ghcr.io/acme".into(),
+                    oci_digest: distribution.clone(),
+                },
+            },
+            LockedPackage {
+                id: "localhost/a".into(),
+                version: Version::new(1, 0, 0),
+                digest: digest.into(),
+                distribution_digest: distribution.clone(),
+                dependencies: vec![LockedDependency {
+                    id: "ghcr.io/acme/b".into(),
+                    version: Version::new(1, 0, 0),
+                    digest: digest.into(),
+                }],
+                source: LockedSource::Path { path: ".".into() },
             },
         ],
     };
     assert!(lock.validate().is_ok());
 
-    lock.packages[1].dependencies.push(LockedDependency {
-        name: "a".into(),
+    // A registry package is pulled from its own workspace, never a copy.
+    let mut mirrored = lock.clone();
+    mirrored.packages[0].source = LockedSource::Registry {
+        workspace: "registry.internal/mirror".into(),
+        oci_digest: distribution.clone(),
+    };
+    assert!(mirrored
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("invalid acquisition source"));
+
+    lock.packages[0].dependencies.push(LockedDependency {
+        id: "localhost/a".into(),
         version: Version::new(1, 0, 0),
         digest: digest.into(),
     });
     assert!(lock.validate().is_err());
 
-    lock.packages[1].dependencies.clear();
+    lock.packages[0].dependencies.clear();
     lock.packages.push(LockedPackage {
-        name: "c".into(),
+        id: "localhost/c".into(),
         version: Version::new(1, 0, 0),
         digest: digest.into(),
         distribution_digest: distribution,
@@ -854,13 +868,12 @@ fn dependency_and_source_aliases_do_not_affect_digest() {
     let dependency_manifest = PackageManifest {
         package: PackageMetadata {
             name: "common".into(),
+            workspace: None,
             version: Version::new(1, 0, 0),
         },
         sources: BTreeMap::from([("source".into(), "common.trellis".into())]),
         dependencies: BTreeMap::new(),
         generate: GenerateConfig::default(),
-        default_registry: None,
-        registries: BTreeMap::new(),
     };
     let dependency = compile_project(
         &dependency_manifest,
@@ -885,6 +898,7 @@ api common@v1 {
     let root = |source_alias: &str, path: &str, dependency_alias: &str| PackageManifest {
         package: PackageMetadata {
             name: "orders".into(),
+            workspace: Some("ghcr.io/acme".into()),
             version: Version::new(1, 2, 3),
         },
         sources: BTreeMap::from([(source_alias.into(), path.into())]),
@@ -894,12 +908,10 @@ api common@v1 {
                 package: "common".into(),
                 version: None,
                 path: Some("common".into()),
-                registry: None,
+                workspace: None,
             },
         )]),
         generate: GenerateConfig::default(),
-        default_registry: None,
-        registries: BTreeMap::new(),
     };
     let compile = |source_alias: &str, path: &str, dependency_alias: &str| {
         compile_project(
@@ -921,11 +933,18 @@ api common@v1 {
         compile("moved", "src/moved.trellis", "shared").root_digest()
     );
     let evidence = PackageEvidence {
-        root_package: "orders".into(),
+        root_package: "ghcr.io/acme/orders".into(),
         root_digest: graph.root_digest().into(),
         packages: vec![
             PackageSourceEvidence {
-                name: "common".into(),
+                name: "ghcr.io/acme/orders".into(),
+                version: Version::new(1, 2, 3),
+                digest: graph.root_digest().into(),
+                source: canonical_package(&graph, graph.root(), CanonicalMode::Presentation)
+                    .unwrap(),
+            },
+            PackageSourceEvidence {
+                name: "localhost/common".into(),
                 version: Version::new(1, 0, 0),
                 digest: dependency.root_digest().into(),
                 source: canonical_package(
@@ -934,13 +953,6 @@ api common@v1 {
                     CanonicalMode::Presentation,
                 )
                 .unwrap(),
-            },
-            PackageSourceEvidence {
-                name: "orders".into(),
-                version: Version::new(1, 2, 3),
-                digest: graph.root_digest().into(),
-                source: canonical_package(&graph, graph.root(), CanonicalMode::Presentation)
-                    .unwrap(),
             },
         ],
     };
@@ -1141,13 +1153,12 @@ fn app_state_encoding_preserves_explicit_read_only_selection() {
     let state_manifest = PackageManifest {
         package: PackageMetadata {
             name: "trellis".into(),
+            workspace: None,
             version: Version::new(1, 0, 0),
         },
         sources: BTreeMap::from([("state".into(), "state.trellis".into())]),
         dependencies: BTreeMap::new(),
         generate: GenerateConfig::default(),
-        default_registry: None,
-        registries: BTreeMap::new(),
     };
     let state_graph = compile_project(
         &state_manifest,
@@ -1191,7 +1202,7 @@ api state@v1 {
             package: "trellis".into(),
             version: None,
             path: Some("../trellis".into()),
-            registry: None,
+            workspace: None,
         },
     );
     let graph = compile_project(
@@ -1263,11 +1274,11 @@ fn operation_declares_distinct_progress_and_update_schemas() {
     assert_ne!(progress, update, "channels keep distinct schemas");
     assert_eq!(
         progress.get("$ref").and_then(serde_json::Value::as_str),
-        Some("#/$defs/orders.Status")
+        Some("#/$defs/ghcr.io~1acme~1orders.Status")
     );
     assert_eq!(
         update.get("$ref").and_then(serde_json::Value::as_str),
-        Some("#/$defs/orders.Preview")
+        Some("#/$defs/ghcr.io~1acme~1orders.Preview")
     );
 
     let canonical = canonical_package(&graph, graph.root(), CanonicalMode::Semantic).unwrap();
@@ -1404,10 +1415,10 @@ fn descriptions_round_trip_through_evidence_without_changing_meaning() {
     let canonical =
         canonical_package(&described, described.root(), CanonicalMode::Presentation).unwrap();
     let evidence = PackageEvidence {
-        root_package: "orders".into(),
+        root_package: "ghcr.io/acme/orders".into(),
         root_digest: described.root_digest().into(),
         packages: vec![PackageSourceEvidence {
-            name: "orders".into(),
+            name: "ghcr.io/acme/orders".into(),
             version: Version::new(1, 2, 3),
             digest: described.root_digest().into(),
             source: canonical.clone(),
@@ -1434,7 +1445,7 @@ fn descriptions_round_trip_through_evidence_without_changing_meaning() {
         })
         .unwrap();
     let schema = described_json_schema(&stored, &input).unwrap();
-    let definition = &schema["$defs"]["orders.GetInput"];
+    let definition = &schema["$defs"]["ghcr.io/acme/orders.GetInput"];
     assert_eq!(definition["description"], "What to look up.");
     assert_eq!(
         definition["properties"]["id"]["description"],
@@ -1455,6 +1466,7 @@ fn settings_typed_by_imported_types_resolve_defaults_and_optionality() {
         &PackageManifest {
             package: PackageMetadata {
                 name: "common".into(),
+                workspace: None,
                 version: Version::new(1, 0, 0),
             },
             ..manifest(&[("source", "common.trellis")])
@@ -1479,7 +1491,7 @@ fn settings_typed_by_imported_types_resolve_defaults_and_optionality() {
                 package: "common".into(),
                 version: None,
                 path: Some("common".into()),
-                registry: None,
+                workspace: None,
             },
         );
         compile_project(
@@ -1533,7 +1545,7 @@ fn compile_webhook_service(body: &str) -> miette::Result<trellis_idl::PackageGra
             package: "trellis".into(),
             version: None,
             path: Some("../runtime".into()),
-            registry: None,
+            workspace: None,
         },
     );
     compile_project(

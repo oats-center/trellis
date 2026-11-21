@@ -437,7 +437,7 @@ async fn commands_ask_for_missing_input_on_a_terminal_and_fail_fast_without_one(
             "--source",
             &fixture("client-upgrade"),
             "--participant",
-            "client-upgrade-fixture.Provider",
+            "localhost/client-upgrade-fixture.Provider",
         ])
         .await["apis"][0]
         .clone();
@@ -446,7 +446,7 @@ async fn commands_ask_for_missing_input_on_a_terminal_and_fail_fast_without_one(
         "apis",
         "force-replace",
         "--participant",
-        "client-upgrade-fixture.Provider",
+        "localhost/client-upgrade-fixture.Provider",
     ]);
     session.exp_string("Source project directory").unwrap();
     session
@@ -485,7 +485,7 @@ async fn an_app_from_its_source_is_registered_as_its_declared_kind() {
             "--source",
             &source,
             "--app",
-            "client-upgrade-fixture.Caller",
+            "localhost/client-upgrade-fixture.Caller",
         ])
         .await["client"]
         .clone();
@@ -507,7 +507,7 @@ async fn an_app_from_its_source_is_registered_as_its_declared_kind() {
             "--source",
             &source,
             "--app",
-            "client-upgrade-fixture.Caller",
+            "localhost/client-upgrade-fixture.Caller",
         ])
         .await;
     assert!(!refused.status.success());
@@ -519,8 +519,9 @@ async fn an_app_from_its_source_is_registered_as_its_declared_kind() {
         .collect::<Vec<_>>()
         .join(" ");
     assert!(
-        words.contains("client-upgrade-fixture.Caller is declared as a native app, but app")
-            && words.contains("is a browser app")
+        words.contains(
+            "localhost/client-upgrade-fixture.Caller is declared as a native app, but app"
+        ) && words.contains("is a browser app")
             && words.contains("Use --kind native"),
         "{stderr}"
     );
@@ -754,5 +755,86 @@ async fn instance_listings_are_colored_only_where_color_is_wanted() {
     }
 
     drop(service);
+    runtime.shutdown().await.unwrap();
+}
+
+/// A Rust service holding only an enrollment secret enrolls itself and serves;
+/// revoking the secret with `--retire-instances` retires it, says how many of
+/// its connections are still being closed, and disconnects it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn revoking_a_secret_with_its_instances_disconnects_them() {
+    use runtime_trellis::participants::runtime_trellis_provider::Participant;
+
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("enrolled pods")
+        .await
+        .unwrap();
+    let cli = Cli::login(&mut runtime, None).await;
+    let deployment = identity.deployment_id();
+    let issued = cli
+        .json(&["svc", deployment, "enrollment", "issue", "--title", "pods"])
+        .await;
+    let text = issued["text"].as_str().unwrap().to_owned();
+    let secret = issued["secret"]["secretId"].as_str().unwrap().to_owned();
+    let service = Participant::connect(identity.enrolling_options(&text))
+        .await
+        .unwrap();
+    let running = tokio::spawn(service.run());
+    let listed = cli.json(&["svc", deployment, "instances"]).await;
+    let enrolled = listed["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|instance| instance["origin"]["kind"] == "enrolled")
+        .expect("the process enrolled itself")
+        .clone();
+    assert_eq!(enrolled["origin"]["secretId"], secret.as_str());
+    assert!(enrolled["connectedAt"].is_string());
+
+    let revoked = std::process::Command::new(CLI)
+        .args([
+            "--format",
+            "text",
+            "svc",
+            deployment,
+            "enrollment",
+            "revoke",
+        ])
+        .args([secret.as_str(), "--retire-instances"])
+        .env("XDG_CONFIG_HOME", &cli.config)
+        .env("NO_COLOR", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&revoked.stderr).into_owned();
+    assert!(revoked.status.success(), "{said}");
+    assert!(
+        said.contains("Retired 1 instance; 1 connection still being closed."),
+        "{said}"
+    );
+    // The enforcement pipeline closes its connection, and its retired key
+    // cannot be admitted again, so the service stops.
+    let ended = tokio::time::timeout(Duration::from_secs(30), running)
+        .await
+        .expect("the retired instance is disconnected");
+    assert!(ended.unwrap().is_err());
+    let all = cli.json(&["svc", deployment, "instances", "--all"]).await;
+    let retired = all["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|instance| instance["instanceId"] == enrolled["instanceId"])
+        .unwrap()
+        .clone();
+    assert_eq!(retired["state"], "retired");
+    assert_eq!(retired["retiredReason"], "secretRevoked");
+    // A retired instance is hidden from the ordinary listing.
+    let live = cli.json(&["svc", deployment, "instances"]).await;
+    assert!(live["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|instance| instance["instanceId"] != enrolled["instanceId"]));
     runtime.shutdown().await.unwrap();
 }

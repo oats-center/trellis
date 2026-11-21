@@ -614,13 +614,12 @@ async fn generated_kv_is_usable_after_readiness_and_reconnection_preserves_data(
         &PackageManifest {
             package: PackageMetadata {
                 name: "trellis-test-fixture".into(),
+                workspace: None,
                 version: "0.100.0".parse().unwrap(),
             },
             sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
             dependencies: BTreeMap::new(),
             generate: GenerateConfig::default(),
-            default_registry: None,
-            registries: BTreeMap::new(),
         },
         vec![SourceUnit {
             alias: "main".into(),

@@ -19,6 +19,10 @@ export {
   type ServiceHealthInfoFn,
 } from "./runtime/health.ts";
 export {
+  ENROLLMENT_SECRET_ENV,
+  type TrellisServiceEnrollmentOpts,
+} from "./runtime/enrollment.ts";
+export {
   HealthCheckResultSchema,
   HealthInfoSchema,
 } from "./runtime/health_schemas.ts";

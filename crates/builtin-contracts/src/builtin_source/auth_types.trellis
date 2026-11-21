@@ -893,7 +893,7 @@ model AuthRejectedPackage {
 /// A registry Trellis pulls published packages from.
 model AuthPackageRegistry {
   name: AuthShortName;
-  /// The registry host and repository prefix its packages are published under, such as `ghcr.io/oats-center`. A package's repository is the prefix followed by its name.
+  /// The workspace Trellis signs in to this registry for, such as `ghcr.io/oats-center`. A package's repository is its workspace followed by its name.
   prefix: AuthName;
   /// The user Trellis signs in to the registry as; absent when it pulls anonymously.
   username?: AuthName;
@@ -920,10 +920,8 @@ model AuthPackageRegistryRemoveRequest {
 }
 /// A published package release. Give exactly one of `version` and `digest`.
 model AuthPackagePullRequest {
-  /// The registry an administrator added, by name.
-  registry: AuthShortName;
-  /// The package name; its repository is the registry's prefix followed by it.
-  name: AuthName;
+  /// The package's full identity, such as `ghcr.io/acme/orders`, which is also its repository. Trellis signs in with the registry added for its workspace, or pulls anonymously.
+  package: AuthName;
   /// The release version, such as `1.2.0`.
   version?: AuthShortName;
   /// The release's OCI manifest digest, such as `sha256:…`, to get exactly the release that was reviewed.
@@ -931,8 +929,8 @@ model AuthPackagePullRequest {
 }
 /// The release a pull fetched and checked.
 model AuthPublishedPackage {
-  registry: AuthShortName;
-  name: AuthName;
+  /// The package's full identity.
+  package: AuthName;
   version: AuthShortName;
   /// The release's OCI manifest digest; pulling by it gets exactly this release again.
   digest: AuthDigest;

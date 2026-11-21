@@ -352,7 +352,7 @@ test("N13 Events refreshes a verified provider event during continuous publicati
           timeout: 30_000,
         });
         const publishedEvent = main.locator(
-          `tbody tr[data-event-type="runtime-trellis.runtime@v1 / Changed"][data-publisher="${seeded.deploymentId}"]`,
+          `tbody tr[data-event-type="localhost/runtime-trellis.runtime@v1 / Changed"][data-publisher="${seeded.deploymentId}"]`,
         );
         assert.deepEqual(await publishedEvent.count(), 0);
 
@@ -644,7 +644,7 @@ test("Z10 Events visibility recovery refreshes a retained notification", async (
           timeout: 30_000,
         });
         const publishedEvent = main.locator(
-          `tbody tr[data-event-type="runtime-trellis.runtime@v1 / Changed"][data-publisher="${seeded.deploymentId}"]`,
+          `tbody tr[data-event-type="localhost/runtime-trellis.runtime@v1 / Changed"][data-publisher="${seeded.deploymentId}"]`,
         );
         assert.deepEqual(await publishedEvent.count(), 0);
 
@@ -769,7 +769,7 @@ test("Z06 permitted Events data survives denied consumer-management authority", 
           })
           .waitFor({ state: "visible", timeout: 30_000 });
         const publishedEvent = main.locator(
-          `tbody tr[data-event-type="runtime-trellis.runtime@v1 / Changed"][data-publisher="${seeded.deploymentId}"]`,
+          `tbody tr[data-event-type="localhost/runtime-trellis.runtime@v1 / Changed"][data-publisher="${seeded.deploymentId}"]`,
         );
         await publishedEvent.first().waitFor({
           state: "visible",
@@ -974,10 +974,10 @@ test("Z08 page discards superseded results and drains the latest query", async (
           });
           const search = main.getByPlaceholder("Search events");
           const rowA = main.locator(
-            `tbody tr[data-event-type="runtime-trellis.runtime@v1 / Changed"][data-publisher="${seededA.deploymentId}"]`,
+            `tbody tr[data-event-type="localhost/runtime-trellis.runtime@v1 / Changed"][data-publisher="${seededA.deploymentId}"]`,
           );
           const rowB = main.locator(
-            `tbody tr[data-event-type="runtime-trellis.runtime@v1 / Changed"][data-publisher="${seededB.deploymentId}"]`,
+            `tbody tr[data-event-type="localhost/runtime-trellis.runtime@v1 / Changed"][data-publisher="${seededB.deploymentId}"]`,
           );
           await rowA.first().waitFor({ state: "visible", timeout: 60_000 });
           await rowB.first().waitFor({ state: "visible", timeout: 60_000 });

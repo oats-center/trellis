@@ -46,13 +46,12 @@ mod tests {
             &PackageManifest {
                 package: PackageMetadata {
                     name: "fixture".into(),
+                    workspace: None,
                     version: Version::new(1, 0, 0),
                 },
                 sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
                 dependencies: BTreeMap::new(),
                 generate: GenerateConfig::default(),
-                default_registry: None,
-                registries: BTreeMap::new(),
             },
             vec![SourceUnit {
                 alias: "main".into(),
@@ -305,7 +304,7 @@ mod tests {
         let group = r#"group editor { title "Editor"; description "Read and change files."; grants "Can change files."; capability files.read; capability files.write; }"#;
         let grouped = compile(grouped_contract(&format!("{READ} {WRITE} {group}"))).unwrap();
         let api = grouped.root_package().apis().values().next().unwrap();
-        let id = crate::CapabilityId::new("fixture.files.v1:editor");
+        let id = crate::CapabilityId::new("localhost/fixture.files.v1:editor");
         let members: Vec<_> = api.groups()[&id]
             .members
             .iter()
@@ -314,8 +313,8 @@ mod tests {
         assert_eq!(
             members,
             [
-                "fixture.files.v1:files.read",
-                "fixture.files.v1:files.write"
+                "localhost/fixture.files.v1:files.read",
+                "localhost/fixture.files.v1:files.write"
             ]
         );
         assert_eq!(api.selection_allows(&id).unwrap().len(), 2);
@@ -387,7 +386,8 @@ pub fn compile_project(
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageSourceEvidence {
-    /// Logical package identity.
+    /// Full package identity, `<workspace>/<name>`, or `trellis` for the
+    /// built-in package.
     pub name: String,
     /// Exact package version.
     pub version: Version,
@@ -401,7 +401,7 @@ pub struct PackageSourceEvidence {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageEvidence {
-    /// Root package identity.
+    /// Root package's full identity.
     pub root_package: String,
     /// Root semantic package digest.
     pub root_digest: String,
@@ -416,6 +416,10 @@ static COMPILED_EVIDENCE: Mutex<VecDeque<(PackageEvidence, Arc<PackageGraph>)>> 
     Mutex::new(VecDeque::new());
 
 /// Compile and verify generated package evidence without filesystem or network access.
+///
+/// Every package and every dependency edge is found by full identity,
+/// workspace and name, so two packages with the same name in different
+/// workspaces stay apart.
 ///
 /// A bounded process-local cache reuses successful compilations only when the
 /// complete evidence matches, including every source byte and dependency. Claimed
@@ -558,6 +562,8 @@ fn compile_evidence_package(
             "evidence source package prelude does not match '{name}'"
         ));
     }
+    let (workspace, package_name) = project::split_package_identity(name)
+        .map_err(|error| miette::miette!("evidence package '{name}': {error}"))?;
     let mut dependencies = BTreeMap::new();
     let mut supplied = BTreeMap::new();
     for dependency in &prelude.dependencies {
@@ -570,27 +576,30 @@ fn compile_evidence_package(
                 dependency.package
             ));
         }
+        // The edge is supplied as a path dependency by name; the canonical
+        // prelude then pins its full identity, version, and digest.
         dependencies.insert(
             dependency.alias.clone(),
             Dependency {
-                package: dependency.package.clone(),
+                package: graph.root().name().to_owned(),
+                workspace: None,
                 version: None,
                 path: Some(dependency.package.clone()),
-                registry: None,
             },
         );
         supplied.insert(dependency.alias.clone(), graph);
     }
     let manifest = PackageManifest {
         package: PackageMetadata {
-            name: name.to_owned(),
+            name: package_name.to_owned(),
+            workspace: workspace
+                .filter(|workspace| *workspace != trellis_protocol::LOCAL_WORKSPACE)
+                .map(str::to_owned),
             version: entry.version.clone(),
         },
         sources: BTreeMap::from([("canonical".into(), "canonical.trellis".into())]),
         dependencies,
         generate: GenerateConfig::default(),
-        default_registry: None,
-        registries: BTreeMap::new(),
     };
     let graph = compile_project(&manifest, vec![source], supplied)?;
     if graph.root_digest() != entry.digest {

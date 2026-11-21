@@ -277,13 +277,12 @@ pub(super) fn package_evidence(name: &str, source: &str) -> PackageEvidence {
         &PackageManifest {
             package: PackageMetadata {
                 name: name.into(),
+                workspace: None,
                 version: "1.0.0".parse().unwrap(),
             },
             sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
             dependencies: BTreeMap::new(),
             generate: GenerateConfig::default(),
-            default_registry: None,
-            registries: BTreeMap::new(),
         },
         vec![SourceUnit {
             alias: "main".into(),

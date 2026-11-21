@@ -270,13 +270,12 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         &PackageManifest {
             package: PackageMetadata {
                 name: "trellis".into(),
+                workspace: None,
                 version: "1.0.0".parse().unwrap(),
             },
             sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
             dependencies: BTreeMap::new(),
             generate: GenerateConfig::default(),
-            default_registry: None,
-            registries: BTreeMap::new(),
         },
         vec![SourceUnit {
             alias: "main".into(),

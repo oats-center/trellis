@@ -240,6 +240,30 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:ServiceInstances.Remove"],
     (client, input) => client.serviceInstancesRemove(input).orThrow(),
   ),
+  authEnrollmentSecretsIssue: adminMethod(
+    apis.auth.API.actions["rpc:EnrollmentSecrets.Issue"],
+    (client, input) => client.enrollmentSecretsIssue(input).orThrow(),
+  ),
+  authEnrollmentSecretsList: adminMethod(
+    apis.auth.API.actions["rpc:EnrollmentSecrets.List"],
+    (client, input) => client.enrollmentSecretsList(input).orThrow(),
+  ),
+  authEnrollmentSecretsUpdate: adminMethod(
+    apis.auth.API.actions["rpc:EnrollmentSecrets.Update"],
+    (client, input) => client.enrollmentSecretsUpdate(input).orThrow(),
+  ),
+  authEnrollmentSecretsRevoke: adminMethod(
+    apis.auth.API.actions["rpc:EnrollmentSecrets.Revoke"],
+    (client, input) => client.enrollmentSecretsRevoke(input).orThrow(),
+  ),
+  authInstancePolicyGet: adminMethod(
+    apis.auth.API.actions["rpc:InstancePolicy.Get"],
+    (client, input) => client.instancePolicyGet(input).orThrow(),
+  ),
+  authInstancePolicySet: adminMethod(
+    apis.auth.API.actions["rpc:InstancePolicy.Set"],
+    (client, input) => client.instancePolicySet(input).orThrow(),
+  ),
   authSessionsList: adminMethod(
     apis.auth.API.actions["rpc:Sessions.List"],
     (client, input) => client.sessionsList(input).orThrow(),

@@ -70,7 +70,7 @@
         })
         .orThrow();
       if (disposed) return;
-      installed = `${release.published.name} ${release.published.version}`;
+      installed = `${release.published.package} ${release.published.version}`;
       pulled = null;
       open = false;
       onapplied(response.deployment);

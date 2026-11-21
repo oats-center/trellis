@@ -487,19 +487,34 @@ impl Webhooks {
                     }
                 }
                 _ = sweep.tick() => {
-                    let now = now_ms();
-                    for (deployment, endpoint) in self.directory().deployments() {
-                        let settings = &endpoint.settings;
-                        let pending_before = now.saturating_sub(i64::try_from(settings.intake_retention_ms).unwrap_or(i64::MAX));
-                        let records_before = now.saturating_sub(i64::try_from(settings.record_retention_ms).unwrap_or(i64::MAX));
-                        if let Err(error) = self.inner.records.sweep(&deployment, pending_before, records_before).await {
-                            tracing::warn!(%deployment, %error, "webhook record retention failed");
-                        }
-                    }
+                    self.sweep().await;
                     if let Ok(count) = self.inner.records.pending().await {
                         pending.store(count, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
+            }
+        }
+    }
+
+    /// Expire requests that left the intake stream unverified and drop
+    /// records past their retention, per deployment.
+    async fn sweep(&self) {
+        let now = now_ms();
+        let before =
+            |retention: u64| now.saturating_sub(i64::try_from(retention).unwrap_or(i64::MAX));
+        for (deployment, endpoint) in self.directory().deployments() {
+            let settings = &endpoint.settings;
+            let swept = self
+                .inner
+                .records
+                .sweep(
+                    &deployment,
+                    before(settings.intake_retention_ms),
+                    before(settings.record_retention_ms),
+                )
+                .await;
+            if let Err(error) = swept {
+                tracing::warn!(%deployment, %error, "webhook record retention failed");
             }
         }
     }

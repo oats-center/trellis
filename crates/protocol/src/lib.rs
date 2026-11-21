@@ -59,7 +59,10 @@ pub use catalog::{
     SESSION_REVOCATION_FORMAT_V1,
 };
 pub use error::{AuthorizationErrorCode, ProtocolError, SessionProofErrorCode};
-pub use identifiers::validate_api_id;
+pub use identifiers::{
+    short_id, split_workspace, validate_api_id, validate_workspace, LOCAL_WORKSPACE,
+    MAX_API_ID_BYTES, MAX_WORKSPACE_BYTES,
+};
 pub use issuer_metadata::{
     sign_issuer_metadata, verify_issuer_metadata, AuthorityMaterial, AuthorizationSessionState,
     AuthorizationSessionStatus, HistoricalIssuerKey, IssuerChain, IssuerChainRequest,

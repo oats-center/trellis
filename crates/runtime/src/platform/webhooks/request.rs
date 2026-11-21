@@ -124,6 +124,11 @@ impl StoredRequest {
         checks: &[Check],
         dedupe_key: Option<&str>,
     ) -> serde_json::Value {
+        let headers: Vec<_> = self
+            .headers
+            .iter()
+            .map(|(name, value)| serde_json::json!({"name": name, "value": value}))
+            .collect();
         serde_json::json!({
             "deliveryId": delivery_id,
             "service": self.deployment_id,
@@ -132,7 +137,7 @@ impl StoredRequest {
             "clientAddress": self.client_address,
             "method": self.method,
             "url": self.url,
-            "headers": self.headers.iter().map(|(name, value)| serde_json::json!({"name": name, "value": value})).collect::<Vec<_>>(),
+            "headers": headers,
             "contentType": self.content_type(),
             "body": base64::engine::general_purpose::STANDARD.encode(&self.body),
             "bodySha256": self.body_sha256(),

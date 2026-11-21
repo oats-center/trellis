@@ -3660,6 +3660,29 @@ export class Trellis<
   }
 
   /**
+   * Retire this enrolled service instance, whose in-memory key ends with its
+   * process. Auth closes the connection shortly after replying.
+   * @internal
+   */
+  async requestRetireOwn(): Promise<void> {
+    const action = AUTH_API.actions["rpc:ServiceInstances.RetireOwn"];
+    await this.#requestBuiltRpc<Record<string, never>>(
+      "ServiceInstances.RetireOwn",
+      {},
+      {
+        subject: action.subject,
+        permission: actionPermission(AUTH_API.identity, action, "call"),
+        input: action.input,
+        output: action.output,
+        callerCapabilities: [],
+        errors: action.errors.map((error) => error.type),
+        declaredErrorTypes: action.errors.map((error) => error.type),
+        runtimeErrors: action.errors,
+      },
+    ).orThrow();
+  }
+
+  /**
    * Read the signed-in app's own settings from Auth.
    * @internal
    */

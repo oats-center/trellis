@@ -1371,7 +1371,7 @@ fn find_api<'a>(
         .ok_or_else(|| miette!("API '{id}' is absent from graph"))
 }
 fn split_api(value: &str) -> Option<(&str, &str)> {
-    let (owner, rest) = value.split_once('.')?;
+    let (owner, rest) = split_package_qualified(value)?;
     Some((owner, rest.split_once("@v")?.0))
 }
 fn raw_kind(value: ActionKind) -> &'static str {

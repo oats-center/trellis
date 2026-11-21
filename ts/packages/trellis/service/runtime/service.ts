@@ -206,6 +206,11 @@ import {
   type SqlOutboxTables,
 } from "../outbox_inbox.ts";
 import { loadDefaultServiceRuntimeDeps } from "./bootstrap.ts";
+import {
+  connectWithServiceIdentity,
+  serviceIdentityStatus,
+  type TrellisServiceEnrollmentOpts,
+} from "./enrollment.ts";
 
 const ServiceSignedAuthorizationSchema = Type.Object({
   participantId: Type.String(),
@@ -437,6 +442,10 @@ export const SERVICE_PROVIDER_INGRESS: unique symbol = Symbol(
  */
 /** @internal The live settings handle, when the participant declares settings. */
 export const SERVICE_CONFIG: unique symbol = Symbol("trellis.service.config");
+/** Retires an enrolled instance with a memory-only key at a graceful stop. @internal */
+export const SERVICE_RETIRE_OWN: unique symbol = Symbol(
+  "trellis.service.retireOwn",
+);
 
 export const SERVICE_TRANSPORT_LIFETIME: unique symbol = Symbol(
   "trellis.service.transportLifetime",
@@ -601,8 +610,13 @@ export type TrellisServiceConnectOpts<
   trellisUrl: string;
   participant: GeneratedServiceParticipant<TOwnedApi, TTrellisApi>;
   name?: string;
-  /** Immutable provisioned service identity. */
-  seed: string;
+  /**
+   * Provisioned service identity. Without it the service enrolls itself with
+   * `enrollment` or `TRELLIS_ENROLLMENT_SECRET`; giving both is an error.
+   */
+  seed?: string;
+  /** Enroll as a new instance with the deployment's enrollment secret. */
+  enrollment?: TrellisServiceEnrollmentOpts;
   /** Discovery and connection timeout in milliseconds. */
   timeout?: number;
   /** Cancels discovery and connection establishment. */
@@ -1299,8 +1313,13 @@ export type TrellisServiceConnectArgs<
   trellisUrl: string;
   participant: TContract;
   name?: string;
-  /** Immutable provisioned service identity. */
-  seed: string;
+  /**
+   * Provisioned service identity. Without it the service enrolls itself with
+   * `enrollment` or `TRELLIS_ENROLLMENT_SECRET`; giving both is an error.
+   */
+  seed?: string;
+  /** Enroll as a new instance with the deployment's enrollment secret. */
+  enrollment?: TrellisServiceEnrollmentOpts;
   /** Discovery and connection timeout in milliseconds. */
   timeout?: number;
   /** Cancels discovery and connection establishment. */
@@ -3212,7 +3231,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           issuers: [server.trust.issuer],
           rotationSequence: server.trust.rotationSequence,
           natsSentinel: server.natsSentinel,
-          seed: args.seed,
+          seed: "",
           timeout: args.timeout,
           signal: args.signal,
         };
@@ -3258,7 +3277,22 @@ export function connectTrellisServiceWithRuntimeDeps<
             },
             { connect: runtimeDeps.connect },
           );
-        connected = await connect();
+        const identity = await connectWithServiceIdentity({
+          seed: args.seed,
+          enrollment: args.enrollment,
+          trellisUrl: server.issuer,
+          origin: new URL(server.issuer).origin,
+          signal: args.signal,
+          participantId: args.participant.identity,
+          participantDigest: args.participant.digest,
+          log: resolveServiceLogger(args.runtime?.log),
+          connect: async (seed) => {
+            provisioned.seed = seed;
+            connected = await connect();
+            return connected;
+          },
+        });
+        connected = identity.connected;
         let own = connected.owner.own();
         let binding = own.authority.binding;
         own.release();
@@ -3394,6 +3428,55 @@ export function connectTrellisServiceWithRuntimeDeps<
           registerDisposal: (handle) => generation.registerDisposal(handle),
         });
         service[SERVICE_TRANSPORT_LIFETIME] = manager;
+        if (identity.enrolled) {
+          // An enrolled instance that cannot reconnect may have been retired
+          // while it was away; its key then never connects again, so the
+          // service ends and a restart enrolls a new instance.
+          let away = 0;
+          let checking = false;
+          const watch = setInterval(() => {
+            if (manager.isClosed()) return clearInterval(watch);
+            if (manager.currentGeneration()) return void (away = 0);
+            if (++away < 2 || checking) return;
+            checking = true;
+            serviceIdentityStatus({
+              trellisUrl: server.issuer,
+              origin: new URL(server.issuer).origin,
+              seed: identity.seed,
+            })
+              .then((state) => {
+                if (state !== "retired" && state !== "removed") return;
+                clearInterval(watch);
+                void manager.terminate(
+                  new Error(
+                    "This instance was retired or removed while it was disconnected; start the process again to enroll a new instance",
+                  ),
+                );
+              })
+              .catch(() => {})
+              .finally(() => {
+                checking = false;
+              });
+          }, 2_500);
+          watch.unref?.();
+          void manager.closed().finally(() => clearInterval(watch));
+        }
+        if (identity.retireOnStop) {
+          // The key lives only in this process, so its instance could never
+          // connect again once the process ends.
+          const retiring = createTrellisInternal(
+            args.participant.identity,
+            manager.currentNats(),
+            {
+              sessionKey: connected.auth.sessionKey,
+              sign: connected.auth.sign,
+              contextDigest: () => owner.ownDigest ?? "",
+              authorityOwner: connected.auth.authorityOwner,
+            },
+            { inboxPrefix: connected.inboxPrefix, transport: manager },
+          );
+          service[SERVICE_RETIRE_OWN] = () => retiring.requestRetireOwn();
+        }
         if (config && readOwnConfig) {
           const read = readOwnConfig;
           service[SERVICE_CONFIG] = config;
@@ -3561,6 +3644,7 @@ export class TrellisServiceSession<
   declare readonly [SERVICE_PROVIDER_INGRESS]: ServiceProviderIngress;
   declare [SERVICE_TRANSPORT_LIFETIME]: ServiceTransportLifetime;
   declare [SERVICE_CONFIG]: ConfigHandle<Record<string, unknown>> | undefined;
+  declare [SERVICE_RETIRE_OWN]: (() => Promise<void>) | undefined;
 
   /** Settings Trellis keeps for this service. */
   get config(): ParticipantConfig<Record<string, unknown>> {
@@ -4361,6 +4445,19 @@ export class TrellisServiceSession<
             await this.#operationTransfer.stop();
           } finally {
             try {
+              const retire = this[SERVICE_RETIRE_OWN];
+              if (retire && transport && !transport.isClosed()) {
+                enter("instance retirement");
+                try {
+                  await retire();
+                } catch (error) {
+                  // Timed retirement removes the instance later instead.
+                  this.#log.warn(
+                    { service: this.name, error },
+                    "Could not retire this instance at stop",
+                  );
+                }
+              }
               enter("runtime");
               await this.#runtime.stop();
             } finally {
