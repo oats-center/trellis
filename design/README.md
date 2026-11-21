@@ -55,15 +55,16 @@ These headings are intentionally named for fast human and AI lookup.
 
 ## Core Platform Docs
 
-| Document                                | Read When                                                            | Why                                                                                 |
-| --------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `core/trellis-patterns.md`              | You need Trellis-wide architecture rules                             | Service categories, platform boundaries, communication patterns                     |
-| `auth/trellis-auth.md`                  | You are changing auth architecture                                   | The auth model: entities, lifecycles, issuance and enforcement pipelines, and rules |
-| `auth/device-activation.md`             | You are changing device preregistration or device activation         | Known-device activation flow, connect info, profiles, online activation             |
-| `auth/service-updates.md`               | You are changing how a running service updates its participant       | Service-submitted IDL, auto-applied and approved updates, review links              |
-| `auth/instance-enrollment.md`           | You are designing self-registered service instances (proposal)       | Enrollment secrets, instances that register their own keys, offline retirement      |
-| `contracts/trellis-api-participants.md` | You are changing manifests, codegen inputs, or permission derivation | Canonical contract format, `uses`, subject ownership, activation rules              |
-| `contracts/trellis-idl.md`              | You are changing declarative contract source or compilation          | IDL source layouts, syntax, types, and protocol lowering boundary                   |
+| Document                                | Read When                                                                           | Why                                                                                 |
+| --------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `core/trellis-patterns.md`              | You need Trellis-wide architecture rules                                            | Service categories, platform boundaries, communication patterns                     |
+| `auth/trellis-auth.md`                  | You are changing auth architecture                                                  | The auth model: entities, lifecycles, issuance and enforcement pipelines, and rules |
+| `auth/device-activation.md`             | You are changing device preregistration or device activation                        | Known-device activation flow, connect info, profiles, online activation             |
+| `auth/service-updates.md`               | You are changing how a running service updates its participant                      | Service-submitted IDL, auto-applied and approved updates, review links              |
+| `auth/instance-enrollment.md`           | You are designing self-registered service instances (proposal)                      | Enrollment secrets, instances that register their own keys, offline retirement      |
+| `contracts/trellis-api-participants.md` | You are changing manifests, codegen inputs, or permission derivation                | Canonical contract format, `uses`, subject ownership, activation rules              |
+| `contracts/trellis-idl.md`              | You are changing declarative contract source or compilation                         | IDL source layouts, syntax, types, and protocol lowering boundary                   |
+| `contracts/workspaces.md`               | You are designing package identity, registry ownership, or package moves (proposal) | Registry-based workspaces in IDs, ownership checks, moves, migration                |
 
 ## Subsystem Design Docs
 
