@@ -13,6 +13,7 @@
 //! `Details` or table here), which decides per stream and strips the codes when
 //! color is off; `std` printing passes them through.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
 use std::io::{IsTerminal as _, Write as _};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -294,6 +295,7 @@ enum Kind {
     Muted,
     State,
     Time,
+    Id,
 }
 
 /// One table column: its header and the dotted field path it shows.
@@ -328,6 +330,17 @@ pub const fn state_col<'a>(header: &'a str, path: &'a str) -> Column<'a> {
         header,
         path,
         kind: Kind::State,
+    }
+}
+
+/// A column of workspace-qualified IDs. A terminal shows each one's short ID,
+/// without its workspace, while no other row in the column has the same short
+/// ID, and the full ID when one does. Piped output keeps full IDs.
+pub const fn id_col<'a>(header: &'a str, path: &'a str) -> Column<'a> {
+    Column {
+        header,
+        path,
+        kind: Kind::Id,
     }
 }
 
@@ -378,11 +391,36 @@ pub fn table<T: Serialize>(items: &[T], columns: &[Column<'_>], empty: &str) -> 
             .iter()
             .map(|column| Cell::new(column.header.to_uppercase()).add_attribute(Attribute::Bold)),
     );
+    // How many rows of each ID column share each short ID.
+    let shared = columns
+        .iter()
+        .map(|column| {
+            let mut counts = BTreeMap::<String, BTreeSet<String>>::new();
+            if matches!(column.kind, Kind::Id) {
+                for item in &items {
+                    let id = field(item, column.path);
+                    counts
+                        .entry(trellis_protocol::short_id(&id).to_owned())
+                        .or_default()
+                        .insert(id);
+                }
+            }
+            counts
+        })
+        .collect::<Vec<_>>();
     for item in &items {
-        let mut row = Row::from(columns.iter().map(|column| {
+        let mut row = Row::from(columns.iter().zip(&shared).map(|(column, shared)| {
             let text = field(item, column.path);
             match column.kind {
                 Kind::Text => Cell::new(text),
+                Kind::Id => {
+                    let short = trellis_protocol::short_id(&text);
+                    if shared.get(short).is_some_and(|ids| ids.len() > 1) {
+                        Cell::new(text)
+                    } else {
+                        Cell::new(short)
+                    }
+                }
                 Kind::Muted => Cell::new(text).add_attribute(Attribute::Dim),
                 Kind::Time => Cell::new(relative_time(&text)).add_attribute(Attribute::Dim),
                 Kind::State => {

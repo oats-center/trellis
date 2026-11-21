@@ -14,6 +14,7 @@
   import Icon from "$lib/components/Icon.svelte";
   import Pager from "$lib/components/Pager.svelte";
   import { formatDate, humanizeName } from "$lib/format";
+  import { idLabels } from "$lib/console/ids.ts";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
@@ -25,7 +26,8 @@
     return humanizeName(apiId.split("@")[0] ?? apiId);
   }
 
-  // `trellis.auth@v1` belongs to the `trellis` namespace.
+  // `trellis.auth@v1` belongs to the `trellis` namespace, and
+  // `ghcr.io/acme/orders.billing@v1` to `ghcr.io/acme/orders`.
   function namespaceOf(apiId: string): string {
     const name = apiId.split("@")[0] ?? apiId;
     return name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : name;
@@ -85,9 +87,11 @@
       const id = namespaceOf(api.apiId);
       byId.set(id, [...(byId.get(id) ?? []), api]);
     }
+    // A package reads without its workspace unless two share a name.
+    const labels = idLabels(byId.keys());
     return [...byId]
-      .map(([id, apis]) => ({ id, apis }))
-      .sort((a, b) => a.id.localeCompare(b.id));
+      .map(([id, apis]) => ({ id, label: labels.get(id) ?? id, apis }))
+      .sort((a, b) => a.label.localeCompare(b.label));
   });
   let review = $state.raw<apis.auth.ApisReviewOutput["review"] | null>(null);
   let result = $state.raw<apis.auth.ApisAcceptOutput | null>(null);
@@ -243,7 +247,7 @@
         <h3
           class="border-b border-base-300 bg-base-200/60 px-5 py-2 text-sm font-semibold"
         >
-          {humanizeName(namespace.id)}
+          {humanizeName(namespace.label)}
           <span class="font-normal text-base-content/55"
             >· {namespace.apis.length}
             {namespace.apis.length === 1 ? "API" : "APIs"}</span

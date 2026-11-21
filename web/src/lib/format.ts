@@ -267,9 +267,12 @@ export function errorMessage(error: unknown): string {
  * runtime". Names people typed are returned exactly as written.
  */
 export function humanizeName(name: string): string {
-  if (!/^[A-Za-z][a-zA-Z0-9]*(\.[A-Za-z][a-zA-Z0-9]*)*$/.test(name))
-    return name;
-  const words = (name.split(".").at(-1) ?? name)
+  const pattern = /^[A-Za-z][a-zA-Z0-9]*(\.[A-Za-z][a-zA-Z0-9]*)*$/;
+  // A workspace-qualified ID reads by its last segment like any other.
+  const short = name.slice(name.lastIndexOf("/") + 1);
+  const local = pattern.test(short) ? short : name;
+  if (!pattern.test(local)) return name;
+  const words = (local.split(".").at(-1) ?? local)
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .toLowerCase();
   return words.charAt(0).toUpperCase() + words.slice(1);

@@ -23,6 +23,7 @@
   import Pager from "$lib/components/Pager.svelte";
   import StatusBadge from "$lib/components/StatusBadge.svelte";
   import { errorMessage, humanizeName } from "$lib/format";
+  import { idLabels } from "$lib/console/ids.ts";
   import { getTrellis } from "$lib/trellis";
   import { codecs } from "@oatscenter/trellis/generated";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
@@ -116,6 +117,12 @@
     return hours < 24 ? `${hours} h ago` : `${Math.floor(hours / 24)} d ago`;
   }
 
+  // Participant IDs read without their workspace unless two share a name.
+  const participantLabels = $derived(
+    idLabels(deployments.map((deployment) => deployment.participantId)),
+  );
+  const participantName = (id: string) =>
+    humanizeName(participantLabels.get(id) ?? id);
   const filteredDeployments = $derived.by(() => {
     const term = search.trim().toLowerCase();
     return deployments.filter(
@@ -310,9 +317,9 @@
                     <span class="block truncate font-medium hover:underline"
                       >{humanizeName(deployment.title)}</span
                     >
-                    {#if humanizeName(deployment.participantId) !== humanizeName(deployment.title)}
+                    {#if participantName(deployment.participantId) !== humanizeName(deployment.title)}
                       <span class="block truncate text-xs text-base-content/60"
-                        >{humanizeName(deployment.participantId)}</span
+                        >{participantName(deployment.participantId)}</span
                       >
                     {/if}
                     {#if health}<span

@@ -1325,6 +1325,7 @@ fn render_app_request(
                 .or_insert(0usize) += 1;
         }
     }
+    let api_names = facade_api_names(graph, uses.keys(), &api_modules)?;
     let mut name_types = Vec::new();
     let mut name_values = Vec::new();
     let mut names = BTreeMap::new();
@@ -1368,9 +1369,7 @@ fn render_app_request(
                 descriptor_name(&selected.action)
             ));
             let name = if name_counts[&selected.action.name.to_ascii_lowercase()] > 1 {
-                // The API's generated name, which only differs from its own
-                // name when another API shares it.
-                format!("{}.{}", api_modules[id.as_str()], selected.action.name)
+                format!("{}.{}", api_names[id.as_str()], selected.action.name)
             } else {
                 selected.action.name.clone()
             };
@@ -1719,13 +1718,14 @@ fn render_participant(
                 .or_insert(0usize) += 1;
         }
     }
+    let api_names = facade_api_names(graph, referenced.iter().copied(), &api_modules)?;
     let mut action_names = Vec::new();
     for id in &referenced {
         let api = find_api(graph, id)?;
         for action in api.actions().keys() {
             let descriptor = descriptor_name(action);
             let name = if action_name_counts[&action.name.to_ascii_lowercase()] > 1 {
-                format!("{}.{}", api_modules[api.identity().as_str()], action.name)
+                format!("{}.{}", api_names[id.as_str()], action.name)
             } else {
                 action.name.clone()
             };
@@ -2650,6 +2650,35 @@ fn type_union(types: Vec<String>) -> String {
     } else {
         types.join(" | ")
     }
+}
+
+/// The API part of a participant's or app's facade method names: each API's
+/// own name, or its generated module name when another API the same
+/// participant uses or serves has that name too.
+fn facade_api_names<'a>(
+    graph: &PackageGraph,
+    apis: impl IntoIterator<Item = &'a trellis_idl::ApiId>,
+    api_modules: &BTreeMap<String, String>,
+) -> Result<BTreeMap<&'a str, String>, CodegenTsError> {
+    let apis = apis
+        .into_iter()
+        .map(|id| Ok((id.as_str(), find_api(graph, id)?.name())))
+        .collect::<Result<Vec<_>, CodegenTsError>>()?;
+    let mut counts = BTreeMap::<String, usize>::new();
+    for (_, name) in &apis {
+        *counts.entry(name.to_lowercase()).or_default() += 1;
+    }
+    Ok(apis
+        .into_iter()
+        .map(|(id, name)| {
+            let name = if counts[&name.to_lowercase()] > 1 {
+                api_modules[id].clone()
+            } else {
+                name.to_owned()
+            };
+            (id, name)
+        })
+        .collect())
 }
 
 fn api_modules(graph: &PackageGraph) -> BTreeMap<String, String> {
