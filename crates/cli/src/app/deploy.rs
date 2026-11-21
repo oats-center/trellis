@@ -70,6 +70,7 @@ async fn run_svc_resource(format: OutputFormat, command: SvcResourceCommand) -> 
         SvcResourceAction::Reject(args) => {
             decide_service_update(format, &command.id, &args, false).await
         }
+        SvcResourceAction::Webhooks(args) => super::webhooks::run(format, &command.id, args).await,
         SvcResourceAction::Config(args) => {
             super::config::run(
                 format,
@@ -233,6 +234,21 @@ async fn decide_service_update(
         Some(update) => miette::miette!("{id} has no update {update}"),
         None => miette::miette!("{id} has no pending update"),
     })?;
+    let unauthenticated = selected
+        .changes
+        .webhooks
+        .iter()
+        .filter(|webhook| webhook.unauthenticated)
+        .map(|webhook| webhook.name.clone())
+        .collect::<Vec<_>>();
+    if approve && !unauthenticated.is_empty() && !args.acknowledge_unauthenticated_webhooks {
+        return Err(miette::miette!(
+            help = "Re-run with --acknowledge-unauthenticated-webhooks only if that is intended.",
+            "This update adds webhook endpoint {} that checks nothing: anyone who learns its \
+            URL can send {id} requests.",
+            unauthenticated.join(", ")
+        ));
+    }
     if approve && !selected.changes.shared_apis.is_empty() && !args.acknowledge_shared_apis {
         return Err(miette::miette!(
             help = "Re-run with --acknowledge-shared-apis only if splitting requests is intended.",
@@ -255,6 +271,9 @@ async fn decide_service_update(
         .service_updates_decide(&auth_types::AuthServiceUpdateDecideRequest {
             update_id: selected.update_id,
             acknowledge_shared_apis: (approve && args.acknowledge_shared_apis).then_some(true),
+            acknowledge_unauthenticated_webhooks: (approve
+                && args.acknowledge_unauthenticated_webhooks)
+                .then_some(true),
             decision: if approve {
                 auth_types::AuthDecision::Approved
             } else {
@@ -699,6 +718,9 @@ async fn create_service(
             participant_id,
             package_evidence,
             acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
+            acknowledge_unauthenticated_webhooks: args
+                .acknowledge_unauthenticated_webhooks
+                .then_some(true),
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })
@@ -789,6 +811,11 @@ fn shared_api_hint(error: impl std::fmt::Display) -> miette::Report {
             help = "Re-run with --acknowledge-shared-apis only if splitting requests is intended.",
             "{message}"
         )
+    } else if message.contains("acknowledgeUnauthenticatedWebhooks") {
+        miette::miette!(
+            help = "Re-run with --acknowledge-unauthenticated-webhooks only if that is intended.",
+            "{message}"
+        )
     } else {
         miette::miette!("{message}")
     }
@@ -811,6 +838,9 @@ async fn create_device(format: OutputFormat, id: &str, args: &DevCreateArgs) -> 
             participant_id,
             package_evidence,
             acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
+            acknowledge_unauthenticated_webhooks: args
+                .acknowledge_unauthenticated_webhooks
+                .then_some(true),
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })
@@ -872,6 +902,9 @@ async fn apply_contract(
             idempotency_key: wire(cli_idempotency_key())?,
             package_evidence,
             acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
+            acknowledge_unauthenticated_webhooks: args
+                .acknowledge_unauthenticated_webhooks
+                .then_some(true),
             extra: Default::default(),
         })
         .await
@@ -1037,7 +1070,9 @@ async fn service_instances(
 /// as `starting`: the instance is connected but not serving yet.
 ///
 /// Its health is the report's effective status and the checks that heartbeat
-/// carries as failing; an instance with no current heartbeat has none.
+/// carries as failing; an instance that has not reported on this connection
+/// has none. Once a connected instance's heartbeats stop, it keeps the phase
+/// it last reported and its health is `offline` with no failing checks.
 fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Value> {
     instances
         .into_iter()
@@ -1048,25 +1083,27 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
                 .find(|report| output::field(report, "instanceId") == id);
             let connected_at = instance.get("connectedAt").and_then(Value::as_str);
             let heartbeat = report.and_then(|report| report.pointer("/latestSample/sample/time"));
-            let reporting = report.filter(|report| {
-                output::field(report, "effectiveStatus") != "offline"
-                    && match (
-                        connected_at,
-                        report.get("observedAt").and_then(Value::as_str),
-                    ) {
-                        (Some(connected), Some(observed)) => {
-                            output::parse_time(observed) >= output::parse_time(connected)
-                        }
-                        _ => false,
+            // A report from an earlier connection says nothing about this one.
+            let reported = report.filter(|report| {
+                match (
+                    connected_at,
+                    report.get("observedAt").and_then(Value::as_str),
+                ) {
+                    (Some(connected), Some(observed)) => {
+                        output::parse_time(observed) >= output::parse_time(connected)
                     }
+                    _ => false,
+                }
             });
+            let reporting =
+                reported.filter(|report| output::field(report, "effectiveStatus") != "offline");
             let waiting = instance.get("waiting");
             let ended = output::field(&instance, "state");
             let state = if ended == "retired" || ended == "removed" {
                 ended
             } else if connected_at.is_none() {
                 "offline".to_owned()
-            } else if let Some(report) = reporting {
+            } else if let Some(report) = reported {
                 report
                     .pointer("/latestSample/phase")
                     .and_then(Value::as_str)
@@ -1090,15 +1127,17 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
             } else {
                 "starting".to_owned()
             };
-            let digest = reporting
+            let digest = reported
                 .and_then(|report| report.get("contractDigest"))
                 .or_else(|| instance.get("participantDigest"))
                 .and_then(Value::as_str);
             let version =
-                reporting.and_then(|report| report.pointer("/latestSample/participant/version"));
+                reported.and_then(|report| report.pointer("/latestSample/participant/version"));
             // Health is the instance's effective status with the checks its
-            // current heartbeat reports failing; a disconnected instance is
-            // offline whatever it last reported.
+            // current heartbeat reports failing. A connected instance whose
+            // heartbeats stopped is offline, without the checks it last
+            // reported; a disconnected instance is offline whatever it last
+            // reported.
             let health = if connected_at.is_none() {
                 json!({ "status": "offline", "failingChecks": [] })
             } else if let Some(report) = reporting {
@@ -1122,6 +1161,8 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
                     })
                     .collect::<Vec<_>>();
                 json!({ "status": report.get("effectiveStatus"), "failingChecks": failing })
+            } else if reported.is_some() {
+                json!({ "status": "offline", "failingChecks": [] })
             } else {
                 Value::Null
             };
@@ -1398,6 +1439,15 @@ fn print_service_instances_result<T: serde::Serialize>(
                     output::field(instance, "instanceId"),
                     output::field(check, "name"),
                     output::state(&output::field(check, "status")),
+                );
+            }
+            if output::field(instance, "status.health.status") == "offline"
+                && output::field(instance, "status.state") != "offline"
+            {
+                anstream::println!(
+                    "{}: heartbeats stopped; last heartbeat {}",
+                    output::field(instance, "instanceId"),
+                    output::field(instance, "status.lastHeartbeat"),
                 );
             }
             let url = output::field(instance, "status.reviewUrl");

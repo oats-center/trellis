@@ -55,6 +55,7 @@
   let unfinished = $state<string | null>(null);
   // The administrator read the warning about answering an API another service serves.
   let sharingUnderstood = $state(false);
+  let unauthenticatedUnderstood = $state(false);
   let confirmationModal: ConfirmationModal | undefined = $state();
 
   const shown = $derived(
@@ -71,6 +72,7 @@
       notice = null;
       unfinished = null;
       sharingUnderstood = false;
+      unauthenticatedUnderstood = false;
     }
     untrack(() => void load());
   });
@@ -127,6 +129,10 @@
     if (busy || !canPerform(authority.authority, "serviceUpdatesDecide"))
       return;
     const shared = update.changes.sharedApis.map(apiLabel);
+    const unauthenticated = update.changes.webhooks.some(
+      (webhook) => webhook.unauthenticated,
+    );
+    if (approve && unauthenticated && !unauthenticatedUnderstood) return;
     if (approve && shared.length) {
       if (!sharingUnderstood) return;
       const confirmed = await confirmationModal?.confirm({
@@ -155,6 +161,9 @@
           updateId: update.updateId,
           decision: approve ? "approved" : "declined",
           ...(approve && shared.length ? { acknowledgeSharedApis: true } : {}),
+          ...(approve && unauthenticated
+            ? { acknowledgeUnauthenticatedWebhooks: true }
+            : {}),
           expectedRevision: update.revision,
           idempotencyKey: codecs.ulid.decode(ulid()),
         })
@@ -269,6 +278,51 @@
       {@render changeList("Gives up", described.givesUp, "bg-base-content/40")}
       {@render changeList("Provides", described.provides, "bg-info")}
     </div>
+    {#if changes.webhooks.length}
+      <div class="space-y-3">
+        <h3 class="text-sm font-semibold">Webhooks</h3>
+        <ul class="space-y-3">
+          {#each changes.webhooks as webhook (webhook.name)}
+            <li class="text-sm">
+              <p class="font-medium">{webhook.title}</p>
+              <p class="text-base-content/65">
+                {webhook.mode === "sync"
+                  ? "Answers after checking"
+                  : "Answers at once, checks afterwards"} · {webhook.methods.join(
+                  ", ",
+                )}{webhook.decides ? " · the service decides" : ""}
+              </p>
+              <ul class="list-disc ps-5">
+                {#each webhook.verifiers as verifier, index (index)}<li>
+                    {verifier}
+                  </li>{/each}
+              </ul>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+    {#if shown.state === "pending" && changes.webhooks.some((webhook) => webhook.unauthenticated)}
+      <div class="alert alert-warning block space-y-2" role="alert">
+        <p class="font-semibold">
+          {changes.webhooks
+            .filter((webhook) => webhook.unauthenticated)
+            .map((webhook) => webhook.title)
+            .join(", ")} checks nothing.
+        </p>
+        <p class="text-sm">
+          Anyone who learns the URL can send the service requests.
+        </p>
+        <label class="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            class="checkbox checkbox-sm"
+            bind:checked={unauthenticatedUnderstood}
+          />
+          I understand this webhook accepts requests from anyone with its URL
+        </label>
+      </div>
+    {/if}
     {#if shown.state === "pending" && changes.sharedApis.length}
       <div class="alert alert-warning block space-y-2" role="alert">
         <p class="font-semibold">
@@ -303,7 +357,9 @@
         <button
           class="btn btn-primary"
           disabled={busy ||
-            (changes.sharedApis.length > 0 && !sharingUnderstood)}
+            (changes.sharedApis.length > 0 && !sharingUnderstood) ||
+            (changes.webhooks.some((webhook) => webhook.unauthenticated) &&
+              !unauthenticatedUnderstood)}
           onclick={() => void decide(shown, true)}>Approve update</button
         >
       </div>

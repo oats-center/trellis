@@ -32,6 +32,9 @@ rand.workspace = true
 ed25519-dalek.workspace = true
 bytes = { workspace = true, optional = true }
 futures-util.workspace = true
+flate2 = "1.1.9"
+opentelemetry.workspace = true
+subtle = "2.6.1"
 getrandom.workspace = true
 jsonschema.workspace = true
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }

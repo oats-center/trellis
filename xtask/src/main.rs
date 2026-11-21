@@ -248,6 +248,13 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
             "Watch",
             "pub ",
         ),
+        (
+            "runtime_webhooks",
+            "trellis.webhooks@v1",
+            trellis_idl::ActionKind::Event,
+            "Received",
+            "pub ",
+        ),
     ] {
         let source = trellis_codegen_rust::render_runtime_action(&graph, api, kind, action)
             .into_diagnostic()?;

@@ -874,6 +874,7 @@ fn render_resource(
         | ResourceDefinition::Store { optional, .. }
         | ResourceDefinition::Job { optional, .. }
         | ResourceDefinition::Consumer { optional, .. } => *optional,
+        ResourceDefinition::Webhook { .. } => false,
     };
     let kind = match value {
         ResourceDefinition::State { .. } => "state",
@@ -881,6 +882,7 @@ fn render_resource(
         ResourceDefinition::Store { .. } => "store",
         ResourceDefinition::Job { .. } => "job",
         ResourceDefinition::Consumer { .. } => "consumer",
+        ResourceDefinition::Webhook { .. } => "webhook",
     };
     writeln!(
         output,
@@ -893,7 +895,8 @@ fn render_resource(
         | ResourceDefinition::Kv { docs, .. }
         | ResourceDefinition::Store { docs, .. }
         | ResourceDefinition::Job { docs, .. }
-        | ResourceDefinition::Consumer { docs, .. } => docs,
+        | ResourceDefinition::Consumer { docs, .. }
+        | ResourceDefinition::Webhook { docs, .. } => docs,
     };
     writeln!(
         output,
@@ -1019,8 +1022,133 @@ fn render_resource(
             .unwrap();
             render_retry(output, retry);
         }
+        ResourceDefinition::Webhook { endpoint, .. } => render_webhook(output, endpoint),
     }
     output.push_str("  }\n");
+}
+
+/// Render a webhook's members in a fixed order, every default spelled out.
+fn render_webhook(output: &mut String, endpoint: &WebhookDefinition) {
+    let item = |output: &mut String, name: &str, value: &WebhookHeaderItem, extra: &str| {
+        write!(output, "      {name} {{ header {};", quote(&value.header)).unwrap();
+        if let Some(separator) = &value.separator {
+            write!(output, " separator {};", quote(separator)).unwrap();
+        }
+        if let Some(prefix) = &value.prefix {
+            write!(output, " prefix {};", quote(prefix)).unwrap();
+        }
+        writeln!(output, "{extra} }}").unwrap();
+    };
+    writeln!(
+        output,
+        "    mode {};\n    methods [{}];\n    status {};",
+        match endpoint.mode {
+            WebhookMode::Async => "async",
+            WebhookMode::Sync => "sync",
+        },
+        endpoint.methods.join(", "),
+        endpoint.status
+    )
+    .unwrap();
+    for verifier in &endpoint.verifiers {
+        match verifier {
+            WebhookVerifier::None => output.push_str("    verify none;\n"),
+            WebhookVerifier::Hmac(hmac) => {
+                let WebhookHmac {
+                    key,
+                    key_prefix,
+                    key_encoding,
+                    algorithm,
+                    signed,
+                    signature,
+                    signature_encoding,
+                    timestamp,
+                } = &**hmac;
+                writeln!(output, "    verify hmac {{\n      key config {key};").unwrap();
+                if let Some(prefix) = key_prefix {
+                    writeln!(output, "      key_prefix {};", quote(prefix)).unwrap();
+                }
+                writeln!(
+                    output,
+                    "      key_encoding {key_encoding};\n      algorithm {algorithm};\n      signed {};",
+                    quote(signed)
+                )
+                .unwrap();
+                item(
+                    output,
+                    "signature",
+                    signature,
+                    &format!(" encoding {signature_encoding};"),
+                );
+                if let Some(timestamp) = timestamp {
+                    item(
+                        output,
+                        "timestamp",
+                        &timestamp.location,
+                        &format!(
+                            " format {}; tolerance {}ms;",
+                            timestamp.format, timestamp.tolerance_ms
+                        ),
+                    );
+                }
+                output.push_str("    }\n");
+            }
+            WebhookVerifier::Token {
+                secret,
+                header,
+                query,
+                prefix,
+            } => {
+                write!(output, "    verify token {{ secret config {secret};").unwrap();
+                if let Some(header) = header {
+                    write!(output, " header {};", quote(header)).unwrap();
+                }
+                if let Some(query) = query {
+                    write!(output, " query {};", quote(query)).unwrap();
+                }
+                if let Some(prefix) = prefix {
+                    write!(output, " prefix {};", quote(prefix)).unwrap();
+                }
+                output.push_str(" }\n");
+            }
+            WebhookVerifier::Basic { username, password } => writeln!(
+                output,
+                "    verify basic {{ username config {username}; password config {password}; }}"
+            )
+            .unwrap(),
+            WebhookVerifier::Address { ranges } => {
+                writeln!(output, "    verify address {{ ranges config {ranges}; }}").unwrap()
+            }
+        }
+    }
+    if let Some(decide) = &endpoint.decide {
+        match decide.deadline_ms {
+            Some(value) => writeln!(output, "    decide {{ deadline {value}ms; }}").unwrap(),
+            None => output.push_str("    decide;\n"),
+        }
+    }
+    if !endpoint.content_encodings.is_empty() {
+        writeln!(
+            output,
+            "    content_encoding [{}];",
+            endpoint.content_encodings.join(", ")
+        )
+        .unwrap();
+    }
+    if let Some(dedupe) = &endpoint.dedupe {
+        writeln!(output, "    dedupe {};", quote(dedupe)).unwrap();
+    }
+    writeln!(output, "    concurrency {};", endpoint.concurrency).unwrap();
+    render_retry(output, &endpoint.retry);
+    if let Some(value) = endpoint.max_body {
+        writeln!(output, "    max_body {value}B;").unwrap();
+    }
+    if let Some(value) = endpoint.dedupe_window_ms {
+        writeln!(output, "    dedupe_window {value}ms;").unwrap();
+    }
+    if let Some(value) = endpoint.rotation_overlap_ms {
+        writeln!(output, "    rotation_overlap {value}ms;").unwrap();
+    }
 }
 
 fn render_accepts(output: &mut String, accepts: &[HistoricRepresentation], imports: &Imports) {

@@ -1006,6 +1006,22 @@ impl Client {
         ))
     }
 
+    /// Return the declared webhook endpoint `D`, when Trellis bound it.
+    pub fn webhook_handle<D>(&self) -> Option<crate::client::WebhookHandle<D>>
+    where
+        D: crate::client::WebhookDescriptor,
+    {
+        let consumer = self.consumer_handle::<D>()?;
+        Some(crate::client::WebhookHandle::from_generated(
+            consumer,
+            self.clone(),
+        ))
+    }
+
+    pub(crate) fn trellis_client(&self) -> &crate::client::TrellisClient {
+        &self.client
+    }
+
     /// Download a generated receive-transfer grant.
     pub async fn download_transfer(
         &self,

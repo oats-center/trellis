@@ -746,7 +746,9 @@ pub fn compare_resource(
     match (declaration, actual) {
         (ResourceDefinition::State { .. }, RetainedResourceActual::State)
         | (ResourceDefinition::Job { .. }, RetainedResourceActual::Job)
-        | (ResourceDefinition::Consumer { .. }, RetainedResourceActual::Consumer) => {}
+        | (ResourceDefinition::Consumer { .. }, RetainedResourceActual::Consumer)
+        // A webhook endpoint is retained as the durable consumer of its events.
+        | (ResourceDefinition::Webhook { .. }, RetainedResourceActual::Consumer) => {}
         (
             ResourceDefinition::Kv {
                 history,

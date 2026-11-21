@@ -35,6 +35,7 @@
   import ServiceUpdates from "$lib/components/ServiceUpdates.svelte";
   import ServiceUpdateHistory from "$lib/components/ServiceUpdateHistory.svelte";
   import ParticipantSettings from "$lib/components/ParticipantSettings.svelte";
+  import WebhookEndpoints from "$lib/components/WebhookEndpoints.svelte";
   import EnrollmentSecrets from "$lib/components/EnrollmentSecrets.svelte";
 
   type Deployment = apis.auth.DeploymentsGetOutput["deployment"];
@@ -884,6 +885,12 @@
                           )}{#if check.error ?? check.summary}: {check.error ??
                               check.summary}{/if}</span
                         >{/each}
+                    {:else if status.health?.status === "offline" && status.state !== "offline"}
+                      <span
+                        class="flex items-center gap-1 text-xs text-warning"
+                        data-heartbeats-stopped
+                        ><Icon name="alert" size={12} />Heartbeats stopped</span
+                      >
                     {/if}
                     {#if status.state === "waitingForApproval"}
                       {#if status.reviewUrl}<a
@@ -1033,6 +1040,10 @@
         {instanceNames}
         bind:instanceId={settingsInstance}
         bind:available={settingsAvailable}
+      />{/if}
+
+    {#if canPerform(authority.authority, "webhooksEndpointsList")}<WebhookEndpoints
+        deploymentId={deployment.deploymentId}
       />{/if}
 
     {#if canPerform(authority.authority, "serviceUpdatesList")}<ServiceUpdateHistory

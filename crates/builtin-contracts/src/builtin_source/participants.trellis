@@ -4,12 +4,14 @@ import { state } from state;
 import { health } from health;
 import { jobs } from jobs;
 import { events } from events;
+import { webhooks } from webhooks;
 import { AuthAttachment } from auth_types;
 
 service platform {
   implements auth;
   implements core;
   implements state;
+  implements webhooks;
   kv connections {
     title "Connections";
     description "Operational attachment presence; policy and enforcement remain in Auth's durable store.";
@@ -66,6 +68,11 @@ agent cli {
     capability deadLetters.replay;
     capability events.inspect;
     capability events.query;
+  }
+  use webhooks {
+    capability attempts.query;
+    capability attempts.inspect;
+    capability attempts.reverify;
   }
 }
 
@@ -133,5 +140,10 @@ app console {
     capability metrics.read;
     capability events.query;
     capability events.observe;
+  }
+  use webhooks {
+    capability attempts.query;
+    capability attempts.inspect;
+    capability attempts.reverify;
   }
 }

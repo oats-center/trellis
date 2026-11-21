@@ -90,6 +90,63 @@ pub enum SvcResourceAction {
     /// added without its IDL takes settings while it waits for approval, and
     /// approving it carries them over.
     Config(ConfigArgs),
+    /// Show the service's webhook endpoints and the requests they received,
+    /// or change an endpoint: enable or disable it, rotate its URL, or set a
+    /// runtime setting.
+    Webhooks(WebhooksArgs),
+}
+
+/// A service's webhook endpoints; with an endpoint, that one.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct WebhooksArgs {
+    /// The endpoint's name in the service's IDL.
+    #[arg(value_name = "ENDPOINT")]
+    pub endpoint: Option<String>,
+    #[command(subcommand)]
+    pub command: Option<WebhooksCommand>,
+}
+
+/// One webhook endpoint operation; without one, show the endpoint.
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum WebhooksCommand {
+    /// List the endpoint's request records, newest first, without bodies.
+    Attempts {
+        /// Only records with this outcome, such as `rejected` or `pending`.
+        #[arg(long, value_name = "OUTCOME")]
+        outcome: Option<String>,
+        /// Only records received within this long, such as `1h` or `7d`.
+        #[arg(long, value_name = "DURATION")]
+        since: Option<String>,
+    },
+    /// Show one request record with its headers.
+    Attempt {
+        #[arg(value_name = "ATTEMPT_ID")]
+        attempt: String,
+        /// Write the stored request body to standard output.
+        #[arg(long)]
+        body: bool,
+    },
+    /// Verify a stored request again with the current verifiers and secrets.
+    Reverify {
+        #[arg(value_name = "ATTEMPT_ID")]
+        attempt: String,
+    },
+    /// Accept requests again.
+    Enable,
+    /// Answer 503 and store nothing.
+    Disable,
+    /// Give the endpoint a new URL. The old one keeps working until `retire-url`.
+    RotateUrl,
+    /// Stop accepting the endpoint's earlier URLs.
+    RetireUrl,
+    /// Change a runtime setting, such as `max-body 512KiB` or `dedupe-window 24h`;
+    /// `default` returns it to the IDL or Trellis default.
+    Set {
+        #[arg(value_name = "SETTING")]
+        setting: String,
+        #[arg(value_name = "VALUE")]
+        value: String,
+    },
 }
 
 /// Settings Trellis keeps for a deployment, or for one instance's overrides
@@ -172,6 +229,10 @@ pub struct SvcUpdateArgs {
     /// serves, splitting callers' requests between the two.
     #[arg(long)]
     pub acknowledge_shared_apis: bool,
+    /// Confirm webhook endpoints that check nothing (`verify none`): anyone
+    /// who learns such an endpoint's URL can send it requests.
+    #[arg(long)]
+    pub acknowledge_unauthenticated_webhooks: bool,
 }
 
 /// Target-first device command.
@@ -238,6 +299,10 @@ pub struct SvcCreateArgs {
     /// serves, splitting callers' requests between the two.
     #[arg(long)]
     pub acknowledge_shared_apis: bool,
+    /// Confirm webhook endpoints that check nothing (`verify none`): anyone
+    /// who learns such an endpoint's URL can send it requests.
+    #[arg(long)]
+    pub acknowledge_unauthenticated_webhooks: bool,
 }
 
 /// Create a device deployment from its native source package or a published
@@ -250,6 +315,10 @@ pub struct DevCreateArgs {
     /// serves, splitting callers' requests between the two.
     #[arg(long)]
     pub acknowledge_shared_apis: bool,
+    /// Confirm webhook endpoints that check nothing (`verify none`): anyone
+    /// who learns such an endpoint's URL can send it requests.
+    #[arg(long)]
+    pub acknowledge_unauthenticated_webhooks: bool,
 }
 
 /// Install a build on an existing deployment, from its source package or a
@@ -266,6 +335,10 @@ pub struct ApplyArgs {
     /// serves, splitting callers' requests between the two.
     #[arg(long)]
     pub acknowledge_shared_apis: bool,
+    /// Confirm webhook endpoints that check nothing (`verify none`): anyone
+    /// who learns such an endpoint's URL can send it requests.
+    #[arg(long)]
+    pub acknowledge_unauthenticated_webhooks: bool,
 }
 
 /// Remove a deployment; enforcement is performed by the native Auth runtime.

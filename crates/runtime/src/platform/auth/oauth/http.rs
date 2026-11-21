@@ -680,14 +680,18 @@ async fn logout_page(
     // OIDC sign-in from this browser sends the provider's configured prompt
     // instead of being signed straight back in. The page sets this even when
     // no Portal login is left to end; at worst a forged navigation makes the
-    // next sign-in ask again.
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        HeaderValue::from_static(
-            "__Host-trellis-portal-reauth=1; Path=/; Secure; HttpOnly; SameSite=Lax; \
-            Max-Age=2592000",
-        ),
-    );
+    // next sign-in ask again. Prompts refused after an earlier sign-out are
+    // tried again after this one.
+    for cookie in [
+        "__Host-trellis-portal-reauth=1; Path=/; Secure; HttpOnly; SameSite=Lax; \
+        Max-Age=2592000",
+        "__Host-trellis-portal-reauth-refused=; Path=/; Secure; HttpOnly; SameSite=Lax; \
+        Max-Age=0",
+    ] {
+        response
+            .headers_mut()
+            .append(header::SET_COOKIE, HeaderValue::from_static(cookie));
+    }
     response
 }
 

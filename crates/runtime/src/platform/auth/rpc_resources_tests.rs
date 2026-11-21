@@ -444,6 +444,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         .unwrap();
     let apply = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         deployment_id: current.deployment_id,
         expected_revision: current.revision,
         package_evidence: serde_json::from_value(serde_json::to_value(&omitted).unwrap()).unwrap(),
@@ -485,6 +486,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         .unwrap();
     let readd = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         expected_revision: current.revision,
         package_evidence: serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
@@ -547,6 +549,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         .unwrap();
     let shrink = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         expected_revision: current.revision,
         package_evidence: serde_json::from_value(serde_json::to_value(&reduced).unwrap()).unwrap(),
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
@@ -563,6 +566,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     ));
     let detach = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         expected_revision: current.revision,
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..apply.clone()
@@ -691,6 +695,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         .unwrap();
     let restore = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         expected_revision: current.revision,
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..readd
@@ -763,6 +768,7 @@ blobs\"; ttl 0; }}{}",
         .unwrap();
     let change_kind = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         deployment_id: current.deployment_id,
         expected_revision: current.revision,
         package_evidence: serde_json::from_value(serde_json::to_value(changed_kind).unwrap())

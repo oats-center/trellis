@@ -10,6 +10,7 @@ mod builtin_live_provider;
 mod console;
 mod live_provider;
 mod state;
+mod webhooks;
 
 pub(crate) use builtin_live_provider::{
     connect_builtin_live_provider, prepare_builtin_live_provider, request_builtin_preparation,
@@ -201,8 +202,30 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .lock()
         .map_err(|_| RuntimeError::Platform("authorization store lock poisoned".into()))? =
         Some(store.clone());
-    // Sign-in and the Console share the Trellis listener.
-    context.register_http_router(router.merge(console::router(&context.config)?))?;
+    let (publisher, published) = tokio::sync::watch::channel(None);
+    let records_path = context
+        .stores
+        .platform()?
+        .path()
+        .with_file_name(crate::storage::WEBHOOKS_DATABASE);
+    let webhooks = webhooks::Webhooks::open(
+        engine.server.store().clone(),
+        &records_path,
+        context.trellis_nats.clone(),
+        published,
+        &context.config.public_origin(),
+        &context
+            .config
+            .resolve_console_origin()
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+    )
+    .await?;
+    // Sign-in, the Console, and webhook intake share the Trellis listener.
+    context.register_http_router(
+        router
+            .merge(console::router(&context.config)?)
+            .merge(webhooks.router()),
+    )?;
     let stop = StopHandle::new();
     let task_stop = stop.clone();
     let provider_store = store.clone();
@@ -217,6 +240,10 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         tasks.spawn(async move { callout.run(callout_stop).await });
         let preparation_stop = task_stop.clone();
         tasks.spawn(async move { preparation.run(preparation_stop).await });
+        let webhook_stop = task_stop.clone();
+        let webhook_changes = store.webhook_signal();
+        let webhook_runtime = webhooks.clone();
+        tasks.spawn(async move { webhook_runtime.run(webhook_changes, webhook_stop).await });
         let own_stop = task_stop.clone();
         tasks.spawn(async move {
             own_context
@@ -314,9 +341,11 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 () = provider_stop.stopped() => return Ok(()),
                 result = bootstrap::connect_platform_provider(
                     provider_store, provider_oauth, provider_operational, provider_servers,
-                    provider_roots, provider_server_name, &provider_seed,
+                    provider_roots, provider_server_name, &provider_seed, webhooks,
                 ) => result?,
             };
+            // Webhook intake publishes `Received` events as the platform.
+            publisher.send_replace(Some(provider.event_publisher()));
             let owner = provider.runtime_native_owner();
             let publisher = provider.event_publisher();
             let publications = async {

@@ -55,7 +55,9 @@ export type InstanceStatus = {
   /**
    * The effective health status and the checks failing in the current
    * heartbeat; absent while a connected instance has not reported on this
-   * connection.
+   * connection. A connected instance whose heartbeats on this connection
+   * stopped is `offline` with no failing checks, and `lastHeartbeat` says
+   * when its last one came.
    */
   readonly health?: {
     readonly status: string;
@@ -89,10 +91,12 @@ function reportedPhase(phase: string | undefined): InstanceState {
 
 /**
  * An instance that is not connected is offline. A connected one is in the
- * phase its latest heartbeat reports, when that heartbeat is current and came
- * on this connection. Before its first heartbeat it waits for its update's
- * approval, then for missing settings, and is otherwise starting. Its health
- * comes from that same current heartbeat; a disconnected instance is offline.
+ * phase its latest heartbeat on this connection reports. Before its first
+ * heartbeat it waits for its update's approval, then for missing settings,
+ * and is otherwise starting. Its health comes from that same heartbeat while
+ * it is current; once heartbeats stop, health is offline and the checks it
+ * last reported are no longer shown as failing now. A disconnected instance
+ * is offline.
  */
 export function instanceStatus(
   instance: ListedInstance,
@@ -100,25 +104,27 @@ export function instanceStatus(
   currentDigest: string | undefined,
 ): InstanceStatus {
   const connectedAt = instance.connectedAt;
-  const reporting =
+  // A report from an earlier connection says nothing about this one.
+  const reported =
     connectedAt !== undefined &&
     report !== undefined &&
-    report.effectiveStatus !== "offline" &&
     Date.parse(report.observedAt) >= Date.parse(connectedAt)
       ? report
       : undefined;
+  const reporting =
+    reported?.effectiveStatus === "offline" ? undefined : reported;
   const missingSettings = instance.waiting?.missingSettings ?? [];
   const state: InstanceState =
     connectedAt === undefined
       ? "offline"
-      : reporting
-        ? reportedPhase(reporting.latestSample.phase)
+      : reported
+        ? reportedPhase(reported.latestSample.phase)
         : instance.waiting?.update
           ? "waitingForApproval"
           : missingSettings.length > 0
             ? "waitingForSettings"
             : "starting";
-  const digest = reporting?.contractDigest ?? instance.participantDigest;
+  const digest = reported?.contractDigest ?? instance.participantDigest;
   const health =
     connectedAt === undefined
       ? { status: "offline", failingChecks: [] }
@@ -134,13 +140,15 @@ export function instanceStatus(
                 ...(error === undefined ? {} : { error }),
               })),
           }
-        : undefined;
+        : reported
+          ? { status: "offline", failingChecks: [] }
+          : undefined;
   return {
     state,
     health,
     build: {
       digest,
-      version: reporting?.latestSample.participant.version,
+      version: reported?.latestSample.participant.version,
       current: digest !== undefined && digest === currentDigest,
     },
     connectedAt,

@@ -463,7 +463,65 @@ fn resource_kind(resource: &trellis_idl::ResourceDefinition) -> &'static str {
         trellis_idl::ResourceDefinition::State { .. } => "state",
         trellis_idl::ResourceDefinition::Job { .. } => "job",
         trellis_idl::ResourceDefinition::Consumer { .. } => "eventConsumer",
+        trellis_idl::ResourceDefinition::Webhook { .. } => "webhook",
     }
+}
+
+/// A webhook endpoint described for the people approving it.
+pub(super) fn webhook_summary(
+    name: &str,
+    resource: &trellis_idl::ResourceDefinition,
+) -> Option<serde_json::Value> {
+    let trellis_idl::ResourceDefinition::Webhook { docs, endpoint } = resource else {
+        return None;
+    };
+    Some(json!({
+        "name": name,
+        "title": docs.title,
+        "mode": match endpoint.mode {
+            trellis_idl::WebhookMode::Async => "async",
+            trellis_idl::WebhookMode::Sync => "sync",
+        },
+        "methods": endpoint.methods,
+        "verifiers": endpoint
+            .verifiers
+            .iter()
+            .map(trellis_idl::webhook::describe_verifier)
+            .collect::<Vec<_>>(),
+        "decides": endpoint.decide.is_some(),
+        "unauthenticated": endpoint.verifiers.contains(&trellis_idl::WebhookVerifier::None),
+    }))
+}
+
+/// Webhook endpoints that check nothing are never approved by accident:
+/// whoever installs one, through any client, says they intend it.
+pub(super) fn require_webhooks_acknowledged(
+    unauthenticated: Vec<String>,
+    acknowledged: Option<bool>,
+) -> Result<(), AuthError> {
+    if unauthenticated.is_empty() || acknowledged == Some(true) {
+        return Ok(());
+    }
+    Err(AuthError::Invalid(format!(
+        "webhook endpoint {} checks nothing, so anyone who learns its URL can send it \
+        requests. Confirm with acknowledgeUnauthenticatedWebhooks only if that is intended",
+        unauthenticated.join(", ")
+    )))
+}
+
+/// The webhook endpoints of `definition` that declare `verify none`.
+pub(super) fn unauthenticated_webhooks(
+    definition: &trellis_idl::ParticipantDefinition,
+) -> Vec<String> {
+    definition
+        .resources()
+        .iter()
+        .filter(|(_, resource)| {
+            matches!(resource, trellis_idl::ResourceDefinition::Webhook { endpoint, .. }
+                if endpoint.verifiers.contains(&trellis_idl::WebhookVerifier::None))
+        })
+        .map(|(name, _)| name.to_string())
+        .collect()
 }
 
 /// Whether a redeclared resource asks for more than the old declaration: more
@@ -505,6 +563,8 @@ fn resource_grows(
         ) => (a, b, c) != (x, y, z),
         (R::Consumer { events: a, .. }, R::Consumer { events: b, .. }) => !b.is_subset(a),
         (R::State { .. }, R::State { .. }) | (R::Job { .. }, R::Job { .. }) => false,
+        // Anything but a webhook's title or description changes what reaches the service.
+        (R::Webhook { endpoint: a, .. }, R::Webhook { endpoint: b, .. }) => a != b,
         _ => true,
     }
 }
@@ -574,6 +634,12 @@ fn changes(
         }
     }
     let accepted_apis = apis_to_accept(connection, &candidate.graph, definition)?;
+    let webhooks: Vec<_> = added_resources
+        .iter()
+        .chain(&reattached_resources)
+        .chain(&changed_resources)
+        .filter_map(|key| webhook_summary(&key.1, resources[*key]))
+        .collect();
     let resource = |(kind, name): &&(String, String)| json!({"kind": kind, "name": name});
     Ok(serde_json::from_value(json!({
         "addedCapabilities": capabilities.difference(&current.capabilities).collect::<Vec<_>>(),
@@ -584,6 +650,7 @@ fn changes(
         "removedResources": removed_resources.iter().map(resource).collect::<Vec<_>>(),
         "addedApis": apis.difference(&current.apis).collect::<Vec<_>>(),
         "sharedApis": shared_apis,
+        "webhooks": webhooks,
         "removedApis": current.apis.difference(&apis).collect::<Vec<_>>(),
         "acceptedApis": accepted_apis,
         "acceptedUsedApis": used_apis_to_accept(connection, definition)?,
@@ -1058,7 +1125,8 @@ fn selected_capabilities(
             trellis_idl::ResourceDefinition::Job { .. } => {
                 selected.insert(JOB_HISTORY_CAPABILITY.into());
             }
-            trellis_idl::ResourceDefinition::Consumer { .. } => {
+            trellis_idl::ResourceDefinition::Consumer { .. }
+            | trellis_idl::ResourceDefinition::Webhook { .. } => {
                 selected.insert(CONSUMER_RUNTIME_CAPABILITY.into());
             }
             _ => {}
@@ -1166,6 +1234,15 @@ fn decide(
                         .map(|api| api.to_string())
                         .collect(),
                     input.acknowledge_shared_apis,
+                )?;
+                require_webhooks_acknowledged(
+                    changes
+                        .webhooks
+                        .iter()
+                        .filter(|webhook| webhook.unauthenticated)
+                        .map(|webhook| webhook.name.clone())
+                        .collect(),
+                    input.acknowledge_unauthenticated_webhooks,
                 )?;
                 SqliteAuthorizationStore::require_platform_for(
                     connection,
@@ -1433,6 +1510,15 @@ fn approve_claim(
             .map(|api| api.to_string())
             .collect(),
         input.acknowledge_shared_apis,
+    )?;
+    require_webhooks_acknowledged(
+        changes
+            .webhooks
+            .iter()
+            .filter(|webhook| webhook.unauthenticated)
+            .map(|webhook| webhook.name.clone())
+            .collect(),
+        input.acknowledge_unauthenticated_webhooks,
     )?;
     let (principal, public_key, title, instance_title): (String, String, String, String) =
         connection.query_row(

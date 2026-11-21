@@ -10,6 +10,8 @@ import type {
   RuntimeRpcErrorDesc,
   SchemaLike,
 } from "./api.ts";
+import { API as WEBHOOKS_API } from "../internal_sdk/generated/apis/webhooks/mod.js";
+import { webhookEventName } from "../webhooks.ts";
 import { eventDescriptorIdentity } from "./api.ts";
 import { lowerCamelSurfaceName, pascalSurfaceName } from "./surface_names.ts";
 import type { TrellisAvailability } from "../connection.ts";
@@ -82,7 +84,7 @@ export type GeneratedResourceDescriptor = Readonly<Record<string, unknown>> &
         version: number;
         migrations: Readonly<Record<number, GeneratedCodec>>;
       }>
-    | Readonly<{ kind: "store" | "job" | "consumer" }>
+    | Readonly<{ kind: "store" | "job" | "consumer" | "webhook" }>
   );
 
 /** Generated participant descriptor accepted by Trellis runtimes. */
@@ -533,6 +535,17 @@ export function getCallerRuntime(
         updateSchema: resource.update,
         result: resource.result,
       };
+    } else if (resource.kind === "webhook") {
+      // Each endpoint receives Trellis's `Received` event through its own
+      // durable consumer, filtered to that endpoint.
+      const received = WEBHOOKS_API.actions["event:Received"];
+      const event = webhookEventName(name);
+      addAction(usedApi, WEBHOOKS_API, received, event);
+      eventConsumers[name] = {
+        uses: { [WEBHOOKS_API.identity]: [event] },
+        replay: "all",
+        concurrency: (resource as { concurrency?: number }).concurrency ?? 1,
+      };
     } else if (resource.kind === "consumer") {
       const uses: Record<string, string[]> = {};
       for (const [api, event] of resource.events as readonly (readonly [
@@ -604,6 +617,7 @@ export function participantAvailability(
         resources[name] = resourceBindings.jobs?.queues[name] !== undefined;
         break;
       case "consumer":
+      case "webhook":
         resources[name] = resourceBindings.eventConsumers?.[name] !== undefined;
         break;
     }

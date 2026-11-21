@@ -215,7 +215,8 @@ pub(super) fn project_instance(
                             ResourceDefinition::State { .. } => kind == 0,
                             ResourceDefinition::Kv { .. } => kind == 1,
                             ResourceDefinition::Store { .. } => kind == 2,
-                            ResourceDefinition::Consumer { .. } => kind == 4,
+                            ResourceDefinition::Consumer { .. }
+                            | ResourceDefinition::Webhook { .. } => kind == 4,
                             _ => false,
                         }
                 })
@@ -243,7 +244,9 @@ pub(super) fn project_instance(
             ResourceDefinition::Kv { .. } => "kv",
             ResourceDefinition::Store { .. } => "store",
             ResourceDefinition::Job { .. } => "jobs",
-            ResourceDefinition::Consumer { .. } => "eventConsumers",
+            ResourceDefinition::Consumer { .. } | ResourceDefinition::Webhook { .. } => {
+                "eventConsumers"
+            }
         };
         let mut entries = resources.get_mut(group);
         if group == "jobs" {
@@ -299,6 +302,14 @@ pub(super) fn project_instance(
                             events: new_events, ..
                         },
                     ) => events == new_events,
+                    // A pinned build keeps receiving only while the endpoint is unchanged.
+                    (
+                        ResourceDefinition::Webhook { endpoint, .. },
+                        ResourceDefinition::Webhook {
+                            endpoint: new_endpoint,
+                            ..
+                        },
+                    ) => endpoint == new_endpoint,
                     _ => true,
                 }
         });

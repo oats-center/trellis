@@ -2081,6 +2081,7 @@ fn render_participant_types(
             | ResourceDefinition::Store { optional, .. }
             | ResourceDefinition::Job { optional, .. }
             | ResourceDefinition::Consumer { optional, .. } => *optional,
+            ResourceDefinition::Webhook { .. } => false,
         };
         lines.push(format!(
             "export type {exported}Resource = ResourceDescriptors[{}];",
@@ -2231,7 +2232,9 @@ fn participant_resource_packages(participant: &ParticipantDefinition) -> BTreeSe
                 packages.extend(result.iter().map(|value| value.package.as_str()));
                 packages.extend(update.iter().map(|value| value.package.as_str()));
             }
-            ResourceDefinition::Store { .. } | ResourceDefinition::Consumer { .. } => {}
+            ResourceDefinition::Store { .. }
+            | ResourceDefinition::Consumer { .. }
+            | ResourceDefinition::Webhook { .. } => {}
         }
     }
     fn named<'a>(value: &'a TypeExpression, packages: &mut BTreeSet<&'a str>) {
@@ -2355,6 +2358,24 @@ fn render_resource(resource: &ResourceDefinition, modules: &BTreeMap<String, Str
                 })
                 .unwrap_or_else(|| "undefined".into())
         ),
+        ResourceDefinition::Webhook { endpoint, .. } => format!(
+            "{{ kind: \"webhook\", availability: \"required\", mode: {}, decides: {}, \
+            concurrency: {}, retry: {} }}",
+            js_string(match endpoint.mode {
+                trellis_idl::WebhookMode::Async => "async",
+                trellis_idl::WebhookMode::Sync => "sync",
+            }),
+            endpoint.decide.is_some(),
+            endpoint.concurrency,
+            endpoint
+                .retry
+                .as_ref()
+                .map(|value| {
+                    serde_json::json!({"attempts":value.attempts,"backoffMs":value.backoff_ms})
+                        .to_string()
+                })
+                .unwrap_or_else(|| "undefined".into())
+        ),
     }
 }
 
@@ -2368,6 +2389,7 @@ fn render_resource_type(
         ResourceDefinition::Store { optional, .. } => ("store", optional),
         ResourceDefinition::Job { optional, .. } => ("job", optional),
         ResourceDefinition::Consumer { optional, .. } => ("consumer", optional),
+        ResourceDefinition::Webhook { .. } => ("webhook", &false),
     };
     let mut fields = vec![
         format!("readonly kind: {}", js_string(kind)),
@@ -2429,7 +2451,9 @@ fn render_resource_type(
                     .unwrap_or_else(|| "undefined".into())
             ));
         }
-        ResourceDefinition::Store { .. } | ResourceDefinition::Consumer { .. } => {}
+        ResourceDefinition::Store { .. }
+        | ResourceDefinition::Consumer { .. }
+        | ResourceDefinition::Webhook { .. } => {}
     }
     format!("{{ {} }}", fields.join("; "))
 }
@@ -2513,7 +2537,9 @@ fn participant_reachable_types(
                     collect_type(graph, reference, &mut result);
                 }
             }
-            ResourceDefinition::Store { .. } | ResourceDefinition::Consumer { .. } => {}
+            ResourceDefinition::Store { .. }
+            | ResourceDefinition::Consumer { .. }
+            | ResourceDefinition::Webhook { .. } => {}
         }
     }
     result

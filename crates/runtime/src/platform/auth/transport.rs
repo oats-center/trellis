@@ -447,6 +447,25 @@ impl SqliteAuthorizationStore {
                     publish.insert(format!("$JS.ACK.{stream}.{durable}.>"));
                 }
             }
+            // An instance whose build declares a webhook endpoint answers
+            // that endpoint's decide calls. Only Trellis publishes them.
+            if let SessionBinding::Service { deployment_id, .. } = &authority.binding {
+                let received =
+                    trellis_protocol::derive_event_subject("trellis.webhooks@v1", "Received")?;
+                for (name, consumer) in &resources.event_consumers {
+                    if consumer
+                        .filter_subjects
+                        .iter()
+                        .any(|subject| subject.starts_with(&format!("{received}.")))
+                    {
+                        subscribe.insert(crate::platform::webhooks::decide_subject(
+                            deployment_id,
+                            name,
+                        ));
+                        responds = true;
+                    }
+                }
+            }
         }
         let policy = TransportAuthorizationV1 {
             format: TRANSPORT_AUTHORIZATION_FORMAT_V1.into(),

@@ -1533,3 +1533,153 @@ fn settings_typed_by_imported_types_resolve_defaults_and_optionality() {
             .to_string();
     assert!(error.contains("does not match its type"), "{error}");
 }
+
+fn compile_webhook_service(body: &str) -> miette::Result<trellis_idl::PackageGraph> {
+    let trellis_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../builtin-contracts");
+    let trellis_manifest = read_manifest(&trellis_root.join("trellis.toml")).unwrap();
+    let trellis = compile_project(
+        &trellis_manifest,
+        load_sources(&trellis_root, &trellis_manifest).unwrap(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let mut root = manifest(&[("main", "main.trellis")]);
+    root.dependencies.insert(
+        "trellis".into(),
+        Dependency {
+            package: "trellis".into(),
+            version: None,
+            path: Some("../runtime".into()),
+            workspace: None,
+        },
+    );
+    compile_project(
+        &root,
+        vec![source(
+            "main",
+            "main.trellis",
+            &format!(
+                r#"service Billing {{
+  config signing {{ title "Signing"; description "Signing secret."; type string; secret; }}
+  config plain {{ title "Plain"; description "Not a secret."; type string; }}
+  config ranges {{ title "Ranges"; description "Sender ranges."; type list<string>; }}
+  {body}
+}}"#
+            ),
+        )],
+        BTreeMap::from([("trellis".into(), trellis)]),
+    )
+}
+
+const STRIPE: &str = r#"webhook stripe {
+    title "Stripe"; description "Payment events.";
+    verify hmac {
+      key config signing;
+      algorithm sha256;
+      signed "{timestamp}.{body}";
+      signature { header "Stripe-Signature"; separator ","; prefix "v1="; encoding hex; }
+      timestamp { header "Stripe-Signature"; separator ","; prefix "t="; format unix_seconds; tolerance 5m; }
+    }
+    verify address { ranges config ranges; }
+    dedupe "{header:Idempotency-Key}";
+  }"#;
+
+fn billing_digest(graph: &trellis_idl::PackageGraph) -> String {
+    let billing = graph.root_package().participants().keys().next().unwrap();
+    trellis_idl::participant_digest(graph, billing).unwrap()
+}
+
+#[test]
+fn webhook_endpoints_compile_round_trip_and_change_the_build() {
+    let graph = compile_webhook_service(STRIPE).unwrap();
+    let billing = graph.root_package().participants().values().next().unwrap();
+    let trellis_idl::ResourceDefinition::Webhook { endpoint, .. } = billing
+        .resources()
+        .iter()
+        .find(|(name, _)| name.as_str() == "stripe")
+        .unwrap()
+        .1
+    else {
+        panic!("stripe is a webhook");
+    };
+    assert_eq!(endpoint.mode, trellis_idl::WebhookMode::Async);
+    assert_eq!(endpoint.methods, ["POST"]);
+    assert_eq!(endpoint.verifiers.len(), 2);
+    let trellis_idl::WebhookVerifier::Hmac(hmac) = &endpoint.verifiers[0] else {
+        panic!("hmac first, in declared order");
+    };
+    assert_eq!(hmac.timestamp.as_ref().unwrap().tolerance_ms, 300_000);
+
+    // The canonical source of the endpoint recompiles to the same build.
+    let presentation =
+        canonical_package(&graph, graph.root(), CanonicalMode::Presentation).unwrap();
+    let start = presentation.find("  webhook stripe").unwrap();
+    let end = start + presentation[start..].find("\n  }\n").unwrap() + 4;
+    let reparsed = compile_webhook_service(&presentation[start..end]).unwrap();
+    assert_eq!(billing_digest(&reparsed), billing_digest(&graph));
+
+    // A title is presentation; a tolerance changes what reaches the service.
+    let retitled =
+        compile_webhook_service(&STRIPE.replace("\"Stripe\"", "\"Stripe payments\"")).unwrap();
+    assert_eq!(billing_digest(&retitled), billing_digest(&graph));
+    let tolerant =
+        compile_webhook_service(&STRIPE.replace("tolerance 5m", "tolerance 10m")).unwrap();
+    assert_ne!(billing_digest(&tolerant), billing_digest(&graph));
+}
+
+#[test]
+fn webhook_compile_rules_refuse_unsafe_declarations() {
+    let refused = |body: &str, expected: &str| {
+        let error = compile_webhook_service(body).unwrap_err().to_string();
+        assert!(error.contains(expected), "{expected}: {error}");
+    };
+    let endpoint = |members: &str| {
+        format!(r#"webhook hook {{ title "Hook"; description "A hook."; {members} }}"#)
+    };
+    // A key, token, or password names a secret setting of the same service.
+    refused(
+        &endpoint(r#"verify token { secret config plain; header "X-Token"; }"#),
+        "must be a secret setting",
+    );
+    refused(
+        &endpoint(r#"verify token { secret config missing; header "X-Token"; }"#),
+        "not a setting of this service",
+    );
+    refused(
+        &endpoint(r#"verify basic { username config plain; password config plain; }"#),
+        "must be a secret setting",
+    );
+    // An address check reads a plain list<string> setting.
+    refused(
+        &endpoint("verify address { ranges config signing; }"),
+        "plain list<string>",
+    );
+    // An endpoint checks something or says it does not.
+    refused(&endpoint(""), "verify none");
+    refused(
+        &endpoint(r#"verify none; verify token { secret config signing; query "t"; }"#),
+        "cannot be combined",
+    );
+    // Templates name only known placeholders, and a timestamp needs its block.
+    refused(
+        &endpoint(
+            r#"verify hmac { key config signing; algorithm sha256; signed "{bogus}"; signature { header "S"; } }"#,
+        ),
+        "unknown placeholder",
+    );
+    refused(
+        &endpoint(
+            r#"verify hmac { key config signing; algorithm sha256; signed "{timestamp}.{body}"; signature { header "S"; } }"#,
+        ),
+        "needs a timestamp block",
+    );
+    // Decide deadlines are bounded by mode.
+    refused(
+        &endpoint("mode sync; decide { deadline 11s; }"),
+        "at most 10 s",
+    );
+    compile_webhook_service(&endpoint("decide { deadline 60s; }")).unwrap();
+    refused(&endpoint("decide { deadline 61s; }"), "at most 60 s");
+    // `verify none` alone is a valid, explicit choice.
+    compile_webhook_service(&endpoint("verify none;")).unwrap();
+}

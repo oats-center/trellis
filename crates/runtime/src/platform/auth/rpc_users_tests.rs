@@ -637,7 +637,9 @@ async fn provider_put_names_the_issuer_when_it_is_not_an_https_url() {
 
 /// A custom authorization parameter must not replace one Auth sets itself:
 /// a second `redirect_uri` or `state` could send the code elsewhere or defeat
-/// the CSRF binding, depending on which copy the provider reads.
+/// the CSRF binding, depending on which copy the provider reads. A
+/// `response_mode` of `form_post` or `fragment` would deliver the code where
+/// the GET-only callback cannot read it.
 #[test]
 fn provider_put_refuses_custom_authorization_parameters_trellis_sets_itself() {
     let directory = tempfile::tempdir().unwrap();
@@ -690,6 +692,7 @@ fn provider_put_refuses_custom_authorization_parameters_trellis_sets_itself() {
             "set by Trellis",
         ),
         (vec![("state", "fixed")], "set by Trellis"),
+        (vec![("response_mode", "form_post")], "callback query"),
         (
             vec![("organization", "org_1"), ("organization", "org_2")],
             "more than once",

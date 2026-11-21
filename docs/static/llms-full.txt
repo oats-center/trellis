@@ -583,7 +583,9 @@ Upgrade by overlapping: run each process as its own instance, start the new
 build, wait until it serves, stop the old one. `trellis svc <ID> instances`
 (`--format json`) and the Console service page show each instance's build,
 whether it is current or older, its state, its health with the name and
-message of each failing check, connected-at and last heartbeat. A
+message of each failing check, connected-at and last heartbeat. A connected
+instance whose heartbeats stopped shows `offline` health beside the state it
+last reported. A
 build that drops an API or a resource such as a job queue the older build
 declares, or that replaces an API with its next major, stops older builds at
 once; add the new major beside the old one and drop the old one in a later
@@ -823,8 +825,8 @@ fresh sign-in), or `none` (no prompt; the provider may sign the person straight
 back in). Later sign-ins reuse the provider's session again. If the provider
 refuses the prompt (`login_required`, `interaction_required`,
 `consent_required`, `account_selection_required`, or `invalid_request` about
-`prompt`), the sign-in page names the setting and the browser's next try goes
-without the prompt.
+`prompt`), the sign-in page names the setting and the browser's next try with
+that provider goes without the prompt; other providers still get theirs.
 
 ### Authorization
 
@@ -928,7 +930,7 @@ such as `organization=<org id>` for an Auth0 application that requires an
 organization. At most 16, unique names of letters, digits, `-`, `_`, `.`;
 names Auth sets itself (`client_id`, `redirect_uri`, `response_type`, `scope`,
 `state`, `nonce`, `code_challenge`, `code_challenge_method`, `prompt`) are
-refused. Auth does not check the ID token against them (an Auth0 `org_id` is
+refused, and so is `response_mode`, because the callback reads only the query. Auth does not check the ID token against them (an Auth0 `org_id` is
 not verified). `disable` and
 `enable` (`Auth.OIDCProviders.Disable/Enable`) turn a provider off and back on.
 People can create their
@@ -1379,6 +1381,31 @@ declaration with its client using `trellis clients add|edit --source PATH
 [--app ID]` (or `clients put FILE --source PATH`) and change values with `trellis clients config CLIENT`. Attach
 each new build's declaration the same way; connected apps follow changed
 defaults live.
+
+#### Webhooks
+
+A service receives HTTP webhooks by declaring `webhook NAME { ... }` instead of
+running its own listener; the package needs a direct `trellis` dependency for
+`trellis.webhooks@v1`. Trellis serves each endpoint at
+`https://<origin>/webhooks/<service name>/<random id>`, checks requests with
+the declared verifiers (`verify hmac { key config SECRET; algorithm sha256;
+signed "{timestamp}.{body}"; signature { header "..."; ... } timestamp { ...
+tolerance 5m; } }`, `verify token`, `verify basic`, `verify address`, or an
+explicit `verify none;`), and delivers accepted requests as `Received` events
+(`WebhookDelivery`, body byte for byte) through the endpoint's own durable
+consumer. Keys, tokens, and passwords name `secret` settings of the same
+service; set them with `trellis svc <name> config set-secret`. `mode async`
+(the default) stores, answers 2xx at once, and verifies afterwards; `mode
+sync` verifies first and can return the service's decide-handler response,
+for handshakes. `decide { deadline 2s; }` lets the service accept, ignore, or
+reject after the standard verifiers. `dedupe "{header:...}"` drops the
+sender's retries on a best-effort basis; handlers must still be idempotent.
+Every member but title and description is part of the build and needs
+approval; `verify none` also needs `--acknowledge-unauthenticated-webhooks`.
+Watch and operate endpoints with `trellis svc <name> webhooks [<endpoint>]`,
+`... attempts`, `... attempt <id> [--body]`, `... reverify <id>`, `...
+enable|disable|rotate-url|retire-url`, and `... set <setting> <value>`. Tests
+send real HTTPS requests to the URL `Webhooks.Endpoints.List` returns.
 
 #### Resource lifecycle
 
@@ -1944,6 +1971,19 @@ defaults. In the testkit, `runtime.services.createInstance({ ..., config: {
 values, secrets } })` stores initial values through `Auth.Config.Set`, and
 `runtime.registerClient` attaches an app's declaration to its client.
 
+#### Webhooks
+
+Each declared webhook endpoint is `service.webhooks.NAME`.
+`onReceived(({ event }) => ...)` handles accepted requests; `event.body` is a
+`Uint8Array`, and serving starts with `service.wait()`. `decide((request) =>
+({ verdict: "accept" | "ignore" | "reject", response?, dedupeKey? }))`
+answers an endpoint that declares `decide`. `@oatscenter/trellis/service`
+exports `webhookHmac`, `verifyWebhookHmac`, `webhookEqual`,
+`withinWebhookWindow`, and `webhookResponse({ status, contentType, body })`,
+and the `WebhookDelivery`, `WebhookDecideRequest`, and `WebhookDecision`
+types. In the testkit, `runtime.callAdminRpc("webhooksEndpointsList", {
+service: deploymentId })` returns each endpoint's URL.
+
 #### SQL outbox
 
 When SQL writes and event/job intents need one atomic commit, configure
@@ -2435,6 +2475,17 @@ don't fit its types, never reach `changed()`. `connect` returns only once every
 required field has a value that fits. Rust native apps have no settings handle.
 In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
 stores values through `Auth.Config.Set`.
+
+#### Webhooks
+
+The generated provider has one method per webhook endpoint returning
+`trellis_rs::client::WebhookHandle`. `subscribe()` streams accepted
+`WebhookDelivery` values from the endpoint's durable consumer;
+`decide(|request| async { Ok::<_, E>(decision) })` answers decide calls until
+the returned `WebhookDecideHandle` is dropped. `webhook_hmac`,
+`verify_webhook_hmac`, `webhook_equal`, `within_webhook_window`, and
+`webhook_response` help decide handlers; the Rust helpers cover SHA-256 and
+SHA-512.
 
 #### Transfers
 

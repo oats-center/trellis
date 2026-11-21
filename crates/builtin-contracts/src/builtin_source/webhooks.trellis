@@ -1,0 +1,240 @@
+/// One request header or form field.
+model WebhookField { name: string; value: string; }
+
+/// A check a request passed.
+enum WebhookCheckKind { "hmac"; "token"; "basic"; "address"; "none"; "decide"; }
+
+/// A check a request passed, and which secret it matched.
+model WebhookCheck {
+  kind: WebhookCheckKind;
+  /// "current" or "previous" for a check that uses a secret.
+  key: string | null;
+}
+
+/// A webhook request that passed verification, exactly as Trellis received it.
+model WebhookDelivery {
+  /// Unique ID of this request; also the event's ID.
+  deliveryId: ulid;
+  /// The service deployment that declared the endpoint.
+  service: string;
+  /// The endpoint's name in the service's IDL.
+  endpoint: string;
+  receivedAt: timestamp;
+  clientAddress: string;
+  method: string;
+  /// The Trellis origin plus the path and query exactly as received, without a credential.
+  url: string;
+  /// Request headers in order, with lowercase names and without credentials.
+  headers: list<WebhookField>;
+  contentType: string | null;
+  /// The body as received, or after decoding its content encoding.
+  body: bytes;
+  bodySha256: string;
+  checks: list<WebhookCheck>;
+  dedupeKey: string | null;
+}
+
+/// When Trellis answers the sender.
+enum WebhookMode { "async"; "sync"; }
+
+/// What the service's decide handler concluded.
+enum WebhookVerdict { "accept"; "ignore"; "reject"; }
+
+/// What Trellis sends a service's decide handler.
+model WebhookDecideRequest {
+  delivery: WebhookDelivery;
+  mode: WebhookMode;
+  /// 1 for the first call. Async decide calls are retried.
+  attempt: uint32;
+  deadline: timestamp;
+}
+
+/// An HTTP response a decide handler gives the sender in sync mode.
+model WebhookResponse { status: uint32; headers: list<WebhookField>; body: bytes; }
+
+/// A decide handler's answer.
+model WebhookDecision {
+  verdict: WebhookVerdict;
+  /// Sent to the sender in sync mode. Ignored in async mode.
+  response?: WebhookResponse;
+  /// Recorded with the request. Never sent to the sender.
+  reason?: string;
+  /// Replaces the declared dedupe key, for senders that put their ID in the body.
+  dedupeKey?: string;
+}
+
+/// What became of a request.
+enum WebhookOutcome {
+  "accepted";
+  "ignored";
+  "duplicate";
+  "pending";
+  "rejected";
+  "limited";
+  "unavailable";
+  "invalid_decision";
+  "expired";
+}
+
+/// An endpoint's runtime settings, as the deployment set them or as they default.
+model WebhookSettings {
+  requestsPerSecond: uint32;
+  burst: uint32;
+  failuresPerMinute: uint32;
+  maxBodyBytes: uint64;
+  dedupeWindowMs: uint64;
+  syncDecideDeadlineMs: uint64;
+  asyncDecideDeadlineMs: uint64;
+  rotationOverlapMs: uint64;
+  recordRetentionMs: uint64;
+  intakeRetentionMs: uint64;
+  intakeMaxBytes: uint64;
+}
+
+/// A secret an endpoint verifies with.
+model WebhookSecretStatus {
+  /// The setting's name.
+  name: string;
+  isSet: bool;
+  /// When the previous value stops being accepted, while it still is.
+  previousAcceptedUntil: timestamp | null;
+  /// When a request last matched the previous value.
+  previousLastMatchedAt: timestamp | null;
+}
+
+/// Requests an endpoint received recently, by outcome.
+model WebhookOutcomeCount { outcome: WebhookOutcome; count: uint64; }
+
+/// One endpoint a service declared.
+model WebhookEndpoint {
+  service: string;
+  endpoint: string;
+  title: string;
+  description: string;
+  /// The URL senders use.
+  url: string;
+  /// Earlier URLs that still work until retired.
+  previousUrls: list<string>;
+  enabled: bool;
+  mode: WebhookMode;
+  methods: list<string>;
+  /// The verifiers in plain words.
+  verifiers: list<string>;
+  decides: bool;
+  unauthenticated: bool;
+  secrets: list<WebhookSecretStatus>;
+  settings: WebhookSettings;
+  /// Requests in the last 24 hours, by outcome.
+  recent: list<WebhookOutcomeCount>;
+}
+
+model WebhooksEndpointsListRequest { service?: string; }
+model WebhooksEndpointsListResponse { endpoints: list<WebhookEndpoint>; }
+
+/// The record Trellis keeps of one request.
+model WebhookAttempt {
+  attemptId: ulid;
+  service: string;
+  endpoint: string;
+  receivedAt: timestamp;
+  clientAddress: string;
+  method: string;
+  bodySize: uint64;
+  bodySha256: string;
+  outcome: WebhookOutcome;
+  /// Names only the failed check, never a value.
+  reason: string | null;
+  /// "current" or "previous" when a secret matched.
+  matchedKey: string | null;
+  verdict: WebhookVerdict | null;
+  status: uint32 | null;
+  /// The `Received` event's ID, once one was published.
+  deliveryId: ulid | null;
+  /// Whether the stored request can still be verified again.
+  stored: bool;
+}
+
+model WebhooksAttemptsQueryRequest {
+  service: string;
+  endpoint?: string;
+  outcome?: WebhookOutcome;
+  since?: timestamp;
+  /// Return records older than this one.
+  before?: ulid;
+  limit?: uint32;
+}
+model WebhooksAttemptsQueryResponse { attempts: list<WebhookAttempt>; next: ulid | null; }
+
+model WebhooksAttemptsInspectRequest { attemptId: ulid; }
+model WebhooksAttemptsInspectResponse {
+  attempt: WebhookAttempt;
+  /// The stored request, while the intake stream still holds it.
+  delivery: WebhookDelivery | null;
+}
+
+model WebhooksAttemptsReverifyRequest { attemptId: ulid; }
+model WebhooksAttemptsReverifyResponse { attempt: WebhookAttempt; }
+
+model WebhooksErrorData { message: string; }
+
+api webhooks@v1 {
+  title "Trellis Webhooks";
+  description "Webhook endpoints services declare, and the requests Trellis received for them.";
+  version "1.0.0";
+  error NotFoundError(WebhooksErrorData);
+  error Unavailable(WebhooksErrorData);
+  error UnexpectedError;
+  error ValidationError;
+  /// A request to an endpoint passed verification.
+  event Received { payload WebhookDelivery; params [service, endpoint]; }
+  /// List webhook endpoints, their URLs, and recent requests.
+  rpc Endpoints.List {
+    input WebhooksEndpointsListRequest;
+    output WebhooksEndpointsListResponse;
+    errors [UnexpectedError, ValidationError];
+  }
+  /// List request records, newest first, without bodies.
+  rpc Attempts.Query {
+    input WebhooksAttemptsQueryRequest;
+    output WebhooksAttemptsQueryResponse;
+    errors [NotFoundError, UnexpectedError, ValidationError];
+  }
+  /// Get one request record with its headers and body.
+  rpc Attempts.Inspect {
+    input WebhooksAttemptsInspectRequest;
+    output WebhooksAttemptsInspectResponse;
+    errors [NotFoundError, UnexpectedError, ValidationError];
+  }
+  /// Verify a stored request again with the current verifiers and secrets.
+  rpc Attempts.Reverify {
+    input WebhooksAttemptsReverifyRequest;
+    output WebhooksAttemptsReverifyResponse;
+    errors [NotFoundError, Unavailable, UnexpectedError, ValidationError];
+  }
+  /// What the service's decide handler receives. Trellis never serves it.
+  rpc Decide {
+    input WebhookDecideRequest;
+    output WebhookDecision;
+    errors [UnexpectedError, ValidationError];
+  }
+  capabilities {
+    capability attempts.query {
+      title "See webhook requests";
+      description "List webhook endpoints and the requests they received, without bodies.";
+      grants "Can see webhook endpoints and request outcomes.";
+      allows { rpc Endpoints.List; rpc Attempts.Query; }
+    }
+    capability attempts.inspect {
+      title "Open webhook requests";
+      description "See request bodies and header values.";
+      grants "Can see webhook data, which may hold personal or payment details.";
+      allows { rpc Attempts.Inspect; }
+    }
+    capability attempts.reverify {
+      title "Verify webhook requests again";
+      description "Run a stored request through verification again.";
+      grants "A request may reach its service after all.";
+      allows { rpc Attempts.Reverify; }
+    }
+  }
+}
