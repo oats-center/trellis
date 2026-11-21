@@ -11,6 +11,8 @@ mod broker;
 mod catalog;
 mod config;
 mod deployments;
+mod instances;
+pub(crate) use instances::STARTUP_QUIET_SECONDS;
 mod framework_storage;
 mod initialization;
 pub(crate) use initialization::{console_registration, CONSOLE_CLIENT_ID};

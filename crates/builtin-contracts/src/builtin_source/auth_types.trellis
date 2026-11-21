@@ -1038,13 +1038,34 @@ model AuthServiceUpdateDecideRequest {
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }
-enum AuthInstanceState { active; disabled; removed; }
+/// `removed`: an administrator removed it. `retired`: Trellis retired it
+/// automatically (see `retiredReason`). Neither can connect or be turned on again.
+enum AuthInstanceState { active; disabled; removed; retired; }
+enum AuthInstanceOriginKind { provisioned; enrolled; }
+/// How an instance came to exist: an administrator provisioned it, or a
+/// process enrolled it with an enrollment secret.
+model AuthInstanceOrigin {
+  kind: AuthInstanceOriginKind;
+  /// The enrollment secret that created it.
+  secretId?: ulid;
+  secretTitle?: AuthName;
+}
+/// Why Trellis retired an instance: `offline` past the retirement period,
+/// `stopped` (it retired itself at a graceful stop), `replaced` (its secret was
+/// at its cap and a new enrollment took its place), or `secretRevoked` (its
+/// secret was revoked with `retireInstances`).
+enum AuthRetiredReason { offline; stopped; replaced; secretRevoked; }
 model AuthProvisionedInstance {
   instanceId: ulid;
   principal: AuthPrincipal;
   deploymentId: ulid;
-  /// `removed` instances keep their record but can never connect or be turned on again.
+  /// `removed` and `retired` instances keep their record for a while but can never connect or be turned on again.
   state: AuthInstanceState;
+  origin: AuthInstanceOrigin;
+  /// When one of its connections was last admitted or closed. Absent until it first connects.
+  lastSeenAt?: timestamp;
+  retiredAt?: timestamp;
+  retiredReason?: AuthRetiredReason;
   /// Whether the instance runs the deployment's installed build. One that does not cannot be turned on until it connects with that build.
   upToDate: bool;
   identityPublicKey?: AuthPublicKey;
@@ -1085,6 +1106,171 @@ model AuthInstanceMutationRequest {
   idempotencyKey: AuthIdempotencyKey;
 }
 model AuthInstanceMutationResponse { instance: AuthProvisionedInstance; enforcement?: AuthEnforcementProgress; }
+
+type AuthEnrollmentLimit = uint32(min=1, max=1000000);
+type AuthRetirementSeconds = uint32(min=3600);
+type AuthRecordDays = uint32(min=1, max=36500);
+type AuthGraceSeconds = uint32(max=86400);
+type AuthEnrollmentSecretText = string(min_length=1, max_length=256);
+/// A secret that lets the processes holding it register themselves as new
+/// instances of one deployment. Only its hash is kept.
+model AuthEnrollmentSecret {
+  secretId: ulid;
+  deploymentId: ulid;
+  title: AuthName;
+  /// After this it creates no more instances. Absent: it works until revoked.
+  expiresAt?: timestamp;
+  /// The most instances it may have at once, counting those not retired or removed.
+  maxInstances: AuthEnrollmentLimit;
+  /// The most new instances it may create in any hour.
+  enrollmentsPerHour: AuthEnrollmentLimit;
+  /// Its instances may only run the deployment's installed build: their own updates are refused.
+  currentBuildOnly: bool;
+  /// Instances it created that are not retired or removed.
+  instances: uint64;
+  createdAt: timestamp;
+  /// When it last created an instance.
+  lastUsedAt?: timestamp;
+  revokedAt?: timestamp;
+  revision: AuthRevision;
+  /// What went wrong with it in the last 24 hours. Empty when nothing did.
+  alerts: list<AuthEnrollmentAlert>;
+}
+/// `revokedUsed` and `expiredUsed`: someone presented it after it stopped
+/// working, so a copy is still out there. `instanceLimit` and `rateLimited`: it
+/// hit its cap or hourly rate. `participantMismatch` and `buildMismatch`: a
+/// process of another service, or with another build, presented it.
+enum AuthEnrollmentAlertKind { revokedUsed; expiredUsed; instanceLimit; rateLimited; participantMismatch; buildMismatch; }
+model AuthEnrollmentAlert {
+  kind: AuthEnrollmentAlertKind;
+  count: uint64;
+  lastAt: timestamp;
+}
+model AuthEnrollmentSecretIssueRequest {
+  deploymentId: ulid;
+  title: AuthName;
+  expiresAt?: timestamp;
+  /// Absent takes the installation's `secretMaxInstances`.
+  maxInstances?: AuthEnrollmentLimit;
+  /// Absent takes the installation's `secretEnrollmentsPerHour`.
+  enrollmentsPerHour?: AuthEnrollmentLimit;
+  currentBuildOnly?: bool;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthEnrollmentSecretIssueResponse {
+  secret: AuthEnrollmentSecret;
+  /// The secret, shown only in the first response. Trellis keeps only its
+  /// hash, so a repeated request with the same idempotency key returns the
+  /// record without it.
+  text?: string;
+}
+model AuthEnrollmentSecretsListRequest { deploymentId: ulid; page?: CursorQuery; }
+type AuthEnrollmentSecretsListResponse = CursorPage<AuthEnrollmentSecret>;
+/// Replaces the secret's title and limits; an absent `expiresAt` means it never expires.
+model AuthEnrollmentSecretUpdateRequest {
+  secretId: ulid;
+  title: AuthName;
+  expiresAt?: timestamp;
+  maxInstances: AuthEnrollmentLimit;
+  enrollmentsPerHour: AuthEnrollmentLimit;
+  currentBuildOnly: bool;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthEnrollmentSecretResponse { secret: AuthEnrollmentSecret; }
+model AuthEnrollmentSecretRevokeRequest {
+  secretId: ulid;
+  /// Also retire every instance the secret created, which disconnects them.
+  retireInstances?: bool;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthEnrollmentSecretRevokeResponse {
+  secret: AuthEnrollmentSecret;
+  /// Instances retired with the secret.
+  retiredInstances: uint64;
+  /// Connections of those instances that were still open when the revocation
+  /// committed. Trellis closes them through its enforcement pipeline.
+  closingConnections: uint64;
+}
+/// The installation's rules for enrolled and offline instances.
+model AuthInstallationInstancePolicy {
+  /// Whether instances offline longer than `retireOfflineAfterSeconds` are retired.
+  retireOffline: bool;
+  retireOfflineAfterSeconds: AuthRetirementSeconds;
+  /// Whether provisioned instances are retired too, not only enrolled ones.
+  retireProvisioned: bool;
+  /// Days a retired or removed instance's record is kept.
+  retiredRecordDays: AuthRecordDays;
+  /// How long a just-enrolled instance that has not connected yet is protected from replacement.
+  firstConnectGraceSeconds: AuthGraceSeconds;
+  /// The instance cap a new secret takes.
+  secretMaxInstances: AuthEnrollmentLimit;
+  /// The hourly rate a new secret takes.
+  secretEnrollmentsPerHour: AuthEnrollmentLimit;
+}
+/// One deployment's own retirement rules. An absent field follows the installation.
+model AuthDeploymentInstancePolicy {
+  retireOffline?: bool;
+  retireOfflineAfterSeconds?: AuthRetirementSeconds;
+  retireProvisioned?: bool;
+}
+/// The retirement rules that apply to one deployment.
+model AuthEffectiveInstancePolicy {
+  retireOffline: bool;
+  retireOfflineAfterSeconds: AuthRetirementSeconds;
+  retireProvisioned: bool;
+}
+model AuthInstancePolicyGetRequest { deploymentId?: ulid; }
+model AuthInstancePolicyResponse {
+  installation: AuthInstallationInstancePolicy;
+  /// With `deploymentId`: what the deployment sets itself.
+  deployment?: AuthDeploymentInstancePolicy;
+  /// With `deploymentId`: what applies to it.
+  effective?: AuthEffectiveInstancePolicy;
+}
+/// Without `deploymentId`, replaces the installation's rules with
+/// `installation`. With it, replaces the deployment's own rules with
+/// `deployment` (absent clears them).
+model AuthInstancePolicySetRequest {
+  deploymentId?: ulid;
+  installation?: AuthInstallationInstancePolicy;
+  deployment?: AuthDeploymentInstancePolicy;
+  idempotencyKey: AuthIdempotencyKey;
+}
+/// Sent to `POST /auth/service/enroll` by a process that holds an enrollment
+/// secret. `proof` is the new identity key's signature over the rest.
+model AuthServiceEnrollmentRequest {
+  requestId: ulid;
+  iat: AuthDeviceProofIssuedAt;
+  enrollmentSecret: AuthEnrollmentSecretText;
+  identityKeyId: AuthDigest;
+  identityPublicKey: AuthPublicKey;
+  participantId: string;
+  participantDigest: AuthDigest;
+  title: AuthName;
+  proof: AuthDeviceProof;
+}
+model AuthServiceEnrollmentResponse {
+  instanceId: ulid;
+  deploymentId: ulid;
+  title: AuthName;
+}
+/// Sent to `POST /auth/service/identity` by a process that holds an identity
+/// key, to learn what became of it. `proof` is the key's signature over the rest.
+model AuthServiceIdentityStatusRequest {
+  requestId: ulid;
+  iat: AuthDeviceProofIssuedAt;
+  identityKeyId: AuthDigest;
+  identityPublicKey: AuthPublicKey;
+  proof: AuthDeviceProof;
+}
+/// `removed`: an administrator removed its instance; the process should stop.
+/// `retired` or `unregistered`: the key will never connect, so a process with an
+/// enrollment secret enrolls a new one. `active` and `disabled`: the key is
+/// still registered.
+enum AuthServiceIdentityState { active; disabled; removed; retired; unregistered; }
+model AuthServiceIdentityStatusResponse { state: AuthServiceIdentityState; }
 type AuthDeviceConfirmationCode = string(min_length=8, max_length=8);
 type AuthDeviceProvisioningSecret = string(min_length=43, max_length=43);
 /// JSON-number Unix milliseconds; the session-proof verifier also requires an integer.

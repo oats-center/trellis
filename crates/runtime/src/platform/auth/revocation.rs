@@ -473,6 +473,7 @@ impl SqliteAuthorizationStore {
                 &attachment.attachment_id,
                 now,
             )?;
+            super::instances::seen(connection, &attachment.authorization_session_id, now)?;
             Ok(Ok((attachment, policy)))
         })?
     }
@@ -487,7 +488,7 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<(), AuthError> {
         self.transaction(|connection| {
-            let closed: Option<String> = connection
+            let closed: Option<(String, String)> = connection
                 .query_row(
                     "UPDATE auth_attachments \
                     SET state='closed',closed_at=?1 \
@@ -495,17 +496,18 @@ impl SqliteAuthorizationStore {
                     AND (broker_user_nkey=?4 \
                     OR ?4='trellis.auth.v1:'||attachment_id) \
                     AND state IN ('pending','admitted') \
-                    RETURNING attachment_id",
+                    RETURNING attachment_id,authorization_session_id",
                     params![now, server, cid, nkey],
-                    |row| row.get(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?;
-            if let Some(attachment) = closed {
+            if let Some((attachment, session)) = closed {
                 enqueue_attachment_event::<events::ConnectionsClosed>(
                     connection,
                     &attachment,
                     now,
                 )?;
+                super::instances::seen(connection, &session, now)?;
             }
             Ok(())
         })
@@ -708,6 +710,9 @@ impl SqliteAuthorizationStore {
                         enqueue_attachment_event::<events::ConnectionsClosed>(
                             connection, attachment, now,
                         )?;
+                        if let Some(session) = effect.payload["authorizationSessionId"].as_str() {
+                            super::instances::seen(connection, session, now)?;
+                        }
                     }
                     if connection.execute(
                         "UPDATE auth_attachments \
