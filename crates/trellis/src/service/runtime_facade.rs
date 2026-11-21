@@ -192,6 +192,16 @@ impl Drop for ServiceEventListenerRegistryCleanup {
 /// Default request/connect timeout for service bootstrap and NATS RPC calls.
 pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 
+/// The identity a service connects with.
+#[derive(Clone, Debug)]
+enum ServiceIdentity<'a> {
+    /// A base64url-encoded provisioned identity seed.
+    Seed(&'a str),
+    /// Enroll a new instance with an enrollment secret.
+    #[cfg(feature = "http")]
+    Enroll(Box<super::enrollment::Enrollment>),
+}
+
 /// High-level options for connecting a generated Rust service runtime.
 #[derive(Clone)]
 pub struct ServiceConnectOptions<'a> {
@@ -201,8 +211,8 @@ pub struct ServiceConnectOptions<'a> {
     trust: crate::client::RuntimeAuthorizationTrust,
     /// Optional display metadata; never an assignment or authorization identity.
     name: Option<&'a str>,
-    /// Base64url-encoded provisioned service identity seed.
-    provisioned_identity_seed_base64url: &'a str,
+    /// A provisioned seed, or how to enroll a new instance.
+    identity: ServiceIdentity<'a>,
     /// Request/connect timeout in milliseconds.
     timeout_ms: u64,
     /// Health heartbeat interval override; absence preserves the production default.
@@ -224,12 +234,74 @@ impl<'a> ServiceConnectOptions<'a> {
             nats_servers,
             trust,
             name: None,
-            provisioned_identity_seed_base64url,
+            identity: ServiceIdentity::Seed(provisioned_identity_seed_base64url),
             timeout_ms: DEFAULT_TIMEOUT_MS,
             health_heartbeat_interval_ms: None,
             lifecycle: super::lifecycle::LifecycleOptions::default(),
             owns_process: true,
         }
+    }
+
+    /// Connect as a new instance that enrolls itself with its deployment's
+    /// enrollment secret, instead of a provisioned seed. `origin` is the
+    /// Trellis origin the installation was discovered at (the discovered
+    /// `issuer`).
+    ///
+    /// The secret comes from [`Self::with_enrollment_secret`], or else from
+    /// `TRELLIS_ENROLLMENT_SECRET`. Without [`Self::with_key_file`] the key
+    /// lives in memory only: every start enrolls a new instance, which retires
+    /// itself when the service stops gracefully.
+    #[cfg(feature = "http")]
+    pub fn enrolling(
+        nats_servers: Vec<String>,
+        trust: crate::client::RuntimeAuthorizationTrust,
+        origin: impl Into<String>,
+    ) -> Self {
+        let mut options = Self::new(nats_servers, trust, "");
+        options.identity = ServiceIdentity::Enroll(Box::new(super::enrollment::Enrollment {
+            origin: origin.into(),
+            secret: None,
+            key_file: None,
+            title: None,
+        }));
+        options
+    }
+
+    /// The enrollment secret for an [`Self::enrolling`] service. Has no effect
+    /// on a provisioned seed.
+    #[cfg(feature = "http")]
+    #[must_use]
+    pub fn with_enrollment_secret(mut self, secret: impl Into<String>) -> Self {
+        if let ServiceIdentity::Enroll(enrollment) = &mut self.identity {
+            enrollment.secret = Some(secret.into());
+        }
+        self
+    }
+
+    /// Keep an [`Self::enrolling`] service's identity key in this file, so
+    /// the process keeps its instance across restarts. On start it connects
+    /// with the stored key first and retries transient failures; it enrolls a
+    /// new key only when Auth reports the stored one retired or unknown, and
+    /// it stops with [`ServiceRuntimeError::InstanceRemoved`] when an
+    /// administrator removed its instance.
+    #[cfg(feature = "http")]
+    #[must_use]
+    pub fn with_key_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        if let ServiceIdentity::Enroll(enrollment) = &mut self.identity {
+            enrollment.key_file = Some(path.into());
+        }
+        self
+    }
+
+    /// Title an [`Self::enrolling`] service's new instance; the host name by
+    /// default.
+    #[cfg(feature = "http")]
+    #[must_use]
+    pub fn with_instance_title(mut self, title: impl Into<String>) -> Self {
+        if let ServiceIdentity::Enroll(enrollment) = &mut self.identity {
+            enrollment.title = Some(title.into());
+        }
+        self
     }
 
     /// Run as part of a host process that owns its own signals and readiness,
@@ -326,6 +398,33 @@ pub enum ServiceRuntimeError {
         deployment's current build"
     )]
     BuildRetired,
+
+    /// An administrator removed the instance whose key is in this key file.
+    /// The process does not enroll again on its own.
+    #[error(
+        "an administrator removed the instance whose key is in {}; this process will not \
+        enroll again on its own",
+        key_file.display()
+    )]
+    InstanceRemoved {
+        /// The key file of the removed instance.
+        key_file: std::path::PathBuf,
+    },
+
+    /// Trellis retired this enrolled instance, or an administrator removed
+    /// it, while it was disconnected: its key can never connect again.
+    /// Starting the process again enrolls a new instance while its secret
+    /// is still valid.
+    #[error(
+        "this instance was retired or removed while it was disconnected; start the process \
+        again to enroll a new instance"
+    )]
+    InstanceRetired,
+
+    /// An enrolling service has neither a usable stored key nor an
+    /// enrollment secret.
+    #[error("no enrollment secret was given (set TRELLIS_ENROLLMENT_SECRET)")]
+    EnrollmentSecretMissing,
 
     /// An administrator rejected this build's participant update.
     #[error("an administrator rejected this build's update ({review})")]
@@ -1485,6 +1584,13 @@ pub struct ConnectedServiceRuntime<C> {
     event_drain: EventDrain,
     /// Whether `run` stops on SIGTERM and Ctrl-C.
     handle_signals: bool,
+    /// Whether a graceful stop retires the instance: its key lives only in
+    /// this process.
+    retire_on_stop: bool,
+    /// For an enrolled instance, where to ask whether its key still exists
+    /// while it cannot connect: the origin, trust roots, and seed.
+    #[cfg(feature = "http")]
+    enrolled_key: Option<(String, Vec<std::path::PathBuf>, String)>,
     _contract: PhantomData<C>,
 }
 
@@ -1556,6 +1662,9 @@ impl<C> ConnectedServiceRuntime<C> {
             lifecycle,
             event_drain: EventDrain::default(),
             handle_signals: true,
+            retire_on_stop: false,
+            #[cfg(feature = "http")]
+            enrolled_key: None,
             _contract: PhantomData,
         }
     }
@@ -2074,6 +2183,7 @@ impl<C> ConnectedServiceRuntime<C> {
         let client = Arc::clone(&self.client);
         let event_drain = self.event_drain.clone();
         let handle_signals = self.handle_signals;
+        let retire_on_stop = self.retire_on_stop;
         let mut event_failures = self.event_failure_receiver;
         let subjects: std::sync::Arc<[String]> = self
             .registered_subjects
@@ -2157,8 +2267,49 @@ impl<C> ConnectedServiceRuntime<C> {
             }
             event_drain.attached().await;
         };
+        // An enrolled instance that cannot reconnect may have been retired
+        // while it was away; its key then never connects again.
+        #[cfg(feature = "http")]
+        let enrolled_key = self.enrolled_key.clone();
+        let mut publication = client.subscribe_transport_publication();
+        let ended_identity = async move {
+            #[cfg(feature = "http")]
+            if let Some((origin, roots, seed)) = enrolled_key {
+                loop {
+                    if publication.borrow_and_update().is_none() {
+                        let reconnected = tokio::time::timeout(
+                            Duration::from_secs(5),
+                            publication.wait_for(Option::is_some),
+                        )
+                        .await
+                        .map(|reconnected| reconnected.is_ok());
+                        if reconnected.is_err() {
+                            use super::enrollment::IdentityState;
+                            if let Ok(IdentityState::Retired | IdentityState::Removed) =
+                                super::enrollment::identity_state(&origin, &roots, &seed).await
+                            {
+                                return ServiceRuntimeError::InstanceRetired;
+                            }
+                        }
+                        continue;
+                    }
+                    if publication.changed().await.is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = &mut publication;
+            std::future::pending().await
+        };
         let stop_requested = stop_signal(&lifecycle, handle_signals);
-        tokio::pin!(serve, workers, retired, attached, stop_requested);
+        tokio::pin!(
+            serve,
+            workers,
+            retired,
+            ended_identity,
+            attached,
+            stop_requested
+        );
         let mut serve_result: Option<Result<(), ServiceRuntimeError>> = None;
         let mut workers_result: Option<Result<(), ServiceRuntimeError>> = None;
         let mut follower: Option<tokio::task::JoinHandle<()>> = None;
@@ -2199,6 +2350,7 @@ impl<C> ConnectedServiceRuntime<C> {
                 }
                 Some(error) = event_failures.recv() => break Some(Err(error)),
                 error = &mut retired => break Some(Err(error)),
+                error = &mut ended_identity => break Some(Err(error)),
                 () = &mut stop_requested => break None,
             }
         };
@@ -2262,10 +2414,121 @@ impl<C> ConnectedServiceRuntime<C> {
         })
         .await;
         self.transfer_tasks.shutdown().await;
+        if retire_on_stop {
+            // The key ends with this process, so its instance could never
+            // connect again: retire it rather than leave it offline.
+            let retired = tokio::time::timeout(
+                Duration::from_secs(5),
+                client.request_json_value(
+                    "trellis.auth@v1",
+                    trellis_protocol::CatalogActionIdentity {
+                        kind: trellis_protocol::ApiSurfaceKind::Rpc,
+                        name: "ServiceInstances.RetireOwn".into(),
+                        direction: trellis_protocol::PermissionAction::Call,
+                    },
+                    "rpc.v1.auth.ServiceInstances.RetireOwn",
+                    &serde_json::json!({}),
+                ),
+            )
+            .await;
+            if !matches!(retired, Ok(Ok(_))) {
+                tracing::warn!("Could not retire this instance at stop; timed retirement will");
+            }
+        }
         let closed = client.shutdown_native_runtime().await;
         lifecycle.set(super::lifecycle::ServicePhase::Stopped);
         closed?;
         Ok(())
+    }
+
+    /// The seed an enrolling service connects with, whether a graceful stop
+    /// retires its instance, and the client when the stored key connected.
+    #[cfg(feature = "http")]
+    async fn enrolled_identity<F, Fut>(
+        enrollment: &super::enrollment::Enrollment,
+        roots: &[std::path::PathBuf],
+        participant: (&str, &str),
+        connect_with: &F,
+    ) -> Result<(String, bool, Option<TrellisClient>), ServiceRuntimeError>
+    where
+        F: Fn(String) -> Fut,
+        Fut: std::future::Future<Output = Result<TrellisClient, TrellisClientError>>,
+    {
+        use super::enrollment::{
+            enroll, identity_state, new_seed, read_key_file, write_key_file, IdentityState,
+            ENROLLMENT_SECRET_ENV,
+        };
+        let secret = enrollment.secret.clone().or_else(|| {
+            std::env::var(ENROLLMENT_SECRET_ENV)
+                .ok()
+                .map(|secret| secret.trim().to_owned())
+                .filter(|secret| !secret.is_empty())
+        });
+        let enroll_new = || async {
+            let secret = secret
+                .as_deref()
+                .ok_or(ServiceRuntimeError::EnrollmentSecretMissing)?;
+            let seed = new_seed()?;
+            if let Some(path) = &enrollment.key_file {
+                write_key_file(path, &seed)?;
+            }
+            let title = enrollment
+                .title
+                .clone()
+                .unwrap_or_else(super::enrollment::default_title);
+            let instance = enroll(
+                &enrollment.origin,
+                roots,
+                secret,
+                &seed,
+                participant.0,
+                participant.1,
+                &title,
+            )
+            .await?;
+            tracing::info!(
+                instance_id = instance["instanceId"].as_str().unwrap_or_default(),
+                deployment_id = instance["deploymentId"].as_str().unwrap_or_default(),
+                title = instance["title"].as_str().unwrap_or_default(),
+                "Enrolled as a new instance"
+            );
+            Ok::<_, ServiceRuntimeError>(seed)
+        };
+        let Some(path) = &enrollment.key_file else {
+            return Ok((enroll_new().await?, true, None));
+        };
+        let Some(stored) = read_key_file(path)? else {
+            return Ok((enroll_new().await?, false, None));
+        };
+        let mut delay = Duration::from_secs(1);
+        loop {
+            let error = match connect_with(stored.clone()).await {
+                Ok(client) => return Ok((stored, false, Some(client))),
+                Err(error) => error,
+            };
+            match identity_state(&enrollment.origin, roots, &stored).await {
+                Ok(IdentityState::Removed) => {
+                    return Err(ServiceRuntimeError::InstanceRemoved {
+                        key_file: path.clone(),
+                    })
+                }
+                Ok(IdentityState::Retired | IdentityState::Unregistered) => {
+                    tracing::info!(
+                        key_file = %path.display(),
+                        "The stored key cannot connect; enrolling a new instance"
+                    );
+                    return Ok((enroll_new().await?, false, None));
+                }
+                state => tracing::warn!(
+                    key_file = %path.display(),
+                    ?state,
+                    %error,
+                    "Could not connect with the stored key; retrying"
+                ),
+            }
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_secs(30));
+        }
     }
 
     /// Return a cloneable service handle for generated participant code.
@@ -2302,20 +2565,41 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
         )
         .await
         .map_err(ServiceRuntimeError::ReadinessProbe)?;
+        let connect_with = |seed: String| {
+            let options = &options;
+            async move {
+                TrellisClient::connect_service_with_contract_with_health_interval(
+                    ServiceConnectWithContractOptions {
+                        nats_servers: options.nats_servers.clone(),
+                        trust: options.trust.clone(),
+                        participant_id: C::ID,
+                        name: options.name,
+                        provisioned_identity_seed_base64url: &seed,
+                        timeout_ms: options.timeout_ms,
+                    },
+                    options.health_heartbeat_interval_ms,
+                )
+                .await
+            }
+        };
+        let (seed, retire_on_stop, mut first) = match &options.identity {
+            ServiceIdentity::Seed(seed) => ((*seed).to_owned(), false, None),
+            #[cfg(feature = "http")]
+            ServiceIdentity::Enroll(enrollment) => {
+                Self::enrolled_identity(
+                    enrollment,
+                    &options.trust.root_certificates,
+                    (C::ID, C::DIGEST),
+                    &connect_with,
+                )
+                .await?
+            }
+        };
         let (client, binding) = loop {
-            let client = TrellisClient::connect_service_with_contract_with_health_interval(
-                ServiceConnectWithContractOptions {
-                    nats_servers: options.nats_servers.clone(),
-                    trust: options.trust.clone(),
-                    participant_id: C::ID,
-                    name: options.name,
-                    provisioned_identity_seed_base64url: options
-                        .provisioned_identity_seed_base64url,
-                    timeout_ms: options.timeout_ms,
-                },
-                options.health_heartbeat_interval_ms,
-            )
-            .await?;
+            let client = match first.take() {
+                Some(client) => client,
+                None => connect_with(seed.clone()).await?,
+            };
             let binding = parse_bootstrap_binding(&client)?;
             if BootstrapBindingInfo::bootstrap_binding(&binding).digest == C::DIGEST {
                 break (client, binding);
@@ -2334,6 +2618,15 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             lifecycle.clone(),
         );
         runtime.handle_signals = options.owns_process;
+        runtime.retire_on_stop = retire_on_stop;
+        #[cfg(feature = "http")]
+        if let ServiceIdentity::Enroll(enrollment) = &options.identity {
+            runtime.enrolled_key = Some((
+                enrollment.origin.clone(),
+                options.trust.root_certificates.clone(),
+                seed.clone(),
+            ));
+        }
         runtime.event_subscribe_needs = C::EVENT_SUBSCRIBE_NEEDS;
         if !C::CONFIG_FIELDS.is_empty() {
             let loaded = super::config::load(&runtime.client, C::ID, &|missing| {

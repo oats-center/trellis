@@ -455,6 +455,17 @@ pub(super) fn credential_snapshot(
             {
                 required.push(super::deployments::SERVICE_UPDATE_CAPABILITY.into());
             }
+            // An enrolled instance may retire itself when it stops.
+            if principal_kind == PrincipalKind::Service
+                && connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM auth_instances \
+                    WHERE principal_id=?1 AND enrollment_secret_id IS NOT NULL)",
+                    [&principal],
+                    |row| row.get::<_, bool>(0),
+                )?
+            {
+                required.push(super::instances::RETIRE_OWN_CAPABILITY.into());
+            }
             Ok(CredentialSnapshot {
                 principal_id: principal,
                 principal_kind,

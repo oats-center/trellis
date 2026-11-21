@@ -72,6 +72,14 @@ pub enum SvcResourceAction {
     Remove(RemoveArgs),
     Instances(SvcInstancesArgs),
     Provision(SvcProvisionArgs),
+    /// Issue, list, change and revoke the secrets that let processes enroll
+    /// themselves as new instances of this service.
+    #[command(subcommand)]
+    Enrollment(EnrollmentCommand),
+    /// Show or change this service's own rules for retiring offline
+    /// instances; unset rules follow `trellis instance-policy`.
+    #[command(subcommand)]
+    InstancePolicy(DeploymentPolicyCommand),
     /// List updates the service submitted for itself, newest first.
     Updates,
     /// Approve the service's pending update.
@@ -272,6 +280,127 @@ pub struct RemoveArgs {
 pub struct SvcInstancesArgs {
     #[arg(long)]
     pub disabled: bool,
+    /// Include retired and removed instances.
+    #[arg(long)]
+    pub all: bool,
+}
+
+/// Enrollment-secret operations.
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum EnrollmentCommand {
+    /// Issue a secret and print it once on standard output, so it can be
+    /// piped into a secret store. Trellis keeps only its hash.
+    Issue(EnrollmentIssueArgs),
+    /// List the service's secrets: limits, instances, last use, and whether
+    /// each is revoked.
+    List,
+    /// Change a secret's title and limits; flags left out keep their value.
+    Edit(EnrollmentEditArgs),
+    /// Stop a secret from creating instances.
+    Revoke(EnrollmentRevokeArgs),
+}
+
+/// A secret's title and limits.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct EnrollmentLimitArgs {
+    #[arg(long)]
+    pub title: Option<String>,
+    /// When it stops creating instances: a date (`2027-01-31`), a time
+    /// (RFC 3339), or a duration from now (`90d`, `12h`). `never` clears it.
+    #[arg(long, value_name = "DATE|DURATION")]
+    pub expires: Option<String>,
+    /// The most instances it may have at once.
+    #[arg(long, value_name = "N")]
+    pub max_instances: Option<u32>,
+    /// The most new instances it may create in any hour.
+    #[arg(long, value_name = "N")]
+    pub per_hour: Option<u32>,
+    /// Its instances may only run the installed build: their own updates are
+    /// refused, so a new build is installed with `apply` first.
+    #[arg(long, value_name = "on|off", num_args = 0..=1, default_missing_value = "on")]
+    pub current_build_only: Option<String>,
+}
+
+/// Issue a secret.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct EnrollmentIssueArgs {
+    #[command(flatten)]
+    pub limits: EnrollmentLimitArgs,
+}
+
+/// Change one secret.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct EnrollmentEditArgs {
+    #[arg(value_name = "SECRET_ID")]
+    pub secret: String,
+    #[command(flatten)]
+    pub limits: EnrollmentLimitArgs,
+}
+
+/// Revoke one secret.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct EnrollmentRevokeArgs {
+    #[arg(value_name = "SECRET_ID")]
+    pub secret: String,
+    /// Also retire every instance it created, which disconnects them: the
+    /// response to a leaked secret.
+    #[arg(long)]
+    pub retire_instances: bool,
+}
+
+/// One service's own retirement rules.
+#[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
+pub enum DeploymentPolicyCommand {
+    /// Show the service's own rules and the ones that apply to it.
+    Show,
+    /// Change the service's own rules; `default` follows the installation.
+    Set(DeploymentPolicySetArgs),
+}
+
+/// One service's own retirement rules.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct DeploymentPolicySetArgs {
+    /// How long an instance may stay offline before it is retired (`24h`,
+    /// at least `1h`), `off`, or `default`.
+    #[arg(long, value_name = "DURATION|off|default")]
+    pub retire_offline_after: Option<String>,
+    /// Whether provisioned instances are retired too: `on`, `off`, or `default`.
+    #[arg(long, value_name = "on|off|default")]
+    pub retire_provisioned: Option<String>,
+}
+
+/// The installation's rules for enrolled and offline instances.
+#[derive(Debug, Subcommand)]
+pub enum InstancePolicyCommand {
+    /// Show the installation's rules.
+    Show,
+    /// Change the installation's rules; flags left out keep their value.
+    Set(InstancePolicySetArgs),
+}
+
+/// The installation's rules for enrolled and offline instances.
+#[derive(Debug, Args)]
+pub struct InstancePolicySetArgs {
+    /// How long an instance may stay offline before it is retired (`24h`,
+    /// at least `1h`), or `off`.
+    #[arg(long, value_name = "DURATION|off")]
+    pub retire_offline_after: Option<String>,
+    /// Whether provisioned instances are retired too.
+    #[arg(long, value_name = "on|off")]
+    pub retire_provisioned: Option<String>,
+    /// Days a retired or removed instance's record is kept.
+    #[arg(long, value_name = "N")]
+    pub retired_record_days: Option<u32>,
+    /// How long a just-enrolled instance that has not connected yet is
+    /// protected from being replaced (`10m`).
+    #[arg(long, value_name = "DURATION")]
+    pub first_connect_grace: Option<String>,
+    /// The instance cap a new secret takes.
+    #[arg(long, value_name = "N")]
+    pub secret_max_instances: Option<u32>,
+    /// The hourly rate a new secret takes.
+    #[arg(long, value_name = "N")]
+    pub secret_per_hour: Option<u32>,
 }
 
 /// List device instances, optionally including disabled principals.

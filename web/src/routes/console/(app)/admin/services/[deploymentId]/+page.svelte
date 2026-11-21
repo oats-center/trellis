@@ -35,6 +35,7 @@
   import ServiceUpdates from "$lib/components/ServiceUpdates.svelte";
   import ServiceUpdateHistory from "$lib/components/ServiceUpdateHistory.svelte";
   import ParticipantSettings from "$lib/components/ParticipantSettings.svelte";
+  import EnrollmentSecrets from "$lib/components/EnrollmentSecrets.svelte";
 
   type Deployment = apis.auth.DeploymentsGetOutput["deployment"];
   type Instance = apis.auth.ServiceInstancesListOutput["items"][number];
@@ -90,12 +91,20 @@
         .map((item) => [item.instanceId, item]),
     ),
   );
-  const current = $derived(
-    instances.filter((instance) => instance.state !== "removed"),
-  );
-  const removed = $derived(
-    instances.filter((instance) => instance.state === "removed"),
-  );
+  // Removed and retired instances are kept for a while, collapsed below.
+  const ended = (instance: Instance) =>
+    instance.state === "removed" || instance.state === "retired";
+  const current = $derived(instances.filter((instance) => !ended(instance)));
+  const removed = $derived(instances.filter(ended));
+  const RETIRED_REASONS: Record<
+    NonNullable<Instance["retiredReason"]>,
+    string
+  > = {
+    offline: "Retired after staying offline",
+    stopped: "Retired itself when it stopped",
+    replaced: "Replaced by a newer instance",
+    secretRevoked: "Retired with its enrollment secret",
+  };
   const listed = $derived(showRemoved ? instances : current);
   const turnedOn = $derived(
     current.filter((instance) => instance.state === "active").length,
@@ -796,9 +805,7 @@
             )}
             <tr
               data-instance-id={instance.instanceId}
-              class={instance.state === "removed"
-                ? "text-base-content/55"
-                : undefined}
+              class={ended(instance) ? "text-base-content/55" : undefined}
             >
               <td class="trellis-primary">
                 <span class="block font-medium">{identity?.name}</span>
@@ -818,6 +825,19 @@
                 <span class="block text-xs text-base-content/60 sm:hidden"
                   >{status ? STATE_LABELS[status.state] : "Not connected"} · {build}</span
                 >
+                {#if instance.origin.kind === "enrolled"}<span
+                    class="block text-xs text-base-content/60"
+                    >Enrolled with {instance.origin.secretTitle ??
+                      "an enrollment secret"}</span
+                  >{/if}
+                {#if instance.state === "retired" && instance.retiredReason}<span
+                    class="block text-xs text-base-content/60"
+                    data-retired-reason={instance.retiredReason}
+                    >{RETIRED_REASONS[
+                      instance.retiredReason
+                    ]}{#if instance.lastSeenAt}
+                      · last seen {formatDate(instance.lastSeenAt)}{/if}</span
+                  >{/if}
                 {#if status && status.state !== "offline" && !status.build.current && status.build.digest}<span
                     class="mt-0.5 flex items-center gap-1 text-xs text-warning"
                     ><Icon name="alert" size={12} />Runs an older build</span
@@ -833,7 +853,9 @@
                     ? "On"
                     : instance.state === "removed"
                       ? "Removed"
-                      : "Off"}
+                      : instance.state === "retired"
+                        ? "Retired"
+                        : "Off"}
                   status={instance.state === "active" ? "healthy" : "offline"}
                 />
               </td>
@@ -908,7 +930,7 @@
                 >{formatDate(instance.principal.createdAt)}</td
               >
               <td class="text-right">
-                {#if instance.state !== "removed"}
+                {#if !ended(instance)}
                   <ActionMenu
                     widthClass="w-48"
                     ariaLabel={`Actions for ${identity?.name ?? instance.instanceId}`}
@@ -990,12 +1012,21 @@
             class="btn btn-ghost btn-sm"
             onclick={() => (showRemoved = !showRemoved)}
             >{showRemoved
-              ? "Hide removed instances"
-              : `Show ${removed.length} removed`}</button
+              ? "Hide retired and removed instances"
+              : `Show ${removed.length} retired or removed`}</button
           >
         </div>
       {/if}
     </section>
+
+    {#if canPerform(authority.authority, "enrollmentSecretsList")}<EnrollmentSecrets
+        deploymentId={deployment.deploymentId}
+        serviceTitle={humanizeName(deployment.title)}
+        enabled={deployment.state === "enabled"}
+        onchange={() => {
+          if (deployment) void refreshInstances(deployment.deploymentId);
+        }}
+      />{/if}
 
     {#if canPerform(authority.authority, "configGet")}<ParticipantSettings
         deploymentId={deployment.deploymentId}

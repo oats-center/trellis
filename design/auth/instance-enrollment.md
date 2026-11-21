@@ -1,18 +1,19 @@
 ---
 title: Instance Enrollment
-description: Proposal for enrollment secrets that let a service process register itself as a new instance of its deployment, and for retiring instances that stay offline.
+description: Enrollment secrets that let a service process register itself as a new instance of its deployment, and the retirement of instances that stay offline.
 ---
 
 # Design: Instance Enrollment
 
-> **Status: proposal awaiting review.** Nothing in this document is
-> implemented. The [open questions](#open-questions) at the end need a decision
-> before work starts.
+> **Status: implemented.** This document describes the as-built behaviour.
+> [Decisions](#decisions) at the end records how the questions raised in
+> review were settled, and [as built](#as-built-details) the details the
+> implementation fixed.
 
-An administrator registers every service instance by hand today. That works
+Without enrollment, an administrator registers every service instance by hand. That works
 for a service that runs on two known hosts. It does not work for a Kubernetes
 Deployment that scales from 3 pods to 30 and back, or for a rolling release
-that starts a new pod for each old one. This proposal lets an administrator
+that starts a new pod for each old one. Enrollment lets an administrator
 give a deployment an **enrollment secret** instead. A process that holds the
 secret makes its own key when it starts and registers itself as a new
 instance. Instances that stay offline for longer than a set time are
@@ -34,7 +35,7 @@ exist.
 
 ## Background
 
-A few terms from the rest of the auth design, since the proposal builds on
+A few terms from the rest of the auth design, since enrollment builds on
 them.
 
 A **deployment** is one installed service: its build, the capabilities it was
@@ -51,13 +52,12 @@ finds the instance and deployment, and admits the connection with that
 deployment's authority. This step is called **admission**. The process never
 tells Auth which deployment it is; the key decides that.
 
-Today an administrator creates each instance and its key with
+An administrator can still create each instance and its key with
 `ServiceInstances.Provision` (`trellis svc <id> provision`). The
 [upgrade guide](../../docs/src/routes/guides/upgrade-without-downtime/+page.md)
 tells operators to give each process its own instance so the Console can tell
-them apart. It also admits that Kubernetes pods of one Deployment share one
-secret and therefore show up as one instance. Both facts are the problem this
-proposal solves.
+them apart. Kubernetes pods of one Deployment that share one seed show up as
+one instance. Enrollment secrets solve both.
 
 ## The problem
 
@@ -324,9 +324,13 @@ A host that holds a valid key therefore restarts without the secret, so
 rotating or revoking the secret does not break its routine restarts.
 
 In either form, a running process that loses its connection for longer than
-the retirement period comes back to find its instance retired. The SDK still
-holds the secret in memory, so it enrolls a new instance with a new key and
-reconnects.
+the retirement period comes back to find its instance retired. The SDK cannot
+swap the identity of a live connection, so it stops the service with an error
+instead (TypeScript: the service's connection ends with it; Rust:
+`ServiceRuntimeError::InstanceRetired` from `run`). While the connection is
+down for more than a few seconds, the SDK asks Auth what became of its key; on
+`retired` or `removed` it stops. The process's supervisor restarts it, and the
+restart enrolls a new instance while the secret is still valid.
 
 ## Security
 
@@ -459,8 +463,10 @@ rows are gone is still recognised. A removed key gets the removal answer, and
 the SDK stops. A retired key gets the retired answer, and the SDK makes a new
 key and enrolls. Without it, a removed host's key would read as unknown and
 the host would quietly enroll again.
-[data-retention.md](../core/data-retention.md) would gain a row for retired
-instances when this is built.
+[data-retention.md](../core/data-retention.md) lists retired and removed
+instances. Auth writes the tombstone when the key is revoked by a retirement,
+an instance removal, or a deployment removal, and again (idempotently) when
+cleanup deletes the rows.
 
 ### Which instances are eligible
 
@@ -494,7 +500,10 @@ While a deployment is disabled, none of its instances can connect, so all of
 them would drift past the period. Retirement does not run for a disabled
 deployment, and enrollment into it is refused. When the deployment is enabled
 again, the offline clock of each instance starts from that moment, so every
-instance gets a full period to reconnect.
+instance gets a full period to reconnect. (Auth records the deployment's
+`enabled_at`; an instance's offline time counts from the later of its
+`lastSeenAt`, its creation, and that moment.) An instance an administrator
+disabled is still retired once it has been offline past the period.
 
 ### Policy settings
 
@@ -598,36 +607,110 @@ Each warning names the secret and links to the matching audit entries.
 - **Choosing which instance gets a request.** All instances of a deployment
   stay equal members of its queue groups.
 
-## Open questions
+## Decisions
 
-1. **Should a process get a new instance on every start by default, with a
-   key file as the opt-in?** Recommendation: yes. Containers rarely keep a
-   disk, a self-retiring instance leaves nothing behind on a graceful stop,
-   and `keyFile` covers hosts that want a stable instance.
-2. **Should a new secret have an instance cap unless the administrator
-   clears it?** Recommendation: yes, 20 from the installation default. An
-   unlimited secret turns a leak into an unbounded number of identities, and
-   raising the cap is one command.
-3. **Are 24 hours for the retirement period and 30 days for keeping retired
-   records the right defaults?** Recommendation: yes. With graceful stops
-   retiring themselves, the period mostly catches crashed and killed
-   processes, so a day is plenty; 30 days covers a monthly review of what ran.
-4. **Should hand-provisioned instances be retired too?** Recommendation: not
-   by default. Their processes cannot re-enroll, so retiring one is a lasting
-   outage for that host. A deployment can opt in with `retireProvisioned`.
-5. **Should `currentBuildOnly` be on by default?** Recommendation: no. Off
-   keeps today's flow where a new build installs itself when it asks for
-   nothing new. The Console's issue form should explain the option, and teams
-   whose pipeline runs `trellis svc <id> apply` before each rollout should turn
-   it on.
-6. **Should the SDK read `TRELLIS_ENROLLMENT_SECRET` when no option is given?**
-   Recommendation: yes. Container platforms hand secrets to processes as
-   environment variables, and the SDK already reads
-   `TRELLIS_CERTIFICATE_FINGERPRINT` the same way. The explicit option still
-   wins.
-7. **Should the rows of instances an administrator removed be deleted after
-   the same 30 days?** Recommendation: yes, keeping the key's tombstone as for
-   retired instances. They are the same kind of record as a retired instance,
-   they also pile up, and removal already revoked their key. The tombstone
-   keeps the removal in force: a returning host is still told to stop. Today
-   the rows are kept forever.
+Each question raised in review was settled with its recommendation.
+
+1. **A new instance per start by default, with a key file as the opt-in.**
+   Memory-only keys enroll per process lifetime and retire themselves at a
+   graceful stop; `keyFile` keeps the instance.
+2. **A new secret has an instance cap**, 20 from the installation default.
+   The cap cannot be cleared; it can be raised to at most 1,000,000.
+3. **24 hours** of offline time before retirement and **30 days** of keeping
+   retired records.
+4. **Provisioned instances are not retired by default**; `retireProvisioned`
+   opts a deployment or the installation in.
+5. **`currentBuildOnly` is off by default.** The Console's form explains it.
+6. **The SDK reads `TRELLIS_ENROLLMENT_SECRET`** when no seed or secret is
+   given; the explicit option wins.
+7. **Removed instances' rows are deleted after the same 30 days**, keeping the
+   key's tombstone, so a returning host is still told to stop. Cleanup covers
+   service instances only; device records are unchanged.
+
+## As-built details
+
+### Wire formats
+
+`POST /auth/service/enroll` takes `AuthServiceEnrollmentRequest`:
+`requestId`, `iat` (Unix milliseconds), `enrollmentSecret`, `identityKeyId`
+(the SHA-256 of the public key), `identityPublicKey`, `participantId`,
+`participantDigest`, `title`, and `proof`. The proof is a
+`trellis.session-proof.v1` signature of purpose `serviceEnrollment`, bound to
+the Trellis origin, the route, the key ID, and the canonical request without
+`proof`. Auth accepts a send time within five minutes either way. Success
+returns `{ instanceId, deploymentId, title }`. Refusals are
+`{ "error": { "code" } }`:
+
+| Status | Code                                                                                  | Meaning                                                                  |
+| ------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| 400    | `invalid_request`, `clock_skew`                                                       | Malformed or not signed by the key; send time outside the window         |
+| 403    | `enrollment_denied`                                                                   | No such secret (not audited)                                             |
+| 403    | `revoked`, `expired`, `deployment_disabled`, `participant_mismatch`, `build_mismatch` | A known secret refused (audited)                                         |
+| 409    | `key_in_use`                                                                          | The key belongs to another instance, a service claim, or has a tombstone |
+| 429    | `instance_limit`, `rate_limited`                                                      | At the cap with nothing to replace; the hourly rate is used up           |
+| 503    | `unavailable`                                                                         | Try again with the same key                                              |
+
+A repeated request for a key this secret already enrolled, whose key is still
+active, returns that instance before any limit or validity check. Auth
+materializes the deployment's resources after each successful enrollment,
+including a repeated one, as `ServiceInstances.Provision` does.
+
+`POST /auth/service/identity` takes `requestId`, `iat`, `identityKeyId`,
+`identityPublicKey`, and a `serviceIdentityStatus` proof, and answers
+`{ "state" }`: `active`, `disabled` (the instance, its deployment, or its
+principal is off), `removed`, `retired`, or `unregistered`. It answers from
+the tombstone once the rows are gone. A key-file host calls it after a failed
+connect; any answer other than `removed`, `retired`, or `unregistered` (or no
+answer) means retry with the same key, with backoff up to 30 seconds.
+
+### Secrets
+
+The secret's text is `trellis-enroll-<secret ID>-<43 base64url characters>`.
+`Issue`'s idempotent replay returns the record without `text`, because Trellis
+never stores the text. Revoking keeps the row; revoked secrets cannot be
+edited. Issuing, editing, and revoking need `users.manage`, and
+`platform.manage` too when the deployment's required or optional capabilities
+include an administrative one. The hourly rate counts the secret's instances
+created in the last hour, retired ones included.
+
+`Revoke` returns `retiredInstances` and `closingConnections`, the number of
+those instances' connections that were open when the revocation committed. The
+enforcement pipeline closes them.
+
+### Instances
+
+Enrolled instances hold `trellis.auth.v1:instances.retireOwn`, granted at
+enrollment and included in their session authority, which lets them call
+`ServiceInstances.RetireOwn`. That call retires the caller's own enrolled
+instance with reason `stopped`; a provisioned instance is refused. The
+caller's own connection is closed only after it has the reply.
+
+Retiring an instance marks it `retired`, revokes its principal and identity
+key, writes the tombstone, queues principal-scope enforcement work (which
+retires its sessions and kicks its connections), and writes
+`instance.retired`. `lastSeenAt` is updated when a connection is admitted,
+when it closes, and when a kick closes it. The sweep runs every five minutes
+from Auth's ordinary maintenance loop, at most 1,000 instances per
+transaction, and retention cleanup runs with it. Provider certificates keep
+the instance ID without a foreign key, so cleanup can delete instance rows.
+
+### Policy
+
+`Auth.InstancePolicy.Get { deploymentId? }` returns `installation`, and with a
+deployment its own `deployment` record and the `effective` rules.
+`Auth.InstancePolicy.Set` replaces the installation record
+(`retireOffline`, `retireOfflineAfterSeconds`, `retireProvisioned`,
+`retiredRecordDays`, `firstConnectGraceSeconds`, `secretMaxInstances`,
+`secretEnrollmentsPerHour`) or, with a deployment, that deployment's record,
+where an absent field follows the installation. A deployment's
+`retireOffline: false` turns retirement off for it.
+
+### Audit and alerts
+
+Besides the generic entry every Auth mutation writes, Auth writes
+`enrollmentSecret.issued`, `enrollmentSecret.updated`,
+`enrollmentSecret.revoked`, `instance.enrolled`,
+`instance.enrollmentRefused`, `instance.retired`, and `instancePolicy.changed`.
+Refusals and secret changes name the secret as their target, so a secret's
+alerts are its refusal entries of the last 24 hours, grouped by reason, and
+`EnrollmentSecrets.List` returns them as `alerts`.

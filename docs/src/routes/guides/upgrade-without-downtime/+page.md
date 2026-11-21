@@ -147,7 +147,11 @@ instance was serving.
 
 ## The procedure
 
-Give each process its own instance, so the CLI and the Console show them apart:
+Give each process its own instance, so the CLI and the Console show them apart.
+The simplest way is an enrollment secret: every process that starts with it
+registers itself as a new instance, and retires that instance when it stops
+gracefully (see [Enroll service instances](/guides/enroll-service-instances)).
+For a fixed set of hosts, provision one instance per host instead:
 
 ```sh
 trellis svc "$DEPLOYMENT_ID" provision --new --public-key <key>
@@ -277,7 +281,8 @@ spec:
 ```
 
 With `maxUnavailable: 0` the old pod stops only after the new pod is ready, and
-`terminationGracePeriodSeconds` leaves room for the stop timeout. Pods of one
-Deployment share its secret and so one instance identity; they all serve, but
-the CLI and the Console show them as one instance. For one instance per pod,
-run two Deployments, each with its own seed, and switch between them.
+`terminationGracePeriodSeconds` leaves room for the stop timeout. Give the
+pods an enrollment secret in `TRELLIS_ENROLLMENT_SECRET`, not a seed: each pod
+then enrolls as its own instance, and the old pod retires its instance when it
+stops. Pods that share one seed all serve, but the CLI and the Console show
+them as one instance.
