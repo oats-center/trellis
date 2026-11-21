@@ -464,27 +464,24 @@ fn project_model_bindings(
         return Ok(bundled);
     }
 
-    // Cargo's own resolution covers path overrides, vendoring, and registries,
-    // but needs every member's sources, including a generated SDK not yet
-    // written. The registry's unpacked sources answer for crates.io versions.
+    // Cargo's lock resolution covers path overrides and patches. `cargo pkgid`
+    // reads it without downloading anything, unlike `cargo metadata`, which
+    // fetches every crate in the lock, even ones the build never compiles.
+    // Registry versions are found in the registry's unpacked sources below.
     let workspace = lock.with_file_name("Cargo.toml");
-    let from_metadata =
+    let from_lock =
         std::process::Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-            .args(["metadata", "--format-version", "1", "--offline", "--locked"])
-            .arg("--manifest-path")
+            .args(["pkgid", "--offline", "--manifest-path"])
             .arg(&workspace)
+            .arg(format!("trellis-models@{version}"))
             .output()
             .ok()
             .filter(|result| result.status.success())
-            .and_then(|result| serde_json::from_slice::<serde_json::Value>(&result.stdout).ok())
-            .and_then(|metadata| {
-                metadata["packages"].as_array()?.iter().find_map(|package| {
-                    (package["name"] == "trellis-models"
-                        && package["version"] == version.to_string())
-                    .then(|| package["manifest_path"].as_str().map(PathBuf::from))?
-                })
-            })
-            .and_then(|manifest| Some((manifest.parent()?.to_path_buf(), "cargo metadata")));
+            .and_then(|result| {
+                let id = String::from_utf8(result.stdout).ok()?;
+                let path = id.trim().strip_prefix("path+file://")?.split('#').next()?;
+                Some((PathBuf::from(path), "the Cargo lock"))
+            });
     let from_registry = || {
         let home = std::env::var_os("CARGO_HOME")
             .map(PathBuf::from)
@@ -495,7 +492,7 @@ fn project_model_bindings(
             .find(|source| source.join("Cargo.toml").is_file())
             .map(|source| (source, "Cargo registry sources"))
     };
-    let Some((source, found_by)) = from_metadata.or_else(from_registry) else {
+    let Some((source, found_by)) = from_lock.or_else(from_registry) else {
         tracing::info!(
             "rust models: {resolved}, whose source is not available offline (run `cargo \
             fetch`); its models cannot be compared, so they are emitted inline"
