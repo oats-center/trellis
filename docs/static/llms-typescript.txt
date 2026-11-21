@@ -81,6 +81,11 @@ pending until an administrator approves it, logging the review link and printing
 it as a QR code on stderr. An administrator's rejection fails `connect`;
 `signal` cancels the wait.
 
+`service.health.setInfo({ version, info })` and
+`service.health.add(name, () => ({ status, summary, error, info }))` add to the
+automatic heartbeats, with `status` `"ok"`, `"degraded"` or `"failed"`;
+`add` returns a function that removes the check.
+
 When the installation serves a private CA, such as the Trellis-generated
 installation CA, start Node services, devices, and native apps with
 `NODE_EXTRA_CA_CERTS=<path to ca.crt>`. Node then verifies OAuth HTTPS and

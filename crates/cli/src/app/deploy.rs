@@ -1413,11 +1413,11 @@ fn print_service_instances_result<T: serde::Serialize>(
                 .map(|message| format!(": {message}"))
                 .unwrap_or_default();
                 // Instances of one service share its name, so the ID says which.
-                println!(
+                anstream::println!(
                     "{}: check {} {}{message}",
                     output::field(instance, "instanceId"),
                     output::field(check, "name"),
-                    output::field(check, "status"),
+                    output::state(&output::field(check, "status")),
                 );
             }
             let url = output::field(instance, "status.reviewUrl");

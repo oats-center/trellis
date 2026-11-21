@@ -4,8 +4,14 @@
 //! lines (`✓`, `!`), hints, and prompts go to stderr, so piping stdout keeps
 //! only the data. `--format json` writes one JSON value to stdout and silences
 //! status lines and hints. Color appears on terminals unless `NO_COLOR` is
-//! set, and `CLICOLOR_FORCE=1` keeps it when piped; tables become
-//! headerless tab-separated rows when stdout is not a terminal.
+//! set to a non-empty value or `TERM=dumb`, and `CLICOLOR_FORCE=1` keeps it
+//! when piped; tables become headerless tab-separated rows when stdout is not
+//! a terminal.
+//!
+//! Colored strings, such as [`state`] and [`code`] return, always carry escape
+//! codes. Write them only through `anstream` (`anstream::println!`, or a
+//! `Details` or table here), which decides per stream and strips the codes when
+//! color is off; `std` printing passes them through.
 
 use std::fmt::Display;
 use std::io::{IsTerminal as _, Write as _};

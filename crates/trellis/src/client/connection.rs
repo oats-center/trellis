@@ -578,10 +578,14 @@ fn build_health_heartbeat(
         checks,
         phase,
     } = snapshot;
-    let failing = checks
-        .iter()
-        .filter(|(_, check, _)| check.status == HealthCheckStatus::Failed)
-        .count();
+    let count = |status| {
+        checks
+            .iter()
+            .filter(|(_, check, _)| check.status == status)
+            .count()
+    };
+    let failing = count(HealthCheckStatus::Failed);
+    let degraded = count(HealthCheckStatus::Degraded);
     Ok(HealthHeartbeatSample {
         sample: HealthHeartbeatSampleSample {
             id: ulid::Ulid::generate().to_string(),
@@ -612,19 +616,27 @@ fn build_health_heartbeat(
             extra: Default::default(),
         },
         phase,
-        reported_status: if failing == 0 {
-            HealthHeartbeatSampleReportedStatus::Healthy
-        } else if failing == checks.len() {
+        // Any failed check makes the participant unhealthy; otherwise any
+        // degraded check makes it degraded.
+        reported_status: if failing > 0 {
             HealthHeartbeatSampleReportedStatus::Unhealthy
-        } else {
+        } else if degraded > 0 {
             HealthHeartbeatSampleReportedStatus::Degraded
+        } else {
+            HealthHeartbeatSampleReportedStatus::Healthy
         },
-        summary: (failing > 0).then(|| {
-            HealthHeartbeatSampleSummary(format!(
-                "{failing} check{} failing",
-                if failing == 1 { "" } else { "s" }
-            ))
-        }),
+        summary: match (failing, degraded) {
+            (0, 0) => None,
+            (0, count) => Some(format!(
+                "{count} check{} degraded",
+                if count == 1 { "" } else { "s" }
+            )),
+            (count, _) => Some(format!(
+                "{count} check{} failing",
+                if count == 1 { "" } else { "s" }
+            )),
+        }
+        .map(HealthHeartbeatSampleSummary),
         // A heartbeat that arrives already proves the broker connection, so
         // only the participant's own checks are listed.
         checks: checks
@@ -641,6 +653,9 @@ fn build_health_heartbeat(
                     name: HealthHeartbeatSampleChecksItemName(name),
                     status: match check.status {
                         HealthCheckStatus::Ok => HealthHeartbeatSampleChecksItemStatus::Ok,
+                        HealthCheckStatus::Degraded => {
+                            HealthHeartbeatSampleChecksItemStatus::Degraded
+                        }
                         HealthCheckStatus::Failed => HealthHeartbeatSampleChecksItemStatus::Failed,
                     },
                     summary: check.summary.map(HealthHeartbeatSampleChecksItemSummary),

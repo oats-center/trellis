@@ -23,8 +23,8 @@ type MaybePromise<T> = T | Promise<T>;
 export type HealthCheckResult = {
   /** Name of the health check */
   name: string;
-  /** Status of the check: "ok" if passed, "failed" if not */
-  status: "ok" | "failed";
+  /** Status of the check: "ok" if it passed, "degraded" if it works with reduced capacity, "failed" if not */
+  status: HealthCheckStatus;
   /** Error message if the check failed with an error */
   error?: string;
   /** Optional short human-readable summary */
@@ -40,8 +40,14 @@ export type ServiceHealthInfo = {
   info?: Record<string, JsonValue>;
 };
 
+/**
+ * Status of one health check. Any `failed` check makes the participant
+ * unhealthy; otherwise any `degraded` check makes it degraded.
+ */
+export type HealthCheckStatus = "ok" | "degraded" | "failed";
+
 export type ServiceHealthCheck = {
-  status: "ok" | "failed";
+  status: HealthCheckStatus;
   summary?: string;
   info?: Record<string, JsonValue>;
   error?: string;
@@ -55,20 +61,27 @@ export type ServiceHealthInfoFn = () => MaybePromise<
 function summarizeHealthStatus(
   results: readonly Pick<HealthCheckResult, "status">[],
 ): HealthResponse["status"] {
-  const allOk = results.every((r) => r.status === "ok");
-  const anyOk = results.some((r) => r.status === "ok");
-  return allOk ? "healthy" : anyOk ? "degraded" : "unhealthy";
+  return results.some((r) => r.status === "failed")
+    ? "unhealthy"
+    : results.some((r) => r.status === "degraded")
+      ? "degraded"
+      : "healthy";
 }
 
 function summarizeHealthChecks(
   results: readonly HealthCheckResult[],
 ): string | undefined {
-  const failedCount = results.filter((r) => r.status === "failed").length;
-  if (failedCount === 0) {
-    return undefined;
+  const count = (status: HealthCheckStatus) =>
+    results.filter((r) => r.status === status).length;
+  const failed = count("failed");
+  const degraded = count("degraded");
+  if (failed > 0) {
+    return `${failed} check${failed === 1 ? "" : "s"} failing`;
   }
-
-  return `${failedCount} check${failedCount === 1 ? "" : "s"} failing`;
+  if (degraded > 0) {
+    return `${degraded} check${degraded === 1 ? "" : "s"} degraded`;
+  }
+  return undefined;
 }
 
 function detectRuntime(): {
@@ -88,7 +101,7 @@ function detectRuntime(): {
  * Aggregated health response for a service.
  */
 export type HealthResponse = {
-  /** Overall status: "healthy" if all pass, "unhealthy" if all fail, "degraded" if mixed */
+  /** Overall status: "unhealthy" if any check failed, otherwise "degraded" if any check is degraded, otherwise "healthy" */
   status: "healthy" | "unhealthy" | "degraded";
   /** Name of the service */
   service: string;

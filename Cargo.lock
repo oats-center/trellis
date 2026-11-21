@@ -6181,6 +6181,7 @@ dependencies = [
  "qrcode",
  "rand 0.10.4",
  "rexpect",
+ "runtime-trellis",
  "rustls",
  "semver",
  "serde",

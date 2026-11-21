@@ -820,11 +820,13 @@ fn update_metric_buckets(
         transaction.execute(
             "INSERT INTO health_check_metric_buckets
              (participant_kind, contract_id, instance_id, bucket_start_ns, check_name,
-              sample_count, ok_count, failed_count, latency_sum_ms, latency_max_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?8)
+              sample_count, ok_count, degraded_count, failed_count, latency_sum_ms,
+              latency_max_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?8, ?9, ?9)
              ON CONFLICT (participant_kind, contract_id, instance_id, bucket_start_ns, check_name)
              DO UPDATE SET sample_count = sample_count + 1,
                            ok_count = ok_count + excluded.ok_count,
+                           degraded_count = degraded_count + excluded.degraded_count,
                            failed_count = failed_count + excluded.failed_count,
                            latency_sum_ms = latency_sum_ms + excluded.latency_sum_ms,
                            latency_max_ms = MAX(latency_max_ms, excluded.latency_max_ms)",
@@ -835,6 +837,7 @@ fn update_metric_buckets(
                 bucket_start_ns,
                 check.name.as_ref(),
                 i64::from(check.status.as_str() == "ok"),
+                i64::from(check.status.as_str() == "degraded"),
                 i64::from(check.status.as_str() == "failed"),
                 check.latency_ms.0 .0,
             ],

@@ -1,4 +1,6 @@
-//! A Rust service's health details and checks reach the Health projection.
+//! A Rust service's health details and checks reach the Health projection,
+//! and its checks decide its status: any failed check makes it unhealthy,
+//! otherwise any degraded check makes it degraded.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -63,46 +65,68 @@ async fn heartbeats_carry_the_services_version_info_and_current_check_results() 
         participant_kind: HealthInspectRequestParticipantKind::Service,
         extra: Default::default(),
     };
-    // Waits for a projected sample that `matches`, returning it as JSON.
-    let sample =
-        |matches: fn(&Value) -> bool| {
-            let health = health.clone();
-            let request = request.clone();
-            async move {
-                tokio::time::timeout(Duration::from_secs(30), async {
-                    loop {
-                        if let Ok(inspected) = health.inspect(&request).await {
-                            if let Some(sample) = inspected.instances.first().map(|instance| {
-                                serde_json::to_value(&instance.latest_sample).unwrap()
-                            }) {
-                                if matches(&sample) {
-                                    break sample;
-                                }
+    // Waits for an instance whose projected latest sample `matches`,
+    // returning the instance as JSON.
+    let sample = |matches: fn(&Value) -> bool| {
+        let health = health.clone();
+        let request = request.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    if let Ok(inspected) = health.inspect(&request).await {
+                        if let Some(instance) = inspected
+                            .instances
+                            .first()
+                            .map(|instance| serde_json::to_value(instance).unwrap())
+                        {
+                            if matches(&instance["latestSample"]) {
+                                break instance;
                             }
                         }
-                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
-                })
-                .await
-                .expect("a matching heartbeat sample")
-            }
-        };
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .expect("a matching heartbeat sample")
+        }
+    };
 
-    let healthy = sample(|sample| sample["checks"].as_array().is_some_and(|c| !c.is_empty())).await;
+    let healthy = sample(|sample| sample["checks"].as_array().is_some_and(|c| !c.is_empty())).await
+        ["latestSample"]
+        .clone();
     assert_eq!(healthy["participant"]["version"], "1.4.2");
     assert_eq!(healthy["participant"]["info"], json!({ "region": "lab" }));
     assert_eq!(healthy["reportedStatus"], "healthy");
     assert_eq!(healthy["checks"][0]["name"], "database");
     assert_eq!(healthy["checks"][0]["status"], "ok");
 
-    database_up.store(false, Ordering::SeqCst);
-    let failing = sample(|sample| sample["reportedStatus"] == "unhealthy").await;
-    assert_eq!(failing["summary"], "1 check failing");
-    assert_eq!(failing["checks"][0]["status"], "failed");
-    assert_eq!(failing["checks"][0]["error"], "connection refused");
+    // A degraded check, with none failed, makes the instance degraded.
+    let cache = service.health().add("cache", || async {
+        ServiceHealthCheck::degraded("serving from one replica")
+    });
+    let degraded = sample(|sample| sample["checks"].as_array().is_some_and(|c| c.len() == 2)).await;
+    assert_eq!(degraded["effectiveStatus"], "degraded");
+    assert_eq!(degraded["latestSample"]["reportedStatus"], "degraded");
+    assert_eq!(degraded["latestSample"]["summary"], "1 check degraded");
+    assert_eq!(degraded["latestSample"]["checks"][0]["name"], "cache");
+    assert_eq!(degraded["latestSample"]["checks"][0]["status"], "degraded");
 
+    // One failed check makes the instance unhealthy, however many pass or
+    // are degraded.
+    database_up.store(false, Ordering::SeqCst);
+    let failing = sample(|sample| sample["checks"][1]["status"] == "failed").await;
+    assert_eq!(failing["effectiveStatus"], "unhealthy");
+    let failing = &failing["latestSample"];
+    assert_eq!(failing["reportedStatus"], "unhealthy");
+    assert_eq!(failing["summary"], "1 check failing");
+    assert_eq!(failing["checks"][1]["error"], "connection refused");
+
+    cache.remove();
     database.remove();
-    let removed = sample(|sample| sample["checks"].as_array().is_some_and(Vec::is_empty)).await;
+    let removed = sample(|sample| sample["checks"].as_array().is_some_and(Vec::is_empty)).await
+        ["latestSample"]
+        .clone();
     assert_eq!(removed["reportedStatus"], "healthy");
     assert_eq!(removed["participant"]["version"], "1.4.2");
 
@@ -114,7 +138,8 @@ async fn heartbeats_carry_the_services_version_info_and_current_check_results() 
         }
         std::future::ready(ServiceHealthCheck::ok())
     });
-    let panicked = sample(|sample| sample["reportedStatus"] == "unhealthy").await;
+    let panicked =
+        sample(|sample| sample["reportedStatus"] == "unhealthy").await["latestSample"].clone();
     assert_eq!(panicked["checks"][0]["name"], "broken");
     assert_eq!(panicked["checks"][0]["status"], "failed");
     assert_eq!(panicked["checks"][0]["error"], "health check panicked");

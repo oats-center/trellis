@@ -551,8 +551,8 @@ impl HealthStore {
             }
 
             let mut check_statement = connection.prepare(
-                "SELECT bucket_start_ns, check_name, sample_count, ok_count, failed_count,
-                        latency_sum_ms, latency_max_ms
+                "SELECT bucket_start_ns, check_name, sample_count, ok_count, degraded_count,
+                        failed_count, latency_sum_ms, latency_max_ms
                  FROM health_check_metric_buckets
                  WHERE participant_kind = ?1 AND contract_id = ?2 AND instance_id = ?3
                    AND bucket_start_ns >= ?4 AND bucket_start_ns < ?5",
@@ -573,14 +573,17 @@ impl HealthStore {
                             row.get::<_, i64>(2)?,
                             row.get::<_, i64>(3)?,
                             row.get::<_, i64>(4)?,
-                            row.get::<_, f64>(5)?,
+                            row.get::<_, i64>(5)?,
                             row.get::<_, f64>(6)?,
+                            row.get::<_, f64>(7)?,
                         ))
                     },
                 )?
                 .collect::<Result<Vec<_>, _>>()?;
             drop(check_statement);
-            for (bucket_start, name, count, ok, failed, latency_sum, latency_max) in check_rows {
+            for (bucket_start, name, count, ok, degraded, failed, latency_sum, latency_max) in
+                check_rows
+            {
                 if !matches_filter(request.check_names.as_ref(), &name) {
                     continue;
                 }
@@ -588,6 +591,7 @@ impl HealthStore {
                     let check = bucket.checks.entry(name).or_default();
                     check.sample_count += count;
                     check.ok_count += ok;
+                    check.degraded_count += degraded;
                     check.failed_count += failed;
                     check.latency_sum_ms += latency_sum;
                     check.latency_max_ms = check.latency_max_ms.max(latency_max);
@@ -619,6 +623,9 @@ impl HealthStore {
                                         check.sample_count.try_into().unwrap_or_default(),
                                     ),
                                     ok_count: Uint64(check.ok_count.try_into().unwrap_or_default()),
+                                    degraded_count: Uint64(
+                                        check.degraded_count.try_into().unwrap_or_default(),
+                                    ),
                                     failed_count: Uint64(
                                         check.failed_count.try_into().unwrap_or_default(),
                                     ),
@@ -721,6 +728,7 @@ impl MetricBucket {
 struct CheckMetric {
     sample_count: i64,
     ok_count: i64,
+    degraded_count: i64,
     failed_count: i64,
     latency_sum_ms: f64,
     latency_max_ms: f64,

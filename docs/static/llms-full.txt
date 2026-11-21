@@ -544,8 +544,11 @@ claims. No health declaration is needed in service contracts, and initial
 publication does not gate connection.
 
 A participant can add its own version, structured details, and named checks to
-every heartbeat; checks run at each publication. With any check failing, the
-instance reports degraded, or unhealthy when every check fails.
+every heartbeat; checks run at each publication. A check reports `ok`,
+`degraded` or `failed`. Any failed check makes the instance unhealthy;
+otherwise any degraded check makes it degraded; otherwise it is healthy.
+Checks an SDK adds itself count like any other, so the rule reads the same in
+every language.
 
 Each service heartbeat also carries its lifecycle `phase`: `connecting`,
 `serving` or `stopping`, published again at once on every change.
@@ -1601,6 +1604,11 @@ pending until an administrator approves it, logging the review link and printing
 it as a QR code on stderr. An administrator's rejection fails `connect`;
 `signal` cancels the wait.
 
+`service.health.setInfo({ version, info })` and
+`service.health.add(name, () => ({ status, summary, error, info }))` add to the
+automatic heartbeats, with `status` `"ok"`, `"degraded"` or `"failed"`;
+`add` returns a function that removes the check.
+
 When the installation serves a private CA, such as the Trellis-generated
 installation CA, start Node services, devices, and native apps with
 `NODE_EXTRA_CA_CERTS=<path to ca.crt>`. Node then verifies OAuth HTTPS and
@@ -2186,7 +2194,8 @@ naming the review link or, without a Console, the CLI command that shows it.
 `service.health()` adds to the automatic heartbeats:
 `set_info(ServiceHealthInfo { version, info })` (or `set_info_with` for values
 computed per heartbeat) and `add(name, || async { ServiceHealthCheck::ok() })`,
-whose returned registration's `remove()` drops the check. A device's connected
+whose returned registration's `remove()` drops the check. A check returns
+`ServiceHealthCheck::ok()`, `::degraded(summary)` or `::failed(error)`. A device's connected
 client has the same `health()`.
 
 Register generated providers before `service.run().await`. The service lifecycle

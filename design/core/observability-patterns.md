@@ -66,16 +66,28 @@ Heartbeat behavior:
 - `TrellisService.connect(...)`, Rust `TrellisClient::connect_service(...)`,
   `TrellisDevice.connect(...)`, and Rust `TrellisClient::connect_device(...)`
   publish baseline samples automatically after authenticated bootstrap
-- baseline heartbeats include runtime metadata, instance identity, publish
-  interval, and a built-in NATS connectivity check
+- baseline heartbeats include runtime metadata, instance identity and publish
+  interval; TypeScript heartbeats also list a built-in `nats` connectivity
+  check, which Rust leaves out because an arriving heartbeat already proves the
+  connection
 - service heartbeats carry the lifecycle `phase` (`connecting`, `serving`,
   `stopping`); the SDK publishes a sample at once on every phase change, so a
   watcher sees an instance move without waiting for the interval
 - `service.health.setInfo(...)` and `service.health.add(...)` (Rust
   `service.health().set_info(...)` and `.add(...)`) extend service heartbeat
   payloads at publish time using callback-based state snapshots; the same
-  helper surface is also available on device connections. Any failing check
-  reports the instance degraded, or unhealthy when every check fails
+  helper surface is also available on device connections
+- each check reports `ok`, `degraded` (working with reduced capacity or
+  quality) or `failed`. The participant's status follows from its checks by
+  one rule in both SDKs: any `failed` check makes it `unhealthy`; otherwise any
+  `degraded` check makes it `degraded`; otherwise it is `healthy`. Built-in
+  checks count like any other, so one failing check reads the same in a Rust
+  and a TypeScript service however many other checks pass. The heartbeat
+  carries this as `reportedStatus`, and the Health projection's
+  `effectiveStatus` is that status until the heartbeats stop, when it becomes
+  `offline`. Across a deployment's instances the worst status wins: any
+  unhealthy instance makes it unhealthy, and a degraded or offline instance
+  degraded
 - heartbeat samples are signed native events, not a raw monitoring channel;
   Console reads the Rust-owned health projection through `Health.Query`,
   `Health.Inspect`, and `Health.Metrics`, then uses `Health.Watch` as a

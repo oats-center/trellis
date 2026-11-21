@@ -137,7 +137,8 @@ naming the review link or, without a Console, the CLI command that shows it.
 `service.health()` adds to the automatic heartbeats:
 `set_info(ServiceHealthInfo { version, info })` (or `set_info_with` for values
 computed per heartbeat) and `add(name, || async { ServiceHealthCheck::ok() })`,
-whose returned registration's `remove()` drops the check. A device's connected
+whose returned registration's `remove()` drops the check. A check returns
+`ServiceHealthCheck::ok()`, `::degraded(summary)` or `::failed(error)`. A device's connected
 client has the same `health()`.
 
 Register generated providers before `service.run().await`. The service lifecycle

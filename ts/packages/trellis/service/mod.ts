@@ -9,6 +9,7 @@
 
 export {
   type HealthCheckResult,
+  type HealthCheckStatus,
   runAllServiceHealthChecks,
   runServiceHealthCheck,
   type ServiceHealth,

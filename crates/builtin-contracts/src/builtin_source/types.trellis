@@ -730,6 +730,7 @@ model HealthInspectResponseInstancesItemLatestSampleSample {
 }
 
 model HealthMetricsResponseSeriesItemBucketsItemChecksItem {
+  degradedCount: uint64;
   failedCount: uint64;
   latencyAverageMs: HealthMetricsResponseSeriesItemBucketsItemChecksItemLatencyAverageMs;
   latencyMaxMs: HealthMetricsResponseSeriesItemBucketsItemChecksItemLatencyMaxMs;
@@ -814,6 +815,7 @@ enum HealthNotFoundErrorDataType {
 
 enum HealthHeartbeatSampleChecksItemStatus {
   ok;
+  degraded;
   failed;
 }
 
@@ -898,6 +900,7 @@ enum HealthWatchFrameValue2Type {
 
 enum HealthInspectResponseHistoryItemChecksItemStatus {
   ok;
+  degraded;
   failed;
 }
 
@@ -914,6 +917,7 @@ enum HealthWatchFrameValue2ChangesItemParticipantKind {
 
 enum HealthInspectResponseInstancesItemLatestSampleChecksItemStatus {
   ok;
+  degraded;
   failed;
 }
 

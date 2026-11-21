@@ -634,7 +634,7 @@ fn validate_sample(
         if check.name.is_empty()
             || check.name.len() > 128
             || !names.insert(&check.name)
-            || !matches!(check.status.as_str(), "ok" | "failed")
+            || !matches!(check.status.as_str(), "ok" | "degraded" | "failed")
             || !check.latency_ms.0 .0.is_finite()
             || !(0.0..=3_600_000.0).contains(&check.latency_ms.0 .0)
         {

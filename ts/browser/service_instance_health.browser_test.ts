@@ -2,7 +2,9 @@
  * An administrator sees which instance of a service is unhealthy and why:
  * the CLI's `svc <ID> instances`, as text and as JSON, and the Console's
  * instance table name the failing check and its message, and say nothing
- * more of a healthy instance.
+ * more of a healthy instance. One failed check makes an instance unhealthy
+ * even though the SDK's own connection check passes, and a degraded check
+ * makes it degraded, as a Rust service reports the same checks.
  */
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -46,6 +48,11 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
       deployment: "checked",
       contract,
     });
+    const degradedKey = await runtime.services.createInstance({
+      name: "checked-degraded",
+      deployment: "checked",
+      contract,
+    });
     const deploymentId = healthyKey.deploymentId;
     const connect = (seed: string) =>
       TrellisService.connect({
@@ -56,12 +63,17 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
       }).orThrow();
     const healthy = await connect(healthyKey.seed);
     const failing = await connect(failingKey.seed);
+    const degraded = await connect(degradedKey.seed);
     healthy.health.add("database", () => ({ status: "ok" }));
     failing.health.add("database", () => ({
       status: "failed",
       error: "connection refused",
     }));
-    const exits = [healthy, failing].map((service) =>
+    degraded.health.add("cache", () => ({
+      status: "degraded",
+      summary: "serving from one replica",
+    }));
+    const exits = [healthy, failing, degraded].map((service) =>
       service.wait().catch((error: unknown) => error),
     );
     const browser = await chromium.launch({
@@ -90,6 +102,8 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
           return (
             byId.get(healthyKey.instanceId)?.health?.status === "healthy" &&
             (byId.get(failingKey.instanceId)?.health?.failingChecks.length ??
+              0) > 0 &&
+            (byId.get(degradedKey.instanceId)?.health?.failingChecks.length ??
               0) > 0
           );
         },
@@ -99,16 +113,24 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
         status: "healthy",
         failingChecks: [],
       });
-      const unhealthy = byId.get(failingKey.instanceId)?.health;
-      assert(
-        unhealthy?.status === "unhealthy" || unhealthy?.status === "degraded",
-        `the failing instance reads ${unhealthy?.status}`,
-      );
-      assert.deepEqual(unhealthy.failingChecks, [
-        { name: "database", status: "failed", error: "connection refused" },
-      ]);
+      assert.deepEqual(byId.get(failingKey.instanceId)?.health, {
+        status: "unhealthy",
+        failingChecks: [
+          { name: "database", status: "failed", error: "connection refused" },
+        ],
+      });
+      assert.deepEqual(byId.get(degradedKey.instanceId)?.health, {
+        status: "degraded",
+        failingChecks: [
+          {
+            name: "cache",
+            status: "degraded",
+            summary: "serving from one replica",
+          },
+        ],
+      });
 
-      // The text listing adds a line for the failing check only.
+      // The text listing adds a line for each failing check only.
       const binary = process.env.TRELLIS_TEST_CLI_BIN;
       assert(binary);
       const { stdout } = await promisify(execFile)(
@@ -131,6 +153,12 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
         stdout,
       );
       assert(
+        lines.includes(
+          `${degradedKey.instanceId}: check cache degraded: serving from one replica`,
+        ),
+        stdout,
+      );
+      assert(
         !lines.some((line) => line.startsWith(`${healthyKey.instanceId}:`)),
         stdout,
       );
@@ -140,7 +168,8 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
           .map((line) => line.split("\t"))
           .find((cells) => cells.includes(instanceId));
       assert(row(healthyKey.instanceId)?.includes("healthy"), stdout);
-      assert(row(failingKey.instanceId)?.includes(unhealthy.status), stdout);
+      assert(row(failingKey.instanceId)?.includes("unhealthy"), stdout);
+      assert(row(degradedKey.instanceId)?.includes("degraded"), stdout);
 
       // The Console's instance table names the same check.
       const page = await context.newPage();
@@ -157,7 +186,7 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
         async () =>
           (await running(failingKey.instanceId).getAttribute(
             "data-health-status",
-          )) === unhealthy.status,
+          )) === "unhealthy",
         { timeoutMs: 30_000 },
       );
       const check = running(failingKey.instanceId).locator(
@@ -183,6 +212,7 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
       await browser.close();
       await healthy.stop();
       await failing.stop();
+      await degraded.stop();
       for (const exit of exits) assert.equal(await exit, undefined);
     }
   }, browserRuntimeOptions());

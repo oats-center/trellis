@@ -1,6 +1,7 @@
 //! Commands that ask for missing input, driven through a pseudo-terminal
-//! against a live runtime, the same commands run by scripts without one, and
-//! the app commands that keep a disabled app disabled.
+//! against a live runtime, the same commands run by scripts without one, the
+//! app commands that keep a disabled app disabled, and color that appears only
+//! on a terminal.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -663,4 +664,95 @@ async fn an_account_manager_chooses_the_provider_when_linking_a_sign_in() {
         ])
         .await;
     assert_eq!(found["user"]["principalId"], person.principal_id());
+}
+
+/// `svc <ID> instances` colors a failing check's state on a terminal, and
+/// writes plain text when piped, with `NO_COLOR`, or with `TERM=dumb`, so
+/// scripts and log files never see escape codes unless `CLICOLOR_FORCE` asks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instance_listings_are_colored_only_where_color_is_wanted() {
+    use runtime_trellis::participants::runtime_trellis_provider::Participant;
+    use trellis_rs::service::ServiceHealthCheck;
+
+    const RED_FAILED: &str = "\x1b[31mfailed\x1b[39m: connection refused";
+
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("colored checks")
+        .await
+        .unwrap();
+    let service = Participant::connect(
+        identity
+            .connect_options()
+            .with_health_heartbeat_interval_ms(1_000),
+    )
+    .await
+    .unwrap();
+    let _check = service.health().add("database", || async {
+        ServiceHealthCheck::failed("connection refused")
+    });
+    let cli = Cli::login(&mut runtime, None).await;
+    let deployment = identity.deployment_id();
+    let args = ["--format", "text", "svc", deployment, "instances"];
+    let line = format!(
+        "{}: check database failed: connection refused",
+        identity.instance_id()
+    );
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let listed = cli.json(&["svc", deployment, "instances"]).await;
+            if listed["instances"][0]["status"]["health"]["status"] == "unhealthy" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("the instance reports its failing check");
+
+    let command = |env: &[(&str, &str)]| {
+        let mut command = std::process::Command::new(CLI);
+        command
+            .args(args)
+            .env("XDG_CONFIG_HOME", &cli.config)
+            .env("TERM", "xterm-256color")
+            .env_remove("NO_COLOR")
+            .env_remove("CLICOLOR_FORCE")
+            .envs(env.iter().copied());
+        command
+    };
+    let piped = |env: &[(&str, &str)]| {
+        let output = command(env)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    for env in [&[][..], &[("NO_COLOR", "1")]] {
+        let stdout = piped(env);
+        assert!(stdout.lines().any(|text| text == line), "{env:?}: {stdout}");
+        assert!(!stdout.contains('\x1b'), "{env:?}: {stdout:?}");
+    }
+    let forced = piped(&[("CLICOLOR_FORCE", "1")]);
+    assert!(forced.contains(RED_FAILED), "{forced:?}");
+
+    let on_terminal = |env: &[(&str, &str)]| {
+        let mut session = rexpect::session::spawn_command(command(env), Some(30_000)).unwrap();
+        session.exp_eof().unwrap()
+    };
+    let colored = on_terminal(&[]);
+    assert!(colored.contains(RED_FAILED), "{colored:?}");
+    for env in [[("NO_COLOR", "1")], [("TERM", "dumb")]] {
+        let plain = on_terminal(&env);
+        assert!(plain.contains("failed: connection refused"), "{plain:?}");
+        assert!(!plain.contains('\x1b'), "{env:?}: {plain:?}");
+    }
+
+    drop(service);
+    runtime.shutdown().await.unwrap();
 }

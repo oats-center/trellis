@@ -243,7 +243,7 @@ test("runtime Events transports Health.StatusChanged on its qualified subject", 
             item.effectiveStatus === "healthy",
         ),
       );
-      for (const status of ["degraded", "healthy"] as const) {
+      for (const status of ["unhealthy", "healthy"] as const) {
         healthy = status === "healthy";
         await runtime.waitFor(async () => {
           const rows = await reader

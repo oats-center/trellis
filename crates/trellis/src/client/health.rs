@@ -26,7 +26,10 @@ pub struct ServiceHealthInfo {
 pub enum HealthCheckStatus {
     /// The check passed.
     Ok,
-    /// The check failed.
+    /// The check works with reduced capacity or quality; the participant
+    /// reports itself degraded unless another check failed.
+    Degraded,
+    /// The check failed; the participant reports itself unhealthy.
     Failed,
 }
 
@@ -49,6 +52,16 @@ impl ServiceHealthCheck {
         Self {
             status: HealthCheckStatus::Ok,
             summary: None,
+            info: None,
+            error: None,
+        }
+    }
+
+    /// A degraded check with `summary` saying what is reduced.
+    pub fn degraded(summary: impl Into<String>) -> Self {
+        Self {
+            status: HealthCheckStatus::Degraded,
+            summary: Some(summary.into()),
             info: None,
             error: None,
         }

@@ -4,7 +4,11 @@ export const HealthInfoSchema = Type.Record(Type.String(), Type.Unknown());
 
 export const HealthCheckResultSchema = Type.Object({
   name: Type.String(),
-  status: Type.Union([Type.Literal("ok"), Type.Literal("failed")]),
+  status: Type.Union([
+    Type.Literal("ok"),
+    Type.Literal("degraded"),
+    Type.Literal("failed"),
+  ]),
   error: Type.Optional(Type.String()),
   summary: Type.Optional(Type.String()),
   info: Type.Optional(HealthInfoSchema),

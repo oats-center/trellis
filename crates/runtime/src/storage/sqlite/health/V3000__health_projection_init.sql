@@ -86,6 +86,7 @@ CREATE TABLE health_check_metric_buckets (
   check_name TEXT NOT NULL,
   sample_count INTEGER NOT NULL DEFAULT 0,
   ok_count INTEGER NOT NULL DEFAULT 0,
+  degraded_count INTEGER NOT NULL DEFAULT 0,
   failed_count INTEGER NOT NULL DEFAULT 0,
   latency_sum_ms REAL NOT NULL DEFAULT 0,
   latency_max_ms REAL NOT NULL DEFAULT 0,

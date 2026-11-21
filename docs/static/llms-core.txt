@@ -538,8 +538,11 @@ claims. No health declaration is needed in service contracts, and initial
 publication does not gate connection.
 
 A participant can add its own version, structured details, and named checks to
-every heartbeat; checks run at each publication. With any check failing, the
-instance reports degraded, or unhealthy when every check fails.
+every heartbeat; checks run at each publication. A check reports `ok`,
+`degraded` or `failed`. Any failed check makes the instance unhealthy;
+otherwise any degraded check makes it degraded; otherwise it is healthy.
+Checks an SDK adds itself count like any other, so the rule reads the same in
+every language.
 
 Each service heartbeat also carries its lifecycle `phase`: `connecting`,
 `serving` or `stopping`, published again at once on every change.

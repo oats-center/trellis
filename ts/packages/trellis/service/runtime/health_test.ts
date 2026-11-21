@@ -52,13 +52,27 @@ test("ServiceHealth aggregates registered checks and info", async () => {
   const response = await health.response();
   const heartbeat = await health.sample();
 
-  assert.deepEqual(response.status, "degraded");
+  // One failed check makes the participant unhealthy although the built-in
+  // connection check passes.
+  assert.deepEqual(response.status, "unhealthy");
   assert.deepEqual(response.checks.length, 2);
   assert.deepEqual(heartbeat.participant.contractId, "trellis.audit@v1");
   assert.deepEqual(heartbeat.participant.version, "1.2.3");
-  assert.deepEqual(heartbeat.reportedStatus, "degraded");
+  assert.deepEqual(heartbeat.reportedStatus, "unhealthy");
+  assert.deepEqual(heartbeat.summary, "1 check failing");
   assert.equal(heartbeat.participant.runtime, "node");
   assert.equal(heartbeat.participant.runtimeVersion, process.version);
+
+  // A degraded check, with none failed, makes it degraded.
+  health.add("db", () => ({ status: "ok" }));
+  health.add("cache", () => ({
+    status: "degraded",
+    summary: "serving from one replica",
+  }));
+  const degraded = await health.sample();
+  assert.deepEqual(degraded.reportedStatus, "degraded");
+  assert.deepEqual(degraded.summary, "1 check degraded");
+  assert.deepEqual((await health.response()).status, "degraded");
 });
 
 test("health wire schemas accept additive fields", () => {

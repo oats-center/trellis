@@ -193,12 +193,14 @@ accept a waiting claim's ID or name as well as a deployment's.
 (`digest`, `version`, `current`, and a short `label`), `connectedAt`,
 `lastHeartbeat`, `health`, and while waiting `reviewUrl` or `missingSettings`.
 `health` is `{ status, failingChecks }`: the heartbeat's effective status
-(`healthy`, `degraded`, `unhealthy`, `offline`) and each failing check's
-`name`, `status`, and the `summary` and `error` it reported. A disconnected
+(`healthy`, `degraded`, `unhealthy`, `offline`) and each check not `ok`
+(`degraded` or `failed`) with its `name`, `status`, and the `summary` and
+`error` it reported. A disconnected
 instance is `offline` with no checks; a connected one with no current
 heartbeat has no `health`. The text table shows state, health, build,
 connected and last heartbeat, and below it prints one line per failing check
-(`<instance ID>: check <name> failed: <error or summary>`) and what a waiting
+(`<instance ID>: check <name> <status>: <error or summary>`, the status
+colored like other states on a terminal) and what a waiting
 instance needs. The Console's service page shows the same health and failing
 checks. The states follow `design/auth/service-updates.md`.
 
