@@ -1,8 +1,8 @@
 /**
  * What a service instance is doing right now, joined from what Auth knows of
  * it (connection, pending update, missing settings) and what it last reported
- * in its heartbeat (phase, build, version). The CLI's `svc <ID> instances`
- * computes the same states.
+ * in its heartbeat (phase, build, version, health and checks). The CLI's
+ * `svc <ID> instances` computes the same states.
  */
 
 /** Where an instance is in its lifecycle. */
@@ -35,14 +35,32 @@ export type ReportedInstance = {
   readonly observedAt: string;
   readonly latestSample: {
     readonly phase?: string;
+    readonly checks: readonly ReportedCheck[];
     readonly participant: { readonly version?: string };
     readonly sample: { readonly time: string };
   };
 };
 
-/** One instance's state, build and timing. */
+/** One check as a heartbeat reports it. */
+export type ReportedCheck = {
+  readonly name: string;
+  readonly status: string;
+  readonly summary?: string;
+  readonly error?: string;
+};
+
+/** One instance's state, health, build and timing. */
 export type InstanceStatus = {
   readonly state: InstanceState;
+  /**
+   * The effective health status and the checks failing in the current
+   * heartbeat; absent while a connected instance has not reported on this
+   * connection.
+   */
+  readonly health?: {
+    readonly status: string;
+    readonly failingChecks: readonly ReportedCheck[];
+  };
   readonly build: {
     readonly digest?: string;
     readonly version?: string;
@@ -73,7 +91,8 @@ function reportedPhase(phase: string | undefined): InstanceState {
  * An instance that is not connected is offline. A connected one is in the
  * phase its latest heartbeat reports, when that heartbeat is current and came
  * on this connection. Before its first heartbeat it waits for its update's
- * approval, then for missing settings, and is otherwise starting.
+ * approval, then for missing settings, and is otherwise starting. Its health
+ * comes from that same current heartbeat; a disconnected instance is offline.
  */
 export function instanceStatus(
   instance: ListedInstance,
@@ -100,8 +119,25 @@ export function instanceStatus(
             ? "waitingForSettings"
             : "starting";
   const digest = reporting?.contractDigest ?? instance.participantDigest;
+  const health =
+    connectedAt === undefined
+      ? { status: "offline", failingChecks: [] }
+      : reporting
+        ? {
+            status: reporting.effectiveStatus,
+            failingChecks: reporting.latestSample.checks
+              .filter((check) => check.status !== "ok")
+              .map(({ name, status, summary, error }) => ({
+                name,
+                status,
+                ...(summary === undefined ? {} : { summary }),
+                ...(error === undefined ? {} : { error }),
+              })),
+          }
+        : undefined;
   return {
     state,
+    health,
     build: {
       digest,
       version: reporting?.latestSample.participant.version,

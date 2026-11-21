@@ -167,9 +167,11 @@ Then, for each upgrade:
 show, for each instance, its build and version, whether that is the
 deployment's current build or an older one still running, its state
 (starting, waiting for approval with the review link, waiting for settings
-naming the missing ones, serving, stopping), when it connected and its last
-heartbeat. `--format json` gives a script the same. During a switch you see the
-new instance move to serving and then the old one leave.
+naming the missing ones, serving, stopping), its health (healthy, degraded,
+unhealthy, offline) with each failing check's name and message, when it
+connected and its last heartbeat. `--format json` gives a script the same.
+During a switch you see the new instance move to serving and then the old one
+leave.
 
 If the new build asks for new access, it waits for approval and the old build
 keeps serving. Approve it, or install it beforehand with

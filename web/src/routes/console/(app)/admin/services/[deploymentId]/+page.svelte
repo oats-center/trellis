@@ -840,6 +840,7 @@
               <td
                 class="hidden sm:table-cell"
                 data-runtime-state={status?.state}
+                data-health-status={status?.health?.status}
               >
                 {#if status}
                   <span class="flex flex-col gap-0.5">
@@ -848,6 +849,20 @@
                       label={STATE_LABELS[status.state]}
                       status={stateTone(status.state)}
                     />
+                    <!-- Running and healthy, or offline, says it all; otherwise name what fails. -->
+                    {#if status.health && status.health.status !== "healthy" && status.health.status !== "offline"}
+                      <span class="text-xs"
+                        ><HealthStatus status={status.health.status} /></span
+                      >
+                      {#each status.health.failingChecks as check (check.name)}<span
+                          class="text-xs text-error"
+                          data-failing-check={check.name}
+                          >{humanizeName(
+                            check.name,
+                          )}{#if check.error ?? check.summary}: {check.error ??
+                              check.summary}{/if}</span
+                        >{/each}
+                    {/if}
                     {#if status.state === "waitingForApproval"}
                       {#if status.reviewUrl}<a
                           class="link text-xs"

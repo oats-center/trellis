@@ -9,6 +9,7 @@ const report = (observedAt: string, phase?: string): ReportedInstance => ({
   observedAt,
   latestSample: {
     ...(phase ? { phase } : {}),
+    checks: [],
     participant: { version: "2.0.0" },
     sample: { time: observedAt },
   },
