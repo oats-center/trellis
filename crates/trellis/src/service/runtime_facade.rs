@@ -132,7 +132,8 @@ impl crate::generated::RpcDescriptor for ConsumerReportDelivery {
 
     const API_ID: &'static str = "trellis.events@v1";
     const DESCRIPTOR_NAME: &'static str = "rpc.Consumers.ReportDelivery";
-    const SUBJECT: &'static str = "rpc.v1.events.Consumers.ReportDelivery";
+    // `rpc.v1.<token of trellis.events@v1>.Consumers.ReportDelivery`
+    const SUBJECT: &'static str = "rpc.v1.dHJlbGxpcy5ldmVudHNAdjE.Consumers.ReportDelivery";
     const KEY: &'static str = "events.Consumers.ReportDelivery";
     const CALLER_CAPABILITIES: &'static [&'static str] = &[];
     const DOWNLOAD: bool = false;
@@ -151,7 +152,8 @@ impl crate::generated::RpcDescriptor for ConsumerDeadLetterInspect {
 
     const API_ID: &'static str = "trellis.events@v1";
     const DESCRIPTOR_NAME: &'static str = "rpc.DeadLetters.Inspect";
-    const SUBJECT: &'static str = "rpc.v1.events.DeadLetters.Inspect";
+    // `rpc.v1.<token of trellis.events@v1>.DeadLetters.Inspect`
+    const SUBJECT: &'static str = "rpc.v1.dHJlbGxpcy5ldmVudHNAdjE.DeadLetters.Inspect";
     const KEY: &'static str = "events.DeadLetters.Inspect";
     const CALLER_CAPABILITIES: &'static [&'static str] = &[];
     const DOWNLOAD: bool = false;
@@ -2467,14 +2469,15 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
         ServiceRuntimeError::Server(Box::new(ServerError::Internal(error.to_string())))
     })?;
     let body = serde_json::json!({ "participantId": C::ID, "packageEvidence": evidence });
-    let submit = || {
-        client.request_json_value(
-            API,
-            action("ServiceUpdates.Submit"),
-            "rpc.v1.auth.ServiceUpdates.Submit",
-            &body,
-        )
+    let subject = |name: &str| {
+        trellis_protocol::derive_rpc_subject(API, name).map_err(|error| {
+            ServiceRuntimeError::Server(Box::new(ServerError::Internal(error.to_string())))
+        })
     };
+    let submit_subject = subject("ServiceUpdates.Submit")?;
+    let status_subject = subject("ServiceUpdates.Status")?;
+    let submit =
+        || client.request_json_value(API, action("ServiceUpdates.Submit"), &submit_subject, &body);
     let waited = async {
         let mut update = submit().await?["update"].take();
         let mut shown = None;
@@ -2539,7 +2542,7 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
                 .request_json_value(
                     API,
                     action("ServiceUpdates.Status"),
-                    "rpc.v1.auth.ServiceUpdates.Status",
+                    &status_subject,
                     &serde_json::json!({ "updateId": update["updateId"] }),
                 )
                 .await?["update"]

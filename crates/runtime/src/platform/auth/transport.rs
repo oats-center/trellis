@@ -388,7 +388,11 @@ impl SqliteAuthorizationStore {
                 if !jobs.queues.is_empty()
                     && matches!(&authority.binding, SessionBinding::Service { .. })
                 {
-                    publish.insert("rpc.v1.jobs.History".into());
+                    publish.insert(
+                        <trellis_runtime_apis::apis::trellis_jobs_v1::rpc::History as
+                            trellis_rs::generated::RpcDescriptor>::SUBJECT
+                            .into(),
+                    );
                 }
                 publish.insert("$JS.API.STREAM.INFO.JOBS".into());
                 let work_stream = jobs.work_stream.as_deref().ok_or(AuthError::Unavailable)?;

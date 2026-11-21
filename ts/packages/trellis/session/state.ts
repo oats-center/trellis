@@ -87,7 +87,7 @@ export const STATE_RUNTIME_RPC: {
   Delete: StateRuntimeRpc<"rpc:Delete">;
 } = {
   Register: {
-    subject: "rpc.v1.state.Register",
+    subject: STATE_API.actions["rpc:Register"].subject,
     input: STATE_API.actions["rpc:Register"].input,
     output: STATE_API.actions["rpc:Register"].output,
     callerCapabilities: [],
@@ -98,7 +98,7 @@ export const STATE_RUNTIME_RPC: {
     runtimeErrors: STATE_API.actions["rpc:Register"].errors,
   },
   Get: {
-    subject: "rpc.v1.state.Get",
+    subject: STATE_API.actions["rpc:Get"].subject,
     input: STATE_API.actions["rpc:Get"].input,
     output: STATE_API.actions["rpc:Get"].output,
     callerCapabilities: [],
@@ -109,7 +109,7 @@ export const STATE_RUNTIME_RPC: {
     runtimeErrors: STATE_API.actions["rpc:Get"].errors,
   },
   Put: {
-    subject: "rpc.v1.state.Put",
+    subject: STATE_API.actions["rpc:Put"].subject,
     input: STATE_API.actions["rpc:Put"].input,
     output: STATE_API.actions["rpc:Put"].output,
     callerCapabilities: [],
@@ -120,7 +120,7 @@ export const STATE_RUNTIME_RPC: {
     runtimeErrors: STATE_API.actions["rpc:Put"].errors,
   },
   Delete: {
-    subject: "rpc.v1.state.Delete",
+    subject: STATE_API.actions["rpc:Delete"].subject,
     input: STATE_API.actions["rpc:Delete"].input,
     output: STATE_API.actions["rpc:Delete"].output,
     callerCapabilities: [],

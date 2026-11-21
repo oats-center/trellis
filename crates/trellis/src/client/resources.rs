@@ -328,7 +328,7 @@ impl<D> BoundStateResourceClient<D> {
         action: &str,
         body: serde_json::Value,
     ) -> Result<serde_json::Value, super::TrellisClientError> {
-        let subject = trellis_protocol::derive_rpc_subject("v1", &format!("state.{action}"))?;
+        let subject = trellis_protocol::derive_rpc_subject(STATE_API_ID, action)?;
         self.client
             .request_json_value(
                 STATE_API_ID,

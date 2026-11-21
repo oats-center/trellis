@@ -802,7 +802,7 @@ mod tests {
         assert_eq!(
             resolve_event_identity("events.v1.YWNtZS1vcmRlcnMucnVudGltZUB2MQ.Changed.customer"),
             (
-                Some("localhost/acme-orders.runtime@v1".to_owned()),
+                Some("acme-orders.runtime@v1".to_owned()),
                 Some("Changed".to_owned())
             )
         );

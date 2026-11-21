@@ -1364,7 +1364,6 @@ fn render_action(
     } else {
         format!("{}.{}", api.name(), name)
     };
-    let version = format!("v{}", api.major());
     let capabilities = |direction| action_capabilities(api, action_kind(action), name, direction);
     let docs = rust_docs(&action_documentation(
         graph,
@@ -1410,7 +1409,7 @@ fn render_action(
                 bool = {download}; pub const CURSOR_PAGINATION: bool = {}; }}\n",
                 type_path(input),
                 format!("rpc.{name}"),
-                format!("rpc.{version}.{key}"),
+                &api.subjects().rpc[name],
                 string_slice(capabilities(InteractionDirection::Call)),
                 qualified_errors(api, errors),
                 pagination.is_some(),
@@ -1548,7 +1547,7 @@ fn render_action(
                 str] = &{}; pub const ERRORS: &'static [&'static str] = &{}; pub const \
                 UPLOAD: bool = {upload}; pub const STREAM: bool = {stream}; }}\n",
                 format!("operation.{name}"),
-                format!("operations.{version}.{}.{name}", api.name()),
+                &api.subjects().operations[name],
                 string_slice(capabilities(InteractionDirection::Invoke)),
                 qualified_errors(api, errors),
             ));

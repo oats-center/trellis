@@ -3020,7 +3020,7 @@ import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
 import type { ConnectedTrellisClient } from "@oatscenter/trellis";
 
 // Package subpaths resolve, with declarations, to the modules the root exports.
-const ordersIdentity: "example.orders@v1" = Orders.identity;
+const ordersIdentity: "localhost/example.orders@v1" = Orders.identity;
 if (!worker.implements.some((api) => api === Orders) || viewer !== apps.Viewer.request) {
   throw new Error("A package subpath loaded a second copy of a generated module");
 }
@@ -3030,7 +3030,7 @@ const requested: AppRequestDescriptor = apps.Viewer.request;
 const nativeKind: "native" = apps.Tool.request.kind;
 const browserKind: "browser" = apps.Viewer.request.kind;
 if (nativeKind !== "native" || browserKind !== "browser" ||
-  apps.Tool.request.requiredCapabilities.join() !== "example.orders.v1:items.read") {
+  apps.Tool.request.requiredCapabilities.join() !== "localhost/example.orders.v1:items.read") {
   throw new Error("Generated app requests lost their declared kind or capability");
 }
 const codec = apps.Sensor_Console.request.states.values.codec;
@@ -3344,7 +3344,7 @@ console.log(JSON.stringify({ errors, docs }));
         assert!(
             get.contains("Look up one order.")
                 && get.contains("Errors: Missing.")
-                && get.contains("Call is allowed by capability example.orders.v1:orders.read")
+                && get.contains("Call is allowed by capability localhost/example.orders.v1:orders.read")
                 && get.contains("(Read orders): See every order."),
             "{result}"
         );
@@ -3356,7 +3356,7 @@ console.log(JSON.stringify({ errors, docs }));
         assert!(
             text(7).contains("Rebuild the order index.")
                 && text(7).contains(
-                    "Invoke is allowed by capability example.orders.v1:orders.admin \
+                    "Invoke is allowed by capability localhost/example.orders.v1:orders.admin \
                     (Administer orders): Rebuild order indexes."
                 ),
             "{result}"
@@ -3365,7 +3365,7 @@ console.log(JSON.stringify({ errors, docs }));
         assert!(
             changed.contains("An order changed.")
                 && changed
-                    .contains("Subscribe is allowed by capability example.orders.v1:orders.read"),
+                    .contains("Subscribe is allowed by capability localhost/example.orders.v1:orders.read"),
             "{result}"
         );
         assert_eq!(text(9), changed, "{result}");

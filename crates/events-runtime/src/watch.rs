@@ -230,7 +230,7 @@ mod tests {
     fn watch_filters_resolved_event_types() {
         let input: lives::WatchInput = serde_json::from_value(serde_json::json!({
             "includeEventTypes": [{
-                "ownerContractId": "localhost/acme-orders.runtime@v1",
+                "ownerContractId": "acme-orders.runtime@v1",
                 "ownerEventName": "Changed"
             }]
         }))
@@ -239,7 +239,7 @@ mod tests {
         assert!(matches_input(
             &input,
             "events.v1.token.Changed",
-            Some("localhost/acme-orders.runtime@v1"),
+            Some("acme-orders.runtime@v1"),
             Some("Changed"),
             None,
             None,
@@ -247,7 +247,7 @@ mod tests {
         assert!(!matches_input(
             &input,
             "events.v1.token.Created",
-            Some("localhost/acme-orders.runtime@v1"),
+            Some("acme-orders.runtime@v1"),
             Some("Created"),
             None,
             None,

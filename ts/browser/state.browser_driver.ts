@@ -9,6 +9,9 @@ import { chromium, type Page } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { build } from "vite";
 
+/** `State.Register`'s subject: `rpc.v1.<token of trellis.state@v1>.Register`. */
+const REGISTER_SUBJECT = `rpc.v1.${Buffer.from("trellis.state@v1").toString("base64url")}.Register`;
+
 test(
   "browser State shares only its authenticated namespace and survives runtime and Chromium restart",
   { timeout: 180000 },
@@ -83,7 +86,7 @@ test(
             if (buffered.length < length) return;
             const command = buffered.subarray(0, length);
             buffered = buffered.subarray(length);
-            if (outgoing && fields[1] === "rpc.v1.state.Register") {
+            if (outgoing && fields[1] === REGISTER_SUBJECT) {
               const headers = fields[0] === "HPUB" ? Number(fields.at(-2)) : 0;
               registrations.push(
                 JSON.parse(

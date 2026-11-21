@@ -573,11 +573,12 @@ export function operationStartSubject(
   descriptor: Pick<OperationShape, "subject" | "permissions">,
   deploymentId: string,
 ): string {
+  // The canonical start subject is `operations.v1.<api-token>.<action>`.
   const parts = descriptor.subject.split(".");
   const { apiId, apiVersion } = descriptor.permissions.invoke;
   if (
     parts[0] !== "operations" ||
-    parts[1] !== apiVersion ||
+    parts[1] !== "v1" ||
     parts.length < 4 ||
     !apiId ||
     !apiVersion ||

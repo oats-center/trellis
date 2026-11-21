@@ -198,13 +198,17 @@ liveness, and closure contract.
 RPCs query data or perform bounded synchronous operations. Caller-visible
 long-running workflows use operations.
 
-Subject naming is domain-based rather than service-based:
+An RPC's subject carries its API's identity, base64url-encoded the way event
+subjects do, followed by the action name:
 
 ```text
-rpc.v1.User.Find
-rpc.v1.Partner.List
-rpc.v1.Documents.Search
+rpc.v1.<api-token>.<Action>
 ```
+
+For `ghcr.io/acme/orders.billing@v1` and the action `Invoices.Find` that is
+`rpc.v1.Z2hjci5pby9hY21lL29yZGVycy5iaWxsaW5nQHYx.Invoices.Find`. Two APIs that
+share a name in different packages or workspaces therefore never share a
+subject or a queue group.
 
 Rules:
 
@@ -217,11 +221,17 @@ Rules:
 Operations are caller-visible asynchronous workflows with durable state,
 explicit progress, and watchable completion.
 
-Subject naming:
+The canonical start subject carries the API identity token:
 
 ```text
-operations.v1.<Domain>.<...tokens>
+operations.v1.<api-token>.<Action>
 ```
+
+Only the start subject is canonical. A started Operation's reference routes its
+status and control requests by API ID and owning deployment ID
+(`operation.v1.<api-token>.<deployment-token>.<Action>`), so a reference a
+caller restores still reaches the deployment that owns the work when several
+deployments serve the API.
 
 Rules:
 
