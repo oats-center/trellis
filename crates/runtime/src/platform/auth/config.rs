@@ -198,6 +198,23 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                 .map_err(rpc_error)
         }
     });
+    let reveal = Arc::clone(&engine);
+    provider.register_config_secrets_reveal(move |context, input| {
+        let engine = Arc::clone(&reveal);
+        async move {
+            let actor = caller(&context, None).map_err(rpc_error)?;
+            blocking(move || {
+                reveal_secret(
+                    engine.server.store(),
+                    &actor,
+                    &input,
+                    crate::clock::unix_now(),
+                )
+            })
+            .await
+            .map_err(rpc_error)
+        }
+    });
     let declare = Arc::clone(&engine);
     provider.register_config_apps_declare(move |context, input| {
         let engine = Arc::clone(&declare);
@@ -341,6 +358,95 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                 .map_err(rpc_error)
         }
     });
+}
+
+/// Secrets one administrator may be shown within [`REVEAL_WINDOW_SECONDS`].
+/// Enough to read every secret of a few services in one sitting, too few to
+/// copy them all out of a large installation unnoticed.
+const REVEALS_PER_WINDOW: u32 = 30;
+const REVEAL_WINDOW_SECONDS: i64 = 600;
+const REVEAL_AUDIT_KIND: &str = "rpc.config.secrets.reveal";
+
+/// Show one stored secret to an administrator holding `config.manageSecrets`.
+/// The audit record names who asked, the target, and the field, never the
+/// value, and it commits with the answer, so a value is shown only once its
+/// reveal is on record. A secret on an instance's deployment shows through
+/// the instance, as `Config.Get` reports it set there.
+fn reveal_secret(
+    storage: &OAuthStorage,
+    actor: &str,
+    input: &AuthConfigSecretRevealRequest,
+    now: i64,
+) -> Result<AuthConfigSecretRevealResponse, AuthError> {
+    storage.authority.transaction(|connection| {
+        require(
+            connection,
+            actor,
+            Administration::ManageConfigSecrets,
+            "showing a secret",
+        )?;
+        let target = Target::resolve(connection, &input.target)?;
+        if target.client().is_some() {
+            return Err(AuthError::Invalid(
+                "an app's settings are public, so it has no secrets".into(),
+            ));
+        }
+        let recent: u32 = connection.query_row(
+            "SELECT count(*) FROM auth_security_audit \
+            WHERE actor_principal_id=?1 AND kind=?2 AND created_at>?3",
+            params![actor, REVEAL_AUDIT_KIND, now - REVEAL_WINDOW_SECONDS],
+            |row| row.get(0),
+        )?;
+        if recent >= REVEALS_PER_WINDOW {
+            return Err(AuthError::RateLimited(format!(
+                "{REVEALS_PER_WINDOW} secrets were shown to you in the last {} minutes; \
+                try again later",
+                REVEAL_WINDOW_SECONDS / 60
+            )));
+        }
+        let field = input.field.as_str();
+        // Sources as `Config.Get` names them; a claim's values read as its
+        // deployment's.
+        let keys = match target.instance() {
+            Some(_) => vec![
+                (target.key(), "instance"),
+                (target.base_key(), "deployment"),
+            ],
+            None => vec![(target.key(), "deployment")],
+        };
+        for (key, source) in keys {
+            let Some(stored) = current(connection, &key)? else {
+                continue;
+            };
+            let mut secrets = open_secrets(storage, &key, stored.sealed.as_deref())?;
+            let Some(value) = secrets.remove(field) else {
+                continue;
+            };
+            connection.execute(
+                "INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,\
+                target_id,data_json,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    super::sqlite::id(),
+                    actor,
+                    REVEAL_AUDIT_KIND,
+                    target.key(),
+                    json(&json!({
+                        "target": input.target,
+                        "field": field,
+                        "source": source,
+                        "revision": stored.revision,
+                    }))?,
+                    now
+                ],
+            )?;
+            return Ok(serde_json::from_value(
+                json!({ "value": value, "source": source }),
+            )?);
+        }
+        Err(AuthError::Invalid(format!(
+            "no secret named {field} is stored here"
+        )))
+    })
 }
 
 /// Every build that reads `target`'s values, each named for an administrator:
@@ -723,7 +829,9 @@ pub(super) fn declaration(
         "name": name,
         "title": field.docs.title,
         "description": field.docs.description,
-        "schema": schema(graph, field)?,
+        // Described for forms, which show a model field's doc comment.
+        "schema": trellis_idl::described_expression_json_schema(graph, &field.ty)
+            .map_err(|error| AuthError::Invalid(error.to_string()))?,
         "required": field.default.is_none(),
         "secret": field.secret,
         "restart": field.restart,

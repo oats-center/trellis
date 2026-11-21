@@ -166,6 +166,8 @@ import {
   AuthConfigRevisionsListResponse,
   AuthConfigRevisionDeleteRequest,
   AuthConfigRollbackRequest,
+  AuthConfigSecretRevealRequest,
+  AuthConfigSecretRevealResponse,
   AuthOwnConfigRequest,
   AuthOwnConfigResponse,
   AuthConfigChanged,
@@ -465,6 +467,11 @@ api auth@v1 {
   rpc Config.Revisions.Delete { input AuthConfigRevisionDeleteRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Make an earlier revision's values current again, as a new revision.
   rpc Config.Rollback { input AuthConfigRollbackRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Show one stored secret's value to an administrator who asks for it.
+  /// Every settings capability reaches it so a refusal can name what is
+  /// missing, but only `config.manageSecrets` is shown the value. Each reveal
+  /// is audited, never its value.
+  rpc Config.Secrets.Reveal { input AuthConfigSecretRevealRequest; output AuthConfigSecretRevealResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// A service or device reads its own configuration, secrets included.
   rpc Config.Own.Get { input AuthOwnConfigRequest; output AuthOwnConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Attach the settings an app build declares to its registered client.
@@ -612,21 +619,21 @@ api auth@v1 {
       title "See settings";
       description "See the settings of services, devices, and apps. Secrets show only whether they are set.";
       grants "Can see every service's, device's, and app's settings, but no secret.";
-      allows { rpc Config.Get; rpc Config.Revisions.List; }
+      allows { rpc Config.Get; rpc Config.Revisions.List; rpc Config.Secrets.Reveal; }
     }
     capability config.manage {
       administrative;
       title "Change settings";
       description "Change, roll back, and delete the settings of services, devices, and apps, except secrets.";
       grants "Can change how every service, device, and app behaves.";
-      allows { rpc Config.Get; rpc Config.Set; rpc Config.Revisions.List; rpc Config.Revisions.Delete; rpc Config.Rollback; rpc Config.Apps.Declare; }
+      allows { rpc Config.Get; rpc Config.Set; rpc Config.Revisions.List; rpc Config.Revisions.Delete; rpc Config.Rollback; rpc Config.Apps.Declare; rpc Config.Secrets.Reveal; }
     }
     capability config.manageSecrets {
       administrative;
-      title "Set secrets";
-      description "Set and replace the secret settings of services, such as passwords and keys.";
-      grants "Can replace any service's passwords and keys, though never read them.";
-      allows { rpc Config.Get; rpc Config.Set; rpc Config.Revisions.List; rpc Config.Revisions.Delete; rpc Config.Rollback; }
+      title "Manage secrets";
+      description "Set, replace, and show the secret settings of services, such as passwords and keys. Each time a secret is shown is recorded.";
+      grants "Can read and replace any service's passwords and keys.";
+      allows { rpc Config.Get; rpc Config.Set; rpc Config.Revisions.List; rpc Config.Revisions.Delete; rpc Config.Rollback; rpc Config.Secrets.Reveal; }
     }
     capability config.readOwn {
       title "Read its own settings";

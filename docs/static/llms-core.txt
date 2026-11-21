@@ -1354,13 +1354,20 @@ changes without a restart, a `restart` field keeps its connect-time value, and
 per-instance overrides take precedence over the deployment's values.
 Administrators use `trellis svc <ID> config` (`set FIELD=VALUE` or
 `set --null FIELD`,
-`set-secret FIELD --from-file PATH` or `--null`, `unset`, `history`, `rollback`,
-`delete-revision`, `--instance`), `trellis dev <ID> config` for device types,
-or the Console's Settings section. For a field the build doesn't declare,
+`set-secret FIELD --from-file PATH` or `--null`, `reveal FIELD`, `unset`,
+`history`, `rollback`, `delete-revision`, `--instance`), `trellis dev <ID>
+config` for device types, or the Console's Settings section, whose form types
+each input from the field's IDL type (lists, models, maps, switches, bounded
+numbers, enum choices) and lists stored values the build doesn't use, each
+removable, in their own section. For a field the build doesn't declare,
 `set` takes JSON when the value parses as JSON and text otherwise. The RPCs are `Auth.Config.*` under
 `config.read`, `config.manage`, and `config.manageSecrets`. Secrets are sealed
 with AES-256-GCM under `secrets.toml`'s storage key (a backup includes that
-file) and never returned to administrators; without `--from-file`,
+file). A secret is shown only on explicit request to holders of
+`config.manageSecrets` (`Config.Secrets.Reveal`, `config reveal FIELD`, or the
+Console's eye), each reveal is audited by who, target, and field (never the
+value), and reveals are rate-limited per administrator; `Config.Get` and
+revision history never carry secret values. Without `--from-file`,
 `set-secret` reads piped standard input, asks on a terminal without echo
 (twice), and with `--no-input` fails naming `--from-file`. Every revision is
 kept until an administrator deletes it with `delete-revision`, which is how a

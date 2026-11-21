@@ -87,10 +87,8 @@ test("an administrator sets a waiting service's settings from the link it printe
         // The secret is never shown back; its field only says it is set.
         const apiKey = settings.getByLabel("API key", { exact: true });
         assert.equal(await apiKey.inputValue(), "");
-        assert.equal(
-          await apiKey.getAttribute("placeholder"),
-          "Set — type to replace",
-        );
+        // A fixed mask says it is set without telling its length.
+        assert.equal(await apiKey.getAttribute("placeholder"), "••••••••");
         // Showing lasted only as long as the saved draft: a new key starts
         // hidden. Emptying it again leaves the saved key alone.
         await apiKey.fill("k2");
@@ -104,10 +102,11 @@ test("an administrator sets a waiting service's settings from the link it printe
           exact: true,
         });
         // A save refused says why until the administrator acts again.
-        await port.fill("nine");
+        await port.fill("");
+        await settings.getByText("Enter a value.").waitFor();
         await saveSettings.click();
         const refused = settings.getByText(
-          "Port must be JSON, such as 9090 or true.",
+          "Fix Port before saving. Nothing was saved.",
         );
         await refused.waitFor();
         await port.fill("9090");
@@ -218,7 +217,7 @@ test("an administrator overrides the only instance's settings, null included, wi
             authApi.actions["rpc:Config.Get"].subject,
           );
           await settings
-            .getByRole("combobox")
+            .getByRole("combobox", { name: "Settings for", exact: true })
             .selectOption({ value: instanceId });
           await held;
           // Saving now would write the service's draft for every instance,
@@ -619,4 +618,280 @@ test("a plain value saved under a name the IDL then declares secret is never sho
   } finally {
     await services.stop();
   }
+});
+
+test("an administrator edits a list, a switch, a choice, a bounded number, a map, and a model field by field, and the service receives typed values", async () => {
+  const services = startedServices();
+  const typed = participants.TypedSettingsService.participant;
+  try {
+    await withTrellisRuntime(async (runtime) => {
+      await runtime.ensureAdmin();
+      const key = await runtime.services.createInstance({
+        name: "typed",
+        deployment: "typed",
+        contract: typed,
+      });
+      // Its hosts and upstream have no defaults, so it waits for them.
+      const connecting = services.add(
+        TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant: typed,
+          seed: key.seed,
+          signal: services.signal,
+        }).orThrow(),
+      );
+      const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+      await runtime.waitFor(async () => {
+        const view = await runtime.callAdminRpc("authConfigGet", { target });
+        return view.instances[0]?.connectedAt;
+      });
+
+      const admin = await launchProfile(runtime);
+      try {
+        const page = await admin.newPage();
+        await page.goto(
+          `${runtime.trellisUrl}/console/admin/services/${key.deploymentId}#settings`,
+          { waitUntil: "domcontentloaded" },
+        );
+        await completeConsoleEntry(page, BROWSER_ADMIN);
+        const settings = page.getByRole("region", { name: "Settings" });
+        const host = (n: number) =>
+          settings.getByLabel(`Hosts ${n}`, { exact: true });
+
+        // A list takes typed rows: add three, remove one, move one up.
+        const addHost = settings.getByRole("button", {
+          name: "Add item to Hosts",
+          exact: true,
+        });
+        await addHost.click();
+        await host(1).fill("a.example");
+        await addHost.click();
+        await host(2).fill("b.example");
+        await addHost.click();
+        await host(3).fill("c.example");
+        await settings
+          .getByRole("button", { name: "Remove Hosts 2", exact: true })
+          .click();
+        await settings
+          .getByRole("button", { name: "Move Hosts 2 up", exact: true })
+          .click();
+        assert.equal(await host(1).inputValue(), "c.example");
+        assert.equal(await host(2).inputValue(), "a.example");
+        assert.equal(await host(3).count(), 0);
+
+        // A switch, and an enum as a choice that starts at its default.
+        const verbose = settings.getByRole("checkbox", {
+          name: "Verbose logging",
+          exact: true,
+        });
+        assert.equal(await verbose.isChecked(), false);
+        await verbose.check();
+        const mode = settings.getByRole("combobox", {
+          name: "Mode",
+          exact: true,
+        });
+        assert.equal(await mode.inputValue(), "safe");
+        await mode.selectOption("thorough");
+
+        // A nullable map starts with no value and takes named entries.
+        await settings
+          .getByRole("button", { name: "Set a value for Labels", exact: true })
+          .click();
+        await settings
+          .getByRole("button", { name: "Add entry to Labels", exact: true })
+          .click();
+        await settings
+          .getByLabel("Name of Labels entry 1", { exact: true })
+          .fill("team");
+        await settings.getByLabel("Labels team", { exact: true }).fill("core");
+
+        // A model's fields are edited one by one, typed by its IDL.
+        const upstream = settings.getByRole("group", {
+          name: "Upstream",
+          exact: true,
+        });
+        await upstream
+          .getByLabel("Upstream url", { exact: true })
+          .fill("https://up.example");
+        await upstream
+          .getByRole("spinbutton", {
+            name: "Upstream timeout seconds",
+            exact: true,
+          })
+          .fill("30");
+        await upstream
+          .getByRole("checkbox", { name: "Upstream retry", exact: true })
+          .check();
+
+        // A number past its bound says so beside it, and nothing is saved.
+        const workers = settings.getByRole("spinbutton", {
+          name: "Workers",
+          exact: true,
+        });
+        await workers.fill("99");
+        const bound = settings.getByText("Must be at most 16.");
+        await bound.waitFor();
+        const save = settings.getByRole("button", {
+          name: "Save settings",
+          exact: true,
+        });
+        await save.click();
+        await settings
+          .getByText("Fix Workers before saving. Nothing was saved.")
+          .waitFor();
+        assert.equal(
+          (await runtime.callAdminRpc("authConfigGet", { target })).revision,
+          undefined,
+          "a value outside its bounds was saved",
+        );
+        await workers.fill("8");
+        assert.equal(await bound.count(), 0);
+        await save.click();
+        await settings.getByText("Settings saved.").waitFor();
+      } finally {
+        await admin.close();
+      }
+
+      const service = await connecting;
+      assert.deepEqual(service.config.current, {
+        hosts: ["c.example", "a.example"],
+        verbose: true,
+        mode: "thorough",
+        workers: 8,
+        upstream: {
+          url: "https://up.example",
+          timeoutSeconds: 30,
+          retry: true,
+        },
+        labels: { team: "core" },
+        startAt: null,
+        partnerToken: null,
+      });
+    }, browserRuntimeOptions());
+  } finally {
+    await services.stop();
+  }
+});
+
+test("a saved secret is shown on request and dropped when hidden, the CLI prints it, and settings the build doesn't use are removed after asking", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const key = await runtime.services.createInstance({
+      name: "revealing",
+      deployment: "revealing",
+      contract: participant,
+      config: {
+        values: { endpoint: "https://one.example", legacyMode: true },
+        secrets: { apiKey: "saved-key", oldKey: "old-key" },
+      },
+    });
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+
+    const admin = await launchProfile(runtime);
+    try {
+      const page = await admin.newPage();
+      await page.goto(
+        `${runtime.trellisUrl}/console/admin/services/${key.deploymentId}#settings`,
+        { waitUntil: "domcontentloaded" },
+      );
+      await completeConsoleEntry(page, BROWSER_ADMIN);
+      const settings = page.getByRole("region", { name: "Settings" });
+
+      // The saved key is masked until asked for, then shown as saved.
+      const apiKey = settings.getByLabel("API key", { exact: true });
+      await apiKey.waitFor();
+      assert.equal(await apiKey.inputValue(), "");
+      assert.equal(await apiKey.getAttribute("type"), "password");
+      await settings
+        .getByRole("button", { name: "Show API key", exact: true })
+        .click();
+      await runtime.waitFor(
+        async () => (await apiKey.inputValue()) === "saved-key",
+      );
+      assert.equal(await apiKey.getAttribute("type"), "text");
+      // Hiding it drops the value from the page.
+      await settings
+        .getByRole("button", { name: "Hide API key", exact: true })
+        .click();
+      assert.equal(await apiKey.inputValue(), "");
+      assert.equal(await apiKey.getAttribute("type"), "password");
+
+      // Unused values have their own section, a secret among them.
+      const unused = settings.getByLabel("Settings this build doesn't use");
+      await unused.getByText("Not used by this build").waitFor();
+      await unused
+        .getByRole("button", { name: "Show oldKey", exact: true })
+        .click();
+      await unused.getByText("old-key", { exact: true }).waitFor();
+      await unused
+        .getByRole("button", { name: "Hide oldKey", exact: true })
+        .click();
+      assert.equal(await unused.getByText("old-key").count(), 0);
+
+      // Removing one asks first; cancelling keeps it.
+      const dialog = page.getByRole("dialog", { name: "Remove legacyMode?" });
+      await unused
+        .getByRole("button", { name: "Remove legacyMode", exact: true })
+        .click();
+      await dialog
+        .getByRole("button", { name: "Cancel", exact: true })
+        .first()
+        .click();
+      await dialog.waitFor({ state: "hidden" });
+      await unused
+        .getByText("legacyMode", { exact: true })
+        .waitFor({ timeout: 1_000 });
+      await unused
+        .getByRole("button", { name: "Remove legacyMode", exact: true })
+        .click();
+      await dialog.getByRole("button", { name: "Remove", exact: true }).click();
+      await settings.getByText("legacyMode removed.").waitFor();
+      await unused
+        .getByRole("button", { name: "Remove oldKey", exact: true })
+        .click();
+      await page
+        .getByRole("dialog", { name: "Remove oldKey?" })
+        .getByRole("button", { name: "Remove", exact: true })
+        .click();
+      await settings.getByText("oldKey removed.").waitFor();
+      await unused.waitFor({ state: "detached" });
+    } finally {
+      await admin.close();
+    }
+    const after = await runtime.callAdminRpc("authConfigGet", { target });
+    assert.deepEqual(after.unused, []);
+    assert.equal(
+      after.fields.find((field) => field.name === "apiKey")?.isSet,
+      true,
+    );
+
+    // The CLI prints the secret alone on standard output, so a script can
+    // capture it, and warns only when that output is a terminal.
+    const browser = await chromium.launch({
+      headless: true,
+      env: browserTrustEnvironment(),
+    });
+    try {
+      const { directory, run } = await loginCliAsAdministrator(
+        runtime,
+        await browser.newPage(),
+      );
+      const printed = await promisify(execFile)(
+        process.env.TRELLIS_TEST_CLI_BIN!,
+        ["svc", "revealing", "config", "reveal", "apiKey"],
+        {
+          env: { ...process.env, XDG_CONFIG_HOME: directory },
+          timeout: 15_000,
+        },
+      );
+      assert.equal(printed.stdout, "saved-key\n");
+      assert.doesNotMatch(printed.stderr, /scrollback/);
+      assert.deepEqual(
+        await run("svc", "revealing", "config", "reveal", "apiKey"),
+        { value: "saved-key", source: "deployment" },
+      );
+    } finally {
+      await browser.close();
+    }
+  }, browserRuntimeOptions());
 });

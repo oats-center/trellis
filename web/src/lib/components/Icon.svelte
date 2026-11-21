@@ -4,6 +4,7 @@
   import Bell from "lucide-svelte/icons/bell";
   import Box from "lucide-svelte/icons/box";
   import ChevronDown from "lucide-svelte/icons/chevron-down";
+  import ChevronUp from "lucide-svelte/icons/chevron-up";
   import ChevronRight from "lucide-svelte/icons/chevron-right";
   import Check from "lucide-svelte/icons/check";
   import Clipboard from "lucide-svelte/icons/clipboard";
@@ -51,6 +52,7 @@
     | "bell"
     | "box"
     | "chevronDown"
+    | "chevronUp"
     | "chevronRight"
     | "check"
     | "clipboard"
@@ -99,6 +101,7 @@
     bell: Bell,
     box: Box,
     chevronDown: ChevronDown,
+    chevronUp: ChevronUp,
     chevronRight: ChevronRight,
     clipboard: Clipboard,
     close: X,

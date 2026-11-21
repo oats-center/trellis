@@ -26,7 +26,9 @@ pub use compile::SuppliedDependencies;
 pub use documentation::{
     action_documentation, api_documentation, field_documentation, type_documentation,
 };
-pub use projection::{described_json_schema, expression_json_schema, json_schema};
+pub use projection::{
+    described_expression_json_schema, described_json_schema, expression_json_schema, json_schema,
+};
 pub use semantic::*;
 
 #[cfg(test)]

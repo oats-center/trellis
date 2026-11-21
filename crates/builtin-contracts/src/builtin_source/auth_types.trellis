@@ -1551,6 +1551,19 @@ model AuthConfigRollbackRequest {
   expectedRevision: AuthConfigRevisionNumber;
   idempotencyKey: AuthIdempotencyKey;
 }
+/// Show one stored secret of a deployment, instance, or service claim.
+model AuthConfigSecretRevealRequest {
+  target: AuthConfigTarget;
+  field: AuthConfigFieldName;
+}
+/// A stored secret's value, for the administrator who asked to see it.
+model AuthConfigSecretRevealResponse {
+  /// The stored value, as it was set.
+  value: json;
+  /// Where it is stored: the target itself, or for an instance, the
+  /// deployment beneath its overrides.
+  source: AuthConfigSource;
+}
 model AuthOwnConfigRequest {
   /// The caller is connecting, so its restart-only values take effect now.
   atConnect: bool;

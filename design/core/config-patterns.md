@@ -1,6 +1,6 @@
 ---
 title: Service Configuration
-description: Typed settings and write-only secrets that Trellis keeps for services and devices, read at connect and followed live.
+description: Typed settings and sealed secrets that Trellis keeps for services and devices, read at connect and followed live.
 ---
 
 # Design: Service Configuration
@@ -32,8 +32,10 @@ for example with `trellis clients put --source`.
   doesn't fit is reported where administrators look, and a required one holds
   the participant with a link to fix it.
 - Settings and secrets are different things. A setting can be shown, copied,
-  and compared. A secret can be set or replaced, never read back by an
-  administrator, and only the deployment's own instances receive it.
+  and compared. A secret can be set or replaced, and is shown to an
+  administrator only on explicit request, only to holders of
+  `config.manageSecrets`, and every time on the audit record. Only the
+  deployment's own instances receive it otherwise.
 - Values belong to the deployment. An instance (a service replica or a device)
   can override individual fields; everything it does not override comes from
   the deployment.
@@ -50,7 +52,8 @@ for example with `trellis clients put --source`.
 
 Each `config` member of a service or device declares one field: a
 lowerCamelCase name, a title, a description, a type from the ordinary IDL type
-system, and optionally a default. `secret` marks a field write-only. `restart`
+system, and optionally a default. `secret` marks a field sealed and never
+shown unless asked for. `restart`
 marks a field the participant reads only when it connects.
 
 ```trellis
@@ -277,9 +280,11 @@ Each build reads what is stored through its own declaration:
 Auth refuses a write in two cases only. A plain value for a field the
 installed build declares secret is refused, since it would be stored where
 every administrator reads it. An app's client takes no secrets, since every
-user of the app reads its settings. The CLI and Console show what Auth reports
-after each save rather than checking types themselves, so every client shares
-one validator.
+user of the app reads its settings. The CLI shows what Auth reports after
+each save rather than checking types itself. The Console's form also checks an
+edited value against the installed build's schema before saving, so a typo
+such as a number past its bound doesn't become a stored value the build skips;
+whether a stored value fits is still each build's answer, reported by Auth.
 
 Without a declaration, `trellis svc <ID> config set NAME=VALUE` stores JSON
 when the value parses as JSON and text otherwise: `workers=4` is a number,
@@ -302,6 +307,7 @@ settings screen:
 | `Config.Revisions.List`   | Revisions newest first, with what each changed. Secret values never appear.                                                                                    |
 | `Config.Revisions.Delete` | Delete an earlier revision that no build in use still takes a value from.                                                                                      |
 | `Config.Rollback`         | Write an earlier revision's values as a new revision.                                                                                                          |
+| `Config.Secrets.Reveal`   | Show one stored secret to a holder of `config.manageSecrets`. Audited without the value and rate-limited per administrator.                                    |
 | `Config.Own.Get`          | The calling service or device reads its own effective values.                                                                                                  |
 | `Config.Changed` (event)  | A target's settings changed.                                                                                                                                   |
 
@@ -318,10 +324,40 @@ a rollback needs whichever its changes touch. Deleting a revision needs either,
 and `config.manageSecrets` when the revision holds a secret. So a role can tune
 settings without touching credentials. A refusal names the capability missing.
 
+## Revealing a secret
+
+The original rule was that no administrator ever reads a secret back. It was
+reversed because an administrator who can replace a credential can already
+take over whatever it protects, and the alternative was copying secrets out of
+band to check them. A secret is now shown on explicit request to holders of
+`config.manageSecrets`, and only then:
+
+- `Config.Secrets.Reveal { target, field }` returns the value stored at the
+  target, or for an instance without its own the deployment's, with `source`
+  saying which. It works on deployments, instances, and waiting claims. An
+  app's client has no secrets.
+- Every settings capability allows the RPC so that a `config.read` or
+  `config.manage` caller gets a refusal naming `config.manageSecrets`, as the
+  other settings refusals do. The handler checks `config.manageSecrets`.
+- The reveal writes a security audit record (kind `rpc.config.secrets.reveal`)
+  in the same transaction that reads the value: the actor, the target, the
+  field, its source, and the revision, never the value. A value is shown only
+  once its reveal is on record.
+- Each administrator may see 30 secrets in any 10-minute window, counted from
+  those audit records; the next is refused with `rate_limited`. That is enough
+  for a sitting with a few services, and too few to copy a large installation
+  out unnoticed.
+- `Config.Get`, revision history, and audit records still never carry a
+  secret's value. The Console holds a revealed value only while it is shown,
+  in the field it was asked for, and the CLI's `config reveal FIELD` prints it
+  to standard output with a warning on standard error when that is a
+  terminal.
+
 The CLI follows the target-first shape: `trellis svc <ID> config` (or
-`trellis dev <ID> config` for a device type) shows the settings, and `set
-FIELD=VALUE`, `set-secret FIELD --from-file PATH`, `unset`, `history`,
-`rollback REVISION`, and `delete-revision REVISION` change them. `--instance`
+`trellis dev <ID> config` for a device type) shows the settings, `reveal
+FIELD` prints a secret, and `set FIELD=VALUE`, `set-secret FIELD --from-file
+PATH`, `unset`, `history`, `rollback REVISION`, and `delete-revision REVISION`
+change them. `--instance`
 selects one instance's overrides. A text setting takes the text as written;
 any other is JSON. `set --null FIELD` stores null for a nullable setting, since
 a text setting would take `null` as text. `set-secret` reads a file or piped standard input, or on a
@@ -340,10 +376,20 @@ doesn't use and marks values that don't fit it.
 `trellis clients config CLIENT` does the same for an app. The Console shows a
 Settings section on each service page (a waiting claim's included), on each
 device type's page, and in each app's editor that has settings, with a form
-for the declared values, the values the build doesn't use, rows to add
-settings by name and value (text or JSON, optionally secret), the instance
+for the declared values, the values the build doesn't use in their own
+section, each removable after a confirmation, rows to add settings by name and
+value (text, number, on or off, or JSON, optionally secret), the instance
 selector (offered whenever the deployment has an instance), the restart
-notice, and earlier versions to restore or delete. Adding a service takes
+notice, and earlier versions to restore or delete. The form reads each field's
+JSON Schema, described with the IDL's doc comments, and gives it an input of
+its type: a switch for `bool`, a bounded number input, a choice for an enum
+(open, so it also takes another value), typed rows for `list<T>` that can be
+added, removed, and reordered, nested fields for a model, named entries for
+`map<T>`, a date and time for `timestamp`, and a null control for a nullable
+field. Only `json` and types nested too deeply fall back to a JSON editor,
+which says so. It checks bounds, lengths, required model fields, and item
+counts as values are edited and saves nothing while an edited field doesn't
+fit, since Auth itself stores any value and leaves fitting to each build. Adding a service takes
 settings too: typed fields from the IDL when one is chosen, otherwise rows by
 name, saved right after the service is created. A field whose type allows null offers Clear,
 which stores null as `--null` does in the CLI, beside Reset, which unsets it. Edits stay with the target
@@ -363,7 +409,7 @@ to the service it starts instead of exporting environment variables.
 - **Scope creep into a secrets manager.** Once secrets live in Trellis there
   will be requests for rotation schedules, dynamic database credentials, and
   leases. Those belong to dedicated tools. Trellis stops at typed settings and
-  write-only static secrets.
+  static secrets shown only on audited request.
 - **Settings are unavailable while Trellis is down.** A restarting instance
   cannot read them without Trellis. That is close to no change, since a service
   cannot do anything useful without Trellis today, but it does put one more

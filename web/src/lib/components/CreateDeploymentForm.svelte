@@ -16,7 +16,11 @@
   import { resolve } from "$lib/console_paths";
   import {
     freeSettings,
-    parseSetting,
+    hasProblem,
+    parseSecret,
+    settingSchema,
+    toJson,
+    type Draft,
     type FreeSetting,
   } from "$lib/console/settings.ts";
   import type { JsonValue } from "@oatscenter/trellis/generated";
@@ -87,7 +91,8 @@
   let seedDialog: HTMLDialogElement | undefined = $state();
   // Settings saved with the new service: typed by its IDL when it has one,
   // otherwise named by hand.
-  let drafts = $state<Record<string, string>>({});
+  let drafts = $state<Record<string, Draft>>({});
+  // Typed secrets shown rather than masked; nothing is saved yet to reveal.
   let revealed = $state<Record<string, boolean>>({});
   let freeRows = $state<FreeSetting[]>([]);
 
@@ -577,11 +582,21 @@
   } {
     const values: Record<string, JsonValue> = {};
     const secrets: Record<string, JsonValue> = {};
+    const unfit: string[] = [];
     for (const field of declaredSettings) {
-      const text = drafts[field.name];
-      if (text === undefined || text === "") continue;
-      (field.secret ? secrets : values)[field.name] = parseSetting(field, text);
+      if (!(field.name in drafts)) continue;
+      const draft = drafts[field.name];
+      if (field.secret) {
+        if (typeof draft === "string" && draft !== "")
+          secrets[field.name] = parseSecret(field, draft);
+        continue;
+      }
+      const { root, defs } = settingSchema(field);
+      if (hasProblem(root, defs, draft)) unfit.push(field.title);
+      else values[field.name] = toJson(draft);
     }
+    if (unfit.length > 0)
+      throw new Error(`Fix ${unfit.join(", ")} before adding the ${kind}.`);
     return { values, secrets };
   }
 
@@ -917,29 +932,37 @@
       {#if withIdl && declaredSettings.length > 0}
         <fieldset class="trellis-field" disabled={busy || uncertain}>
           <legend class="trellis-field-label mb-1.5">Settings</legend>
-          <div class="space-y-3">
+          <div class="divide-y divide-base-300">
             {#each declaredSettings as field (field.name)}
               <SettingInput
                 {field}
                 id={`new-setting-${field.name}`}
-                value={drafts[field.name] ?? ""}
-                placeholder={field.default === undefined
-                  ? ""
-                  : `Default: ${typeof field.default === "string" ? field.default : JSON.stringify(field.default)}`}
+                value={field.name in drafts
+                  ? drafts[field.name]
+                  : field.secret
+                    ? ""
+                    : field.default}
+                edited={field.name in drafts}
                 disabled={busy || uncertain}
-                missing={field.required && !drafts[field.name]}
-                revealed={revealed[field.name] ?? false}
-                oninput={(text) => {
-                  drafts = { ...drafts, [field.name]: text };
-                  if (!text && revealed[field.name])
+                missing={field.required && !(field.name in drafts)}
+                onchange={(next) => {
+                  if (field.secret && next === "") {
+                    drafts = Object.fromEntries(
+                      Object.entries(drafts).filter(
+                        ([name]) => name !== field.name,
+                      ),
+                    );
                     revealed = { ...revealed, [field.name]: false };
+                  } else drafts = { ...drafts, [field.name]: next };
                 }}
+                secretShown={revealed[field.name] ?? false}
                 onreveal={() => {
                   revealed = {
                     ...revealed,
                     [field.name]: !revealed[field.name],
                   };
                 }}
+                revealBlocked="Type a value to see it."
               />
             {/each}
           </div>

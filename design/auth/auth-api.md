@@ -209,8 +209,12 @@ need `trellis.auth.v1:config.read`, `config.manage`, or `config.manageSecrets`;
 instance holds `config.readOwn` for `Config.Own.Get` and the `Config.Changed`
 event. `Config.Apps.Declare` needs `config.manage`; apps read their own
 settings with `Config.App.Get` under `config.readApp`, part of the `account`
-group. Secret values are sealed at rest and never returned to an administrator.
-See [service configuration](../core/config-patterns.md).
+group. Secret values are sealed at rest. `Config.Secrets.Reveal` returns one
+to a holder of `config.manageSecrets` on request, writes a security audit
+record without the value, and is rate-limited per administrator; the other
+settings capabilities reach it only to be refused. No other RPC returns a
+secret to an administrator. See
+[service configuration](../core/config-patterns.md#revealing-a-secret).
 
 ### Resource administration
 
