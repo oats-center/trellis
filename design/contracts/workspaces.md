@@ -18,7 +18,7 @@ description: Proposal to make the registry location a package is published from 
 - [trellis-api-participants.md](./trellis-api-participants.md): how API,
   participant, and capability IDs are formed
 - [../auth/service-updates.md](../auth/service-updates.md): how a deployment
-  moves to a new build, including force-replace for an incompatible build
+  moves to a new build
 
 ## The problem
 
@@ -236,10 +236,9 @@ manifest; there is no `--registry` flag. The registry refuses the push unless
 the publisher's credentials allow writes there. That refusal is the ownership
 check. A `localhost` package cannot be published.
 
-**Pull into Auth.** `Auth.Packages.Pull` accepts a release only when the
-workspace it declares is the location Auth pulled it from, or a registry the
-administrator added as a mirror of that workspace (see
-[Mirrors and private copies](#mirrors-and-private-copies)). A release at
+**Pull into Auth.** `Auth.Packages.Pull` always pulls a package from its own
+workspace, and accepts a release only when the workspace it declares is the
+location Auth pulled it from. A release at
 `ghcr.io/someone/krishi` that declares `ghcr.io/krishi-diagnostics` is refused.
 Each package in the release's frozen resolution is pulled from its own
 recorded workspace, by its manifest digest, and must declare that workspace
@@ -268,30 +267,12 @@ the new holder can publish under that workspace. Existing locks and
 installations still pin exact digests, so they keep the releases they already
 have.
 
-## Mirrors and private copies
+## Private copies
 
-A mirror holds byte-for-byte copies of another location's releases, for
-example a registry inside a network without internet access. Copying a release
-with ordinary OCI tools keeps its manifest digest, and the frozen resolution
-pins dependencies by that digest.
-
-A mirror does not get its own workspace. Its packages keep the identity of the
-workspace they came from. An administrator adds the mirror to Auth and says
-which workspace it mirrors:
-
-```sh
-trellis registries set lab-mirror --prefix registry.lab.internal/krishi \
-  --mirror-of ghcr.io/krishi-diagnostics
-```
-
-Auth then accepts `ghcr.io/krishi-diagnostics` packages from either location.
-The administrator's statement is the trust decision, made for their own
-installation.
-
-A private copy that changes anything is a fork. A fork is a different package
-and is published under the forker's own workspace, with new IDs. Publishing a
-modified copy under the original workspace's identity at another location
-fails the pull check.
+A private copy that changes anything is a fork. It is a different package and
+is published under the forker's own workspace, with new IDs. An unmodified copy
+at another location, such as a mirror inside a network without internet access,
+is not supported in this release.
 
 ## Changing a workspace
 
@@ -300,13 +281,19 @@ and publishing again. There is no move command. The workspace is part of the
 identity, so the result is a new package with new participant, API, and
 capability IDs. Renaming a package is the same case.
 
-Trellis handles the new identity with the mechanisms it already has. Applying
-the new build to an existing deployment is a breaking identity change, handled
-like any other incompatible change: the administrator force-replaces the
-deployment's build, or creates a new deployment for the new package. Grants and
-roles that named the old IDs do not carry over. The administrator grants the
-new capabilities, and users consent again under the new IDs. Consumers in other
-packages are rebuilt against the new workspace before they can call it.
+A new identity needs a new deployment. `Deployments.Apply` looks up the
+deployment's current participant ID in the incoming package evidence
+(`crates/runtime/src/platform/auth/rpc_deployments.rs`), and a build under a
+new workspace has a different participant ID, so it cannot be applied to an
+existing deployment. Force-replace does not help either, because it replaces
+incompatible APIs and keeps the participant. The administrator creates a new
+deployment for the new package identity and removes the old deployment when
+it is no longer needed. Grants and roles that named the old IDs do not carry
+over: the administrator grants the new capabilities, and users consent again
+under the new IDs. Consumers in other packages are rebuilt against the new
+workspace before they can call it. The new deployment's resources are new and
+start empty; data the old deployment held moves only through the service
+itself, if the service offers a way to export and import it.
 
 ## Effects
 
@@ -333,6 +320,12 @@ runtime such as `rpc.v1.jobs.History`. Auth stores each accepted action's
 route (`auth_api_actions.route_json`), so those stored routes are derived again
 (see [Migration](#migration)).
 
+Only the canonical start subject of an Operation gains the API identity. Once
+an Operation starts, its reference routes later status and control calls by
+API ID and owning deployment ID, and that owner route stays as it is. When two
+deployments serve the same API, a reference restored by the caller still
+reaches the deployment that owns the work.
+
 ### Permissions
 
 NATS permissions are subjects, so they change with the subjects. Capability IDs
@@ -355,16 +348,24 @@ short ID, then the full ID only when the short IDs also collide. A Krishi
 package that uses both `krishi` packages' `samples` APIs gets
 `GhcrIoKrishiDiagnosticsKrishiSamplesV1`, which is long and also rare.
 
-### Resources
+Different full IDs can still produce the same generated name, because the
+generator splits on punctuation: `ghcr.io/acme-lab` and `ghcr.io/acme/lab`
+both become `GhcrIoAcmeLab`. When generated names collide, the generator adds a
+short deterministic suffix derived from a hash of each full identity, to the
+colliding names only. Every other name stays readable.
 
-A deployment's resources are identified today by a digest that includes the
-participant ID (`crates/runtime/src/platform/auth/resources.rs`). A
-force-replace with a build under a new identity would then give every resource
-a new ID and empty storage. Under this proposal a deployment's resources belong
-to the deployment: Auth finds a deployment's existing resource by deployment,
-kind, and local name, and keeps its stored ID and allocation when the
-deployment's build changes identity. The data stays with the deployment
-whatever its package is called.
+### Evidence
+
+Generated clients hand Auth a self-contained evidence bundle, and Auth compiles
+it again offline. Today the evidence compiler (`compile_evidence` in
+`crates/idl/src/lib.rs`) finds packages by name, checks each against its
+canonical prelude by name, and follows dependency edges by the package name in
+the prelude. With two `krishi` packages in one graph, that lookup is ambiguous.
+
+The evidence carries full identities, workspace plus name, on the evidence
+root, on each package, and on each dependency edge. The import aliases stay as
+they are in source. The offline compiler resolves every package and edge by
+full identity, so Auth compiles the same graph the author did.
 
 ### Package resolution in Auth
 
@@ -375,17 +376,37 @@ built-in `trellis`.
 ## Migration
 
 Trellis is pre-release, so this is a clean break with no compatibility path
-for old formats or old IDs.
+for old formats or old IDs. Upgrading means starting a fresh installation.
 
 **Every ID changes once.** Each installed package either declares a workspace
 or becomes a `localhost` package, so every ID outside the built-in package
 gains a workspace: `krishi.SherpaService` becomes
 `localhost/krishi.SherpaService` or
 `ghcr.io/krishi-diagnostics/krishi.SherpaService`. Semantic digests change with
-them. Stored IDs are not rewritten. Following the project's pre-release rule,
-the Auth schema's baseline migration is edited in place and the release starts
-from a fresh Auth database. Deployments, grants, roles, and consent are created
-again under the new IDs.
+them. Stored IDs are not rewritten, and there is no migration code. Following
+the project's pre-release rule, the Auth schema's baseline migration is edited
+in place.
+
+**Every store starts empty.** A fresh Auth database alone is not enough,
+because other stores refer to what it held. Recorded events refer to
+authorization contexts in `platform.sqlite`, and recreated deployments get new
+IDs, so resource data would not reattach to them. The fresh installation
+starts without:
+
+- `platform.sqlite` (Auth: deployments, grants, roles, consent, package
+  evidence, authorization contexts)
+- `events.sqlite`, `jobs.sqlite`, and `health.sqlite`
+- the JetStream streams (`trellis`, `JOBS`, `JOBS_WORK`, `JOBS_ADVISORIES`,
+  `TRELLIS_HEALTH`, `trellis_consumer_dlq`, `trellis_consumer_replays`)
+- the KV buckets, object stores, and streams that hold service resource data
+- earlier `trellis-server backup` archives, which restore the old IDs and
+  cannot be used with the new release
+
+Before upgrading, an operator exports what they want to keep: each service's
+own data through that service's export, if it has one, and any records the
+operator needs for reference, such as the event history, audit records, and the
+list of deployments, grants, and roles. Anything wanted back is imported again
+through the services themselves after the new deployments exist.
 
 **What else breaks.**
 
@@ -406,11 +427,14 @@ again under the new IDs.
    `trellis update`, then build and publish each package. The `qlever-llc`
    community does the same for its packages; Krishi's `krishi` can then
    depend on theirs.
-2. Back up what has to survive, then upgrade `trellis-server` with a fresh
-   Auth database.
-3. Create each deployment again with `trellis svc create --package
+2. On krishi-dev, export the service data and records worth keeping, as listed
+   above. Stop `trellis-server`, remove the installation's data (the SQLite
+   databases and the JetStream storage), and start the new `trellis-server` as
+   a fresh installation.
+3. Create each deployment with `trellis svc create --package
 ghcr.io/krishi-diagnostics/<name>@<version>`, grant roles, and roll out the
-   new builds. Users consent again on first use.
+   new builds. Import the exported service data through the services. Users
+   consent again on first use.
 
 ## Decisions
 
@@ -420,11 +444,14 @@ These were open during review and are now settled.
    the Console form, and service updates are trusted as written. The workspace
    is naming, not a security boundary; registry push permission protects
    published names. Auth records no origin and shows no "not checked" status.
-2. **There is no move.** Changing a workspace is editing `workspace` and
-   republishing, which produces a new package identity. An existing deployment
-   takes the new build through force-replace or is replaced by a new
-   deployment, and users consent again. There are no "moved to" records, no
-   move command, and no policy rewrite.
+2. **There is no move, and a workspace change needs a new deployment.**
+   Changing a workspace is editing `workspace` and republishing, which produces
+   a new package identity. `Deployments.Apply` cannot apply it to an existing
+   deployment, so the administrator creates a new deployment, removes the old
+   one when it is no longer needed, grants again, and users consent again.
+   Consumers rebuild. Resources are not re-identified to keep data across the
+   change. There are no "moved to" records, no move command, and no policy
+   rewrite.
 3. **Packages without a declared workspace get `localhost`.** Every package
    except the built-in `trellis` has the same ID shape. `localhost` packages
    cannot be published at all, because `localhost` names no shared location. A
@@ -439,14 +466,42 @@ These were open during review and are now settled.
 6. **No data is carried across the ID change.** Every installation running
    0.100 today is a development or test installation; Krishi's production
    still runs 0.11 and moves to 0.100 later. So the release starts from a
-   fresh Auth database, as the pre-release rule says, with no migration code
+   fresh installation, as the pre-release rule says, with no migration code
    that rewrites stored IDs. Krishi's production cutover from 0.11 should
    happen after this release, so it isn't done twice.
+7. **The clean reset is a fresh installation.** Every store that depends on
+   Auth starts empty with it: the SQLite databases, the JetStream streams, the
+   resource buckets and stores, and old backups. Operators export first and
+   import again through the services.
+8. **Evidence carries full identities.** The evidence root, each package, and
+   each dependency edge name workspace and name, and the offline compiler
+   resolves by full identity. Source keeps local import aliases.
+9. **Operations keep their owner route.** Only the canonical start subject
+   gains the API identity. A started Operation's reference routes by API ID
+   and owning deployment ID.
+10. **Generated names stay readable and never collide.** Colliding names, and
+    only those, get a short deterministic suffix derived from a hash of the
+    full identity.
+11. **No mirrors in this release.** Auth and the CLI always pull from the
+    workspace's own registry. A modified copy is a fork with its own
+    workspace.
+
+## Verification
+
+- Compile a `krishi` package that imports the other `krishi` (different
+  workspaces), install its generated evidence through Auth, and check that
+  both APIs resolve to their intended full identities.
+- Start an Operation with two deployments serving the same API, restore the
+  returned reference, and check that a later status or control request
+  reaches the owning deployment.
+- Compile a consumer that calls two APIs whose generated names collide, such
+  as ones from `ghcr.io/acme-lab` and `ghcr.io/acme/lab`, and check that it
+  builds and each call reaches its own API.
 
 ## Out of scope
 
 - Signing releases or verifying publishers by key. The registry's access
   control is the only ownership proof.
-- Mirrors for the CLI. `trellis add` and `update` pull from the workspace
-  itself.
+- Mirrors and unmodified copies at another location, in Auth and in the CLI.
+  Both pull from the workspace's own registry.
 - Aliases or rewrites that keep old IDs working after a workspace change.
