@@ -16,7 +16,6 @@ use trellis_idl::{WebhookMode, WebhookVerifier};
 use super::process::{Answer, Verdict};
 use super::records::{NewAttempt, Outcome};
 use super::request::{dropped, Check, Disposition, StoredRequest};
-use super::verify::KeyMatch;
 use super::{Endpoint, Webhooks};
 
 /// Most request headers, and most header bytes, Trellis accepts.
