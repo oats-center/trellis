@@ -38,7 +38,11 @@ fn seconds(text: &str) -> miette::Result<u64> {
         "h" => 3600,
         "d" => 86_400,
         "w" => 604_800,
-        _ => miette::bail!("`{text}` is not a duration such as 10m, 24h or 30d"),
+        _ => {
+            return Err(miette::miette!(
+                "`{text}` is not a duration such as 10m, 24h or 30d"
+            ))
+        }
     };
     number
         .checked_mul(scale)
@@ -72,7 +76,7 @@ fn on_off(text: &str, flag: &str) -> miette::Result<bool> {
     match text {
         "on" | "true" | "yes" => Ok(true),
         "off" | "false" | "no" => Ok(false),
-        _ => miette::bail!("{flag} takes on or off"),
+        _ => Err(miette::miette!("{flag} takes on or off")),
     }
 }
 
