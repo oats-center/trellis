@@ -37,6 +37,7 @@
     state: "Saved state",
     job: "Job queue",
     eventConsumer: "Event subscription",
+    webhook: "Webhook",
   };
   // Owner names make "used by" readable; IDs are the fallback.
   let ownerNames = $state.raw<Map<string, string>>(new Map());

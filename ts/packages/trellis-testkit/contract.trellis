@@ -1,4 +1,4 @@
-import { auth, events, health, jobs, state } from trellis;
+import { auth, events, health, jobs, state, webhooks } from trellis;
 
 agent cli {
   use auth {
@@ -30,5 +30,10 @@ agent cli {
   use jobs { capability jobs.query; }
   use state {
     capability values.delete;
+  }
+  use webhooks {
+    capability attempts.query;
+    capability attempts.inspect;
+    capability attempts.reverify;
   }
 }

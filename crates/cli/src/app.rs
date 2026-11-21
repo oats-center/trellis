@@ -27,6 +27,7 @@ mod resources;
 mod runtime;
 mod self_cmd;
 mod trust;
+mod webhooks;
 
 const SELF_UPDATE_TARGET: SelfUpdateTarget = SelfUpdateTarget::new(
     "oats-center",

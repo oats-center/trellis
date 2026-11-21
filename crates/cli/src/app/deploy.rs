@@ -64,6 +64,7 @@ async fn run_svc_resource(format: OutputFormat, command: SvcResourceCommand) -> 
         SvcResourceAction::Reject(args) => {
             decide_service_update(format, &command.id, &args, false).await
         }
+        SvcResourceAction::Webhooks(args) => super::webhooks::run(format, &command.id, args).await,
         SvcResourceAction::Config(args) => {
             super::config::run(
                 format,

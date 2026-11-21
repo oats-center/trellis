@@ -1068,24 +1068,7 @@ pub struct WebhookHeaderItem {
 )]
 pub enum WebhookVerifier {
     /// HMAC signature over a template of the request.
-    Hmac {
-        /// Secret setting holding the key.
-        key: String,
-        /// Prefix removed from the secret before decoding.
-        key_prefix: Option<String>,
-        /// `text`, `hex`, `base64`, or `base64url`.
-        key_encoding: String,
-        /// `sha1`, `sha256`, or `sha512`.
-        algorithm: String,
-        /// Template of the signed bytes.
-        signed: String,
-        /// Where signatures are read.
-        signature: WebhookHeaderItem,
-        /// `hex`, `base64`, or `base64url`.
-        signature_encoding: String,
-        /// Optional signed timestamp.
-        timestamp: Option<WebhookTimestamp>,
-    },
+    Hmac(Box<WebhookHmac>),
     /// A header value or query parameter equal to a secret.
     Token {
         /// Secret setting holding the token.
@@ -1111,6 +1094,28 @@ pub enum WebhookVerifier {
     },
     /// The endpoint checks nothing.
     None,
+}
+
+/// An `hmac` verifier's configuration.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookHmac {
+    /// Secret setting holding the key.
+    pub key: String,
+    /// Prefix removed from the secret before decoding.
+    pub key_prefix: Option<String>,
+    /// `text`, `hex`, `base64`, or `base64url`.
+    pub key_encoding: String,
+    /// `sha1`, `sha256`, or `sha512`.
+    pub algorithm: String,
+    /// Template of the signed bytes.
+    pub signed: String,
+    /// Where signatures are read.
+    pub signature: WebhookHeaderItem,
+    /// `hex`, `base64`, or `base64url`.
+    pub signature_encoding: String,
+    /// Optional signed timestamp.
+    pub timestamp: Option<WebhookTimestamp>,
 }
 
 /// A signed timestamp's location, format, and tolerance.

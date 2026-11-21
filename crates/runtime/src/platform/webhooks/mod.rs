@@ -1,0 +1,574 @@
+//! Webhook intake: the endpoints services declare, served on the Trellis
+//! origin at `/webhooks/<service name>/<random id>`.
+//!
+//! Intake runs the cheap checks and the credential verifiers (`token`,
+//! `basic`, `address`) as a request arrives and removes the credential before
+//! anything is written. An `async` endpoint stores the request in its
+//! deployment's intake stream, answers, and a worker verifies it afterwards;
+//! a `sync` endpoint verifies first and answers once the outcome is recorded.
+//! A request that passes becomes a `trellis.webhooks@v1` `Received` event,
+//! delivered through the endpoint's own durable consumer.
+
+mod api;
+mod intake;
+mod limits;
+mod process;
+mod records;
+mod request;
+mod verify;
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
+
+use base64::Engine as _;
+use tokio::sync::watch;
+
+use super::auth::webhooks::WebhookEndpointRecord;
+use super::auth::OAuthStorage;
+use crate::supervisor::RuntimeError;
+
+pub(crate) use api::register as register_api;
+
+/// The subject a service's decide handler for `endpoint` answers on.
+pub(crate) fn decide_subject(deployment: &str, endpoint: &str) -> String {
+    format!(
+        "webhooks.v1.decide.{}.{}",
+        trellis_protocol::encode_subject_token(deployment),
+        trellis_protocol::encode_subject_token(endpoint)
+    )
+}
+
+/// The dedupe KV bucket shared by every endpoint.
+const DEDUPE_BUCKET: &str = "trellis_webhook_dedupe";
+/// The longest dedupe window a deployment may choose, which is also how long
+/// the bucket keeps an ID at most.
+const DEDUPE_BUCKET_AGE: Duration = Duration::from_secs(30 * 86_400);
+
+pub(crate) fn now_ms() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
+pub(crate) fn rfc3339(ms: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000)
+        .ok()
+        .and_then(|time| {
+            time.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_owned())
+}
+
+/// An endpoint's runtime settings: the deployment's value, else the IDL
+/// member, else the Trellis default.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Settings {
+    pub(crate) requests_per_second: u64,
+    pub(crate) burst: u64,
+    pub(crate) failures_per_minute: u64,
+    pub(crate) max_body: u64,
+    pub(crate) dedupe_window_ms: u64,
+    pub(crate) sync_decide_deadline_ms: u64,
+    pub(crate) async_decide_deadline_ms: u64,
+    pub(crate) rotation_overlap_ms: u64,
+    pub(crate) record_retention_ms: u64,
+    pub(crate) intake_retention_ms: u64,
+    pub(crate) intake_max_bytes: u64,
+}
+
+impl Settings {
+    fn resolve(record: &WebhookEndpointRecord) -> Self {
+        let set = |name: &str| record.settings.get(name).copied();
+        let definition = &record.definition;
+        let decide = definition
+            .decide
+            .as_ref()
+            .and_then(|decide| decide.deadline_ms);
+        let sync = definition.mode == trellis_idl::WebhookMode::Sync;
+        Self {
+            requests_per_second: set("requestsPerSecond").unwrap_or(50),
+            burst: set("burst").unwrap_or(200),
+            failures_per_minute: set("failuresPerMinute").unwrap_or(20),
+            max_body: set("maxBody").or(definition.max_body).unwrap_or(256 << 10),
+            dedupe_window_ms: set("dedupeWindow")
+                .or(definition.dedupe_window_ms)
+                .unwrap_or(72 * 3_600_000),
+            sync_decide_deadline_ms: set("syncDecideDeadline")
+                .or(decide.filter(|_| sync))
+                .unwrap_or(2_000)
+                .min(10_000),
+            async_decide_deadline_ms: set("asyncDecideDeadline")
+                .or(decide.filter(|_| !sync))
+                .unwrap_or(30_000)
+                .min(60_000),
+            rotation_overlap_ms: set("rotationOverlap")
+                .or(definition.rotation_overlap_ms)
+                .unwrap_or(24 * 3_600_000),
+            record_retention_ms: set("recordRetention").unwrap_or(30 * 86_400_000),
+            intake_retention_ms: set("intakeRetention").unwrap_or(7 * 86_400_000),
+            intake_max_bytes: set("intakeMaxBytes").unwrap_or(1 << 30),
+        }
+    }
+
+    pub(crate) fn decide_deadline_ms(&self, mode: trellis_idl::WebhookMode) -> u64 {
+        match mode {
+            trellis_idl::WebhookMode::Sync => self.sync_decide_deadline_ms,
+            trellis_idl::WebhookMode::Async => self.async_decide_deadline_ms,
+        }
+    }
+}
+
+/// One endpoint as intake serves it.
+#[derive(Debug)]
+pub(crate) struct Endpoint {
+    pub(crate) record: WebhookEndpointRecord,
+    pub(crate) settings: Settings,
+}
+
+impl Endpoint {
+    /// A setting's current value as text, when set.
+    pub(crate) fn text(&self, field: &str) -> Option<String> {
+        self.record
+            .values
+            .get(field)
+            .and_then(|value| value.current.as_ref())
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+
+    /// The secrets a verifier may use for a request received at `received_at_ms`:
+    /// the current one, and the one before the newest change while the
+    /// overlap after that change lasts.
+    pub(crate) fn secrets(&self, field: &str, received_at_ms: i64) -> verify::Secrets {
+        let value = self.record.values.get(field);
+        verify::Secrets {
+            current: self.text(field),
+            previous: value
+                .and_then(|value| value.previous.as_ref())
+                .filter(|(_, changed_at)| {
+                    let until = changed_at.saturating_mul(1000).saturating_add(
+                        i64::try_from(self.settings.rotation_overlap_ms).unwrap_or(i64::MAX),
+                    );
+                    received_at_ms < until
+                })
+                .and_then(|(previous, _)| previous.as_str().map(str::to_owned)),
+        }
+    }
+
+    /// When the previous secret stops being accepted, while it still is.
+    pub(crate) fn previous_accepted_until(&self, field: &str) -> Option<i64> {
+        let (_, changed_at) = self.record.values.get(field)?.previous.as_ref()?;
+        let until = changed_at
+            .saturating_mul(1000)
+            .saturating_add(i64::try_from(self.settings.rotation_overlap_ms).unwrap_or(i64::MAX));
+        (now_ms() < until).then_some(until)
+    }
+
+    pub(crate) fn key(&self) -> (String, String) {
+        (
+            self.record.deployment_id.clone(),
+            self.record.endpoint.clone(),
+        )
+    }
+}
+
+/// Every served endpoint, by URL ID and by deployment and name.
+#[derive(Debug, Default)]
+pub(crate) struct Directory {
+    pub(crate) by_url: HashMap<String, Arc<Endpoint>>,
+    pub(crate) by_name: BTreeMap<(String, String), Arc<Endpoint>>,
+}
+
+impl Directory {
+    fn build(records: Vec<WebhookEndpointRecord>) -> Self {
+        let mut directory = Self::default();
+        for record in records {
+            let settings = Settings::resolve(&record);
+            let endpoint = Arc::new(Endpoint { record, settings });
+            directory
+                .by_url
+                .insert(endpoint.record.current_url.clone(), Arc::clone(&endpoint));
+            for url in &endpoint.record.previous_urls {
+                directory.by_url.insert(url.clone(), Arc::clone(&endpoint));
+            }
+            directory.by_name.insert(endpoint.key(), endpoint);
+        }
+        directory
+    }
+
+    /// Deployments with endpoints, with the endpoint whose settings size the
+    /// deployment's intake stream.
+    fn deployments(&self) -> BTreeMap<String, Arc<Endpoint>> {
+        let mut deployments = BTreeMap::new();
+        for ((deployment, _), endpoint) in &self.by_name {
+            deployments
+                .entry(deployment.clone())
+                .or_insert_with(|| Arc::clone(endpoint));
+        }
+        deployments
+    }
+}
+
+/// Webhook intake shared by the HTTP route, the workers, and the API.
+#[derive(Clone)]
+pub(crate) struct Webhooks {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    storage: OAuthStorage,
+    directory: RwLock<Arc<Directory>>,
+    records: records::Records,
+    nats: async_nats::Client,
+    jetstream: async_nats::jetstream::Context,
+    dedupe: async_nats::jetstream::kv::Store,
+    publisher: watch::Receiver<Option<trellis_rs::service::EventPublisher>>,
+    /// The configured Trellis origin, without a trailing slash.
+    origin: String,
+    /// The Console's own host when it has one; webhook paths 404 there.
+    console_host: Option<String>,
+    /// The largest body that fits one event in a NATS message.
+    ceiling: u64,
+    limits: limits::Limits,
+}
+
+/// The intake stream of one deployment.
+pub(crate) fn stream_name(deployment: &str) -> String {
+    let token: String = deployment
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("TRELLIS_WEBHOOKS_{token}")
+}
+
+fn stream_subject(deployment: &str) -> String {
+    format!(
+        "trellis.webhooks.intake.{}",
+        trellis_protocol::encode_subject_token(deployment)
+    )
+}
+
+const WORKER: &str = "TRELLIS_WEBHOOKS_WORKER";
+
+impl Webhooks {
+    /// Open the records database and the dedupe bucket and load the endpoints.
+    pub(crate) async fn open(
+        storage: OAuthStorage,
+        records_path: &Path,
+        nats: async_nats::Client,
+        publisher: watch::Receiver<Option<trellis_rs::service::EventPublisher>>,
+        origin: &str,
+        console_origin: &str,
+    ) -> Result<Self, RuntimeError> {
+        let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
+        let path = records_path.to_owned();
+        let records = tokio::task::spawn_blocking(move || records::Records::open(&path))
+            .await
+            .map_err(|error| platform(&error))?
+            .map_err(|error| platform(&error))?;
+        let jetstream = async_nats::jetstream::new(nats.clone());
+        let dedupe = match jetstream.get_key_value(DEDUPE_BUCKET).await {
+            Ok(bucket) => bucket,
+            Err(_) => jetstream
+                .create_key_value(async_nats::jetstream::kv::Config {
+                    bucket: DEDUPE_BUCKET.into(),
+                    history: 1,
+                    max_age: DEDUPE_BUCKET_AGE,
+                    storage: async_nats::jetstream::stream::StorageType::File,
+                    ..Default::default()
+                })
+                .await
+                .map_err(|error| platform(&error))?,
+        };
+        let max_payload = u64::try_from(nats.server_info().max_payload).unwrap_or(1 << 20);
+        let origin = origin.trim_end_matches('/').to_owned();
+        let console_host = url::Url::parse(console_origin)
+            .ok()
+            .zip(url::Url::parse(&origin).ok())
+            .filter(|(console, trellis)| console.origin() != trellis.origin())
+            .and_then(|(console, _)| console.host_str().map(str::to_ascii_lowercase));
+        let webhooks = Self {
+            inner: Arc::new(Inner {
+                storage,
+                directory: RwLock::new(Arc::new(Directory::default())),
+                records,
+                nats,
+                jetstream,
+                dedupe,
+                publisher,
+                origin,
+                console_host,
+                // The body travels base64-encoded inside the event, beside its
+                // headers and envelope.
+                ceiling: max_payload.saturating_sub(64 << 10) / 4 * 3,
+                limits: limits::Limits::default(),
+            }),
+        };
+        webhooks.reload().await?;
+        Ok(webhooks)
+    }
+
+    /// The webhook routes on the Trellis listener.
+    pub(crate) fn router(&self) -> axum::Router {
+        intake::router(self.clone())
+    }
+
+    pub(crate) fn directory(&self) -> Arc<Directory> {
+        self.inner
+            .directory
+            .read()
+            .map(|directory| Arc::clone(&directory))
+            .unwrap_or_default()
+    }
+
+    async fn reload(&self) -> Result<(), RuntimeError> {
+        let storage = self.inner.storage.clone();
+        let records =
+            super::auth::blocking(move || super::auth::webhooks::load_endpoints(&storage)).await?;
+        let directory = Arc::new(Directory::build(records));
+        for (deployment, endpoint) in directory.deployments() {
+            if let Err(error) = self.ensure_stream(&deployment, &endpoint.settings).await {
+                tracing::warn!(%deployment, %error, "webhook intake stream unavailable");
+            }
+        }
+        if let Ok(mut current) = self.inner.directory.write() {
+            *current = directory;
+        }
+        Ok(())
+    }
+
+    /// Create the deployment's intake stream, or converge its limits in place.
+    async fn ensure_stream(&self, deployment: &str, settings: &Settings) -> Result<(), String> {
+        use async_nats::jetstream::stream;
+        let config = stream::Config {
+            name: stream_name(deployment),
+            subjects: vec![format!("{}.>", stream_subject(deployment))],
+            retention: stream::RetentionPolicy::Limits,
+            // A full stream refuses new requests rather than push out requests
+            // still waiting for verification.
+            discard: stream::DiscardPolicy::New,
+            max_age: Duration::from_millis(settings.intake_retention_ms),
+            max_bytes: i64::try_from(settings.intake_max_bytes).unwrap_or(i64::MAX),
+            storage: stream::StorageType::File,
+            duplicate_window: Duration::from_secs(120),
+            ..Default::default()
+        };
+        match self.inner.jetstream.get_stream(&config.name).await {
+            Ok(mut existing) => {
+                let info = existing.info().await.map_err(|error| error.to_string())?;
+                if info.config.max_age != config.max_age
+                    || info.config.max_bytes != config.max_bytes
+                {
+                    self.inner
+                        .jetstream
+                        .update_stream(config)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            Err(_) => {
+                self.inner
+                    .jetstream
+                    .create_stream(config)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Store a request in its deployment's intake stream, waiting for JetStream
+    /// to confirm the write, and return its sequence.
+    pub(crate) async fn store(&self, request: &request::StoredRequest) -> Result<u64, String> {
+        let payload = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-Msg-Id", request.attempt_id.as_str());
+        let subject = format!(
+            "{}.{}",
+            stream_subject(&request.deployment_id),
+            trellis_protocol::encode_subject_token(&request.endpoint)
+        );
+        let ack = tokio::time::timeout(Duration::from_secs(5), async {
+            self.inner
+                .jetstream
+                .publish_with_headers(subject, headers, payload.into())
+                .await
+                .map_err(|error| error.to_string())?
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| "intake stream write timed out".to_owned())??;
+        Ok(ack.sequence)
+    }
+
+    /// Read a stored request back by its stream sequence.
+    pub(crate) async fn stored(
+        &self,
+        deployment: &str,
+        sequence: u64,
+    ) -> Result<Option<request::StoredRequest>, String> {
+        let stream = self
+            .inner
+            .jetstream
+            .get_stream(stream_name(deployment))
+            .await
+            .map_err(|error| error.to_string())?;
+        match stream.get_raw_message(sequence).await {
+            Ok(message) => serde_json::from_slice(&message.payload)
+                .map(Some)
+                .map_err(|error| error.to_string()),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Keep the directory current, verify stored `async` requests, and apply
+    /// retention, until `stop` resolves.
+    pub(crate) async fn run(
+        self,
+        mut changed: watch::Receiver<u64>,
+        stop: crate::shutdown::StopHandle,
+    ) -> Result<(), RuntimeError> {
+        let pending = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let gauge = Arc::clone(&pending);
+        let _pending = trellis_rs::telemetry::instruments::register_observable(
+            trellis_rs::telemetry::instruments::ObservableFamily::WebhooksPending,
+            Arc::new(move || {
+                vec![(
+                    gauge.load(std::sync::atomic::Ordering::Relaxed) as f64,
+                    Vec::new(),
+                )]
+            }),
+        );
+        let mut workers: BTreeMap<String, tokio_util::task::AbortOnDropHandle<()>> =
+            BTreeMap::new();
+        let mut sweep = tokio::time::interval(Duration::from_secs(60));
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            for deployment in self.directory().deployments().into_keys() {
+                if workers
+                    .get(&deployment)
+                    .is_none_or(|worker| worker.is_finished())
+                {
+                    let webhooks = self.clone();
+                    let name = deployment.clone();
+                    workers.insert(
+                        deployment,
+                        tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                            webhooks.work(name).await;
+                        })),
+                    );
+                }
+            }
+            tokio::select! {
+                () = stop.stopped() => return Ok(()),
+                result = changed.changed() => {
+                    if result.is_err() {
+                        return Ok(());
+                    }
+                    // Commits often come in bursts; take them as one reload.
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    changed.mark_unchanged();
+                    if let Err(error) = self.reload().await {
+                        tracing::warn!(%error, "webhook endpoints could not be reloaded");
+                    }
+                }
+                _ = sweep.tick() => {
+                    let now = now_ms();
+                    for (deployment, endpoint) in self.directory().deployments() {
+                        let settings = &endpoint.settings;
+                        let pending_before = now.saturating_sub(i64::try_from(settings.intake_retention_ms).unwrap_or(i64::MAX));
+                        let records_before = now.saturating_sub(i64::try_from(settings.record_retention_ms).unwrap_or(i64::MAX));
+                        if let Err(error) = self.inner.records.sweep(&deployment, pending_before, records_before).await {
+                            tracing::warn!(%deployment, %error, "webhook record retention failed");
+                        }
+                    }
+                    if let Ok(count) = self.inner.records.pending().await {
+                        pending.store(count, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Verify the deployment's stored `async` requests as they arrive.
+    async fn work(self, deployment: String) {
+        use async_nats::jetstream::consumer;
+        use futures_util::StreamExt as _;
+        loop {
+            let result = async {
+                let stream = self
+                    .inner
+                    .jetstream
+                    .get_stream(stream_name(&deployment))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let consumer: consumer::PullConsumer = stream
+                    .get_or_create_consumer(
+                        WORKER,
+                        consumer::pull::Config {
+                            durable_name: Some(WORKER.into()),
+                            ack_policy: consumer::AckPolicy::Explicit,
+                            ack_wait: Duration::from_secs(120),
+                            max_deliver: -1,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let mut messages = consumer
+                    .messages()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                while let Some(message) = messages.next().await {
+                    let message = message.map_err(|error| error.to_string())?;
+                    self.verify_stored(message).await;
+                }
+                Ok::<(), String>(())
+            }
+            .await;
+            if !self.directory().deployments().contains_key(&deployment) {
+                return;
+            }
+            if let Err(error) = result {
+                tracing::warn!(%deployment, %error, "webhook worker restarting");
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    /// The `Received` event's subject for one endpoint.
+    pub(crate) fn received_subject(deployment: &str, endpoint: &str) -> String {
+        let base = trellis_protocol::derive_event_subject("trellis.webhooks@v1", "Received")
+            .unwrap_or_default();
+        format!(
+            "{base}.{}.{}",
+            trellis_protocol::encode_subject_token(deployment),
+            trellis_protocol::encode_subject_token(endpoint)
+        )
+    }
+}
+
+/// The dedupe key stored for a delivery ID.
+fn dedupe_entry(deployment: &str, endpoint: &str, id: &str) -> String {
+    use sha2::Digest as _;
+    format!(
+        "{}.{}.{}",
+        trellis_protocol::encode_subject_token(deployment),
+        trellis_protocol::encode_subject_token(endpoint),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(id))
+    )
+}

@@ -11,7 +11,8 @@ use crate::{
         ParticipantDefinition, ParticipantId, ParticipantKind, ParticipantNeeds, Primitive, Replay,
         ResolvedDependency, ResourceDefinition, ResourceName, RetryPolicy, SemanticPackage,
         SourceSpan, SourceUnit, TypeDefinition, TypeExpression, TypeId, TypeRef, WebhookDecide,
-        WebhookDefinition, WebhookHeaderItem, WebhookMode, WebhookTimestamp, WebhookVerifier,
+        WebhookDefinition, WebhookHeaderItem, WebhookHmac, WebhookMode, WebhookTimestamp,
+        WebhookVerifier,
     },
     webhook::TemplatePart,
 };
@@ -2139,7 +2140,7 @@ fn resolve_webhook(
                 if timestamp.is_none() && parts.contains(&TemplatePart::Timestamp) {
                     return Err(fail("{timestamp} in signed needs a timestamp block".into()));
                 }
-                WebhookVerifier::Hmac {
+                WebhookVerifier::Hmac(Box::new(WebhookHmac {
                     key,
                     key_prefix: text_member(members, "key_prefix")?,
                     key_encoding: word(
@@ -2158,7 +2159,7 @@ fn resolve_webhook(
                         &["hex", "base64", "base64url"],
                     )?,
                     timestamp,
-                }
+                }))
             }
             "token" => {
                 only(

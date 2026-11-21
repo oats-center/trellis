@@ -108,6 +108,7 @@ import { logger as noopLogger, type LoggerLike } from "../../globals.ts";
 import {
   createProviderRuntime,
   PROVIDER_CALLER,
+  SERVICE_DEPLOYMENT_ID,
   type ProviderCaller,
   type ProviderHandlerClient,
   type ProviderRuntime,
@@ -1665,6 +1666,9 @@ export function createConnectedService<
     jobs: service.jobs,
   };
   resources.transfer = operationTransfer;
+  Object.defineProperty(service, SERVICE_DEPLOYMENT_ID, {
+    value: args.healthIdentity?.deploymentId,
+  });
 
   if (heartbeatEnabled) {
     // A phase change is reported at once, so a watcher sees it move.

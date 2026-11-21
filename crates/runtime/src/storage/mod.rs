@@ -97,6 +97,9 @@ mod sqlite_migrations {
     pub use trellis_events_runtime::storage::sqlite_migrations as events;
 }
 
+/// Webhook request records, kept beside the platform database.
+pub(crate) const WEBHOOKS_DATABASE: &str = "webhooks.sqlite";
+
 /// SQLite-backed store for a built-in runtime subsystem.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteStore {
@@ -112,6 +115,11 @@ impl SqliteStore {
             subsystem,
             config: config.into(),
         }
+    }
+
+    /// The database file.
+    pub(crate) fn path(&self) -> &Path {
+        &self.config.path
     }
 
     /// Runs schema migrations for this subsystem.

@@ -3383,6 +3383,61 @@ export class Trellis<
     );
   }
 
+  /**
+   * Answers a webhook endpoint's decide calls on its runtime subject. Only
+   * Trellis publishes there, and every instance of the service shares one
+   * queue, so each call reaches one instance. A handler that throws sends no
+   * reply, and Trellis treats the call as failed.
+   *
+   * @internal Used by the service webhook facade.
+   */
+  serveWebhookDecide(
+    subject: string,
+    decide: (request: unknown) => Promise<unknown>,
+    signal?: AbortSignal,
+  ): AsyncResult<void, UnexpectedError> {
+    return AsyncResult.try(async () => {
+      let lease: TransportLease | undefined;
+      if (this.#adaptiveTransport) {
+        lease = await this.#transport.acquireFor(
+          { subscribe: [subject] },
+          {
+            ...(signal ? { signal } : {}),
+            deadlineMs: Date.now() + this.timeout,
+          },
+        );
+      }
+      const nc = lease?.nc ?? this.#nats;
+      const sub = nc.subscribe(subject, { queue: "trellis.webhooks.decide" });
+      signal?.addEventListener(
+        "abort",
+        () => {
+          sub.unsubscribe();
+          lease?.release();
+        },
+        { once: true },
+      );
+      await nc.flush();
+      void (async () => {
+        try {
+          for await (const msg of sub) {
+            try {
+              const reply = await decide(msg.json());
+              msg.respond(JSON.stringify(reply));
+            } catch (error) {
+              this.#log.error(
+                { error, subject: msg.subject },
+                "Webhook decide handler failed",
+              );
+            }
+          }
+        } finally {
+          lease?.release();
+        }
+      })();
+    });
+  }
+
   async #startEphemeralEvent(
     event: EventsOf<TA>,
     ctx: EventDescriptorOf<TA, EventsOf<TA>>,

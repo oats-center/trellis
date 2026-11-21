@@ -13,6 +13,7 @@ import {
   selectedActionAvailabilityError,
 } from "./caller.ts";
 import type { TrellisConnection } from "./connection.ts";
+import { createWebhookEndpoints, type WebhookEndpoint } from "./webhooks.ts";
 import type {
   ParticipantConfig,
   ParticipantConfigOf,
@@ -47,6 +48,8 @@ import type {
 } from "./service/runtime/service.ts";
 
 export const PROVIDER_CALLER = Symbol("trellis.provider.caller");
+/** @internal The deployment a connected service instance belongs to. */
+export const SERVICE_DEPLOYMENT_ID = Symbol("trellis.service.deployment");
 
 export type ProviderCaller = object;
 
@@ -220,11 +223,30 @@ type ProviderConfig<TContract, TService> = TService extends {
   ? { readonly config: ParticipantConfig<ParticipantConfigOf<TContract>> }
   : {};
 
+/** The webhook endpoints a service declares, by name. */
+export type ProviderWebhooks<
+  TContract extends GeneratedParticipant,
+  TClient,
+> = {
+  readonly [
+    K in keyof TContract["resources"] as TContract["resources"][K] extends {
+      readonly kind: "webhook";
+    }
+      ? K
+      : never
+  ]: WebhookEndpoint<TClient>;
+};
+
 export type ProviderRuntime<
   TContract extends GeneratedParticipant,
   TService,
-> = ProviderBase<TService> &
-  ProviderConfig<TContract, TService> &
+> = ProviderBase<TService> & {
+  /** The webhook endpoints this service declares. */
+  readonly webhooks: ProviderWebhooks<
+    TContract,
+    ProviderRuntime<TContract, TService>
+  >;
+} & ProviderConfig<TContract, TService> &
   ProviderHandlerClient<TContract, TService> &
   DocumentedMethods<
     ProviderOwnedRegistrations<TContract> &
@@ -343,6 +365,14 @@ export function createProviderRuntime<
     service[PROVIDER_CALLER],
     contract,
   ) as Record<string, unknown> & CallerRuntime<TContract>;
+  provider.webhooks = createWebhookEndpoints(
+    contract.resources as Readonly<Record<string, { readonly kind: string }>>,
+    service[PROVIDER_CALLER] as Parameters<typeof createWebhookEndpoints>[1],
+    (service as { readonly [SERVICE_DEPLOYMENT_ID]?: string })[
+      SERVICE_DEPLOYMENT_ID
+    ],
+    () => provider,
+  );
   provider.availability = caller.availability;
   provider.watchAvailability = caller.watchAvailability;
   provider.transfer = caller.transfer;

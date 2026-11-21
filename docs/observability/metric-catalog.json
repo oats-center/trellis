@@ -1140,6 +1140,68 @@
       },
       "owner": "Route catalog",
       "observation": "Count registration mapped to _other beyond 128 per family, without echoing rejected label."
+    },
+    {
+      "name": "trellis.webhooks.requests",
+      "instrument": "Counter<u64>",
+      "unit": "{request}",
+      "attributes": {
+        "trellis.webhook.endpoint": "declared endpoint name",
+        "trellis.outcome": [
+          "accepted",
+          "ignored",
+          "duplicate",
+          "pending",
+          "rejected",
+          "limited",
+          "unavailable",
+          "invalid_decision",
+          "expired"
+        ]
+      },
+      "owner": "Webhook intake",
+      "observation": "One request to a known endpoint, counted when its outcome is known; unknown URLs count under the _unknown endpoint."
+    },
+    {
+      "name": "trellis.webhooks.request.duration",
+      "instrument": "Histogram<f64>",
+      "unit": "s",
+      "attributes": {
+        "trellis.webhook.endpoint": "declared endpoint name",
+        "trellis.outcome": [
+          "accepted",
+          "ignored",
+          "duplicate",
+          "pending",
+          "rejected",
+          "limited",
+          "unavailable",
+          "invalid_decision",
+          "expired"
+        ]
+      },
+      "owner": "Webhook intake",
+      "observation": "From arrival until Trellis answered the sender."
+    },
+    {
+      "name": "trellis.webhooks.decide.duration",
+      "instrument": "Histogram<f64>",
+      "unit": "s",
+      "attributes": {
+        "trellis.webhook.endpoint": "declared endpoint name",
+        "trellis.outcome": ["accept", "ignore", "reject", "failed", "invalid"]
+      },
+      "owner": "Webhook intake",
+      "observation": "One call of a service's decide handler, including its deadline."
+    },
+    {
+      "name": "trellis.webhooks.pending",
+      "instrument": "ObservableGauge<f64>",
+      "unit": "{request}",
+      "attributes": {},
+      "owner": "Webhook records SQL snapshot",
+      "observation": "Stored requests still waiting for verification.",
+      "aggregation": "sum"
     }
   ]
 }

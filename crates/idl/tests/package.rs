@@ -1588,10 +1588,10 @@ fn webhook_endpoints_compile_round_trip_and_change_the_build() {
     assert_eq!(endpoint.mode, trellis_idl::WebhookMode::Async);
     assert_eq!(endpoint.methods, ["POST"]);
     assert_eq!(endpoint.verifiers.len(), 2);
-    let trellis_idl::WebhookVerifier::Hmac { timestamp, .. } = &endpoint.verifiers[0] else {
+    let trellis_idl::WebhookVerifier::Hmac(hmac) = &endpoint.verifiers[0] else {
         panic!("hmac first, in declared order");
     };
-    assert_eq!(timestamp.as_ref().unwrap().tolerance_ms, 300_000);
+    assert_eq!(hmac.timestamp.as_ref().unwrap().tolerance_ms, 300_000);
 
     // The canonical source of the endpoint recompiles to the same build.
     let presentation =

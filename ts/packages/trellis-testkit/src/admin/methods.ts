@@ -264,6 +264,26 @@ export const adminMethods = {
     apis.events.API.actions["rpc:DeadLetters.Replay"],
     (client, input) => client.deadLettersReplay(input).orThrow(),
   ),
+  authWebhooksUpdate: adminMethod(
+    apis.auth.API.actions["rpc:Webhooks.Update"],
+    (client, input) => client.webhooksUpdate(input).orThrow(),
+  ),
+  webhooksEndpointsList: adminMethod(
+    apis.webhooks.API.actions["rpc:Endpoints.List"],
+    (client, input) => client.endpointsList(input).orThrow(),
+  ),
+  webhooksAttemptsQuery: adminMethod(
+    apis.webhooks.API.actions["rpc:Attempts.Query"],
+    (client, input) => client.attemptsQuery(input).orThrow(),
+  ),
+  webhooksAttemptsInspect: adminMethod(
+    apis.webhooks.API.actions["rpc:Attempts.Inspect"],
+    (client, input) => client.attemptsInspect(input).orThrow(),
+  ),
+  webhooksAttemptsReverify: adminMethod(
+    apis.webhooks.API.actions["rpc:Attempts.Reverify"],
+    (client, input) => client.attemptsReverify(input).orThrow(),
+  ),
 } as const;
 
 export type AdminRpc = {

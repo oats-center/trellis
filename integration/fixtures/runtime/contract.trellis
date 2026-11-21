@@ -222,6 +222,53 @@ device Device {
   }
 }
 enum ConfiguredLevel { "info"; "debug"; }
+service WebhookService {
+  config signing { title "Signing secret"; description "Shared HMAC key for the signed endpoints."; type string; secret; }
+  config hookToken { title "Hook token"; description "The token senders present."; type string; secret; }
+  config partnerUser { title "Partner user"; description "The partner's Basic username."; type string; }
+  config partnerPassword { title "Partner password"; description "The partner's Basic password."; type string; secret; }
+  webhook signed {
+    title "Signed";
+    description "Stripe-style HMAC over the timestamp and body.";
+    verify hmac {
+      key config signing;
+      algorithm sha256;
+      signed "{timestamp}.{body}";
+      signature { header "Test-Signature"; separator ","; prefix "v1="; encoding hex; }
+      timestamp { header "Test-Signature"; separator ","; prefix "t="; format unix_seconds; tolerance 5m; }
+    }
+    dedupe "{header:X-Delivery-Id}";
+    max_body 4KiB;
+  }
+  webhook token {
+    title "Token";
+    description "A fixed token in a header.";
+    verify token { secret config hookToken; header "X-Hook-Token"; }
+  }
+  webhook query {
+    title "Query token";
+    description "A fixed token in the query string.";
+    verify token { secret config hookToken; query "token"; }
+  }
+  webhook partner {
+    title "Partner";
+    description "Basic credentials, answered once recorded.";
+    mode sync;
+    verify basic { username config partnerUser; password config partnerPassword; }
+  }
+  webhook handshake {
+    title "Handshake";
+    description "A signed endpoint whose service answers setup requests itself.";
+    mode sync;
+    verify hmac {
+      key config signing;
+      algorithm sha256;
+      signed "{body}";
+      signature { header "X-Body-Signature"; prefix "sha256="; encoding hex; }
+    }
+    decide { deadline 5s; }
+  }
+}
 service ConfiguredService {
   config endpoint { title "Endpoint"; description "Where the service sends work."; type string; }
   config apiKey { title "API key"; description "Key the endpoint accepts."; type string; secret; }

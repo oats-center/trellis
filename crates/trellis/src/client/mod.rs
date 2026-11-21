@@ -20,6 +20,7 @@ mod resources;
 mod subject;
 mod transfer;
 mod transport_generations;
+mod webhooks;
 
 pub use auth::SessionAuth;
 pub use authorization::{
@@ -100,4 +101,9 @@ pub use transfer::{
 pub(crate) use transport_generations::{
     GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, TransportGeneration,
     TransportGenerationManager, TransportLease,
+};
+pub use webhooks::{
+    verify_webhook_hmac, webhook_equal, webhook_hmac, webhook_response, within_webhook_window,
+    WebhookDecideHandle, WebhookDecideRequest, WebhookDecision, WebhookDelivery, WebhookDescriptor,
+    WebhookField, WebhookHandle, WebhookHmacAlgorithm, WebhookResponse, WebhookVerdict,
 };

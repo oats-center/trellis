@@ -95,12 +95,13 @@ pub fn parse_template(template: &str) -> Result<Vec<TemplatePart>, String> {
 pub fn describe_verifier(verifier: &crate::WebhookVerifier) -> String {
     use crate::WebhookVerifier;
     match verifier {
-        WebhookVerifier::Hmac {
-            algorithm,
-            signed,
-            timestamp,
-            ..
-        } => {
+        WebhookVerifier::Hmac(hmac) => {
+            let crate::WebhookHmac {
+                algorithm,
+                signed,
+                timestamp,
+                ..
+            } = &**hmac;
             let parts = parse_template(signed).unwrap_or_default();
             let mut covered = Vec::new();
             for part in &parts {
@@ -164,7 +165,7 @@ fn duration_words(ms: u64) -> String {
     ];
     units
         .iter()
-        .find(|(size, _)| ms >= *size && ms % size == 0)
+        .find(|(size, _)| ms >= *size && ms.is_multiple_of(*size))
         .map_or_else(
             || format!("{ms} ms"),
             |(size, unit)| format!("{} {unit}", ms / size),

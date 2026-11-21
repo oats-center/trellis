@@ -61,6 +61,15 @@ function eventsFeed(name: string): ConsoleOperation {
   };
 }
 
+function webhooksRpc(name: string): ConsoleOperation {
+  return {
+    api: apis.webhooks.API.identity,
+    surface: "rpc",
+    name,
+    action: "call",
+  };
+}
+
 function healthRpc(name: string): ConsoleOperation {
   return {
     api: apis.health.API.identity,
@@ -143,6 +152,11 @@ export const CONSOLE_OPERATIONS = {
   packageRegistriesPut: authRpc("PackageRegistries.Put"),
   packageRegistriesRemove: authRpc("PackageRegistries.Remove"),
   deploymentsDisable: authRpc("Deployments.Disable"),
+  webhooksUpdate: authRpc("Webhooks.Update"),
+  webhooksEndpointsList: webhooksRpc("Endpoints.List"),
+  webhooksAttemptsQuery: webhooksRpc("Attempts.Query"),
+  webhooksAttemptsInspect: webhooksRpc("Attempts.Inspect"),
+  webhooksAttemptsReverify: webhooksRpc("Attempts.Reverify"),
   deploymentsEnable: authRpc("Deployments.Enable"),
   deploymentsRemove: authRpc("Deployments.Remove"),
   serviceInstancesList: authRpc("ServiceInstances.List"),

@@ -1053,16 +1053,17 @@ fn render_webhook(output: &mut String, endpoint: &WebhookDefinition) {
     for verifier in &endpoint.verifiers {
         match verifier {
             WebhookVerifier::None => output.push_str("    verify none;\n"),
-            WebhookVerifier::Hmac {
-                key,
-                key_prefix,
-                key_encoding,
-                algorithm,
-                signed,
-                signature,
-                signature_encoding,
-                timestamp,
-            } => {
+            WebhookVerifier::Hmac(hmac) => {
+                let WebhookHmac {
+                    key,
+                    key_prefix,
+                    key_encoding,
+                    algorithm,
+                    signed,
+                    signature,
+                    signature_encoding,
+                    timestamp,
+                } = &**hmac;
                 writeln!(output, "    verify hmac {{\n      key config {key};").unwrap();
                 if let Some(prefix) = key_prefix {
                     writeln!(output, "      key_prefix {};", quote(prefix)).unwrap();

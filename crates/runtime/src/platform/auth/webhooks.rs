@@ -225,7 +225,6 @@ fn check_setting(name: &str, value: i64) -> Result<(), AuthError> {
 #[derive(Clone, Debug)]
 pub(crate) struct WebhookEndpointRecord {
     pub(crate) deployment_id: String,
-    pub(crate) deployment_title: String,
     pub(crate) service_name: String,
     pub(crate) endpoint: String,
     pub(crate) title: String,
@@ -249,7 +248,7 @@ pub(crate) fn load_endpoints(
 ) -> Result<Vec<WebhookEndpointRecord>, AuthError> {
     storage.authority.read(|connection| {
         let mut statement = connection.prepare(
-            "SELECT e.deployment_id,d.title,e.endpoint,e.service_name,e.enabled,d.state,\
+            "SELECT e.deployment_id,e.endpoint,e.service_name,e.enabled,d.state,\
             d.participant_id,b.installed_revision,p.projection_json \
             FROM auth_webhook_endpoints e \
             JOIN auth_deployments d USING(deployment_id) \
@@ -264,26 +263,24 @@ pub(crate) fn load_endpoints(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, bool>(4)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, u64>(7)?,
-                    row.get::<_, String>(8)?,
+                    row.get::<_, u64>(6)?,
+                    row.get::<_, String>(7)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut graphs = BTreeMap::new();
         let mut records = Vec::new();
-        for (deployment, title, endpoint, name, enabled, state, participant, revision, evidence) in
-            rows
-        {
-            if !graphs.contains_key(&(participant.clone(), revision)) {
-                let graph = trellis_idl::compile_evidence(decode(&evidence)?)
-                    .map_err(|error| AuthError::Invalid(error.to_string()))?;
-                graphs.insert((participant.clone(), revision), graph);
-            }
-            let graph = &graphs[&(participant.clone(), revision)];
+        for (deployment, endpoint, name, enabled, state, participant, revision, evidence) in rows {
+            let graph = match graphs.entry((participant.clone(), revision)) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => entry.insert(
+                    trellis_idl::compile_evidence(decode(&evidence)?)
+                        .map_err(|error| AuthError::Invalid(error.to_string()))?,
+                ),
+            };
             let Some(definition) = graph
                 .root_package()
                 .participants()
@@ -339,8 +336,8 @@ pub(crate) fn load_endpoints(
             let mut fields = BTreeSet::new();
             for verifier in &declared.verifiers {
                 match verifier {
-                    WebhookVerifier::Hmac { key, .. } => {
-                        fields.insert(key.clone());
+                    WebhookVerifier::Hmac(hmac) => {
+                        fields.insert(hmac.key.clone());
                     }
                     WebhookVerifier::Token { secret, .. } => {
                         fields.insert(secret.clone());
@@ -359,7 +356,6 @@ pub(crate) fn load_endpoints(
                 super::config::webhook_settings(connection, storage, &deployment, &fields)?;
             records.push(WebhookEndpointRecord {
                 deployment_id: deployment,
-                deployment_title: title,
                 service_name: name,
                 endpoint,
                 title: docs.title.clone(),
