@@ -466,7 +466,7 @@ test("a permission whose earlier version the user held is still given after Refr
     const userId = created.user.principalId;
     // The user holds Subscribe Alpha, which the API then drops and brings
     // back: the grant they kept is for a version that no longer exists.
-    const alpha = "runtime-trellis.events.v1:alpha.subscribe";
+    const alpha = "localhost/runtime-trellis.events.v1:alpha.subscribe";
     await runtime.contracts.install({
       contract: participants.EventService.participant,
     });
@@ -481,7 +481,7 @@ test("a permission whose earlier version the user held is still given after Refr
       participants.EventService.participant,
     ]) {
       const { review } = await runtime.callAdminRpc("authApisReview", {
-        apiId: "runtime-trellis.events@v1",
+        apiId: "localhost/runtime-trellis.events@v1",
         packageEvidence: types.AuthPackageEvidenceCodec.decode(
           contract.packageEvidence,
         ),
@@ -500,7 +500,7 @@ test("a permission whose earlier version the user held is still given after Refr
     }
     const current = (
       await runtime.callAdminRpc("authCapabilitiesList", {
-        apiId: "runtime-trellis.events@v1",
+        apiId: "localhost/runtime-trellis.events@v1",
       })
     ).items.find((item) => item.identity.capabilityId === alpha)?.identity;
     assert(current, "the API brought Subscribe Alpha back");

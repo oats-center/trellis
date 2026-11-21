@@ -6,13 +6,20 @@
 //! package it ships and the packages of every installed participant. It never
 //! fetches anything. The evidence it returns is ordinary package evidence, so
 //! `Deployments.Create` still recompiles and checks all of it.
+//!
+//! Every package is chosen by full identity, workspace and name. A
+//! dependency that names no workspace matches only `localhost` packages or
+//! the built-in `trellis`, unless it is a path dependency on a package the
+//! client supplied under that name.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use semver::{Version, VersionReq};
-use trellis_idl::project::{Dependency, GenerateConfig, PackageManifest, PackageMetadata};
+use trellis_idl::project::{
+    package_identity, Dependency, GenerateConfig, PackageManifest, PackageMetadata,
+};
 use trellis_idl::{PackageEvidence, PackageGraph, ParticipantKind, SourceUnit};
 use trellis_runtime_apis::__types::trellis::{
     AuthDeploymentKind, AuthMissingPackage, AuthName, AuthPackageOrigin, AuthPackageResolveRequest,
@@ -25,13 +32,7 @@ use super::sqlite::{decode, AuthError, Connection};
 /// Every package closure Auth holds verified source for: the built-in
 /// participants' first, then each installed participant's.
 pub(super) fn held_evidence(connection: &Connection) -> Result<Vec<HeldEvidence>, AuthError> {
-    let mut held = super::initialization::builtin_package_evidence()?
-        .into_iter()
-        .map(|(_, evidence)| HeldEvidence {
-            evidence,
-            builtin: true,
-        })
-        .collect::<Vec<_>>();
+    let mut held = builtin_evidence()?;
     let mut statement =
         connection.prepare("SELECT evidence_json FROM auth_package_evidence_documents")?;
     for row in statement.query_map([], |row| row.get::<_, String>(0))? {
@@ -43,6 +44,18 @@ pub(super) fn held_evidence(connection: &Connection) -> Result<Vec<HeldEvidence>
     Ok(held)
 }
 
+/// The closures of the built-in participants, whose `trellis` package this
+/// server ships.
+pub(super) fn builtin_evidence() -> Result<Vec<HeldEvidence>, AuthError> {
+    Ok(super::initialization::builtin_package_evidence()?
+        .into_iter()
+        .map(|(_, evidence)| HeldEvidence {
+            evidence,
+            builtin: true,
+        })
+        .collect())
+}
+
 /// One verified package closure Auth holds.
 pub(super) struct HeldEvidence {
     evidence: PackageEvidence,
@@ -51,6 +64,7 @@ pub(super) struct HeldEvidence {
 
 /// A package the root's closure can use, held by Auth or supplied by the client.
 struct Candidate {
+    /// Full package identity.
     name: String,
     version: Version,
     digest: Option<String>,
@@ -119,8 +133,8 @@ pub(super) fn resolve(
         }
     }
 
-    // Supplied packages' names come first: a root without a manifest may
-    // import one of them.
+    // Supplied packages' identities come first: a root without a manifest
+    // may import one of them.
     let mut supplied_names = Vec::with_capacity(supplied.len());
     for package in supplied {
         let (name, _) = identity(package)?;
@@ -137,19 +151,19 @@ pub(super) fn resolve(
         .chain(supplied_names.iter().cloned())
         .collect::<BTreeSet<_>>();
     let mut unknown_imports = BTreeSet::new();
-    let root = authored(&input.root, &known, &mut unknown_imports)?;
-    if supplied_names.contains(&root.manifest.package.name) {
+    let root = authored(&input.root, &known, &supplied_names, &mut unknown_imports)?;
+    let root_identity = root.manifest.identity();
+    if supplied_names.contains(&root_identity) {
         return Err(AuthError::Invalid(format!(
-            "package {} is both the root and a supplied package",
-            root.manifest.package.name
+            "package {root_identity} is both the root and a supplied package"
         )));
     }
     let mut authored_packages = Vec::with_capacity(supplied.len());
     for package in supplied {
-        let mut package = authored(package, &known, &mut unknown_imports)?;
+        let mut package = authored(package, &known, &supplied_names, &mut unknown_imports)?;
         package.supplied = Some(authored_packages.len());
         candidates.push(Candidate {
-            name: package.manifest.package.name.clone(),
+            name: package.manifest.identity(),
             version: package.manifest.package.version.clone(),
             digest: None,
             origin: AuthPackageOrigin::Supplied,
@@ -181,11 +195,12 @@ pub(super) fn resolve(
         let mut visited = BTreeSet::new();
         while let Some(next) = queue.pop_front() {
             let asks = match next {
-                None => manifest_requirements(&root.manifest)?,
+                None => manifest_requirements(&root.manifest, &supplied_names)?,
                 Some(index) => match candidates[index].source {
-                    CandidateSource::Supplied(package) => {
-                        manifest_requirements(&authored_packages[package].manifest)?
-                    }
+                    CandidateSource::Supplied(package) => manifest_requirements(
+                        &authored_packages[package].manifest,
+                        &supplied_names,
+                    )?,
                     CandidateSource::Held { closure, .. } => {
                         let graph = held_graph(closure)?;
                         let package = graph
@@ -216,7 +231,7 @@ pub(super) fn resolve(
                 },
             };
             for (name, requirement) in asks {
-                if name == root.manifest.package.name {
+                if name == root_identity {
                     return Err(AuthError::Invalid(format!(
                         "package {name} depends on itself through {}",
                         requirement.by
@@ -345,6 +360,7 @@ pub(super) fn resolve(
     #[allow(clippy::too_many_arguments)]
     fn compile(
         package: &Authored,
+        supplied_names: &[String],
         chosen: &BTreeMap<String, usize>,
         candidates: &[Candidate],
         authored_packages: &[Authored],
@@ -354,7 +370,7 @@ pub(super) fn resolve(
         compiling: &mut BTreeSet<String>,
         rejected: &mut Option<AuthRejectedPackage>,
     ) -> Result<PackageGraph, AuthError> {
-        let name = &package.manifest.package.name;
+        let name = &package.manifest.identity();
         if let Some(graph) = compiled.get(name) {
             return Ok(graph.clone());
         }
@@ -365,10 +381,11 @@ pub(super) fn resolve(
         }
         let mut supplied = BTreeMap::new();
         for (alias, dependency) in &package.manifest.dependencies {
-            let index = chosen[&dependency.package];
+            let index = chosen[&dependency_key(dependency, supplied_names)];
             let graph = match candidates[index].source {
                 CandidateSource::Supplied(other) => compile(
                     &authored_packages[other],
+                    supplied_names,
                     chosen,
                     candidates,
                     authored_packages,
@@ -403,6 +420,7 @@ pub(super) fn resolve(
     }
     let graph = match compile(
         &root,
+        &supplied_names,
         &chosen,
         &candidates,
         &authored_packages,
@@ -509,18 +527,36 @@ fn held_package(
     Ok((*graph).clone())
 }
 
-/// The dependencies a manifest names, keyed by package.
+/// The full identity a dependency asks for. A registry dependency names it;
+/// a path dependency names only a package, which is the supplied package of
+/// that name when there is exactly one, and otherwise the `localhost` (or
+/// built-in) package of that name.
+fn dependency_key(dependency: &Dependency, supplied: &[String]) -> String {
+    if let Some(identity) = dependency.identity() {
+        return identity;
+    }
+    let mut named = supplied
+        .iter()
+        .filter(|identity| trellis_protocol::short_id(identity) == dependency.package);
+    match (named.next(), named.next()) {
+        (Some(only), None) => only.clone(),
+        _ => package_identity(None, &dependency.package),
+    }
+}
+
+/// The dependencies a manifest names, keyed by full identity.
 fn manifest_requirements(
     manifest: &PackageManifest,
+    supplied: &[String],
 ) -> Result<Vec<(String, Requirement)>, AuthError> {
     manifest
         .dependencies
         .values()
         .map(|dependency| {
             Ok((
-                dependency.package.clone(),
+                dependency_key(dependency, supplied),
                 Requirement {
-                    by: manifest.package.name.clone(),
+                    by: manifest.identity(),
                     version: dependency
                         .version
                         .as_deref()
@@ -534,16 +570,24 @@ fn manifest_requirements(
         .collect()
 }
 
-/// A supplied package's name and version, from its manifest or its fields.
+/// A supplied package's full identity and version, from its manifest or its
+/// fields. Without a manifest, `name` is a full identity or a bare name, which
+/// is a `localhost` package.
 fn identity(package: &AuthPackageSources) -> Result<(String, Version), AuthError> {
     match &package.manifest {
         Some(text) => {
             let manifest = parse_manifest(text)?;
-            Ok((manifest.package.name, manifest.package.version))
+            Ok((manifest.identity(), manifest.package.version))
         }
         None => match (&package.name, &package.version) {
             (Some(name), Some(version)) => Ok((
-                name.0.clone(),
+                if name.0.contains('/') {
+                    trellis_idl::project::split_package_identity(&name.0)
+                        .map_err(|error| AuthError::Invalid(error.to_string()))?;
+                    name.0.clone()
+                } else {
+                    package_identity(None, &name.0)
+                },
                 Version::parse(version).map_err(|error| {
                     AuthError::Invalid(format!("version {}: {error}", version.0))
                 })?,
@@ -573,6 +617,7 @@ fn parse_manifest(text: &str) -> Result<PackageManifest, AuthError> {
 fn authored(
     package: &AuthPackageSources,
     known: &BTreeSet<String>,
+    supplied: &[String],
     unknown: &mut BTreeSet<String>,
 ) -> Result<Authored, AuthError> {
     let normalized = |path: &str| path.trim_start_matches("./").replace('\\', "/");
@@ -606,7 +651,7 @@ fn authored(
                 .ok_or_else(|| {
                     AuthError::Invalid(format!(
                         "{}'s trellis.toml lists {path}, which is not among its files",
-                        manifest.package.name
+                        manifest.identity()
                     ))
                 })?;
             sources.push(SourceUnit {
@@ -622,6 +667,16 @@ fn authored(
         });
     }
     let (name, version) = identity(package)?;
+    let (workspace, package_name) = trellis_idl::project::split_package_identity(&name)
+        .map(|(workspace, name)| {
+            (
+                workspace
+                    .filter(|workspace| *workspace != trellis_protocol::LOCAL_WORKSPACE)
+                    .map(str::to_owned),
+                name.to_owned(),
+            )
+        })
+        .map_err(|error| AuthError::Invalid(error.to_string()))?;
     let mut sources = BTreeMap::new();
     for (path, text) in &files {
         if Path::new(path)
@@ -655,22 +710,27 @@ fn authored(
     for import in trellis_idl::external_imports(&sources)
         .map_err(|error| AuthError::Invalid(format!("{name}: {error}")))?
     {
-        if known.contains(&import) && import != name {
-            dependencies.insert(
-                import.clone(),
-                Dependency {
-                    package: import.clone(),
-                    version: None,
-                    path: Some(import),
-                    registry: None,
-                },
-            );
+        // An import names a package by its name alone, so it means the
+        // supplied package of that name, or a `localhost` or built-in one.
+        let dependency = Dependency {
+            package: import.clone(),
+            workspace: None,
+            version: None,
+            path: Some(import.clone()),
+        };
+        let key = dependency_key(&dependency, supplied);
+        if known.contains(&key) && key != name {
+            dependencies.insert(import, dependency);
         } else {
             unknown.insert(import);
         }
     }
     let manifest = PackageManifest {
-        package: PackageMetadata { name, version },
+        package: PackageMetadata {
+            name: package_name,
+            workspace,
+            version,
+        },
         sources: sources
             .iter()
             .map(|source| {
@@ -682,13 +742,11 @@ fn authored(
             .collect(),
         dependencies,
         generate: GenerateConfig::default(),
-        default_registry: None,
-        registries: BTreeMap::new(),
     };
     manifest.validate().map_err(|error| {
         AuthError::Invalid(format!(
             "{}: {error}; add its trellis.toml",
-            manifest.package.name
+            manifest.identity()
         ))
     })?;
     Ok(Authored {

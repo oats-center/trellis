@@ -9,7 +9,7 @@ import {
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 const id = <const N extends string>(name: N) =>
-  `runtime-trellis.transport_growth.v1:${name}` as const;
+  `localhost/runtime-trellis.transport_growth.v1:${name}` as const;
 
 test("an app requesting a group sees each member the user holds without the whole group", async () => {
   await withTrellisRuntime(async (runtime) => {

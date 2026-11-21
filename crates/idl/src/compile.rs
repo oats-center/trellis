@@ -39,7 +39,7 @@ pub(crate) fn compile(
     validate_imports(&parsed, &packages, &dependency_aliases)?;
 
     let declarations = collect(&parsed)?;
-    let package_id = PackageId::new(&manifest.package.name);
+    let package_id = PackageId::new(manifest.identity());
     let mut package = SemanticPackage {
         identity: package_id.clone(),
         version: manifest.package.version.clone(),
@@ -339,22 +339,37 @@ fn dependencies(
     let mut digests = BTreeMap::<PackageId, String>::new();
     let mut direct = BTreeMap::new();
     let mut lookup = BTreeMap::new();
+    let own = PackageId::new(manifest.identity());
     for (alias, dependency) in &manifest.dependencies {
         let graph = supplied[alias].clone();
-        if graph.root().as_str() != dependency.package {
+        // A registry dependency names its full identity; a path dependency
+        // only its name, and its own manifest gives the workspace.
+        let matches = match dependency.identity() {
+            Some(identity) => graph.root().as_str() == identity,
+            None => graph.root().name() == dependency.package,
+        };
+        if !matches {
             return Err(miette!(
                 "dependency '{alias}' supplied package '{}' instead of '{}'",
                 graph.root(),
-                dependency.package
+                dependency
+                    .identity()
+                    .unwrap_or_else(|| dependency.package.clone())
             ));
         }
-        if graph
-            .packages()
-            .contains_key(&PackageId::new(&manifest.package.name))
-        {
+        if graph.root() == &own {
+            return Err(miette!("package cannot depend on itself"));
+        }
+        if graph.packages().contains_key(&own) {
             return Err(miette!(
                 "package dependency cycle through '{}'",
-                dependency.package
+                graph.root()
+            ));
+        }
+        if direct.contains_key(graph.root()) {
+            return Err(miette!(
+                "package '{}' is present under more than one dependency alias",
+                graph.root()
             ));
         }
         if let Some(requirement) = &dependency.version {
@@ -412,7 +427,7 @@ fn validate_preludes(
         return Err(miette!("canonical package prelude may appear only once"));
     }
     let prelude = &present[0].prelude;
-    if prelude.package.as_deref() != Some(&manifest.package.name) {
+    if prelude.package.as_deref() != Some(manifest.identity().as_str()) {
         return Err(miette!(
             "canonical package prelude disagrees with manifest identity"
         ));

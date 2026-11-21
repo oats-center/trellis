@@ -36,7 +36,8 @@ import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 import { spawnTracked, type ProcessExit } from "./_support/process.ts";
 
 /** Optional capability id declined at consent and grown later. */
-const CAPABILITY_EXTEND = "runtime-trellis.transport_growth.v1:growth.extend";
+const CAPABILITY_EXTEND =
+  "localhost/runtime-trellis.transport_growth.v1:growth.extend";
 
 const PROVIDER_DEPLOYMENT = "tg-op-provider";
 

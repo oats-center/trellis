@@ -327,7 +327,9 @@ test("providing a new API waits for approval; sharing one another service serves
       );
       return items.find((update) => update.state === "pending");
     });
-    assert.deepEqual(shared.changes.sharedApis, ["runtime-trellis.runtime@v1"]);
+    assert.deepEqual(shared.changes.sharedApis, [
+      "localhost/runtime-trellis.runtime@v1",
+    ]);
     // Approving needs the explicit acknowledgement that requests get split.
     await assert.rejects(
       runtime.callAdminRpc("authServiceUpdatesDecide", {
@@ -368,7 +370,9 @@ test("providing a new API waits for approval; sharing one another service serves
       );
       return items.find((update) => update.state === "pending");
     });
-    assert.deepEqual(pending.changes.addedApis, ["runtime-trellis.added@v1"]);
+    assert.deepEqual(pending.changes.addedApis, [
+      "localhost/runtime-trellis.added@v1",
+    ]);
     await runtime.callAdminRpc("authServiceUpdatesDecide", {
       updateId: pending.updateId,
       decision: "approved",

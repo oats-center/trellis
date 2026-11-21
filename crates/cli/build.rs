@@ -27,6 +27,23 @@ fn main() {
         serde_json::to_vec(&[binding]).expect("encode built-in model binding"),
     )
     .expect("write built-in model binding");
+    // The built-in package's own files, so the CLI can stand in for the
+    // release of it that the Trellis project publishes alongside this build.
+    let root = trellis_builtin_contracts::source_root();
+    let manifest =
+        trellis_idl::project::read_manifest(&root.join("trellis.toml")).expect("built-in manifest");
+    let files = std::iter::once("trellis.toml".to_owned())
+        .chain(manifest.sources.values().cloned())
+        .map(|path| {
+            let text = std::fs::read_to_string(root.join(&path)).expect("built-in source");
+            (path, text)
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    std::fs::write(
+        output.join("builtin-package.json"),
+        serde_json::to_vec(&files).expect("encode built-in package files"),
+    )
+    .expect("write built-in package files");
     println!(
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../../.git/HEAD").display()

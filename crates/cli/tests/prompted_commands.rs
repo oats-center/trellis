@@ -437,7 +437,7 @@ async fn commands_ask_for_missing_input_on_a_terminal_and_fail_fast_without_one(
             "--source",
             &fixture("client-upgrade"),
             "--participant",
-            "client-upgrade-fixture.Provider",
+            "localhost/client-upgrade-fixture.Provider",
         ])
         .await["apis"][0]
         .clone();
@@ -446,7 +446,7 @@ async fn commands_ask_for_missing_input_on_a_terminal_and_fail_fast_without_one(
         "apis",
         "force-replace",
         "--participant",
-        "client-upgrade-fixture.Provider",
+        "localhost/client-upgrade-fixture.Provider",
     ]);
     session.exp_string("Source project directory").unwrap();
     session
@@ -485,7 +485,7 @@ async fn an_app_from_its_source_is_registered_as_its_declared_kind() {
             "--source",
             &source,
             "--app",
-            "client-upgrade-fixture.Caller",
+            "localhost/client-upgrade-fixture.Caller",
         ])
         .await["client"]
         .clone();
@@ -507,7 +507,7 @@ async fn an_app_from_its_source_is_registered_as_its_declared_kind() {
             "--source",
             &source,
             "--app",
-            "client-upgrade-fixture.Caller",
+            "localhost/client-upgrade-fixture.Caller",
         ])
         .await;
     assert!(!refused.status.success());
@@ -519,8 +519,9 @@ async fn an_app_from_its_source_is_registered_as_its_declared_kind() {
         .collect::<Vec<_>>()
         .join(" ");
     assert!(
-        words.contains("client-upgrade-fixture.Caller is declared as a native app, but app")
-            && words.contains("is a browser app")
+        words.contains(
+            "localhost/client-upgrade-fixture.Caller is declared as a native app, but app"
+        ) && words.contains("is a browser app")
             && words.contains("Use --kind native"),
         "{stderr}"
     );

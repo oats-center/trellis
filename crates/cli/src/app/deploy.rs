@@ -461,63 +461,23 @@ async fn build_input(
     let package = build
         .package
         .as_deref()
-        .ok_or_else(|| miette::miette!("give --source DIR or --package NAME@VERSION"))?;
+        .ok_or_else(|| miette::miette!("give --source DIR or --package WORKSPACE/NAME@VERSION"))?;
     let (name, release) = package.rsplit_once('@').ok_or_else(|| {
         miette::miette!(
-            help = "Name a release as NAME@1.2.0, or pin it as NAME@sha256:<digest>.",
+            help = "Name a release as ghcr.io/acme/orders@1.2.0, or pin it as \
+            ghcr.io/acme/orders@sha256:<digest>.",
             "--package {package} names no release"
         )
     })?;
+    miette::WrapErr::wrap_err_with(trellis_idl::project::package_repository(name), || {
+        format!("--package {package} must name a published package by its full identity, such as ghcr.io/acme/orders@1.2.0")
+    })?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
         .trellis_auth_v1();
-    let registry = match &build.registry {
-        Some(registry) => registry.clone(),
-        None => {
-            let names = auth
-                .package_registries_list(&auth_types::AuthEmpty {
-                    extra: Default::default(),
-                })
-                .await
-                .into_diagnostic()?
-                .registries
-                .into_iter()
-                .map(|registry| registry.name.0)
-                .collect::<Vec<_>>();
-            match names.as_slice() {
-                [] => {
-                    return Err(miette::miette!(
-                        help = "Add one with `trellis registries set NAME --prefix HOST/PATH`.",
-                        "Trellis has no registry to pull {name} from"
-                    ))
-                }
-                [only] => only.clone(),
-                _ if crate::prompt::interactive() => {
-                    let choices = names
-                        .iter()
-                        .map(|name| (name.clone(), name.clone()))
-                        .collect::<Vec<_>>();
-                    crate::prompt::Form::new(true).choose(
-                        "Which registry?",
-                        "--registry",
-                        None,
-                        &choices,
-                        None,
-                    )?
-                }
-                _ => {
-                    return Err(miette::miette!(
-                        "choose a registry with --registry; registries: {}",
-                        names.join(", ")
-                    ))
-                }
-            }
-        }
-    };
     let pinned = release.starts_with("sha256:");
     let pulled = auth
         .packages_pull(&auth_types::AuthPackagePullRequest {
-            registry: wire(&registry)?,
-            name: wire(name)?,
+            package: wire(name)?,
             version: (!pinned).then(|| wire(release)).transpose()?,
             digest: pinned.then(|| wire(release)).transpose()?,
             extra: Default::default(),
@@ -540,10 +500,9 @@ async fn build_input(
         let published = &pulled.published;
         output::Details::new(format!(
             "{} {}",
-            output::strong(&published.name.0),
+            output::strong(&published.package.0),
             published.version.0
         ))
-        .field("Registry", &published.registry.0)
         .field("Digest", &published.digest.0)
         .field("Participant", &participant)
         .section("Built with")

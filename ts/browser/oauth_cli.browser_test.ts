@@ -197,7 +197,7 @@ test(
           new URL("../../integration/fixtures/runtime", import.meta.url)
             .pathname,
           "--participant",
-          "runtime-trellis.ConfiguredService",
+          "localhost/runtime-trellis.ConfiguredService",
         );
         type Setting = { name: string; value?: unknown; isSet: boolean };
         const setting = (view: { fields: Setting[] }, name: string) =>
@@ -294,7 +294,7 @@ test(
           "--source",
           runtimeSource,
           "--app",
-          "runtime-trellis.ConfiguredAgent",
+          "localhost/runtime-trellis.ConfiguredAgent",
         );
         // A replacement whose source cannot be declared changes nothing.
         await writeFile(
@@ -316,7 +316,12 @@ test(
         for (const source of [
           ["--source", `${directory}/missing`],
           ["--source", `${directory}/broken`],
-          ["--source", runtimeSource, "--app", "runtime-trellis.Missing"],
+          [
+            "--source",
+            runtimeSource,
+            "--app",
+            "localhost/runtime-trellis.Missing",
+          ],
         ])
           await assert.rejects(run("clients", "put", appPath, ...source));
         const unchanged = (await run("clients", "get", "configured-app"))

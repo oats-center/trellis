@@ -26,16 +26,22 @@ export function definitionsOf(root: unknown): Record<string, Schema> {
   return result;
 }
 
+/** The definition key a `#/$defs/...` pointer names, unescaped (RFC 6901). */
+function pointerKey(ref: string): string {
+  return ref
+    .replace(/^#\/\$defs\//, "")
+    .replaceAll("~1", "/")
+    .replaceAll("~0", "~");
+}
+
 /** `#/$defs/trellis.AuthUser` → `AuthUser`. */
 export function refName(ref: string): string {
-  const key = ref.replace(/^#\/\$defs\//, "");
+  const key = pointerKey(ref);
   return key.slice(key.lastIndexOf(".") + 1);
 }
 
 function refKey(node: Schema): string | null {
-  return typeof node.$ref === "string"
-    ? node.$ref.replace(/^#\/\$defs\//, "")
-    : null;
+  return typeof node.$ref === "string" ? pointerKey(node.$ref) : null;
 }
 
 /** The definition a `$ref` points at, or the node itself. */

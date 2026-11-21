@@ -85,7 +85,7 @@ test("a service imported by package subpaths answers a real call", async () => {
         });
         try {
           assert.deepEqual(await caller.echo({ value: "hello" }).orThrow(), {
-            value: "runtime-trellis.runtime@v1 hello",
+            value: "localhost/runtime-trellis.runtime@v1 hello",
           });
         } finally {
           await caller.connection.close();

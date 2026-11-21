@@ -926,7 +926,7 @@ test("generated runtime workflows", async (t) => {
                       const encode = (value: string) =>
                         Buffer.from(value).toString("base64url");
                       const subject = `operation.v1.${encode(
-                        "runtime-trellis.runtime@v1",
+                        "localhost/runtime-trellis.runtime@v1",
                       )}.${encode(
                         identity.deploymentId,
                       )}.Work.updates.${operation.id}`;

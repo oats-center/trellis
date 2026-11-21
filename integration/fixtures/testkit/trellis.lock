@@ -1,28 +1,28 @@
-format = 2
-root = "trellis-test-fixture"
+format = 3
+root = "localhost/trellis-test-fixture"
 
 [[packages]]
-name = "trellis"
+id = "localhost/trellis-test-fixture"
+version = "0.100.0-rc.52"
+digest = "b9waLO6WcCW3hNoAhn129bd9YYaqmhS3yyjLnG-FpWA"
+distribution-digest = "sha256:a7fc681e298a5c69377ad77117c4cce401005eb5a6ca7e5eaf24bac33c56441a"
+
+[[packages.dependencies]]
+id = "trellis"
 version = "0.100.0-rc.51"
-digest = "2mqWPPB9BzM3Zxq7rLLWvBAYmEywIPfr_GMNAVwkbbo"
-distribution-digest = "sha256:5d62372321f62fdf450ac138dd50593901f6841cdaef6a8d1b26f074f5352146"
+digest = "VnNiMe-l7GLvkZ2gaMeKLL9Nfj4J-O_Jk6XBIq84JjI"
+
+[packages.source]
+kind = "path"
+path = "."
+
+[[packages]]
+id = "trellis"
+version = "0.100.0-rc.51"
+digest = "VnNiMe-l7GLvkZ2gaMeKLL9Nfj4J-O_Jk6XBIq84JjI"
+distribution-digest = "sha256:0a366dfe3ac9a128abc3b75ef586fa595e1c9604992a0895be787690570e9da4"
 dependencies = []
 
 [packages.source]
 kind = "path"
 path = "../../../crates/builtin-contracts"
-
-[[packages]]
-name = "trellis-test-fixture"
-version = "0.100.0-rc.52"
-digest = "Mvvnzl04ziSoNkQxYwsxVfrAvCRnmFqw5D0h-OFK1TY"
-distribution-digest = "sha256:0f13f1afc00ede492f9e632a68842bfde30bf0ca55598b8e6aa431a492ea83dd"
-
-[[packages.dependencies]]
-name = "trellis"
-version = "0.100.0-rc.51"
-digest = "2mqWPPB9BzM3Zxq7rLLWvBAYmEywIPfr_GMNAVwkbbo"
-
-[packages.source]
-kind = "path"
-path = "."

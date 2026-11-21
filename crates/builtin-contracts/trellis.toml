@@ -1,5 +1,3 @@
-default-registry = "trellis"
-
 [package]
 name = "trellis"
 version = "0.100.0-rc.51"
@@ -14,6 +12,3 @@ health = "src/builtin_source/health.trellis"
 jobs = "src/builtin_source/jobs.trellis"
 events = "src/builtin_source/events.trellis"
 participants = "src/builtin_source/participants.trellis"
-
-[registries.trellis]
-prefix = "ghcr.io/oats-center"

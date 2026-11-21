@@ -3260,8 +3260,10 @@ fn has_provider_accessor(graph: &PackageGraph, api: &ApiId) -> bool {
         })
 }
 
+/// A module name built from an ID's short form, so generated paths stay
+/// readable whatever workspace the package is published from.
 fn module_name(value: &str) -> String {
-    rust_ident(&key_to_snake(value))
+    rust_ident(&key_to_snake(trellis_protocol::short_id(value)))
 }
 
 fn type_name(value: &str) -> String {
@@ -3351,13 +3353,12 @@ mod tests {
             &PackageManifest {
                 package: PackageMetadata {
                     name: "fixture".into(),
+                    workspace: None,
                     version: Version::new(2, 3, 4),
                 },
                 sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
                 dependencies: BTreeMap::new(),
                 generate: GenerateConfig::default(),
-                default_registry: None,
-                registries: BTreeMap::new(),
             },
             vec![SourceUnit {
                 alias: "main".into(),
@@ -3782,6 +3783,7 @@ fn main() {
         let manifest = PackageManifest {
             package: PackageMetadata {
                 name: "fixture".into(),
+                workspace: None,
                 version: Version::new(2, 3, 4),
             },
             sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
@@ -3791,12 +3793,10 @@ fn main() {
                     package: "trellis".into(),
                     version: None,
                     path: Some("../runtime".into()),
-                    registry: None,
+                    workspace: None,
                 },
             )]),
             generate: GenerateConfig::default(),
-            default_registry: None,
-            registries: BTreeMap::new(),
         };
         let graph = compile_project(
             &manifest,
@@ -4348,7 +4348,7 @@ fn generated_descriptors_validate_each_channel() {
                 https://example.com/a_b"
             ) && get.contains("Errors: Missing.")
                 && get.contains(
-                    "Call is allowed by capability fixture.main.v1:items.read (Read): Read values."
+                    "Call is allowed by capability localhost/fixture.main.v1:items.read (Read): Read values."
                 ),
             "{get}"
         );

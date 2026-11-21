@@ -116,13 +116,12 @@ fn generated_package_exercises_wo03_b2_b4() {
     let manifest = PackageManifest {
         package: PackageMetadata {
             name: "fixture".into(),
+            workspace: None,
             version: "3.4.5".parse().unwrap(),
         },
         sources: BTreeMap::from([("fixture".into(), "fixture.trellis".into())]),
         dependencies: BTreeMap::new(),
         generate: GenerateConfig::default(),
-        default_registry: None,
-        registries: BTreeMap::new(),
     };
     let compile = |source: String| {
         trellis_idl::compile_project(

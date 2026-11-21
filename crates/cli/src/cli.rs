@@ -178,26 +178,21 @@ pub struct GenerateArgs {
 }
 
 #[derive(Debug, clap::Args)]
-/// Add one local Trellis project or remote API ID.
+/// Add one local Trellis project or published package.
 pub struct AddArgs {
-    /// Relative Trellis project path or stable API ID such as `acme.orders@v1`.
+    /// Relative Trellis project path, or a published package's full identity
+    /// such as `ghcr.io/acme/orders`, which says where it is pulled from.
     pub source: String,
     #[arg(long)]
     /// Semantic Version requirement; defaults to a caret of the exact release.
     pub version: Option<String>,
-    #[arg(long)]
-    /// Named OCI registry for a remote API.
-    pub registry: Option<String>,
     #[command(flatten)]
     pub project: ProjectRootArgs,
 }
 
 #[derive(Debug, clap::Args)]
-/// Publish project-owned canonical APIs to OCI.
+/// Publish the package to its workspace, `<workspace>/<name>`.
 pub struct PublishArgs {
-    #[arg(long)]
-    /// Named OCI registry; defaults to `default-registry`.
-    pub registry: Option<String>,
     #[command(flatten)]
     pub project: ProjectRootArgs,
 }
