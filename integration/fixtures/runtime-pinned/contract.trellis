@@ -275,3 +275,22 @@ agent ConfiguredAgent {
   config greeting { title "Greeting"; description "What the app says first."; type string; default "hello"; }
   config limit { title "Limit"; description "Rows the app shows per page."; type int32; default 20; }
 }
+// A later build of the webhook service: its signed endpoint answers in sync
+// mode, and the endpoints it no longer needs are dropped.
+service WebhookService {
+  config signing { title "Signing secret"; description "Shared HMAC key for the signed endpoints."; type string; secret; }
+  webhook signed {
+    title "Signed";
+    description "Stripe-style HMAC over the timestamp and body.";
+    mode sync;
+    verify hmac {
+      key config signing;
+      algorithm sha256;
+      signed "{timestamp}.{body}";
+      signature { header "Test-Signature"; separator ","; prefix "v1="; encoding hex; }
+      timestamp { header "Test-Signature"; separator ","; prefix "t="; format unix_seconds; tolerance 5m; }
+    }
+    dedupe "{header:X-Delivery-Id}";
+    max_body 4KiB;
+  }
+}

@@ -109,6 +109,9 @@ async function signedPost(
         signal: target.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...unsignedRequest, proof }),
+        // The body carries the signed request and, for enrollment, the
+        // secret: it goes to Trellis or nowhere.
+        redirect: "manual",
       });
     } catch (error) {
       if (target.signal?.aborted || attempt >= 8) throw error;
@@ -117,6 +120,15 @@ async function signedPost(
       continue;
     }
     if (response.ok) return await response.json();
+    if (
+      response.type === "opaqueredirect" ||
+      (response.status >= 300 && response.status < 400)
+    ) {
+      await response.body?.cancel();
+      throw new Error(
+        `Trellis answered ${path} with a ${response.status} redirect to ${response.headers.get("location") ?? "an unnamed location"}; enrollment requests don't follow redirects`,
+      );
+    }
     if (TRANSIENT_STATUS.has(response.status) && attempt < 8) {
       await response.body?.cancel();
       await pause(delay, target.signal);

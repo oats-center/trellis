@@ -974,7 +974,7 @@ async fn attach_authorization_provider(
                                 return Ok(false);
                             }
                             if watcher.own_authority().is_err() {
-                                authorization_contexts.suspend();
+                                authorization_contexts.suspend_unless_own_authority();
                                 authorization_contexts.request_coverage_reconciliation();
                             }
                         }

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use trellis_idl::{WebhookMode, WebhookVerifier};
 
 use super::records::Outcome;
-use super::request::{Check, StoredRequest};
+use super::request::{Check, Disposition, StoredRequest};
 use super::verify::{self, Failure, KeyMatch};
 use super::{Endpoint, Webhooks};
 
@@ -669,11 +669,13 @@ impl Webhooks {
                 .await;
             return;
         };
-        if endpoint.record.definition.mode == WebhookMode::Sync {
+        if request.disposition == Disposition::Archived {
             // A rejected sync request stored for verifying again later.
             let _ = message.ack().await;
             return;
         }
+        // Queued work was answered 2xx, so it is verified as async whatever
+        // mode the endpoint has since been changed to.
         let verdict = self
             .verify(&endpoint, &request, WebhookMode::Async, attempt)
             .await;

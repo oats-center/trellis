@@ -15,7 +15,7 @@ use trellis_idl::{WebhookMode, WebhookVerifier};
 
 use super::process::{Answer, Verdict};
 use super::records::{NewAttempt, Outcome};
-use super::request::{dropped, Check, StoredRequest};
+use super::request::{dropped, Check, Disposition, StoredRequest};
 use super::verify::KeyMatch;
 use super::{Endpoint, Webhooks};
 
@@ -334,6 +334,11 @@ async fn intake(
     let path = parts.uri.path().to_owned();
     let mut stored = StoredRequest {
         attempt_id: attempt_id.to_owned(),
+        // Only a rejected `sync` request is stored, and only to keep it.
+        disposition: match definition.mode {
+            WebhookMode::Async => Disposition::Queued,
+            WebhookMode::Sync => Disposition::Archived,
+        },
         deployment_id: endpoint.record.deployment_id.clone(),
         endpoint: endpoint.record.endpoint.clone(),
         received_at_ms,

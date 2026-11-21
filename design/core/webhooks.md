@@ -823,6 +823,20 @@ webhooks <endpoint> set` stores them for the deployment whichever endpoint
   set or the request leaves the intake stream.
 - **Disabled endpoints.** A disabled endpoint, like a disabled deployment,
   answers 503 and stores nothing.
+- **Mode changes and stored requests.** Each request in the intake stream
+  records why it is there: `queued` for an `async` request answered 2xx,
+  `archived` for a `sync` request refused at once. The worker goes by that
+  record, not by the endpoint's current mode. A queued request is still
+  verified and published after an approved update switches the endpoint to
+  `sync`, so a request the sender was told succeeded is never dropped. An
+  archived request is never published after a switch to `async`, so a request
+  the sender was refused never becomes an event. A queued request is verified
+  with the verifiers and decide handler the endpoint has when the worker runs,
+  as verifying again does; the decide call still says `async` and uses the
+  `async` deadline. Disabling the endpoint or its deployment stops new
+  requests only: queued ones are still verified and published, and their
+  events wait for the service. While the endpoint is detached, its queued
+  requests wait and are retried every minute.
 - **Acknowledgement.** `ServiceUpdates.Decide` needs
   `acknowledgeUnauthenticatedWebhooks` when the update adds or changes a
   `verify none` endpoint. `Deployments.Create` and `Deployments.Apply` need it

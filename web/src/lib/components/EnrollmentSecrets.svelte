@@ -77,18 +77,28 @@
 
   async function load(): Promise<void> {
     try {
+      const listAll = async (): Promise<Secret[]> => {
+        const all: Secret[] = [];
+        let cursor: string | undefined;
+        do {
+          const listed = await trellis
+            .enrollmentSecretsList({
+              deploymentId: codecs.ulid.decode(deploymentId),
+              page: { limit: 200, ...(cursor ? { cursor } : {}) },
+            })
+            .orThrow();
+          all.push(...listed.items);
+          cursor = listed.page.nextCursor;
+        } while (cursor);
+        return all;
+      };
       const [listed, read] = await Promise.all([
-        trellis
-          .enrollmentSecretsList({
-            deploymentId: codecs.ulid.decode(deploymentId),
-            page: { limit: 200 },
-          })
-          .orThrow(),
+        listAll(),
         trellis
           .instancePolicyGet({ deploymentId: codecs.ulid.decode(deploymentId) })
           .orThrow(),
       ]);
-      secrets = [...listed.items];
+      secrets = listed;
       policy = read;
       const own = read.deployment;
       retirement =
@@ -190,7 +200,13 @@
 
   function save(secret: Secret): Promise<void> {
     return run(async () => {
-      const expires = expiry();
+      // The date field shows only the day, so an untouched field keeps the
+      // exact expiry instead of moving it to that day's midnight.
+      const edited = expiry();
+      const expires =
+        form.expires === (secret.expiresAt?.slice(0, 10) ?? "")
+          ? secret.expiresAt
+          : edited && codecs.timestamp.decode(edited);
       await trellis
         .enrollmentSecretsUpdate({
           secretId: secret.secretId,
@@ -198,7 +214,7 @@
           maxInstances: form.maxInstances,
           enrollmentsPerHour: form.perHour,
           currentBuildOnly: form.currentBuildOnly,
-          ...(expires ? { expiresAt: codecs.timestamp.decode(expires) } : {}),
+          ...(expires ? { expiresAt: expires } : {}),
           expectedRevision: secret.revision,
           idempotencyKey: codecs.ulid.decode(ulid()),
         })

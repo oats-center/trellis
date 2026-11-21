@@ -353,8 +353,19 @@ export async function requestDeviceEnrollment(args: {
           },
         }),
       }),
+      // The signed request goes to Trellis or nowhere.
+      redirect: "manual",
     },
   );
+  if (
+    response.type === "opaqueredirect" ||
+    (response.status >= 300 && response.status < 400)
+  ) {
+    await response.body?.cancel();
+    throw new Error(
+      `Trellis answered /auth/device/enroll with a ${response.status} redirect to ${response.headers.get("location") ?? "an unnamed location"}; enrollment requests don't follow redirects`,
+    );
+  }
   if (!response.ok) throw await decodeTrellisHttpError(response);
   const body: unknown = await response.json();
   if (typeof body !== "object" || body === null) {
