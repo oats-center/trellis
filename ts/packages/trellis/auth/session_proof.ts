@@ -6,7 +6,8 @@ import { base64urlDecode, base64urlEncode } from "./utils.ts";
 export const SESSION_PROOF_FORMAT_V1 = "trellis.session-proof.v1" as const;
 
 /** One protocol-owned signature purpose. */
-export type SessionProofPurpose = "deviceEnrollment";
+export type SessionProofPurpose =
+  "deviceEnrollment" | "serviceEnrollment" | "serviceIdentityStatus";
 
 /** Inputs validated and encoded by the Rust session-proof protocol. */
 export type SessionProofInput = {

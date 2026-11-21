@@ -24,12 +24,16 @@
   import StatusBadge from "$lib/components/StatusBadge.svelte";
   import { errorMessage, humanizeName } from "$lib/format";
   import { getTrellis } from "$lib/trellis";
+  import { codecs } from "@oatscenter/trellis/generated";
+  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
+  import { canPerform } from "$lib/console/operations.ts";
 
   type Deployment = apis.auth.DeploymentsListOutput["items"][number];
   type Participant = apis.health.QueryOutput["items"][number];
   type Claim = apis.auth.ServiceClaimsListOutput["items"][number];
 
   const trellis = getTrellis();
+  const authority = getConsoleAuthority();
   const RPC_TIMEOUT_MS = 10_000;
 
   let selectedState = $state<"" | "enabled" | "disabled">("");
@@ -56,6 +60,26 @@
         .filter((update) => update.state === "pending")
         .map((update) => update.deploymentId),
     );
+  }
+
+  // Services whose enrollment secrets had trouble in the last 24 hours.
+  let enrollmentAlerts = $state.raw<Set<string>>(new Set());
+  async function loadEnrollmentAlerts(ids: string[]): Promise<void> {
+    if (!canPerform(authority.authority, "enrollmentSecretsList")) return;
+    const alerted = await Promise.all(
+      ids.map(async (deploymentId) => {
+        const listed = await trellis
+          .enrollmentSecretsList({
+            deploymentId: codecs.ulid.decode(deploymentId),
+            page: { limit: 200 },
+          })
+          .orThrow();
+        return listed.items.some((secret) => secret.alerts.length > 0)
+          ? deploymentId
+          : undefined;
+      }),
+    );
+    enrollmentAlerts = new Set(alerted.filter((id) => id !== undefined));
   }
 
   // Services added without their IDL, waiting for the service to connect.
@@ -130,6 +154,9 @@
         (deployment): deployment is Deployment => deployment.kind === "service",
       );
       nextCursor = response.page.nextCursor;
+      void loadEnrollmentAlerts(
+        deployments.map((deployment) => deployment.deploymentId),
+      ).catch(() => {});
       // Selection survives a same-page refresh only for rows still present.
       pruneSelection(
         selected,
@@ -332,6 +359,13 @@
                     href={resolve("/admin/services/[deploymentId]", {
                       deploymentId: deployment.deploymentId,
                     })}>Update waiting</a
+                  >{/if}
+                {#if enrollmentAlerts.has(deployment.deploymentId)}<a
+                    class="badge badge-sm badge-warning ml-1"
+                    data-enrollment-alert
+                    href={resolve("/admin/services/[deploymentId]", {
+                      deploymentId: deployment.deploymentId,
+                    })}>Enrollment warning</a
                   >{/if}
               </td>
               <td class="hidden text-base-content/75 sm:table-cell"

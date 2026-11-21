@@ -17,6 +17,8 @@ mod bootstrap_ports;
 pub(crate) mod config;
 #[doc(hidden)]
 mod core_bootstrap;
+#[cfg(feature = "http")]
+mod enrollment;
 mod error;
 mod events_runtime;
 mod lifecycle;
@@ -56,6 +58,8 @@ pub use bindings::{
 #[doc(hidden)]
 pub use bootstrap_ports::BootstrapBindingInfo;
 pub use config::{ConfigHandle, ConfigRevision};
+#[cfg(feature = "http")]
+pub use enrollment::ENROLLMENT_SECRET_ENV;
 pub use error::{
     DeclaredRpcError, HandlerResult, SchemaValidationIssue, ServerError, ValidationIssue,
 };
