@@ -885,6 +885,12 @@
                           )}{#if check.error ?? check.summary}: {check.error ??
                               check.summary}{/if}</span
                         >{/each}
+                    {:else if status.health?.status === "offline" && status.state !== "offline"}
+                      <span
+                        class="flex items-center gap-1 text-xs text-warning"
+                        data-heartbeats-stopped
+                        ><Icon name="alert" size={12} />Heartbeats stopped</span
+                      >
                     {/if}
                     {#if status.state === "waitingForApproval"}
                       {#if status.reviewUrl}<a

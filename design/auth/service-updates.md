@@ -152,11 +152,15 @@ URL, and the `missingSettings` its installed build requires and has no value
 for, with the Console's `settingsUrl`. Auth cannot see what a connected
 instance does after that; its heartbeat says, through `phase` (`connecting`,
 `serving`, `stopping`). The Console's service page and `trellis svc <ID>
-instances` join the two the same way: not connected is `offline`; a current
+instances` join the two the same way: not connected is `offline`; the latest
 heartbeat sent on this connection gives its phase; before one arrives the
 instance is `waitingForApproval`, then `waitingForSettings`, else `starting`.
 A connected instance whose heartbeat still reports `connecting` is `starting`
-too: connected, not serving yet.
+too: connected, not serving yet. When the heartbeats of a connected instance
+stop, the Health Runtime marks it `offline`; the instance keeps the phase it
+last reported, its health reads `offline` ("Heartbeats stopped" in the
+Console), and the checks it last reported are not shown as failing now. A
+heartbeat from an earlier connection never counts.
 The build is the heartbeat's digest and version, or the installed digest, and is
 current when it equals the deployment's installed build.
 

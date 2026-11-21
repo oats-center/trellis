@@ -5,10 +5,17 @@
  * more of a healthy instance. One failed check makes an instance unhealthy
  * even though the SDK's own connection check passes, and a degraded check
  * makes it degraded, as a Rust service reports the same checks.
+ *
+ * A process that stops sending heartbeats while its connection stays open
+ * (here a stopped process, as a starved or hung one is) still shows what it
+ * last reported, with offline health, so it cannot pass for a fresh instance
+ * that has not reported yet.
  */
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { join } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { chromium } from "playwright";
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -22,10 +29,40 @@ import {
 } from "./browser_test_support.ts";
 import { openConsoleAsRuntimeAdmin } from "./console_test_support.ts";
 
+/**
+ * A service in its own process, so the test can stop that process while its
+ * connection stays open. It serves the Provider contract from `fixture` with
+ * a heartbeat every second.
+ */
+const program = `
+import { TrellisService } from ${JSON.stringify(
+  pathToFileURL(join(import.meta.dirname, "../packages/trellis/service/mod.ts"))
+    .href,
+)};
+const [trellisUrl, seed, fixture] = process.argv.slice(1);
+const { participants } = await import(fixture);
+const service = await TrellisService.connect({
+  trellisUrl,
+  participant: participants.Provider.participant,
+  seed,
+  runtime: { health: { publishIntervalMs: 1000 } },
+}).orThrow();
+await service.wait();
+`;
+const fixtureUrl = (fixture: string) =>
+  pathToFileURL(
+    join(
+      import.meta.dirname,
+      `../../integration/fixtures/${fixture}/packages/runtime-trellis/index.js`,
+    ),
+  ).href;
+
 type Listed = {
   instanceId: string;
   status: {
     state: string;
+    connectedAt?: string;
+    lastHeartbeat?: string;
     health?: {
       status: string;
       failingChecks: { name: string; status: string; error?: string }[];
@@ -53,7 +90,44 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
       deployment: "checked",
       contract,
     });
+    const stalledKey = await runtime.services.createInstance({
+      name: "checked-stalled",
+      deployment: "checked",
+      contract,
+    });
+    // Its build asks for more than the installed one, so it stays connected
+    // waiting for approval and never sends a heartbeat.
+    const unreportedKey = await runtime.services.createInstance({
+      name: "checked-unreported",
+      deployment: "checked",
+      contract,
+    });
     const deploymentId = healthyKey.deploymentId;
+    const launch = (seed: string, fixture: string) =>
+      spawn(
+        process.execPath,
+        [
+          "--no-warnings",
+          "--input-type=module",
+          "-e",
+          program,
+          runtime.trellisUrl,
+          seed,
+          fixtureUrl(fixture),
+        ],
+        {
+          // Its output (the waiting one prints the review link) only
+          // explains a failure.
+          stdio: ["ignore", "pipe", "pipe"],
+          env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificate },
+        },
+      );
+    const stalled = launch(stalledKey.seed, "runtime");
+    const unreported = launch(unreportedKey.seed, "runtime-pinned");
+    let childOutput = "";
+    for (const child of [stalled, unreported])
+      for (const stream of [child.stdout, child.stderr])
+        stream.on("data", (chunk: Buffer) => (childOutput += chunk.toString()));
     const connect = (seed: string) =>
       TrellisService.connect({
         trellisUrl: runtime.trellisUrl,
@@ -104,7 +178,9 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
             (byId.get(failingKey.instanceId)?.health?.failingChecks.length ??
               0) > 0 &&
             (byId.get(degradedKey.instanceId)?.health?.failingChecks.length ??
-              0) > 0
+              0) > 0 &&
+            byId.get(stalledKey.instanceId)?.health?.status === "healthy" &&
+            byId.get(unreportedKey.instanceId)?.state === "waitingForApproval"
           );
         },
         { timeoutMs: 30_000 },
@@ -129,6 +205,36 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
           },
         ],
       });
+
+      // One process stops; its connection stays open, its heartbeats end.
+      assert(stalled.pid);
+      process.kill(stalled.pid, "SIGSTOP");
+      await runtime.waitFor(
+        async () => {
+          byId = await listed();
+          return (
+            byId.get(stalledKey.instanceId)?.health?.status === "offline" ||
+            byId.get(stalledKey.instanceId)?.connectedAt === undefined
+          );
+        },
+        { timeoutMs: 30_000 },
+      );
+      const stalledStatus = byId.get(stalledKey.instanceId);
+      assert(
+        stalledStatus?.connectedAt,
+        `the stopped process disconnected\n${childOutput}`,
+      );
+      assert.equal(stalledStatus.state, "serving");
+      assert.deepEqual(stalledStatus.health, {
+        status: "offline",
+        failingChecks: [],
+      });
+      assert(stalledStatus.lastHeartbeat);
+      const unreportedStatus = byId.get(unreportedKey.instanceId);
+      assert.equal(unreportedStatus?.state, "waitingForApproval");
+      assert(unreportedStatus.connectedAt);
+      assert.equal(unreportedStatus.health, undefined);
+      assert.equal(unreportedStatus.lastHeartbeat, undefined);
 
       // The text listing adds a line for each failing check only.
       const binary = process.env.TRELLIS_TEST_CLI_BIN;
@@ -162,6 +268,16 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
         !lines.some((line) => line.startsWith(`${healthyKey.instanceId}:`)),
         stdout,
       );
+      assert(
+        lines.includes(
+          `${stalledKey.instanceId}: heartbeats stopped; last heartbeat ${stalledStatus.lastHeartbeat}`,
+        ),
+        stdout,
+      );
+      assert(
+        !lines.some((line) => line.startsWith(`${unreportedKey.instanceId}:`)),
+        stdout,
+      );
       // Piped, each row is tab-separated and carries its instance's health.
       const row = (instanceId: string) =>
         lines
@@ -170,6 +286,10 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
       assert(row(healthyKey.instanceId)?.includes("healthy"), stdout);
       assert(row(failingKey.instanceId)?.includes("unhealthy"), stdout);
       assert(row(degradedKey.instanceId)?.includes("degraded"), stdout);
+      assert(row(stalledKey.instanceId)?.includes("serving"), stdout);
+      assert(row(stalledKey.instanceId)?.includes("offline"), stdout);
+      assert(row(unreportedKey.instanceId), stdout);
+      assert(!row(unreportedKey.instanceId)?.includes("offline"), stdout);
 
       // The Console's instance table names the same check.
       const page = await context.newPage();
@@ -207,7 +327,44 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
         await running(healthyKey.instanceId).getByText("Healthy").count(),
         0,
       );
+      // The stopped instance says its heartbeats stopped; the one that never
+      // reported has no health at all.
+      await running(stalledKey.instanceId)
+        .locator("[data-heartbeats-stopped]")
+        .waitFor();
+      assert.equal(
+        await running(stalledKey.instanceId).getAttribute("data-runtime-state"),
+        "serving",
+      );
+      assert.equal(
+        await running(stalledKey.instanceId).getAttribute("data-health-status"),
+        "offline",
+      );
+      assert.equal(
+        await running(unreportedKey.instanceId).getAttribute(
+          "data-runtime-state",
+        ),
+        "waitingForApproval",
+      );
+      assert.equal(
+        await running(unreportedKey.instanceId).getAttribute(
+          "data-health-status",
+        ),
+        null,
+      );
+      assert.equal(
+        await running(unreportedKey.instanceId)
+          .locator("[data-heartbeats-stopped]")
+          .count(),
+        0,
+      );
     } finally {
+      for (const child of [stalled, unreported]) {
+        if (child.pid && child.exitCode === null) {
+          process.kill(child.pid, "SIGCONT");
+          child.kill("SIGKILL");
+        }
+      }
       await context.close();
       await browser.close();
       await healthy.stop();

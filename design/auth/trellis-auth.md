@@ -925,11 +925,15 @@ the cookie, so later sign-ins without a sign-out keep the provider's single
 sign-on. An abandoned sign-in leaves it in place. If the provider answers a
 sign-in that carried the post-sign-out prompt with `login_required`,
 `interaction_required`, `consent_required`, `account_selection_required`, or
-`invalid_request` whose description mentions `prompt`, the callback clears the
-cookie and the sign-in page tells the person the provider refused that prompt
-and names the "Prompt after sign-out" setting. Their next try goes without the
-prompt, so a provider that rejects it cannot block sign-in; Trellis never
-quietly drops the prompt before the provider has refused it. Trellis does not
+`invalid_request` whose description mentions `prompt`, the callback adds the
+provider to `__Host-trellis-portal-reauth-refused` (HttpOnly, `SameSite=Lax`,
+30 days) and the sign-in page tells the person the provider refused that prompt
+and names the "Prompt after sign-out" setting. Their next try with that
+provider goes without the prompt, so a provider that rejects it cannot block
+sign-in; Trellis never quietly drops the prompt before the provider has refused
+it. The sign-out cookie itself stays, so another provider chosen from the same
+page still gets its own prompt. A successful OIDC sign-in clears both cookies,
+and the next `/logout` page clears the refusal list. Trellis does not
 yet call the provider's own `end_session_endpoint`.
 
 A provider can also carry custom authorization parameters: name/value pairs,
@@ -945,7 +949,10 @@ and refuses the names Auth sets itself (`client_id`, `redirect_uri`,
 `response_type`, `scope`, `state`, `nonce`, `code_challenge`,
 `code_challenge_method`, and `prompt`, which has its own setting), since a
 second copy could redirect the code or defeat the state and PKCE bindings
-depending on which one the provider reads. Auth does not check that the ID
+depending on which one the provider reads. It also refuses `response_mode`: the
+callback is a GET that reads the result from its query, so a provider that
+honored `form_post` or `fragment` would deliver the code where Auth cannot read
+it. Auth does not check that the ID
 token reflects a parameter: an Auth0 token's `org_id` is not compared with the
 configured organization.
 

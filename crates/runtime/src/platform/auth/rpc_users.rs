@@ -484,13 +484,16 @@ pub(super) fn put_provider(
                 | "code_challenge"
                 | "code_challenge_method"
                 | "prompt"
+                | "response_mode"
         ) {
             return Err(AuthError::Invalid(format!(
                 "authorization parameter {name} is set by Trellis itself{}",
-                if name == "prompt" {
-                    "; use the provider's prompt after sign-out setting instead"
-                } else {
-                    ""
+                match name {
+                    "prompt" => "; use the provider's prompt after sign-out setting instead",
+                    "response_mode" =>
+                        "; the Portal reads the sign-in result from the callback query, \
+                        so providers must use the default query response mode",
+                    _ => "",
                 }
             )));
         }
