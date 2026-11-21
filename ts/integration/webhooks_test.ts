@@ -225,10 +225,11 @@ test("an acknowledged async request still reaches the service after an approved 
           service: key.deploymentId,
         })
       ).endpoints;
-    const signed = (await endpoints()).find(
-      (endpoint) => endpoint.endpoint === "signed",
+    // Intake serves the endpoint once its directory sees the new deployment.
+    const signed = await runtime.waitFor(async () =>
+      (await endpoints()).find((endpoint) => endpoint.endpoint === "signed"),
     );
-    assert.equal(signed?.mode, "async");
+    assert.equal(signed.mode, "async");
     const body = '{"id":"evt_queued"}';
     const timestamp = Math.floor(Date.now() / 1000);
     const response = await fetch(signed.url, {
