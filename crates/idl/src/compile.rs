@@ -10,8 +10,10 @@ use crate::{
         KeyConcurrency, KeyConcurrencyPolicy, NumericBound, PackageGraph, PackageId, Pagination,
         ParticipantDefinition, ParticipantId, ParticipantKind, ParticipantNeeds, Primitive, Replay,
         ResolvedDependency, ResourceDefinition, ResourceName, RetryPolicy, SemanticPackage,
-        SourceSpan, SourceUnit, TypeDefinition, TypeExpression, TypeId, TypeRef,
+        SourceSpan, SourceUnit, TypeDefinition, TypeExpression, TypeId, TypeRef, WebhookDecide,
+        WebhookDefinition, WebhookHeaderItem, WebhookMode, WebhookTimestamp, WebhookVerifier,
     },
+    webhook::TemplatePart,
 };
 use miette::{miette, IntoDiagnostic};
 use semver::VersionReq;
@@ -1470,13 +1472,22 @@ fn resolve_authoring(
                 resource.kind
             ));
         }
-        let definition = resolve_resource(resource, kind, source, scope, root)?;
-        if matches!(definition, ResourceDefinition::Consumer { .. }) {
+        let definition = if resource.kind == "webhook" {
+            resolve_webhook(resource, kind, &config, scope, root)?
+        } else {
+            resolve_resource(resource, kind, source, scope, root)?
+        };
+        let needed = match definition {
+            ResourceDefinition::Consumer { .. } => Some(("consumer", "trellis.events@v1")),
+            ResourceDefinition::Webhook { .. } => Some(("webhook", "trellis.webhooks@v1")),
+            _ => None,
+        };
+        if let Some((what, api)) = needed {
             let trellis = PackageId::new("trellis");
             if scope.package != &trellis && !root.dependencies.contains_key(&trellis) {
                 return Err(miette!(
-                    "consumer '{}' requires a direct dependency on the trellis package \
-                    containing trellis.events@v1; add trellis to trellis.toml and update \
+                    "{what} '{}' requires a direct dependency on the trellis package \
+                    containing {api}; add trellis to trellis.toml and update \
                     trellis.lock",
                     resource.name
                 ));
@@ -1486,9 +1497,9 @@ fn resolve_authoring(
             } else {
                 &scope.dependencies[&trellis].apis
             };
-            if !apis.contains_key(&ApiId::new("trellis.events@v1")) {
+            if !apis.contains_key(&ApiId::new(api)) {
                 return Err(miette!(
-                    "consumer '{}' requires trellis.events@v1 in the selected trellis package",
+                    "{what} '{}' requires {api} in the selected trellis package",
                     resource.name
                 ));
             }
@@ -1816,6 +1827,432 @@ fn resolve_resource(
             }
         }
         _ => return Err(miette!("unknown resource kind '{}'", raw.kind)),
+    })
+}
+
+/// Compile one `webhook` declaration, checking the rules the IDL states for
+/// endpoints against the service's own settings.
+fn resolve_webhook(
+    raw: &ast::Resource,
+    participant: Option<ParticipantKind>,
+    config: &BTreeMap<String, ConfigFieldDefinition>,
+    scope: &Scope<'_>,
+    root: &SemanticPackage,
+) -> miette::Result<ResourceDefinition> {
+    use ast::VerifierValue;
+    type Members = BTreeMap<String, VerifierValue>;
+    let endpoint = &raw.name;
+    let fail = |message: String| miette!("webhook '{endpoint}': {message}");
+    if participant != Some(ParticipantKind::Service) {
+        return Err(fail("only services can declare webhooks".into()));
+    }
+    if raw.optional {
+        return Err(fail("a webhook cannot be optional".into()));
+    }
+    reject_except(
+        raw,
+        &[
+            "title",
+            "description",
+            "mode",
+            "methods",
+            "decide",
+            "status",
+            "content_encoding",
+            "dedupe",
+            "concurrency",
+            "retry",
+            "max_body",
+            "dedupe_window",
+            "rotation_overlap",
+        ],
+    )?;
+    let docs = Documentation {
+        title: text(raw, "title")?.to_owned(),
+        description: text(raw, "description")?.to_owned(),
+    };
+    if docs.title.is_empty() || docs.description.is_empty() {
+        return Err(fail("requires nonempty title and description".into()));
+    }
+    let mode = match raw.members.get("mode") {
+        None => WebhookMode::Async,
+        Some(ResourceValue::Name(value)) if value == "async" => WebhookMode::Async,
+        Some(ResourceValue::Name(value)) if value == "sync" => WebhookMode::Sync,
+        _ => return Err(fail("mode must be async or sync".into())),
+    };
+    let methods = match raw.members.get("methods") {
+        None => vec!["POST".to_owned()],
+        Some(ResourceValue::Names(values)) => {
+            let unique = values.iter().cloned().collect::<BTreeSet<_>>();
+            if values.is_empty() || unique.len() != values.len() {
+                return Err(fail("methods must be distinct and nonempty".into()));
+            }
+            if let Some(bad) = unique
+                .iter()
+                .find(|value| !["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&value.as_str()))
+            {
+                return Err(fail(format!(
+                    "method '{bad}' must be one of GET, POST, PUT, PATCH, or DELETE"
+                )));
+            }
+            unique.into_iter().collect()
+        }
+        _ => return Err(fail("invalid methods".into())),
+    };
+    let decide = match raw.members.get("decide") {
+        None => None,
+        Some(ResourceValue::Decide { deadline_ms }) => {
+            let ceiling = match mode {
+                WebhookMode::Sync => 10_000,
+                WebhookMode::Async => 60_000,
+            };
+            if deadline_ms.is_some_and(|value| value == 0 || value > ceiling) {
+                return Err(fail(format!(
+                    "a decide deadline must be positive and at most {} s in this mode",
+                    ceiling / 1000
+                )));
+            }
+            Some(WebhookDecide {
+                deadline_ms: *deadline_ms,
+            })
+        }
+        _ => return Err(fail("invalid decide".into())),
+    };
+    let status = match raw.members.get("status") {
+        None => 200,
+        Some(ResourceValue::Integer(value)) if (200..300).contains(value) => *value as u16,
+        _ => return Err(fail("status must be a 2xx status".into())),
+    };
+    let content_encodings = match raw.members.get("content_encoding") {
+        None => Vec::new(),
+        Some(ResourceValue::Names(values)) => {
+            let unique = values.iter().cloned().collect::<BTreeSet<_>>();
+            if unique.len() != values.len()
+                || unique
+                    .iter()
+                    .any(|value| !["gzip", "deflate"].contains(&value.as_str()))
+            {
+                return Err(fail(
+                    "content_encoding lists distinct encodings from gzip and deflate".into(),
+                ));
+            }
+            unique.into_iter().collect()
+        }
+        _ => return Err(fail("invalid content_encoding".into())),
+    };
+    let dedupe = match raw.members.get("dedupe") {
+        None => None,
+        Some(ResourceValue::Text(value)) => {
+            let parts = crate::webhook::parse_template(value)
+                .map_err(|error| fail(format!("dedupe template: {error}")))?;
+            if parts.iter().any(|part| {
+                matches!(
+                    part,
+                    TemplatePart::Body | TemplatePart::FormSorted | TemplatePart::Timestamp
+                )
+            }) {
+                return Err(fail(
+                    "a dedupe template may use {header:Name}, {method}, {url}, {path}, and \
+                    {query}"
+                        .into(),
+                ));
+            }
+            if parts
+                .iter()
+                .all(|part| matches!(part, TemplatePart::Literal(_)))
+            {
+                return Err(fail(
+                    "a dedupe template must name where the delivery ID is".into(),
+                ));
+            }
+            Some(value.clone())
+        }
+        _ => return Err(fail("invalid dedupe".into())),
+    };
+    let concurrency = u32::try_from(integer_or(raw, "concurrency", 1)?)
+        .map_err(|_| fail("concurrency exceeds u32".into()))?;
+    if concurrency == 0 {
+        return Err(fail("concurrency must be positive".into()));
+    }
+    let positive = |name: &str| -> miette::Result<Option<u64>> {
+        match raw.members.get(name) {
+            None => Ok(None),
+            Some(ResourceValue::Capacity(value) | ResourceValue::Duration(value)) if *value > 0 => {
+                Ok(Some(*value))
+            }
+            _ => Err(fail(format!("{name} must be positive"))),
+        }
+    };
+    let max_body = positive("max_body")?;
+    let dedupe_window_ms = positive("dedupe_window")?;
+    let rotation_overlap_ms = positive("rotation_overlap")?;
+    if dedupe_window_ms.is_some() && dedupe.is_none() {
+        return Err(fail("dedupe_window needs a dedupe template".into()));
+    }
+
+    // Settings named by verifiers resolve through aliases, here or in a dependency.
+    let resolve = |ty: &TypeExpression| -> miette::Result<(bool, TypeExpression)> {
+        let mut nullable = false;
+        let mut ty = ty.clone();
+        loop {
+            match ty {
+                TypeExpression::Nullable(inner) => {
+                    nullable = true;
+                    ty = *inner;
+                }
+                TypeExpression::Named(ref reference) => {
+                    let package = package_for(root, scope.dependencies, &reference.package)?;
+                    match package.types.get(&reference.id) {
+                        Some(TypeDefinition::Alias(value)) => ty = value.clone(),
+                        _ => return Ok((nullable, ty.clone())),
+                    }
+                }
+                _ => return Ok((nullable, ty.clone())),
+            }
+        }
+    };
+    let is_string =
+        |ty: &TypeExpression| matches!(ty, TypeExpression::Primitive(Primitive::String, _));
+    let setting =
+        |member: &str, value: Option<&VerifierValue>, secret: bool| -> miette::Result<String> {
+            let Some(VerifierValue::Config(name)) = value else {
+                return Err(fail(format!(
+                    "{member} must name a setting, as `{member} config <name>;`"
+                )));
+            };
+            let Some(field) = config.get(name) else {
+                return Err(fail(format!(
+                    "{member} names '{name}', which is not a setting of this service"
+                )));
+            };
+            if secret && !field.secret {
+                return Err(fail(format!(
+                    "{member} names '{name}', which must be a secret setting"
+                )));
+            }
+            if !is_string(&resolve(&field.ty)?.1) {
+                return Err(fail(format!(
+                    "{member} names '{name}', which must hold a string"
+                )));
+            }
+            Ok(name.clone())
+        };
+    let text_member = |members: &Members, name: &str| -> miette::Result<Option<String>> {
+        match members.get(name) {
+            None => Ok(None),
+            Some(VerifierValue::Text(value)) if !value.is_empty() => Ok(Some(value.clone())),
+            _ => Err(fail(format!("{name} must be a nonempty quoted string"))),
+        }
+    };
+    let word = |members: &Members,
+                name: &str,
+                default: Option<&str>,
+                allowed: &[&str]|
+     -> miette::Result<String> {
+        match members.get(name) {
+            None => default
+                .map(str::to_owned)
+                .ok_or_else(|| fail(format!("{name} is required"))),
+            Some(VerifierValue::Name(value)) if allowed.contains(&value.as_str()) => {
+                Ok(value.clone())
+            }
+            _ => Err(fail(format!(
+                "{name} must be one of {}",
+                allowed.join(", ")
+            ))),
+        }
+    };
+    let only = |members: &Members, kind: &str, allowed: &[&str]| -> miette::Result<()> {
+        match members
+            .keys()
+            .find(|name| !allowed.contains(&name.as_str()))
+        {
+            Some(name) => Err(fail(format!("{kind} does not support '{name}'"))),
+            None => Ok(()),
+        }
+    };
+    let header_item =
+        |members: &Members, what: &str, extra: &[&str]| -> miette::Result<WebhookHeaderItem> {
+            let mut allowed = vec!["header", "separator", "prefix"];
+            allowed.extend_from_slice(extra);
+            only(members, what, &allowed)?;
+            let header = text_member(members, "header")?
+                .ok_or_else(|| fail(format!("{what} needs a header")))?;
+            Ok(WebhookHeaderItem {
+                header: header.to_ascii_lowercase(),
+                separator: text_member(members, "separator")?,
+                prefix: text_member(members, "prefix")?,
+            })
+        };
+    let mut verifiers = Vec::new();
+    for verifier in &raw.verifiers {
+        let members = &verifier.members;
+        verifiers.push(match verifier.kind.as_str() {
+            "none" => {
+                only(members, "verify none", &[])?;
+                WebhookVerifier::None
+            }
+            "hmac" => {
+                only(
+                    members,
+                    "verify hmac",
+                    &[
+                        "key",
+                        "key_prefix",
+                        "key_encoding",
+                        "algorithm",
+                        "signed",
+                        "signature",
+                        "timestamp",
+                    ],
+                )?;
+                let key = setting("key", members.get("key"), true)?;
+                let signed = text_member(members, "signed")?
+                    .ok_or_else(|| fail("verify hmac needs signed \"<template>\"".into()))?;
+                let parts = crate::webhook::parse_template(&signed)
+                    .map_err(|error| fail(format!("signed template: {error}")))?;
+                let Some(VerifierValue::Block(signature)) = members.get("signature") else {
+                    return Err(fail("verify hmac needs a signature { ... } block".into()));
+                };
+                let timestamp = match members.get("timestamp") {
+                    None => None,
+                    Some(VerifierValue::Block(timestamp)) => {
+                        let location =
+                            header_item(timestamp, "timestamp", &["format", "tolerance"])?;
+                        let tolerance_ms = match timestamp.get("tolerance") {
+                            Some(VerifierValue::Duration(value)) if *value > 0 => *value,
+                            _ => return Err(fail("timestamp needs a positive tolerance".into())),
+                        };
+                        Some(WebhookTimestamp {
+                            location,
+                            format: word(
+                                timestamp,
+                                "format",
+                                Some("unix_seconds"),
+                                &["unix_seconds", "unix_millis", "rfc3339"],
+                            )?,
+                            tolerance_ms,
+                        })
+                    }
+                    _ => return Err(fail("timestamp must be a block".into())),
+                };
+                if timestamp.is_none() && parts.contains(&TemplatePart::Timestamp) {
+                    return Err(fail("{timestamp} in signed needs a timestamp block".into()));
+                }
+                WebhookVerifier::Hmac {
+                    key,
+                    key_prefix: text_member(members, "key_prefix")?,
+                    key_encoding: word(
+                        members,
+                        "key_encoding",
+                        Some("text"),
+                        &["text", "hex", "base64", "base64url"],
+                    )?,
+                    algorithm: word(members, "algorithm", None, &["sha1", "sha256", "sha512"])?,
+                    signed,
+                    signature: header_item(signature, "signature", &["encoding"])?,
+                    signature_encoding: word(
+                        signature,
+                        "encoding",
+                        Some("hex"),
+                        &["hex", "base64", "base64url"],
+                    )?,
+                    timestamp,
+                }
+            }
+            "token" => {
+                only(
+                    members,
+                    "verify token",
+                    &["secret", "header", "query", "prefix"],
+                )?;
+                let header = text_member(members, "header")?;
+                let query = text_member(members, "query")?;
+                let prefix = text_member(members, "prefix")?;
+                if header.is_some() == query.is_some() {
+                    return Err(fail(
+                        "verify token needs exactly one of header or query".into(),
+                    ));
+                }
+                if prefix.is_some() && header.is_none() {
+                    return Err(fail("a token prefix applies only to a header".into()));
+                }
+                WebhookVerifier::Token {
+                    secret: setting("secret", members.get("secret"), true)?,
+                    header: header.map(|value| value.to_ascii_lowercase()),
+                    query,
+                    prefix,
+                }
+            }
+            "basic" => {
+                only(members, "verify basic", &["username", "password"])?;
+                WebhookVerifier::Basic {
+                    username: setting("username", members.get("username"), false)?,
+                    password: setting("password", members.get("password"), true)?,
+                }
+            }
+            "address" => {
+                only(members, "verify address", &["ranges"])?;
+                let Some(VerifierValue::Config(name)) = members.get("ranges") else {
+                    return Err(fail(
+                        "ranges must name a setting, as `ranges config <name>;`".into(),
+                    ));
+                };
+                let field = config.get(name).ok_or_else(|| {
+                    fail(format!(
+                        "ranges names '{name}', which is not a setting of this service"
+                    ))
+                })?;
+                let plain = !field.secret
+                    && match resolve(&field.ty)?.1 {
+                        TypeExpression::List(item, _) => resolve(&item)
+                            .is_ok_and(|(nullable, item)| !nullable && is_string(&item)),
+                        _ => false,
+                    };
+                if !plain {
+                    return Err(fail(format!(
+                        "ranges names '{name}', which must be a plain list<string> setting"
+                    )));
+                }
+                WebhookVerifier::Address {
+                    ranges: name.clone(),
+                }
+            }
+            other => {
+                return Err(fail(format!(
+                    "unknown verifier '{other}'; use hmac, token, basic, address, or none"
+                )))
+            }
+        });
+    }
+    if verifiers.is_empty() && decide.is_none() {
+        return Err(fail(
+            "an endpoint needs a verify or a decide; one that checks nothing says \
+            `verify none;`"
+                .into(),
+        ));
+    }
+    if verifiers.contains(&WebhookVerifier::None) && verifiers.len() > 1 {
+        return Err(fail(
+            "verify none cannot be combined with other verifiers".into(),
+        ));
+    }
+    Ok(ResourceDefinition::Webhook {
+        docs,
+        endpoint: Box::new(WebhookDefinition {
+            mode,
+            methods,
+            verifiers,
+            decide,
+            status,
+            content_encodings,
+            dedupe,
+            concurrency,
+            retry: retry(raw)?,
+            max_body,
+            dedupe_window_ms,
+            rotation_overlap_ms,
+        }),
     })
 }
 
@@ -2538,6 +2975,12 @@ fn resource_needs_json(
             "replay": match replay { Replay::New => "new", Replay::All => "all" },
             "retry": retry(retry_value),
         }),
+        ResourceDefinition::Webhook { endpoint, .. } => {
+            let mut value =
+                serde_json::to_value(endpoint).map_err(|error| miette!(error.to_string()))?;
+            value["kind"] = serde_json::json!("webhook");
+            value
+        }
     };
     trellis_protocol::canonicalize_json(&value).map_err(|error| miette!(error.to_string()))
 }

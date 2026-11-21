@@ -13,6 +13,7 @@ state = "src/builtin_source/state.trellis"
 health = "src/builtin_source/health.trellis"
 jobs = "src/builtin_source/jobs.trellis"
 events = "src/builtin_source/events.trellis"
+webhooks = "src/builtin_source/webhooks.trellis"
 participants = "src/builtin_source/participants.trellis"
 
 [registries.trellis]

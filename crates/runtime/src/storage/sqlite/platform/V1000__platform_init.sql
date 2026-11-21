@@ -161,7 +161,7 @@ CREATE TABLE auth_resources (
     owner_id TEXT NOT NULL CHECK (length(owner_id) > 0),
     participant_id TEXT CHECK (participant_id IS NULL OR length(participant_id) > 0),
     namespace_json TEXT CHECK (namespace_json IS NULL OR json_valid(namespace_json)),
-    kind TEXT NOT NULL CHECK (kind IN ('consumer', 'job', 'kv', 'state', 'store')),
+    kind TEXT NOT NULL CHECK (kind IN ('consumer', 'job', 'kv', 'state', 'store', 'webhook')),
     local_name TEXT NOT NULL CHECK (length(local_name) > 0),
     commitment_json TEXT NOT NULL CHECK (json_valid(commitment_json)),
     physical_id TEXT CHECK (physical_id IS NULL OR length(physical_id) > 0),
@@ -1157,4 +1157,37 @@ CREATE TABLE auth_client_config_declarations (
     evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json)),
     declared_by TEXT NOT NULL,
     declared_at INTEGER NOT NULL CHECK (declared_at BETWEEN 0 AND 9007199254740991)
+);
+-- Webhook endpoints a deployment's builds declared. A row outlives a build
+-- that drops its endpoint, so declaring it again brings back the same URL.
+CREATE TABLE auth_webhook_endpoints (
+    deployment_id TEXT NOT NULL REFERENCES auth_deployments(deployment_id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL CHECK (length(endpoint) > 0),
+    -- The URL's service segment, fixed when the endpoint was first declared.
+    service_name TEXT NOT NULL CHECK (length(service_name) > 0),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND 9007199254740991),
+    PRIMARY KEY (deployment_id, endpoint)
+);
+-- An endpoint's random URL IDs: one current, and earlier ones that keep
+-- working until an administrator retires them.
+CREATE TABLE auth_webhook_urls (
+    url_id TEXT PRIMARY KEY CHECK (length(url_id) = 22),
+    deployment_id TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    current INTEGER NOT NULL CHECK (current IN (0, 1)),
+    created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND 9007199254740991),
+    FOREIGN KEY (deployment_id, endpoint)
+        REFERENCES auth_webhook_endpoints(deployment_id, endpoint) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX auth_webhook_urls_current
+    ON auth_webhook_urls(deployment_id, endpoint) WHERE current = 1;
+-- Runtime settings a deployment set, overriding the IDL and Trellis defaults.
+-- Deployment-wide settings use the empty endpoint.
+CREATE TABLE auth_webhook_settings (
+    deployment_id TEXT NOT NULL REFERENCES auth_deployments(deployment_id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL,
+    setting TEXT NOT NULL CHECK (length(setting) > 0),
+    value INTEGER NOT NULL CHECK (value BETWEEN 0 AND 9007199254740991),
+    PRIMARY KEY (deployment_id, endpoint, setting)
 );

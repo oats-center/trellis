@@ -30,6 +30,7 @@ fn create(
 ) -> AuthDeploymentMutationResponse {
     let input = AuthDeploymentCreateRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         package_evidence: evidence,
         participant_id: participant.into(),
         kind: AuthDeploymentKind::Service,
@@ -135,6 +136,7 @@ fn a_dependency_on_an_installed_service_package_takes_the_highest_matching_insta
     let second = install("1.2.0", &newer);
     let apply = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         deployment_id: warehouse.deployment.deployment_id,
         expected_revision: warehouse.deployment.revision,
         package_evidence: second.clone(),

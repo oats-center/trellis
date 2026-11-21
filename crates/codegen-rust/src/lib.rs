@@ -2173,6 +2173,19 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
                     ));
                 }
             }
+            ResourceDefinition::Webhook { .. } => {
+                let descriptor = format!("resources::{}", type_name(name.as_str()));
+                out.push_str(&format!(
+                    "/// The `{name}` webhook endpoint: its events and decide handler.\n\
+                    pub fn {method}(&self) -> \
+                    Result<trellis_rs::client::WebhookHandle<{descriptor}>, \
+                    trellis_rs::service::ServerError> {{ \
+                    self.inner.webhook_handle::<{descriptor}>().ok_or_else(|| \
+                    trellis_rs::service::ServerError::ResourceUnavailable {{ \
+                    resource_kind: \"webhook\".into(), resource_name: {name:?}.into() }}) }}\n",
+                    name = name.as_str()
+                ));
+            }
             ResourceDefinition::Consumer { optional, .. } => {
                 let descriptor = format!("resources::{}", type_name(name.as_str()));
                 if *optional {
@@ -2349,6 +2362,19 @@ Availability> {{ futures_util::StreamExt::boxed(futures_util::stream::unfold(sel
                 self.runtime.register_generated_job_worker_with_concurrency::<{descriptor}, F, Fut, E>(handler, concurrency).await }}\n"
             ));
                 }
+                ResourceDefinition::Webhook { .. } => {
+                    let descriptor = format!("resources::{}", type_name(name.as_str()));
+                    out.push_str(&format!(
+                        "/// The `{name}` webhook endpoint: its events and decide handler.\n\
+                    pub fn {method}(&self) -> \
+                    Result<trellis_rs::client::WebhookHandle<{descriptor}>, \
+                    trellis_rs::service::ServerError> {{ \
+                    self.runtime.generated_client().webhook_handle::<{descriptor}>().ok_or_else(|| \
+                    trellis_rs::service::ServerError::ResourceUnavailable {{ \
+                    resource_kind: \"webhook\".into(), resource_name: {name:?}.into() }}) }}\n",
+                        name = name.as_str()
+                    ));
+                }
                 ResourceDefinition::Consumer { optional, .. } => {
                     let descriptor = format!("resources::{}", type_name(name.as_str()));
                     if *optional {
@@ -2400,6 +2426,7 @@ fn render_resources(
             | ResourceDefinition::Store { optional, .. }
             | ResourceDefinition::Job { optional, .. }
             | ResourceDefinition::Consumer { optional, .. } => optional,
+            ResourceDefinition::Webhook { .. } => &false,
         };
         match resource {
             ResourceDefinition::State {
@@ -2561,6 +2588,19 @@ fn render_resources(
                     name.as_str(),
                 ));
             }
+            ResourceDefinition::Webhook { endpoint, .. } => {
+                out.push_str(&format!(
+                    "pub struct {rust_name};\nimpl {rust_name} {{ pub const NAME: &'static \
+                    str = {name:?}; pub const DECIDES: bool = {decides}; }}\n\
+                    impl trellis_rs::client::ConsumerDescriptor for {rust_name} {{ const \
+                    NAME: &'static str = {name:?}; const EVENTS: &'static \
+                    [(&'static str, &'static str)] = &[(\"trellis.webhooks@v1\", \"Received\")]; }}\n\
+                    impl trellis_rs::client::WebhookDescriptor for {rust_name} {{ const \
+                    DECIDES: bool = {decides}; }}\n",
+                    name = name.as_str(),
+                    decides = endpoint.decide.is_some(),
+                ));
+            }
         }
     }
     out.push_str("}\n");
@@ -2708,6 +2748,7 @@ fn render_availability(graph: &PackageGraph, participant: &ParticipantDefinition
             ResourceDefinition::Store { optional, .. } => (*optional, "Store"),
             ResourceDefinition::Job { optional, .. } => (*optional, "Job"),
             ResourceDefinition::Consumer { optional, .. } => (*optional, "Consumer"),
+            ResourceDefinition::Webhook { .. } => (false, "Consumer"),
         };
         if optional {
             fields.insert(
@@ -2930,7 +2971,9 @@ fn participant_reachable_types(
                     collect_type(graph, reference, &mut result);
                 }
             }
-            ResourceDefinition::Store { .. } | ResourceDefinition::Consumer { .. } => {}
+            ResourceDefinition::Store { .. }
+            | ResourceDefinition::Consumer { .. }
+            | ResourceDefinition::Webhook { .. } => {}
         }
     }
     result

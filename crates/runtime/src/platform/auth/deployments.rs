@@ -760,6 +760,7 @@ impl SqliteAuthorizationStore {
                         trellis_idl::ResourceDefinition::Kv { .. } => "kv",
                         trellis_idl::ResourceDefinition::Store { .. } => "store",
                         trellis_idl::ResourceDefinition::Consumer { .. } => "consumer",
+                        trellis_idl::ResourceDefinition::Webhook { .. } => "webhook",
                         trellis_idl::ResourceDefinition::Job { .. } => "job",
                         trellis_idl::ResourceDefinition::State { .. } => "state",
                     };
@@ -833,7 +834,11 @@ impl SqliteAuthorizationStore {
             }
             if kind == "service"
                 && participant.resources().values().any(|resource| {
-                    matches!(resource, trellis_idl::ResourceDefinition::Consumer { .. })
+                    matches!(
+                        resource,
+                        trellis_idl::ResourceDefinition::Consumer { .. }
+                            | trellis_idl::ResourceDefinition::Webhook { .. }
+                    )
                 })
             {
                 let cap = capability(connection, CONSUMER_RUNTIME_CAPABILITY)?;
@@ -936,7 +941,11 @@ impl SqliteAuthorizationStore {
             if kind == "service"
                 && installed.is_some_and(|value| {
                     value.resources().values().any(|resource| {
-                        matches!(resource, trellis_idl::ResourceDefinition::Consumer { .. })
+                        matches!(
+                            resource,
+                            trellis_idl::ResourceDefinition::Consumer { .. }
+                                | trellis_idl::ResourceDefinition::Webhook { .. }
+                        )
                     })
                 })
             {

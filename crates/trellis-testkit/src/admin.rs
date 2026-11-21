@@ -510,6 +510,7 @@ impl AdminSession {
                 participant_id: P::ID.to_owned(),
                 package_evidence: wire(P::package_evidence())?,
                 acknowledge_shared_apis: acknowledge_shared_apis.then_some(true),
+                acknowledge_unauthenticated_webhooks: None,
                 idempotency_key: wire(ulid::Ulid::generate().to_string())?,
                 extra: Default::default(),
             })

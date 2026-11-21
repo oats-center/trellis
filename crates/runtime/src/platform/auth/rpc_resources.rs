@@ -277,7 +277,7 @@ pub(super) async fn remove_resource(
                     let physical_matches = match resource.kind {
                         AuthResourceKind::Kv | AuthResourceKind::Store => physical == owned_name,
                         AuthResourceKind::State => physical == format!("{id}.{allocation}"),
-                        AuthResourceKind::EventConsumer => {
+                        AuthResourceKind::EventConsumer | AuthResourceKind::Webhook => {
                             serde_json::from_str::<serde_json::Value>(&physical).is_ok_and(
                                 |value| {
                                     value["consumer"] == owned_name
@@ -452,7 +452,7 @@ pub(super) async fn remove_resource(
                     .await
                     .map_err(|error| AuthError::Broker(error.to_string()))?;
             }
-        } else if kind == "job" || kind == "consumer" {
+        } else if kind == "job" || kind == "consumer" || kind == "webhook" {
             let mut value: serde_json::Value = serde_json::from_str(&physical)?;
             let owned = value.get("owned").unwrap_or(&value).clone();
             let consumer = owned["consumer"].as_str().ok_or(AuthError::Conflict)?;
@@ -464,7 +464,7 @@ pub(super) async fn remove_resource(
                 },
                 consumer.to_owned(),
             )];
-            if kind == "consumer" {
+            if kind == "consumer" || kind == "webhook" {
                 targets.push((
                     trellis_events_runtime::REPLAY_STREAM,
                     owned["replay_consumer"]

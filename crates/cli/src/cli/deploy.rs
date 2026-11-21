@@ -164,6 +164,10 @@ pub struct SvcUpdateArgs {
     /// serves, splitting callers' requests between the two.
     #[arg(long)]
     pub acknowledge_shared_apis: bool,
+    /// Confirm webhook endpoints that check nothing (`verify none`): anyone
+    /// who learns such an endpoint's URL can send it requests.
+    #[arg(long)]
+    pub acknowledge_unauthenticated_webhooks: bool,
 }
 
 /// Target-first device command.
@@ -231,6 +235,10 @@ pub struct SvcCreateArgs {
     /// serves, splitting callers' requests between the two.
     #[arg(long)]
     pub acknowledge_shared_apis: bool,
+    /// Confirm webhook endpoints that check nothing (`verify none`): anyone
+    /// who learns such an endpoint's URL can send it requests.
+    #[arg(long)]
+    pub acknowledge_unauthenticated_webhooks: bool,
 }
 
 /// Create a device deployment from its native source package or a published
@@ -243,6 +251,10 @@ pub struct DevCreateArgs {
     /// serves, splitting callers' requests between the two.
     #[arg(long)]
     pub acknowledge_shared_apis: bool,
+    /// Confirm webhook endpoints that check nothing (`verify none`): anyone
+    /// who learns such an endpoint's URL can send it requests.
+    #[arg(long)]
+    pub acknowledge_unauthenticated_webhooks: bool,
 }
 
 /// Install a build on an existing deployment, from its source package or a
@@ -259,6 +271,10 @@ pub struct ApplyArgs {
     /// serves, splitting callers' requests between the two.
     #[arg(long)]
     pub acknowledge_shared_apis: bool,
+    /// Confirm webhook endpoints that check nothing (`verify none`): anyone
+    /// who learns such an endpoint's URL can send it requests.
+    #[arg(long)]
+    pub acknowledge_unauthenticated_webhooks: bool,
 }
 
 /// Remove a deployment; enforcement is performed by the native Auth runtime.

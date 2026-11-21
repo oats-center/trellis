@@ -227,6 +227,21 @@ async fn decide_service_update(
         Some(update) => miette::miette!("{id} has no update {update}"),
         None => miette::miette!("{id} has no pending update"),
     })?;
+    let unauthenticated = selected
+        .changes
+        .webhooks
+        .iter()
+        .filter(|webhook| webhook.unauthenticated)
+        .map(|webhook| webhook.name.clone())
+        .collect::<Vec<_>>();
+    if approve && !unauthenticated.is_empty() && !args.acknowledge_unauthenticated_webhooks {
+        return Err(miette::miette!(
+            help = "Re-run with --acknowledge-unauthenticated-webhooks only if that is intended.",
+            "This update adds webhook endpoint {} that checks nothing: anyone who learns its \
+            URL can send {id} requests.",
+            unauthenticated.join(", ")
+        ));
+    }
     if approve && !selected.changes.shared_apis.is_empty() && !args.acknowledge_shared_apis {
         return Err(miette::miette!(
             help = "Re-run with --acknowledge-shared-apis only if splitting requests is intended.",
@@ -249,6 +264,9 @@ async fn decide_service_update(
         .service_updates_decide(&auth_types::AuthServiceUpdateDecideRequest {
             update_id: selected.update_id,
             acknowledge_shared_apis: (approve && args.acknowledge_shared_apis).then_some(true),
+            acknowledge_unauthenticated_webhooks: (approve
+                && args.acknowledge_unauthenticated_webhooks)
+                .then_some(true),
             decision: if approve {
                 auth_types::AuthDecision::Approved
             } else {
@@ -734,6 +752,9 @@ async fn create_service(
             participant_id,
             package_evidence,
             acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
+            acknowledge_unauthenticated_webhooks: args
+                .acknowledge_unauthenticated_webhooks
+                .then_some(true),
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })
@@ -824,6 +845,11 @@ fn shared_api_hint(error: impl std::fmt::Display) -> miette::Report {
             help = "Re-run with --acknowledge-shared-apis only if splitting requests is intended.",
             "{message}"
         )
+    } else if message.contains("acknowledgeUnauthenticatedWebhooks") {
+        miette::miette!(
+            help = "Re-run with --acknowledge-unauthenticated-webhooks only if that is intended.",
+            "{message}"
+        )
     } else {
         miette::miette!("{message}")
     }
@@ -846,6 +872,9 @@ async fn create_device(format: OutputFormat, id: &str, args: &DevCreateArgs) -> 
             participant_id,
             package_evidence,
             acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
+            acknowledge_unauthenticated_webhooks: args
+                .acknowledge_unauthenticated_webhooks
+                .then_some(true),
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })
@@ -907,6 +936,9 @@ async fn apply_contract(
             idempotency_key: wire(cli_idempotency_key())?,
             package_evidence,
             acknowledge_shared_apis: args.acknowledge_shared_apis.then_some(true),
+            acknowledge_unauthenticated_webhooks: args
+                .acknowledge_unauthenticated_webhooks
+                .then_some(true),
             extra: Default::default(),
         })
         .await
