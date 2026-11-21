@@ -270,7 +270,9 @@ test("aborting a service connect while its settings read is outstanding ends the
       // while the read is still outstanding.
       const hold = runtime
         .nativeTransportGate()
-        .armResponseHold("rpc.v1.auth.Config.Own.Get");
+        .armResponseHold(
+          `rpc.v1.${Buffer.from("trellis.auth@v1").toString("base64url")}.Config.Own.Get`,
+        );
       const controller = new AbortController();
       const connecting = TrellisService.connect({
         trellisUrl: runtime.trellisUrl,

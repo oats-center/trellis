@@ -515,6 +515,52 @@ pub fn package_evidence(graph: &PackageGraph) -> miette::Result<PackageEvidence>
     })
 }
 
+/// Readable generated names that never collide, for a set of full IDs.
+///
+/// Each ID starts from its `preferred` name. Only the IDs whose name is shared,
+/// ignoring case, are renamed: first to `name` of the short ID (the full ID
+/// without its workspace), then to `name` of the full ID. Different full IDs
+/// can still produce one name, since `name` drops punctuation
+/// (`ghcr.io/acme-lab` and `ghcr.io/acme/lab` both become `GhcrIoAcmeLab`), so
+/// names that still collide take `_` and the first eight hex digits of the
+/// SHA-256 of their full ID. Every other name stays as it was.
+pub fn generated_names<'a>(
+    preferred: impl IntoIterator<Item = (&'a str, String)>,
+    name: impl Fn(&str) -> String,
+) -> BTreeMap<&'a str, String> {
+    use sha2::{Digest as _, Sha256};
+    use std::fmt::Write as _;
+    let mut names = preferred.into_iter().collect::<BTreeMap<_, _>>();
+    let shared = |names: &BTreeMap<&'a str, String>| {
+        let mut counts = BTreeMap::<String, usize>::new();
+        for value in names.values() {
+            *counts.entry(value.to_lowercase()).or_default() += 1;
+        }
+        names
+            .iter()
+            .filter(|(_, value)| counts[&value.to_lowercase()] > 1)
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>()
+    };
+    let forms: [&dyn Fn(&str) -> String; 2] =
+        [&|id| name(trellis_protocol::short_id(id)), &|id| name(id)];
+    for form in forms {
+        for id in shared(&names) {
+            names.insert(id, form(id));
+        }
+    }
+    for id in shared(&names) {
+        let digest = Sha256::digest(id.as_bytes());
+        let mut suffix = String::new();
+        for byte in &digest[..4] {
+            write!(suffix, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        let value = format!("{}_{suffix}", names[id]);
+        names.insert(id, value);
+    }
+    names
+}
+
 /// Name what a package's sources import from outside the package: every
 /// `import ... from X` whose `X` is not another source of the same set.
 ///

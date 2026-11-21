@@ -433,15 +433,32 @@ pub fn compile_participant_input(
 /// one chosen at a terminal.
 fn choose_participant(candidates: &[String], selected: Option<&str>) -> miette::Result<usize> {
     match selected {
-        Some(id) => candidates
-            .iter()
-            .position(|candidate| candidate == id)
-            .ok_or_else(|| {
-                miette::miette!(
+        // A full ID names itself; a short ID, without the workspace, names
+        // the one candidate that has it.
+        Some(id) => {
+            let matching = candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| {
+                    *candidate == id || trellis_protocol::short_id(candidate) == id
+                })
+                .collect::<Vec<_>>();
+            match matching.as_slice() {
+                [(index, _)] => Ok(*index),
+                [] => Err(miette::miette!(
                     "participant '{id}' does not match; candidates: {}",
                     candidates.join(", ")
-                )
-            }),
+                )),
+                several => Err(miette::miette!(
+                    "participant '{id}' could mean {}; give its full ID",
+                    several
+                        .iter()
+                        .map(|(_, candidate)| candidate.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" or ")
+                )),
+            }
+        }
         None if candidates.len() == 1 => Ok(0),
         None if crate::prompt::interactive() && !candidates.is_empty() => {
             let choices = candidates.iter().cloned().enumerate().collect::<Vec<_>>();
@@ -1345,7 +1362,7 @@ fn print_deployments<T: serde::Serialize>(
             &[
                 output::col("Name", "title"),
                 output::state_col("State", "state"),
-                output::col("Participant", "participantId"),
+                output::id_col("Participant", "participantId"),
                 output::muted("ID", "deploymentId"),
             ],
             &if with_disabled {

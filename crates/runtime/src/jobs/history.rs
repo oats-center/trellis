@@ -128,7 +128,7 @@ pub(super) fn register(
 
 fn forbidden(session_key: &str) -> ServerError {
     ServerError::RequestDenied {
-        subject: "rpc.v1.jobs.History".into(),
+        subject: <History as trellis_rs::generated::RpcDescriptor>::SUBJECT.into(),
         session_key: session_key.into(),
     }
 }

@@ -186,16 +186,6 @@ pub fn validate_api_id(value: &str) -> Result<(), ProtocolError> {
     validate_positive_decimal("api id", major)
 }
 
-pub(crate) fn validate_version(value: &str) -> Result<(), ProtocolError> {
-    let Some(major) = value.strip_prefix('v') else {
-        return Err(invalid(
-            "surface version",
-            "must be a positive 'vN' version",
-        ));
-    };
-    validate_positive_decimal("surface version", major)
-}
-
 pub(crate) fn validate_logical_name(value: &str) -> Result<(), ProtocolError> {
     validate_protocol_identifier("logical name", value)?;
     if value.starts_with('.')

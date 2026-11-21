@@ -26,7 +26,8 @@ pub(crate) async fn read(
                     name: "History".into(),
                     direction: trellis_protocol::PermissionAction::Call,
                 },
-                "rpc.v1.jobs.History",
+                &trellis_protocol::derive_rpc_subject("trellis.jobs@v1", "History")
+                    .map_err(|error| error.to_string())?,
                 &serde_json::to_value(input).map_err(|error| error.to_string())?,
             )
             .await

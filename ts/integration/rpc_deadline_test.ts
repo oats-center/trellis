@@ -10,12 +10,13 @@ import { type BaseError } from "@oatscenter/result";
 import { Result, TransportError } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
+  apis,
   apps,
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-const ECHO = "rpc.v1.runtime.Echo";
+const ECHO = apis.runtime.API.actions["rpc:Echo"].subject;
 
 test("a request whose deadline passes before it is sent is never sent", async () => {
   await withTrellisRuntime(

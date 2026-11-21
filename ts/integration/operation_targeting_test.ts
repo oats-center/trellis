@@ -210,6 +210,17 @@ test(
             "b:accepted",
           );
           assert.deepEqual(executions, { a: 2, b: 1 });
+          // Both deployments now serve the canonical start subject. A
+          // reference restored from storage still asks its owner, A, for
+          // status: only the start subject is canonical.
+          const restoredCanonical = client.work.resume(
+            JSON.parse(JSON.stringify(canonical)),
+          );
+          assert.equal(restoredCanonical.deploymentId, identityA.deploymentId);
+          assert.equal(
+            (await restoredCanonical.get().orThrow()).output?.value,
+            "a:canonical",
+          );
           const bytes = new Uint8Array([0, 1, 2, 127, 255]);
           let uploads = 0;
           await a.handleUpload(async ({ input, transfer, op }) => {

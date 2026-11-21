@@ -180,7 +180,9 @@ test("active contract replacement keeps covered connections and drops uncovered 
                       !existingConnections.has(id) &&
                       !closed &&
                       subs.some(
-                        ({ subject }) => subject === "rpc.v1.runtime.Echo",
+                        ({ subject }) =>
+                          subject ===
+                          `rpc.v1.${Buffer.from("localhost/runtime-trellis.runtime@v1").toString("base64url")}.Echo`,
                       ),
                   ) ?? false,
             );

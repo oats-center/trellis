@@ -178,6 +178,14 @@ publication uses only short-lived staging and backups.
 
 Generated names depend on declared action names and dependency aliases. Check
 the generated participant rather than inventing a method from a generic example.
+Module and export names come from short IDs (the ID without its workspace), so
+they read the same whatever workspace a package is published from. Only names
+that would collide change: an API whose name another API in the graph shares
+is named by its short ID, then by its full ID, and names that still collide
+(`ghcr.io/acme-lab/x` and `ghcr.io/acme/lab/x` both drop to `GhcrIoAcmeLabX`)
+take a short hash suffix of the full ID. A participant or app that uses two
+APIs of the same name gets method names from those generated names, such as
+`ghcrIoAcmeLabXSamplesV1D24145caGet`; look them up in the generated package.
 TypeScript participants expose flat caller methods and generated `handle...`,
 `publish...`, and `on...` methods where the selection allows them. Rust
 participants expose typed methods through generated facades.
