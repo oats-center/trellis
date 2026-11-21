@@ -38,11 +38,26 @@ pub(crate) struct Check {
     pub(crate) key: Option<String>,
 }
 
+/// Why intake wrote a request to the intake stream, fixed when it was received.
+///
+/// The worker acts on this, not on the endpoint's current mode, so an approved
+/// mode change never drops a request the sender was already answered for, and
+/// never publishes one the sender was refused.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum Disposition {
+    /// An `async` request answered 2xx, waiting for the worker to verify it.
+    Queued,
+    /// A `sync` request refused at once, kept only to inspect and verify again.
+    Archived,
+}
+
 /// A request as received, without credentials.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StoredRequest {
     pub(crate) attempt_id: String,
+    pub(crate) disposition: Disposition,
     pub(crate) deployment_id: String,
     pub(crate) endpoint: String,
     pub(crate) received_at_ms: i64,

@@ -19,6 +19,7 @@ import {
 import { codecs } from "@oatscenter/trellis/generated";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { participants as laterParticipants } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 const participant = participants.WebhookService.participant;
@@ -204,6 +205,114 @@ test("a signed async endpoint answers at once, verifies afterwards, drops duplic
     assert.equal(disabled.status, 503);
     assert.equal(await disabled.text(), "");
     assert.equal((await attempts("signed")).length, before);
+    await service.stop();
+  });
+});
+
+test("an acknowledged async request still reaches the service after an approved change to sync mode", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    // The signing secret is not set yet, so the worker keeps the request
+    // pending, as it does in production until an administrator sets it.
+    const key = await runtime.services.createInstance({
+      name: "billing",
+      deployment: "billing",
+      contract: participant,
+    });
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    const endpoints = async () =>
+      (
+        await runtime.callAdminRpc("webhooksEndpointsList", {
+          service: key.deploymentId,
+        })
+      ).endpoints;
+    const signed = (await endpoints()).find(
+      (endpoint) => endpoint.endpoint === "signed",
+    );
+    assert.equal(signed?.mode, "async");
+    const body = '{"id":"evt_queued"}';
+    const timestamp = Math.floor(Date.now() / 1000);
+    const response = await fetch(signed.url, {
+      method: "POST",
+      body,
+      headers: {
+        "test-signature": `t=${timestamp},v1=${sign(`${timestamp}.${body}`)}`,
+      },
+    });
+    assert.equal(response.status, 200);
+    const attempts = async () =>
+      (
+        await runtime.callAdminRpc("webhooksAttemptsQuery", {
+          service: key.deploymentId,
+          endpoint: "signed",
+        })
+      ).attempts;
+    const held = await runtime.waitFor(async () => {
+      const [attempt] = await attempts();
+      return attempt?.reason === "secret signing not set" ? attempt : undefined;
+    });
+    assert.equal(held.outcome, "pending");
+
+    // The service's next build answers the endpoint in sync mode.
+    const connecting = TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: laterParticipants.WebhookService.participant,
+      seed: key.seed,
+    }).orThrow();
+    const update = await runtime.waitFor(async () => {
+      const { items } = await runtime.callAdminRpc(
+        "authServiceUpdatesList",
+        {},
+      );
+      return items.find(
+        (item) =>
+          item.deploymentId === key.deploymentId && item.state === "pending",
+      );
+    });
+    await runtime.callAdminRpc("authServiceUpdatesDecide", {
+      updateId: update.updateId,
+      decision: "approved",
+      expectedRevision: update.revision,
+      idempotencyKey: codecs.ulid.decode(ulid()),
+    });
+    await runtime.waitFor(async () =>
+      (await endpoints()).some(
+        (endpoint) =>
+          endpoint.endpoint === "signed" && endpoint.mode === "sync",
+      )
+        ? true
+        : undefined,
+    );
+
+    // Once the secret is set the queued request is verified and delivered.
+    const { revision } = await runtime.callAdminRpc("authConfigGet", {
+      target,
+    });
+    await runtime.callAdminRpc("authConfigSet", {
+      target,
+      secrets: { signing: SIGNING },
+      ...(revision === undefined ? {} : { expectedRevision: revision }),
+      idempotencyKey: codecs.ulid.decode(ulid()),
+    });
+    const service = await connecting;
+    const received: WebhookDelivery[] = [];
+    await service.webhooks.signed
+      .onReceived(({ event }) => {
+        received.push(event);
+      })
+      .orThrow();
+    void service.wait();
+    // The worker checks a request waiting for its secret every 10 seconds.
+    await runtime.waitFor(() => (received.length === 1 ? true : undefined), {
+      timeoutMs: 20_000,
+    });
+    assert.equal(new TextDecoder().decode(received[0]!.body), body);
+    assert.equal(received[0]!.deliveryId, held.attemptId);
+    assert.deepEqual(
+      received[0]!.checks.map((check) => [check.kind, check.key]),
+      [["hmac", "current"]],
+    );
+    const [attempt] = await attempts();
+    assert.equal(attempt?.outcome, "accepted");
     await service.stop();
   });
 });
