@@ -98,7 +98,11 @@ model WebhookSecretStatus {
   isSet: bool;
   /// When the previous value stops being accepted, while it still is.
   previousAcceptedUntil: timestamp | null;
-  /// When a request last matched the previous value.
+  /// When a request to this endpoint last matched the current value, since
+  /// the change that set it.
+  currentLastMatchedAt: timestamp | null;
+  /// When a request to this endpoint last matched the value the newest
+  /// change replaced, after that change.
   previousLastMatchedAt: timestamp | null;
 }
 

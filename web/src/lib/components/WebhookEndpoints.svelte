@@ -320,6 +320,11 @@
               <dt class="text-base-content/65">{secret.name}</dt>
               <dd>
                 {secret.isSet ? "Set" : "Not set"}
+                {#if secret.currentLastMatchedAt}
+                  · last matched {formatDate(
+                    String(secret.currentLastMatchedAt),
+                  )}
+                {/if}
                 {#if secret.previousAcceptedUntil}
                   · old value accepted until {formatDate(
                     String(secret.previousAcceptedUntil),

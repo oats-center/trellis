@@ -8,10 +8,23 @@ const DURATIONS = [
   [1000, "s"],
 ] as const;
 
-const MULTIPLIERS: Record<WebhookSettingUnit, Record<string, bigint>> = {
-  count: {},
-  ms: { ms: 1n, s: 1000n, m: 60_000n, h: 3_600_000n, d: 86_400_000n },
-  bytes: { B: 1n, KiB: 1024n, MiB: 1_048_576n, GiB: 1_073_741_824n },
+// Maps, so a suffix such as `constructor` finds nothing rather than an
+// inherited property.
+const MULTIPLIERS: Record<WebhookSettingUnit, Map<string, bigint>> = {
+  count: new Map(),
+  ms: new Map([
+    ["ms", 1n],
+    ["s", 1000n],
+    ["m", 60_000n],
+    ["h", 3_600_000n],
+    ["d", 86_400_000n],
+  ]),
+  bytes: new Map([
+    ["B", 1n],
+    ["KiB", 1024n],
+    ["MiB", 1_048_576n],
+    ["GiB", 1_073_741_824n],
+  ]),
 };
 
 /**
@@ -52,6 +65,6 @@ export function parseWebhookSetting(
   if (!match) return null;
   const suffix = match[2];
   if (suffix === undefined) return BigInt(match[1]!);
-  const multiplier = MULTIPLIERS[unit][suffix];
+  const multiplier = MULTIPLIERS[unit].get(suffix);
   return multiplier === undefined ? null : BigInt(match[1]!) * multiplier;
 }

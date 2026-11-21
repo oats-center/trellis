@@ -1829,6 +1829,10 @@ pub(crate) struct WebhookSettingValue {
     /// The value the newest change replaced, and when that change was made,
     /// while the revision just before the change still exists.
     pub(crate) previous: Option<(Value, i64)>,
+    /// For a secret, the settings revision that set its current value, so
+    /// matches are kept per change; `None` when unset or when that revision
+    /// is gone.
+    pub(crate) rotation: Option<u32>,
 }
 
 /// The deployment's own values of `fields`, secrets decrypted, for webhook
@@ -1854,6 +1858,7 @@ pub(crate) fn webhook_settings(
                 .and_then(|effective| effective.value.clone())
                 .filter(|value| !value.is_null()),
             previous: None,
+            rotation: None,
         };
         if declared
             .fields
@@ -1902,7 +1907,10 @@ pub(crate) fn webhook_settings(
                 // later revision carries it and that change's time is lost;
                 // the change found is an older one, and its value is not
                 // the current one.
-                if kept && at(revision)? == value.current {
+                if value.current.is_some() && at(revision)? == value.current {
+                    value.rotation = Some(revision);
+                }
+                if kept && value.rotation.is_some() {
                     value.previous = at(replaced)?
                         .filter(|previous| Some(previous) != value.current.as_ref())
                         .map(|previous| (previous, changed_at));

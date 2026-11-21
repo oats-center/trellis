@@ -50,12 +50,21 @@ impl Webhooks {
         let record = &endpoint.record;
         let definition = &record.definition;
         let (deployment, name) = endpoint.key();
-        let last_previous = self
+        let matches = self
             .inner
             .records
-            .previous_match(&deployment, &name)
+            .matches(&deployment, &name)
             .await
             .map_err(unexpected)?;
+        // When this field's current rotation last matched `key`; matches of
+        // other fields and earlier rotations never stand in.
+        let last_matched = |field: &str, key: super::verify::KeyMatch| {
+            let rotation = endpoint.record.values.get(field)?.rotation?;
+            matches
+                .get(&(field.to_owned(), rotation, key.as_str().to_owned()))
+                .copied()
+                .map(super::rfc3339)
+        };
         let mut secrets = Vec::new();
         for verifier in &definition.verifiers {
             let fields: Vec<&String> = match verifier {
@@ -69,7 +78,8 @@ impl Webhooks {
                     "name": field,
                     "isSet": endpoint.text(field).is_some(),
                     "previousAcceptedUntil": endpoint.previous_accepted_until(field).map(super::rfc3339),
-                    "previousLastMatchedAt": last_previous.map(super::rfc3339),
+                    "currentLastMatchedAt": last_matched(field, super::verify::KeyMatch::Current),
+                    "previousLastMatchedAt": last_matched(field, super::verify::KeyMatch::Previous),
                 }));
             }
         }

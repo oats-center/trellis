@@ -176,6 +176,12 @@ fn print_endpoint(endpoint: &Value) {
                         output::absolute_time(until)
                     ));
                 }
+                if let Some(matched) = secret["currentLastMatchedAt"].as_str() {
+                    line.push_str(&format!(
+                        ", last matched {}",
+                        output::relative_time(matched)
+                    ));
+                }
                 if let Some(matched) = secret["previousLastMatchedAt"].as_str() {
                     line.push_str(&format!(
                         ", previous value last matched {}",

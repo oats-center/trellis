@@ -280,6 +280,18 @@ service WebhookService {
     }
     dedupe "{header:X-Delivery-Id}";
   }
+  webhook layered {
+    title "Layered";
+    description "A token and an HMAC over the body, both checked.";
+    mode sync;
+    verify token { secret config hookToken; header "X-Hook-Token"; }
+    verify hmac {
+      key config signing;
+      algorithm sha256;
+      signed "{body}";
+      signature { header "X-Body-Signature"; prefix "sha256="; encoding hex; }
+    }
+  }
 }
 service ConfiguredService {
   config endpoint { title "Endpoint"; description "Where the service sends work."; type string; }

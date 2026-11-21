@@ -78,8 +78,11 @@ button for each URL.
 When the sender changes its secret, token, or password, set the new one.
 Trellis accepts the previous value for 24 hours, so requests the sender made
 before the change still pass. Only the value the change replaced is accepted,
-never an older one. The endpoint shows until when the old value is accepted
-and when a request last matched it. Deleting the previous settings revision
+never an older one. For each secret, the endpoint shows until when the old
+value is accepted, when a request last matched the new value, and when one
+last matched the old value since the change. Each secret has its own times,
+and a change starts them afresh, so an old secret's use before the change
+never shows up as use after it. Deleting the previous settings revision
 with `trellis svc billing config delete-revision <revision>` ends the overlap
 at once.
 

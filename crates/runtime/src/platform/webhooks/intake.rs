@@ -449,8 +449,17 @@ async fn intake(
                         "token does not match",
                     )));
                 };
-                if matched == KeyMatch::Previous {
-                    let _ = records.note_previous_match(deployment, endpoint_name).await;
+                if let Some(rotation) = endpoint.match_rotation(secret, matched, received_at_ms) {
+                    let _ = records
+                        .note_match(
+                            deployment,
+                            endpoint_name,
+                            secret,
+                            rotation,
+                            matched,
+                            received_at_ms,
+                        )
+                        .await;
                 }
                 stored.checks.push(Check {
                     kind: "token".into(),
@@ -487,8 +496,17 @@ async fn intake(
                         "basic credentials do not match",
                     )));
                 };
-                if matched == KeyMatch::Previous {
-                    let _ = records.note_previous_match(deployment, endpoint_name).await;
+                if let Some(rotation) = endpoint.match_rotation(password, matched, received_at_ms) {
+                    let _ = records
+                        .note_match(
+                            deployment,
+                            endpoint_name,
+                            password,
+                            rotation,
+                            matched,
+                            received_at_ms,
+                        )
+                        .await;
                 }
                 stored.checks.push(Check {
                     kind: "basic".into(),

@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 
+use super::verify::KeyMatch;
+
 mod migrations {
     use refinery::embed_migrations;
     embed_migrations!("src/storage/sqlite/webhooks");
@@ -262,39 +264,63 @@ impl Records {
         .await
     }
 
-    pub(crate) async fn note_previous_match(
+    /// Note that a request to `endpoint` received at `matched_at_ms` matched
+    /// the `key` value of secret `field` while settings revision `rotation`
+    /// set its current value.
+    pub(crate) async fn note_match(
         &self,
         deployment_id: &str,
         endpoint: &str,
+        field: &str,
+        rotation: u32,
+        key: KeyMatch,
+        matched_at_ms: i64,
     ) -> Result<()> {
-        let (deployment_id, endpoint) = (deployment_id.to_owned(), endpoint.to_owned());
+        let (deployment_id, endpoint, field) = (
+            deployment_id.to_owned(),
+            endpoint.to_owned(),
+            field.to_owned(),
+        );
         self.with(move |connection| {
             connection.execute(
-                "INSERT INTO webhook_previous_matches(deployment_id,endpoint,matched_at) \
-                VALUES(?1,?2,?3) ON CONFLICT(deployment_id,endpoint) \
-                DO UPDATE SET matched_at=excluded.matched_at",
-                params![deployment_id, endpoint, now_ms()],
+                "INSERT INTO webhook_secret_matches\
+                (deployment_id,endpoint,field,rotation,matched_key,matched_at) \
+                VALUES(?1,?2,?3,?4,?5,?6) \
+                ON CONFLICT(deployment_id,endpoint,field,rotation,matched_key) \
+                DO UPDATE SET matched_at=max(matched_at,excluded.matched_at)",
+                params![
+                    deployment_id,
+                    endpoint,
+                    field,
+                    rotation,
+                    key.as_str(),
+                    matched_at_ms
+                ],
             )?;
             Ok(())
         })
         .await
     }
 
-    pub(crate) async fn previous_match(
+    /// When a request to `endpoint` last matched each value of its secrets,
+    /// by field, rotation, and `current` or `previous`.
+    pub(crate) async fn matches(
         &self,
         deployment_id: &str,
         endpoint: &str,
-    ) -> Result<Option<i64>> {
+    ) -> Result<BTreeMap<(String, u32, String), i64>> {
         let (deployment_id, endpoint) = (deployment_id.to_owned(), endpoint.to_owned());
         self.with(move |connection| {
-            connection
-                .query_row(
-                    "SELECT matched_at FROM webhook_previous_matches \
-                    WHERE deployment_id=?1 AND endpoint=?2",
-                    params![deployment_id, endpoint],
-                    |row| row.get(0),
-                )
-                .optional()
+            let mut statement = connection.prepare(
+                "SELECT field,rotation,matched_key,matched_at FROM webhook_secret_matches \
+                WHERE deployment_id=?1 AND endpoint=?2",
+            )?;
+            let rows = statement
+                .query_map(params![deployment_id, endpoint], |row| {
+                    Ok(((row.get(0)?, row.get(1)?, row.get(2)?), row.get(3)?))
+                })?
+                .collect::<Result<BTreeMap<_, _>>>()?;
+            Ok(rows)
         })
         .await
     }

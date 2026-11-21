@@ -293,9 +293,22 @@ The previous secret is the one the newest change replaced, which the settings
 revision just before that change holds. Nothing older is ever accepted.
 Deleting that revision with `trellis svc <name> config delete-revision
 <revision>` ends the overlap at once and destroys the old secret. Deleting
-any other revision never brings an older secret back. The Console shows when
-the old secret last matched a request, so the administrator can see when the
-sender has switched.
+any other revision never brings an older secret back.
+
+Trellis records when a request last matched each secret, so the administrator
+can see when the sender has switched. A match belongs to the secret field it
+used, to the settings revision that set that field's current value, and to
+whether it matched the current value or the previous one. The time is when
+Trellis received the request, also when an `async` request is verified later
+or again. An endpoint reports, for each of its secrets, when the current value
+and the previous value last matched under the newest change only. Another
+secret's matches, and matches under an earlier change, never stand in: right
+after a change both times are empty, even if the value that is now previous
+matched before the change. A request received before the change that matches
+the previous value used it while it was current, so it counts toward neither
+time. While the revision that set the current value is gone, Trellis cannot
+tell which change it belongs to and reports and records no matches for that
+secret.
 
 ## The two modes step by step
 
@@ -705,7 +718,7 @@ an endpoint, rotating its URL, and changing its runtime settings take
 
 The Console's service page gets a Webhooks section with each endpoint's URL and
 a copy button, its verifiers in plain words, whether its secrets are set, when
-an old secret last matched, its runtime settings, and recent requests by
+each secret's current and previous values last matched, its runtime settings, and recent requests by
 outcome. The CLI has the same views:
 
 ```text

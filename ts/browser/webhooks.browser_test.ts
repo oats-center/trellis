@@ -86,6 +86,27 @@ test("an administrator sees a service's webhook endpoints and their requests, an
         return response.status === 413 ? true : undefined;
       });
 
+      // Text that is not a size, even one ending in a name every object
+      // has, is refused with a message and saves nothing.
+      await token
+        .getByRole("button", { name: "Change Body size limit of Token" })
+        .click();
+      await token.getByLabel("Body size limit of Token").fill("5constructor");
+      await token.getByRole("button", { name: "Save" }).click();
+      await page
+        .getByText("Body size limit takes a size, such as 512KiB or 16MiB.")
+        .waitFor();
+      await token.getByText("1 KiB", { exact: true }).waitFor();
+      const { endpoints: described } = await runtime.callAdminRpc(
+        "webhooksEndpointsList",
+        { service: key.deploymentId },
+      );
+      assert.equal(
+        described.find((endpoint) => endpoint.endpoint === "token")!.settings
+          .maxBodyBytes,
+        1024n,
+      );
+
       await token.getByRole("button", { name: "Actions for Token" }).click();
       await token.getByRole("button", { name: "Disable webhook" }).click();
       await page

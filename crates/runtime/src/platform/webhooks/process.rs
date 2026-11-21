@@ -305,12 +305,21 @@ impl Webhooks {
                 let secrets = endpoint.secrets(&hmac.key, request.received_at_ms);
                 match verify::hmac(request, hmac, &secrets) {
                     Ok(key) => {
-                        if key == KeyMatch::Previous {
+                        if let Some(rotation) =
+                            endpoint.match_rotation(&hmac.key, key, request.received_at_ms)
+                        {
                             let (deployment, name) = endpoint.key();
                             let _ = self
                                 .inner
                                 .records
-                                .note_previous_match(&deployment, &name)
+                                .note_match(
+                                    &deployment,
+                                    &name,
+                                    &hmac.key,
+                                    rotation,
+                                    key,
+                                    request.received_at_ms,
+                                )
                                 .await;
                         }
                         matched = matched.or(Some(key));

@@ -873,7 +873,18 @@ async fn webhook_endpoints_and_their_requests_are_shown_and_managed() {
         .map(|endpoint| endpoint["endpoint"].as_str().unwrap())
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["handshake", "partner", "query", "signed", "token"]);
+    assert_eq!(
+        names,
+        [
+            "handshake",
+            "layered",
+            "partner",
+            "query",
+            "receipt",
+            "signed",
+            "token"
+        ]
+    );
     let token = cli.json(&["svc", deployment, "webhooks", "token"]).await;
     let url = token["url"].as_str().unwrap().to_owned();
     assert!(url.contains("/webhooks/billing/"), "{url}");

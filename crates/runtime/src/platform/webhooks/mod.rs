@@ -173,6 +173,31 @@ impl Endpoint {
         (now_ms() < until).then_some(until)
     }
 
+    /// The rotation a request received at `received_at_ms` that matched the
+    /// `key` value of secret `field` counts toward: the settings revision
+    /// that set the current value. A match of the previous value by a
+    /// request received before that change used it while it was current,
+    /// so it counts toward no rotation, and neither does a match while the
+    /// revision that set the current value is gone.
+    pub(crate) fn match_rotation(
+        &self,
+        field: &str,
+        key: verify::KeyMatch,
+        received_at_ms: i64,
+    ) -> Option<u32> {
+        let value = self.record.values.get(field)?;
+        let rotation = value.rotation?;
+        match (key, &value.previous) {
+            (verify::KeyMatch::Current, _) => Some(rotation),
+            (verify::KeyMatch::Previous, Some((_, changed_at)))
+                if received_at_ms >= changed_at.saturating_mul(1000) =>
+            {
+                Some(rotation)
+            }
+            (verify::KeyMatch::Previous, _) => None,
+        }
+    }
+
     pub(crate) fn key(&self) -> (String, String) {
         (
             self.record.deployment_id.clone(),

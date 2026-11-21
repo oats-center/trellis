@@ -621,6 +621,8 @@ test("a changed secret's overlap accepts only the secret it replaced, for every 
     // newest change replaced and never an older one.
     assert.deepEqual(await overlap(), {
       "handshake:signing": true,
+      "layered:hookToken": true,
+      "layered:signing": true,
       "partner:partnerPassword": true,
       "query:hookToken": true,
       "receipt:signing": true,
@@ -662,6 +664,123 @@ test("a changed secret's overlap accepts only the secret it replaced, for every 
       "accepted",
       "current",
     ]);
+    await service.stop();
+  });
+});
+
+test("each secret reports when its own current and previous values last matched, since its newest change", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const { key, service, url } = await install(runtime);
+    void service.wait();
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    const changeSigning = async (signing: string) => {
+      const { revision } = await runtime.callAdminRpc("authConfigGet", {
+        target,
+      });
+      await runtime.callAdminRpc("authConfigSet", {
+        target,
+        secrets: { signing },
+        ...(revision === undefined ? {} : { expectedRevision: revision }),
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      });
+    };
+    // One request carrying both credentials, and the time window it was
+    // received in.
+    const send = async (token: string, signing: string) => {
+      const body = JSON.stringify({ id: ulid() });
+      const before = Date.now();
+      const response = await fetch(url("layered"), {
+        method: "POST",
+        body,
+        headers: {
+          "x-hook-token": token,
+          "x-body-signature": `sha256=${sign(body, signing)}`,
+        },
+      });
+      const window = { status: response.status, before, after: Date.now() };
+      await response.body?.cancel();
+      return window;
+    };
+    const reported = async () => {
+      const { endpoints } = await runtime.callAdminRpc(
+        "webhooksEndpointsList",
+        { service: key.deploymentId },
+      );
+      const layered = endpoints.find((entry) => entry.endpoint === "layered")!;
+      const time = (value: unknown) =>
+        value === null ? null : Date.parse(String(value));
+      return Object.fromEntries(
+        layered.secrets.map((secret) => [
+          secret.name,
+          {
+            current: time(secret.currentLastMatchedAt),
+            previous: time(secret.previousLastMatchedAt),
+          },
+        ]),
+      );
+    };
+    const within = (
+      time: number | null,
+      window: { before: number; after: number },
+    ) => {
+      assert.ok(
+        time !== null && time >= window.before && time <= window.after,
+        `${time} is within ${window.before}..${window.after}`,
+      );
+    };
+
+    // Nothing has matched yet.
+    assert.deepEqual(await reported(), {
+      hookToken: { current: null, previous: null },
+      signing: { current: null, previous: null },
+    });
+    // Intake follows settings as they change; wait until it holds them.
+    const first = await runtime.waitFor(async () => {
+      const window = await send(TOKEN, SIGNING);
+      return window.status === 200 ? window : undefined;
+    });
+    let now = await reported();
+    within(now.hookToken!.current, first);
+    within(now.signing!.current, first);
+    assert.equal(now.hookToken!.previous, null);
+    assert.equal(now.signing!.previous, null);
+
+    // Changing the signing secret starts its record afresh; the token keeps
+    // its own.
+    await changeSigning("second-signing");
+    now = await runtime.waitFor(async () => {
+      const status = await reported();
+      return status.signing!.current === null ? status : undefined;
+    });
+    within(now.hookToken!.current, first);
+    assert.equal(now.signing!.previous, null);
+    // A request with the replaced signing secret is that secret's previous
+    // use, and never the token's.
+    const old = await send(TOKEN, SIGNING);
+    assert.equal(old.status, 200);
+    now = await reported();
+    within(now.signing!.previous, old);
+    assert.equal(now.signing!.current, null);
+    within(now.hookToken!.current, old);
+    assert.equal(now.hookToken!.previous, null);
+
+    // A second change: the previous value is now the second secret, which no
+    // request has used, so the earlier previous use does not carry over.
+    await changeSigning("third-signing");
+    now = await runtime.waitFor(async () => {
+      const status = await reported();
+      return status.signing!.previous === null ? status : undefined;
+    });
+    assert.equal(now.signing!.current, null);
+    const second = await send(TOKEN, "second-signing");
+    assert.equal(second.status, 200);
+    const third = await send(TOKEN, "third-signing");
+    assert.equal(third.status, 200);
+    now = await reported();
+    within(now.signing!.previous, second);
+    within(now.signing!.current, third);
+    within(now.hookToken!.current, third);
+    assert.equal(now.hookToken!.previous, null);
     await service.stop();
   });
 });
