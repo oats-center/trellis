@@ -391,6 +391,19 @@ defaults. In the testkit, `runtime.services.createInstance({ ..., config: {
 values, secrets } })` stores initial values through `Auth.Config.Set`, and
 `runtime.registerClient` attaches an app's declaration to its client.
 
+### Webhooks
+
+Each declared webhook endpoint is `service.webhooks.NAME`.
+`onReceived(({ event }) => ...)` handles accepted requests; `event.body` is a
+`Uint8Array`, and serving starts with `service.wait()`. `decide((request) =>
+({ verdict: "accept" | "ignore" | "reject", response?, dedupeKey? }))`
+answers an endpoint that declares `decide`. `@oatscenter/trellis/service`
+exports `webhookHmac`, `verifyWebhookHmac`, `webhookEqual`,
+`withinWebhookWindow`, and `webhookResponse({ status, contentType, body })`,
+and the `WebhookDelivery`, `WebhookDecideRequest`, and `WebhookDecision`
+types. In the testkit, `runtime.callAdminRpc("webhooksEndpointsList", {
+service: deploymentId })` returns each endpoint's URL.
+
 ### SQL outbox
 
 When SQL writes and event/job intents need one atomic commit, configure

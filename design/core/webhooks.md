@@ -1,14 +1,15 @@
 ---
 title: Receiving Webhooks
-description: Proposal for HTTP webhook endpoints that services declare in IDL. Trellis serves them, checks that each request is genuine, and delivers accepted requests to the service as ordinary events.
+description: HTTP webhook endpoints that services declare in IDL. Trellis serves them, checks that each request is genuine, and delivers accepted requests to the service as ordinary events.
 order: 47
 ---
 
 # Design: Receiving Webhooks
 
-> **Status: proposal awaiting review.** Nothing in this document is
-> implemented. The questions it raised are settled in
-> [Decisions](#decisions) at the end.
+> **Status: implemented.** This document describes the as-built behavior.
+> Where the build settled something the proposal left open, or departs from
+> it, [As built](#as-built) says so. The questions review raised are settled
+> in [Decisions](#decisions) at the end.
 
 A webhook is an HTTP request that another system sends when something happens
 on its side. Stripe sends one when a payment succeeds, and GitHub sends one when
@@ -17,7 +18,7 @@ to run its own HTTP listener, check signatures with hand-written code, and keep
 the signing secret somewhere. If it crashes before writing a request down, the
 request is lost.
 
-This proposal moves that work into Trellis. A service declares a webhook
+Trellis does that work instead. A service declares a webhook
 endpoint in its IDL. Trellis serves the endpoint, checks that each request
 really comes from the sender, and hands accepted requests to the service as
 ordinary Trellis events. Sending webhooks is out of scope.
@@ -726,8 +727,8 @@ verification.
 ## Sender facts to check
 
 These senders shaped the design. Facts marked _unverified_ come from memory and
-must be checked against the vendor's current documentation before
-implementation.
+were not checked against the vendor's current documentation; nothing in the
+implementation relies on them.
 
 | Sender            | How it signs                                                                              | What it expects back                                         |
 | ----------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
@@ -750,6 +751,61 @@ implementation.
 - **Endpoints created at runtime**, such as one URL per customer, are left out
   because one endpoint that routes by a query parameter and verifies with
   `decide` covers that until a real service needs more.
+
+## As built
+
+The implementation settles these points the proposal left open:
+
+- **Where intake runs.** Intake is part of the platform subsystem, which owns
+  the Auth database, the settings storage key, and the Trellis listener.
+  Request records live in `webhooks.sqlite` beside the platform database, and
+  `trellis-server backup` includes it.
+- **Names in URLs and events.** The URL's service segment is the deployment's
+  name lowercased, with runs of other characters made one `-`, fixed when the
+  endpoint is first declared, so renaming the deployment keeps the URL. A
+  request whose service segment does not match its random ID gets 404. The
+  `service` field of `WebhookDelivery`, the `Received` event parameter, and
+  the decide subject carry the deployment ID, which is unique.
+- **The decide call.** Trellis sends `WebhookDecideRequest` as JSON on
+  `webhooks.v1.decide.<b64(deployment)>.<b64(endpoint)>` and reads a
+  `WebhookDecision` reply. The call is not wrapped in a signed RPC envelope:
+  only Trellis may publish on that subject, and Auth grants a service instance
+  subscribe permission only for the endpoints its build declares. The
+  `trellis.webhooks@v1` API declares a `Decide` RPC so both SDKs generate the
+  request and decision types; no capability allows it and Trellis never
+  serves it.
+- **Members the compiler accepts.** `methods` takes `GET`, `POST`, `PUT`,
+  `PATCH`, and `DELETE`; `status` is a 2xx status; `content_encoding` takes
+  `gzip` and `deflate`; `decide;` or `decide { deadline 2s; }`. A `dedupe`
+  template may use `{header:Name}`, `{method}`, `{url}`, `{path}`, and
+  `{query}`. A `basic` username may be a plain or secret string setting. An
+  endpoint cannot be `optional`.
+- **Limits.** A request with more than 100 headers or 32 KiB of header data
+  gets 431. A body that does not decode under its declared encoding gets 400.
+  A deployment's setting must stay within bounds: the dedupe window and the
+  change overlap at most 30 days, the intake retention at least an hour.
+  Request records of rate-limited requests are kept like any other.
+- **Runtime settings.** The failed-request budget, record retention, intake
+  retention, and intake size are deployment-wide; `trellis svc <name>
+webhooks <endpoint> set` stores them for the deployment whichever endpoint
+  names them. The Console's Webhooks section shows each setting with a Change
+  action.
+- **A missing secret.** An `async` `hmac` request whose secret is not set is
+  recorded `pending` and checked again every 10 seconds until the secret is
+  set or the request leaves the intake stream.
+- **Disabled endpoints.** A disabled endpoint, like a disabled deployment,
+  answers 503 and stores nothing.
+- **Acknowledgement.** `ServiceUpdates.Decide` needs
+  `acknowledgeUnauthenticatedWebhooks` when the update adds or changes a
+  `verify none` endpoint. `Deployments.Create` and `Deployments.Apply` need it
+  whenever the build declares one.
+- **Metrics.** Each metric carries `trellis.webhook.endpoint` (the endpoint
+  name) and `trellis.outcome`; requests to unknown URLs count under the
+  endpoint `_unknown`.
+- **SDK helpers.** The TypeScript helpers compute HMAC-SHA1, SHA-256, and
+  SHA-512 with WebCrypto. The Rust helpers cover SHA-256 and SHA-512; a Rust
+  decide handler that needs SHA-1 brings its own implementation. Trellis's
+  own `hmac` verifier supports all three.
 
 ## Decisions
 
