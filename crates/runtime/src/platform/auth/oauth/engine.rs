@@ -400,7 +400,7 @@ impl OAuthEngine {
         let _ = self.operational.set(client);
     }
 
-    pub(super) fn operational(&self) -> Option<&async_nats::Client> {
+    pub(in crate::platform::auth) fn operational(&self) -> Option<&async_nats::Client> {
         self.operational.get()
     }
 

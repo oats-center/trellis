@@ -13,9 +13,9 @@ use trellis_protocol::{
     session_proof_signing_digest as session_proof_signing_digest_protocol,
     verify_session_authority as verify_session_authority_protocol,
     verify_session_proof as verify_session_proof_protocol, AuthorityIssuerKey,
-    DeviceEnrollmentSessionProofInput, ProtocolError, SessionAuthorityPurpose,
-    SessionAuthorityVerificationInput, SessionAuthorityVerificationPolicy, SessionProof,
-    SessionProofInput, SessionProofPolicy, SessionRequest, TransportAuthorizationV1,
+    DeviceEnrollmentSessionProofInput, ProtocolError, ServiceIdentitySessionProofInput,
+    SessionAuthorityPurpose, SessionAuthorityVerificationInput, SessionAuthorityVerificationPolicy,
+    SessionProof, SessionProofInput, SessionProofPolicy, SessionRequest, TransportAuthorizationV1,
     VerifiedSessionAuthority,
 };
 use trellis_protocol::{
@@ -641,19 +641,42 @@ enum WireSessionProofInput {
         origin: String,
         unsigned_request: Value,
     },
+    ServiceEnrollment {
+        origin: String,
+        unsigned_request: Value,
+    },
+    ServiceIdentityStatus {
+        origin: String,
+        unsigned_request: Value,
+    },
 }
 
 impl TryFrom<WireSessionProofInput> for SessionProofInput {
     type Error = ProtocolError;
     fn try_from(value: WireSessionProofInput) -> Result<Self, Self::Error> {
-        let WireSessionProofInput::DeviceEnrollment {
-            origin,
-            unsigned_request,
-        } = value;
-        Self::device_enrollment(DeviceEnrollmentSessionProofInput {
-            origin,
-            unsigned_request,
-        })
+        match value {
+            WireSessionProofInput::DeviceEnrollment {
+                origin,
+                unsigned_request,
+            } => Self::device_enrollment(DeviceEnrollmentSessionProofInput {
+                origin,
+                unsigned_request,
+            }),
+            WireSessionProofInput::ServiceEnrollment {
+                origin,
+                unsigned_request,
+            } => Self::service_enrollment(ServiceIdentitySessionProofInput {
+                origin,
+                unsigned_request,
+            }),
+            WireSessionProofInput::ServiceIdentityStatus {
+                origin,
+                unsigned_request,
+            } => Self::service_identity_status(ServiceIdentitySessionProofInput {
+                origin,
+                unsigned_request,
+            }),
+        }
     }
 }
 

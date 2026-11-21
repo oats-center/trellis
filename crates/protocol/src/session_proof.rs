@@ -22,12 +22,18 @@ const MAXIMUM_PROOF_WINDOW_MS: i64 = 5 * 60 * 1_000;
 pub enum SessionProofPurpose {
     /// Request device enrollment without runtime authority or a claimed assignment.
     DeviceEnrollment,
+    /// Register a new service identity key with an enrollment secret.
+    ServiceEnrollment,
+    /// Ask what became of a service identity key.
+    ServiceIdentityStatus,
 }
 
 impl SessionProofPurpose {
     fn as_str(self) -> &'static str {
         match self {
             Self::DeviceEnrollment => "deviceEnrollment",
+            Self::ServiceEnrollment => "serviceEnrollment",
+            Self::ServiceIdentityStatus => "serviceIdentityStatus",
         }
     }
 }
@@ -57,7 +63,113 @@ pub struct DeviceEnrollmentSessionProofInput {
     pub unsigned_request: Value,
 }
 
+/// Owned fields for a request a service identity key signs for itself, at
+/// `/auth/service/enroll` or `/auth/service/identity`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceIdentitySessionProofInput {
+    /// Exact configured Trellis origin, independently supplied by both peers.
+    pub origin: String,
+    /// Complete canonical request input, with the entire `proof` field omitted.
+    pub unsigned_request: Value,
+}
+
 impl SessionProofInput {
+    /// Build a proof that the key named by `identityKeyId` signs a request to
+    /// enroll itself as a new service instance, bound to the origin, the
+    /// enrollment route, and the complete unsigned request.
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::SessionProof`] for malformed or noncanonical input.
+    pub fn service_enrollment(
+        input: ServiceIdentitySessionProofInput,
+    ) -> Result<Self, ProtocolError> {
+        Self::service_identity(
+            SessionProofPurpose::ServiceEnrollment,
+            "/auth/service/enroll",
+            input,
+        )
+    }
+
+    /// Build a proof that the key named by `identityKeyId` asks for its own
+    /// status, bound to the origin, the status route, and the complete
+    /// unsigned request.
+    ///
+    /// # Errors
+    /// Returns [`ProtocolError::SessionProof`] for malformed or noncanonical input.
+    pub fn service_identity_status(
+        input: ServiceIdentitySessionProofInput,
+    ) -> Result<Self, ProtocolError> {
+        Self::service_identity(
+            SessionProofPurpose::ServiceIdentityStatus,
+            "/auth/service/identity",
+            input,
+        )
+    }
+
+    fn service_identity(
+        purpose: SessionProofPurpose,
+        route: &str,
+        input: ServiceIdentitySessionProofInput,
+    ) -> Result<Self, ProtocolError> {
+        let ServiceIdentitySessionProofInput {
+            origin,
+            unsigned_request,
+        } = input;
+        validate_safe_json_integers(&unsigned_request, &mut Vec::new())?;
+        let request = unsigned_request.as_object().ok_or_else(|| {
+            proof_error(
+                SessionProofErrorCode::InvalidFormat,
+                ["request"],
+                "unsigned request must be an object",
+            )
+        })?;
+        if request.contains_key("proof") {
+            return Err(proof_error(
+                SessionProofErrorCode::InvalidFormat,
+                ["proof"],
+                "unsigned request must omit proof",
+            ));
+        }
+        let required_text = |field: &str| -> Result<String, ProtocolError> {
+            request
+                .get(field)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    proof_error(
+                        SessionProofErrorCode::InvalidFormat,
+                        [field],
+                        "required string is missing",
+                    )
+                })
+        };
+        let request_id = required_text("requestId")?;
+        let identity_key_id = required_text("identityKeyId")?;
+        let issued_at = request.get("iat").and_then(Value::as_i64).ok_or_else(|| {
+            proof_error(
+                SessionProofErrorCode::InvalidFormat,
+                ["iat"],
+                "iat must be an integer",
+            )
+        })?;
+        validate_key_id(&identity_key_id, &["identityKeyId"])?;
+        validate_request_id(&request_id)?;
+        validate_safe_integer(issued_at, &["issuedAt"])?;
+        let request_digest = Sha256::digest(canonicalize_json(&unsigned_request)?.as_bytes());
+        Ok(Self {
+            purpose,
+            request_id,
+            issued_at,
+            signer_key_id: identity_key_id.clone(),
+            transcript_fields: vec![
+                text(&origin, &["origin"])?,
+                route.as_bytes().to_vec(),
+                digest(&identity_key_id, &["identityKeyId"])?,
+                request_digest.to_vec(),
+            ],
+        })
+    }
+
     /// Build a device-enrollment proof bound to the selected origin, enrollment
     /// route, identity key, runtime key, and complete unsigned request.
     ///
