@@ -152,6 +152,10 @@ pub enum DurationFamily {
     ContractAnalysis,
     /// One live observation activation handshake.
     LiveHandshake,
+    /// One webhook request, from arrival until Trellis answered.
+    WebhookRequest,
+    /// One call of a service's webhook decide handler.
+    WebhookDecide,
 }
 
 impl DurationFamily {
@@ -180,6 +184,8 @@ impl DurationFamily {
             Self::AuthCallout => "trellis.auth.callout.duration",
             Self::ContractAnalysis => "trellis.contract.analysis.duration",
             Self::LiveHandshake => "trellis.live.handshake.duration",
+            Self::WebhookRequest => "trellis.webhooks.request.duration",
+            Self::WebhookDecide => "trellis.webhooks.decide.duration",
         }
     }
 
@@ -238,6 +244,8 @@ pub enum CounterFamily {
     SnapshotErrors,
     /// Route registrations that exceeded the bounded catalog.
     RouteOverflow,
+    /// Webhook requests to known endpoints, by endpoint and outcome.
+    WebhookRequests,
 }
 
 impl CounterFamily {
@@ -262,6 +270,7 @@ impl CounterFamily {
             Self::RuntimeLeaseEvents => "trellis.runtime.lease.events",
             Self::SnapshotErrors => "trellis.snapshot.errors",
             Self::RouteOverflow => "trellis.telemetry.route_overflow",
+            Self::WebhookRequests => "trellis.webhooks.requests",
         }
     }
 
@@ -285,6 +294,7 @@ impl CounterFamily {
             Self::AuthRefreshAttempts => "{attempt}",
             Self::SnapshotErrors => "{error}",
             Self::RouteOverflow => "{registration}",
+            Self::WebhookRequests => "{request}",
         }
     }
 }
@@ -381,6 +391,8 @@ pub enum ObservableFamily {
     StorageRecords,
     /// Age of the oldest record one runtime data class retains.
     StorageOldestAge,
+    /// Webhook requests stored and still waiting for verification.
+    WebhooksPending,
 }
 
 impl ObservableFamily {
@@ -410,6 +422,7 @@ impl ObservableFamily {
             Self::StorageBytes => "trellis.storage.bytes",
             Self::StorageRecords => "trellis.storage.records",
             Self::StorageOldestAge => "trellis.storage.oldest.age",
+            Self::WebhooksPending => "trellis.webhooks.pending",
         }
     }
 
@@ -437,6 +450,7 @@ impl ObservableFamily {
             Self::ConnectionCount => "{connection}",
             Self::AuthCoverageCount => "{context}",
             Self::AuthPostCommitPending => "{action}",
+            Self::WebhooksPending => "{request}",
         }
     }
 }

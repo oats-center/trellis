@@ -344,6 +344,17 @@ required field has a value that fits. Rust native apps have no settings handle.
 In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
 stores values through `Auth.Config.Set`.
 
+### Webhooks
+
+The generated provider has one method per webhook endpoint returning
+`trellis_rs::client::WebhookHandle`. `subscribe()` streams accepted
+`WebhookDelivery` values from the endpoint's durable consumer;
+`decide(|request| async { Ok::<_, E>(decision) })` answers decide calls until
+the returned `WebhookDecideHandle` is dropped. `webhook_hmac`,
+`verify_webhook_hmac`, `webhook_equal`, `within_webhook_window`, and
+`webhook_response` help decide handlers; the Rust helpers cover SHA-256 and
+SHA-512.
+
 ### Transfers
 
 Generated Operation references upload bytes with `upload(body)` or stream with

@@ -156,6 +156,10 @@ pub(crate) struct SqliteAuthorizationStore {
     work_queued: Arc<std::sync::atomic::AtomicBool>,
     /// Bumped after each commit that queued work, waking the effect workers.
     work_signal: tokio::sync::watch::Sender<u64>,
+    /// Set by SQLite's update hook when a statement writes a table webhook intake reads.
+    webhooks_changed: Arc<std::sync::atomic::AtomicBool>,
+    /// Bumped after each commit that changed what webhook intake serves.
+    webhook_signal: tokio::sync::watch::Sender<u64>,
     pub(super) avatar_signer: std::sync::OnceLock<Arc<super::avatars::AvatarSigner>>,
     pub(crate) settings: AuthSettings,
 }
@@ -529,11 +533,21 @@ impl SqliteAuthorizationStore {
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         let clients_changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let work_queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let webhooks_changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (changed, queued) = (Arc::clone(&clients_changed), Arc::clone(&work_queued));
+        let webhooks = Arc::clone(&webhooks_changed);
         connection.update_hook(Some(
             move |action: rusqlite::hooks::Action, _: &str, table: &str, _: i64| match table {
                 "auth_oauth_clients" | "auth_cimd_clients" => {
                     changed.store(true, std::sync::atomic::Ordering::Release);
+                }
+                "auth_webhook_endpoints"
+                | "auth_webhook_urls"
+                | "auth_webhook_settings"
+                | "auth_deployments"
+                | "auth_deployment_bindings"
+                | "auth_config_revisions" => {
+                    webhooks.store(true, std::sync::atomic::Ordering::Release);
                 }
                 "auth_enforcement_work" | "auth_post_commit_actions"
                     if action == rusqlite::hooks::Action::SQLITE_INSERT =>
@@ -555,6 +569,8 @@ impl SqliteAuthorizationStore {
             clients_changed,
             work_queued,
             work_signal: tokio::sync::watch::Sender::new(0),
+            webhooks_changed,
+            webhook_signal: tokio::sync::watch::Sender::new(0),
             avatar_signer: std::sync::OnceLock::new(),
             settings,
         })
@@ -655,6 +671,10 @@ impl SqliteAuthorizationStore {
             self.work_signal
                 .send_modify(|generation| *generation = generation.wrapping_add(1));
         }
+        if self.webhooks_changed.swap(false, Ordering::AcqRel) {
+            self.webhook_signal
+                .send_modify(|generation| *generation = generation.wrapping_add(1));
+        }
         if !self.clients_changed.swap(false, Ordering::AcqRel) {
             return;
         }
@@ -668,6 +688,12 @@ impl SqliteAuthorizationStore {
                 self.clients_changed.store(true, Ordering::Release);
             }
         }
+    }
+
+    /// Changes whenever a commit changes an endpoint, a deployment, or the
+    /// settings webhook verifiers read.
+    pub(crate) fn webhook_signal(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.webhook_signal.subscribe()
     }
 
     /// Changes whenever a commit queues enforcement or effect work.

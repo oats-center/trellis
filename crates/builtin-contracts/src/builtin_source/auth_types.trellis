@@ -801,7 +801,7 @@ model AuthOIDCRoleMappingDeleteRequest {
 
 enum AuthDeploymentKind { service; device; }
 enum AuthDeploymentState { enabled; disabled; removed; }
-enum AuthResourceKind { kv; store; state; job; eventConsumer; }
+enum AuthResourceKind { kv; store; state; job; eventConsumer; webhook; }
 model AuthDeployment {
   deploymentId: ulid;
   title: string;
@@ -818,6 +818,8 @@ model AuthDeploymentCreateRequest {
   participantId: string;
   packageEvidence: AuthPackageEvidence;
   acknowledgeSharedApis?: bool;
+  /// Confirms approving webhook endpoints that check nothing (`verify none`).
+  acknowledgeUnauthenticatedWebhooks?: bool;
   idempotencyKey: AuthIdempotencyKey;
 }
 /// One IDL file of a package.
@@ -949,6 +951,8 @@ model AuthDeploymentApplyRequest {
   deploymentId: ulid;
   packageEvidence: AuthPackageEvidence;
   acknowledgeSharedApis?: bool;
+  /// Confirms approving webhook endpoints that check nothing (`verify none`).
+  acknowledgeUnauthenticatedWebhooks?: bool;
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }
@@ -963,6 +967,18 @@ model AuthServiceUpdateResource {
   kind: AuthResourceKind;
   name: string;
 }
+/// A webhook endpoint as an approver sees it.
+model AuthWebhookSummary {
+  name: string;
+  title: string;
+  mode: string;
+  methods: list<string>;
+  /// Each verifier in plain words.
+  verifiers: list<string>;
+  decides: bool;
+  /// The endpoint checks nothing; approving it needs acknowledgeUnauthenticatedWebhooks.
+  unauthenticated: bool;
+}
 model AuthServiceUpdateChanges {
   addedCapabilities: list<AuthCapabilityId>;
   removedCapabilities: list<AuthCapabilityId>;
@@ -972,6 +988,8 @@ model AuthServiceUpdateChanges {
   removedResources: list<AuthServiceUpdateResource>;
   addedApis: list<AuthApiId>;
   sharedApis: list<AuthApiId>;
+  /// Webhook endpoints the build adds or changes, described for approval.
+  webhooks: list<AuthWebhookSummary>;
   removedApis: list<AuthApiId>;
   acceptedApis: list<AuthApiId>;
   acceptedUsedApis: list<AuthApiId>;
@@ -1035,6 +1053,8 @@ model AuthServiceUpdateDecideRequest {
   updateId: ulid;
   decision: AuthDecision;
   acknowledgeSharedApis?: bool;
+  /// Confirms approving webhook endpoints that check nothing (`verify none`).
+  acknowledgeUnauthenticatedWebhooks?: bool;
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }
@@ -1573,3 +1593,31 @@ model AuthAppConfigResponse {
   revision?: AuthConfigRevisionNumber;
   values: map<json>;
 }
+
+/// What an administrator changes about a webhook endpoint.
+enum AuthWebhookChange { enable; disable; rotateUrl; retireUrl; set; }
+/// A webhook runtime setting a deployment may override.
+enum AuthWebhookSetting {
+  requestsPerSecond;
+  burst;
+  failuresPerMinute;
+  maxBody;
+  dedupeWindow;
+  syncDecideDeadline;
+  asyncDecideDeadline;
+  rotationOverlap;
+  recordRetention;
+  intakeRetention;
+  intakeMaxBytes;
+}
+model AuthWebhooksUpdateRequest {
+  deploymentId: ulid;
+  endpoint: string;
+  change: AuthWebhookChange;
+  /// The setting `set` changes.
+  setting?: AuthWebhookSetting;
+  /// Milliseconds for durations, bytes for sizes, a count otherwise; null returns to the default.
+  value?: uint64 | null;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthWebhooksUpdateResponse { endpoint: string; enabled: bool; }

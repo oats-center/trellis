@@ -11,6 +11,7 @@ mod parser;
 pub mod project;
 mod projection;
 mod semantic;
+pub mod webhook;
 
 pub use canonical::{
     api_digest, canonical_package, package_digest, participant_digest, selected_surface_digest,

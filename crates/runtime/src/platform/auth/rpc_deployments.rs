@@ -201,6 +201,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
         }};
     }
     provision!(register_deployments_create, create_deployment);
+    provision!(register_webhooks_update, super::webhooks::update);
     provision!(register_deployments_apply, apply_deployment);
     provision!(
         register_deployments_enable,
@@ -374,6 +375,10 @@ pub(super) fn create_deployment(
                 )?,
                 input.acknowledge_shared_apis,
             )?;
+            super::service_updates::require_webhooks_acknowledged(
+                super::service_updates::unauthenticated_webhooks(participant),
+                input.acknowledge_unauthenticated_webhooks,
+            )?;
             let deployment = SqliteAuthorizationStore::install_deployment_in_transaction(
                 connection,
                 &identity.actor,
@@ -477,6 +482,20 @@ pub(super) fn apply_deployment(
                 &input.package_evidence,
                 &current.participant_id,
                 serde_json::from_str(&resources)?,
+            )?;
+            let graph = trellis_idl::compile_evidence(serde_json::from_value(
+                serde_json::to_value(&input.package_evidence)?,
+            )?)
+            .map_err(|error| AuthError::Invalid(error.to_string()))?;
+            let participant = graph
+                .root_package()
+                .participants()
+                .values()
+                .find(|participant| participant.identity().as_str() == current.participant_id)
+                .ok_or(AuthError::NotFound)?;
+            super::service_updates::require_webhooks_acknowledged(
+                super::service_updates::unauthenticated_webhooks(participant),
+                input.acknowledge_unauthenticated_webhooks,
             )?;
             let provided: String = connection.query_row(
                 "SELECT provided_apis_json FROM auth_deployment_bindings WHERE deployment_id=?1",

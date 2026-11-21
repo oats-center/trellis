@@ -433,7 +433,8 @@ impl SqliteAuthorizationStore {
                     .jobs
                     .as_ref()
                     .is_some_and(|jobs| jobs.queues.contains_key(name)),
-                trellis_idl::ResourceDefinition::Consumer { .. } => {
+                trellis_idl::ResourceDefinition::Consumer { .. }
+                | trellis_idl::ResourceDefinition::Webhook { .. } => {
                     runtime.event_consumers.contains_key(name)
                 }
             };

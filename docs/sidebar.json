@@ -200,6 +200,10 @@
         "to": "/guides/settings-and-secrets"
       },
       {
+        "title": "Receiving webhooks",
+        "to": "/guides/receiving-webhooks"
+      },
+      {
         "title": "Jobs",
         "collapsible": true,
         "items": [

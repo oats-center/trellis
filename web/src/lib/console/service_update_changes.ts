@@ -29,6 +29,7 @@ const RESOURCE_KINDS: Record<string, [string, string]> = {
   state: ["Saved state", "saved state"],
   job: ["Job queue", "job queue"],
   eventConsumer: ["Event delivery", "event delivery"],
+  webhook: ["Webhook", "webhook"],
 };
 
 /** A capability's title when the Console knows it, else a readable form of its ID. */

@@ -180,7 +180,27 @@ pub(crate) struct Resource {
     pub name: String,
     pub optional: bool,
     pub members: BTreeMap<String, ResourceValue>,
+    /// A webhook's `verify` blocks, in declared order.
+    pub verifiers: Vec<Verifier>,
     pub span: Range<usize>,
+}
+
+/// One authored `verify <kind> { ... }` or `verify none;` of a webhook.
+#[derive(Clone, Debug)]
+pub(crate) struct Verifier {
+    pub kind: String,
+    pub members: BTreeMap<String, VerifierValue>,
+}
+
+/// A verifier member value: a quoted string, a bare word, a `config` setting
+/// reference, a duration, or a nested block.
+#[derive(Clone, Debug)]
+pub(crate) enum VerifierValue {
+    Text(String),
+    Name(String),
+    Config(String),
+    Duration(u64),
+    Block(BTreeMap<String, VerifierValue>),
 }
 
 #[derive(Clone, Debug)]
@@ -194,4 +214,5 @@ pub(crate) enum ResourceValue {
     Accepts(Vec<(u32, String)>),
     Retry { attempts: u32, backoff_ms: Vec<u64> },
     KeyConcurrency { path: Vec<String>, policy: String },
+    Decide { deadline_ms: Option<u64> },
 }

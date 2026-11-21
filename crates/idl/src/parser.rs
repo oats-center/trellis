@@ -2,7 +2,7 @@ use crate::{
     ast::{
         Action, Alias, Api, ApiUse, Capability, CapabilityGroup, ConfigField, Declaration, Enum,
         Field, Import, MemberValue, Model, ParsedSource, Participant, Prelude, PreludeDependency,
-        Resource, ResourceValue, Selection, Spanned, TypeExpr,
+        Resource, ResourceValue, Selection, Spanned, TypeExpr, Verifier, VerifierValue,
     },
     lexer::{lex, Token, TokenKind},
     semantic::SourceUnit,
@@ -528,7 +528,7 @@ impl<'a> Parser<'a> {
                         optional_capabilities,
                     });
                 }
-                kind @ ("state" | "kv" | "store" | "job" | "consumer") => {
+                kind @ ("state" | "kv" | "store" | "job" | "consumer" | "webhook") => {
                     let start = self.previous_span().start;
                     let optional = self.eat_word("optional");
                     let mut resource = self.resource(kind.to_owned(), optional)?;
@@ -641,10 +641,35 @@ impl<'a> Parser<'a> {
         let name = self.ident()?;
         self.token(TokenKind::LBrace)?;
         let mut members = BTreeMap::new();
+        let mut verifiers = Vec::new();
         while !self.at(TokenKind::RBrace) {
             let member = self.word_text()?;
+            if member == "verify" && kind == "webhook" {
+                verifiers.push(self.verifier()?);
+                continue;
+            }
             let value = match member.as_str() {
                 "title" | "description" => ResourceValue::Text(self.string_statement()?),
+                "dedupe" if kind == "webhook" => ResourceValue::Text(self.string_statement()?),
+                "mode" => ResourceValue::Name(self.name_statement()?),
+                "methods" | "content_encoding" => ResourceValue::Names(self.name_list_statement()?),
+                "status" => ResourceValue::Integer(self.integer_statement()?),
+                "max_body" => ResourceValue::Capacity(self.capacity_statement()?),
+                "dedupe_window" | "rotation_overlap" => {
+                    ResourceValue::Duration(self.duration_statement(false)?)
+                }
+                "decide" => {
+                    let mut deadline_ms = None;
+                    if !self.eat(TokenKind::Semi) {
+                        self.token(TokenKind::LBrace)?;
+                        if !self.at(TokenKind::RBrace) {
+                            self.word("deadline")?;
+                            deadline_ms = Some(self.duration_statement(false)?);
+                        }
+                        self.token(TokenKind::RBrace)?;
+                    }
+                    ResourceValue::Decide { deadline_ms }
+                }
                 "schema" | "payload" | "result" | "update" => {
                     ResourceValue::Name(self.name_statement()?)
                 }
@@ -677,8 +702,50 @@ impl<'a> Parser<'a> {
             name,
             optional,
             members,
+            verifiers,
             span,
         })
+    }
+
+    /// `verify none;` or `verify <kind> { member value; ... }`.
+    fn verifier(&mut self) -> miette::Result<Verifier> {
+        let kind = self.ident()?;
+        if self.eat(TokenKind::Semi) {
+            return Ok(Verifier {
+                kind,
+                members: BTreeMap::new(),
+            });
+        }
+        let members = self.verifier_block()?;
+        Ok(Verifier { kind, members })
+    }
+
+    fn verifier_block(&mut self) -> miette::Result<BTreeMap<String, VerifierValue>> {
+        self.token(TokenKind::LBrace)?;
+        let mut members = BTreeMap::new();
+        while !self.at(TokenKind::RBrace) {
+            let member = self.word_text()?;
+            let value = if self.at(TokenKind::LBrace) {
+                VerifierValue::Block(self.verifier_block()?)
+            } else {
+                let value = if self.at(TokenKind::String) {
+                    VerifierValue::Text(self.string()?)
+                } else if self.at(TokenKind::Number) {
+                    VerifierValue::Duration(self.duration(false)?)
+                } else if self.eat_word("config") {
+                    VerifierValue::Config(self.ident()?)
+                } else {
+                    VerifierValue::Name(self.ident()?)
+                };
+                self.token(TokenKind::Semi)?;
+                value
+            };
+            if members.insert(member.clone(), value).is_some() {
+                return Err(self.error_previous(format!("duplicate verifier member '{member}'")));
+            }
+        }
+        self.token(TokenKind::RBrace)?;
+        Ok(members)
     }
 
     fn accepts(&mut self) -> miette::Result<Vec<(u32, String)>> {

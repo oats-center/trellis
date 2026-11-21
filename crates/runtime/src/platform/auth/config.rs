@@ -1712,3 +1712,87 @@ fn own_config(
         }))?)
     })
 }
+
+/// One deployment setting a webhook verifier reads.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WebhookSettingValue {
+    /// The deployment's effective value, `None` while unset.
+    pub(crate) current: Option<Value>,
+    /// The value before the newest change, and when that change was made,
+    /// while the earlier revision still exists.
+    pub(crate) previous: Option<(Value, i64)>,
+}
+
+/// The deployment's own values of `fields`, secrets decrypted, for webhook
+/// verification. Per-instance overrides never apply: an endpoint belongs to
+/// the whole service. A secret's value before its newest change comes with
+/// the change time, so the caller can accept it during an overlap; deleting
+/// the earlier revision removes it.
+pub(crate) fn webhook_settings(
+    connection: &Connection,
+    storage: &OAuthStorage,
+    deployment: &str,
+    fields: &BTreeSet<String>,
+) -> Result<BTreeMap<String, WebhookSettingValue>, AuthError> {
+    let declared = Declared::installed(connection, deployment)?;
+    let key = format!("deployment:{deployment}");
+    let current = layer(connection, storage, &declared, &key, None, "deployment")?;
+    let current_values = effective(&declared, &[current]);
+    let mut result = BTreeMap::new();
+    for field in fields {
+        let mut value = WebhookSettingValue {
+            current: current_values
+                .get(field)
+                .and_then(|effective| effective.value.clone())
+                .filter(|value| !value.is_null()),
+            previous: None,
+        };
+        if declared
+            .fields
+            .get(field)
+            .is_some_and(|declared| declared.secret)
+        {
+            // The newest revision that changed this secret, and the stored
+            // revision before it.
+            let changed: Option<(u32, i64)> = connection
+                .query_row(
+                    "SELECT revision,created_at FROM auth_config_revisions \
+                    WHERE target_key=?1 AND EXISTS (SELECT 1 FROM \
+                    json_each(changed_secrets_json) WHERE value=?2) \
+                    ORDER BY revision DESC LIMIT 1",
+                    params![key, field],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((revision, changed_at)) = changed {
+                let earlier: Option<u32> = connection
+                    .query_row(
+                        "SELECT revision FROM auth_config_revisions \
+                        WHERE target_key=?1 AND revision<?2 ORDER BY revision DESC LIMIT 1",
+                        params![key, revision],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(earlier) = earlier {
+                    let before = layer(
+                        connection,
+                        storage,
+                        &declared,
+                        &key,
+                        Some(earlier),
+                        "deployment",
+                    )?;
+                    value.previous = effective(&declared, &[before])
+                        .remove(field)
+                        .and_then(|effective| effective.value)
+                        .filter(|previous| {
+                            !previous.is_null() && Some(previous) != value.current.as_ref()
+                        })
+                        .map(|previous| (previous, changed_at));
+                }
+            }
+        }
+        result.insert(field.clone(), value);
+    }
+    Ok(result)
+}

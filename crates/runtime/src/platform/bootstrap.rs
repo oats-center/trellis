@@ -31,6 +31,7 @@ pub(crate) async fn prepare_builtin_provider<C: ParticipantDescriptor>(
 }
 
 /// Connect the prepared built-in through ordinary Callout and signed own-context.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_platform_provider(
     store: Arc<SqliteAuthorizationStore>,
     oauth: Arc<super::auth::OAuthEngine>,
@@ -39,6 +40,7 @@ pub(crate) async fn connect_platform_provider(
     root_certificates: Vec<std::path::PathBuf>,
     nats_server_name: Option<String>,
     identity_seed: &str,
+    webhooks: super::webhooks::Webhooks,
 ) -> Result<ConnectedServiceRuntime<Participant>, RuntimeError> {
     let reader = store.clone();
     let mut trust = super::auth::blocking(move || reader.runtime_authorization_trust()).await?;
@@ -53,6 +55,10 @@ pub(crate) async fn connect_platform_provider(
     super::state::StateRuntime::start(operational.clone(), store.clone())
         .await?
         .register(&mut provider);
+    super::webhooks::register_api(
+        &mut trellis_runtime_apis::apis::trellis_webhooks_v1::Provider::new(&mut provider),
+        webhooks,
+    );
     register_rpc(
         &mut trellis_auth_v1::Provider::new(&mut provider),
         store,

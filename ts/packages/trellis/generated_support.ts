@@ -609,7 +609,7 @@ export function apiDescriptor<const T extends ApiDescriptorInput>(
 
 function validateResource(resource: Record<string, unknown>): void {
   if (
-    !["state", "kv", "store", "job", "consumer"].includes(
+    !["state", "kv", "store", "job", "consumer", "webhook"].includes(
       String(resource.kind),
     ) ||
     !["required", "optional"].includes(String(resource.availability))

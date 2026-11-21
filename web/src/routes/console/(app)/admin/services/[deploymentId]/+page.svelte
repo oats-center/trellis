@@ -35,6 +35,7 @@
   import ServiceUpdates from "$lib/components/ServiceUpdates.svelte";
   import ServiceUpdateHistory from "$lib/components/ServiceUpdateHistory.svelte";
   import ParticipantSettings from "$lib/components/ParticipantSettings.svelte";
+  import WebhookEndpoints from "$lib/components/WebhookEndpoints.svelte";
   import EnrollmentSecrets from "$lib/components/EnrollmentSecrets.svelte";
 
   type Deployment = apis.auth.DeploymentsGetOutput["deployment"];
@@ -1039,6 +1040,10 @@
         {instanceNames}
         bind:instanceId={settingsInstance}
         bind:available={settingsAvailable}
+      />{/if}
+
+    {#if canPerform(authority.authority, "webhooksEndpointsList")}<WebhookEndpoints
+        deploymentId={deployment.deploymentId}
       />{/if}
 
     {#if canPerform(authority.authority, "serviceUpdatesList")}<ServiceUpdateHistory

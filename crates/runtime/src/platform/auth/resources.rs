@@ -155,6 +155,7 @@ pub(crate) async fn materialize_native_kv(
                     } => ("kv", *history, *ttl_ms),
                     ResourceDefinition::Store { ttl_ms, .. } => ("store", 0, *ttl_ms),
                     ResourceDefinition::Consumer { .. } => ("consumer", 0, 0),
+                    ResourceDefinition::Webhook { .. } => ("webhook", 0, 0),
                     ResourceDefinition::Job { .. } => ("job", 0, 0),
                     ResourceDefinition::State { .. } => ("state", 0, 0),
                 };
@@ -187,21 +188,34 @@ pub(crate) async fn materialize_native_kv(
                 } else {
                     None
                 };
-                let consumer = if let ResourceDefinition::Consumer {
-                    events,
-                    concurrency,
-                    replay,
-                    retry,
-                    ..
-                } = declaration
-                {
-                    Some(EventConsumerResourceBinding {
-                        resource_id: resource_id.clone(),
-                        stream: crate::resources::EVENT_STREAM.into(),
-                        consumer_name: String::new(),
-                        // A parameterized event publishes on its subject plus one
-                        // token per parameter, so the filter needs one wildcard each.
-                        filter_subjects: events
+                // A webhook endpoint's events reach the service through its own
+                // durable consumer, filtered to exactly this endpoint.
+                let webhook_filter = |endpoint: &str| {
+                    trellis_protocol::derive_event_subject("trellis.webhooks@v1", "Received")
+                        .map(|base| {
+                            format!(
+                                "{base}.{}.{}",
+                                trellis_protocol::encode_subject_token(deployment),
+                                trellis_protocol::encode_subject_token(endpoint)
+                            )
+                        })
+                        .map_err(|error| AuthError::Invalid(error.to_string()))
+                };
+                let consumer = match declaration {
+                    ResourceDefinition::Webhook { endpoint, .. } => Some((
+                        vec![webhook_filter(&name)?],
+                        endpoint.concurrency,
+                        &trellis_idl::Replay::All,
+                        &endpoint.retry,
+                    )),
+                    ResourceDefinition::Consumer {
+                        events,
+                        concurrency,
+                        replay,
+                        retry,
+                        ..
+                    } => Some((
+                        events
                             .iter()
                             .map(|(api, event)| {
                                 let action = trellis_idl::ActionId {
@@ -233,7 +247,20 @@ pub(crate) async fn materialize_native_kv(
                                 .map_err(|error| AuthError::Invalid(error.to_string()))
                             })
                             .collect::<Result<_, _>>()?,
-                        concurrency: *concurrency,
+                        *concurrency,
+                        replay,
+                        retry,
+                    )),
+                    _ => None,
+                };
+                let consumer = if let Some((filter_subjects, concurrency, replay, retry)) = consumer
+                {
+                    Some(EventConsumerResourceBinding {
+                        resource_id: resource_id.clone(),
+                        stream: crate::resources::EVENT_STREAM.into(),
+                        consumer_name: String::new(),
+                        filter_subjects,
+                        concurrency,
                         replay: match replay {
                             trellis_idl::Replay::New => {
                                 trellis_rs::service::EventConsumerReplay::New
@@ -461,6 +488,9 @@ pub(crate) async fn materialize_native_kv(
                         allocation.kind
                     ],
                 )?;
+                if allocation.kind == "webhook" {
+                    super::webhooks::declare_endpoint(connection, deployment, name, now)?;
+                }
             }
             Ok(ResourcePlan {
                 principal,

@@ -1382,6 +1382,31 @@ declaration with its client using `trellis clients add|edit --source PATH
 each new build's declaration the same way; connected apps follow changed
 defaults live.
 
+#### Webhooks
+
+A service receives HTTP webhooks by declaring `webhook NAME { ... }` instead of
+running its own listener; the package needs a direct `trellis` dependency for
+`trellis.webhooks@v1`. Trellis serves each endpoint at
+`https://<origin>/webhooks/<service name>/<random id>`, checks requests with
+the declared verifiers (`verify hmac { key config SECRET; algorithm sha256;
+signed "{timestamp}.{body}"; signature { header "..."; ... } timestamp { ...
+tolerance 5m; } }`, `verify token`, `verify basic`, `verify address`, or an
+explicit `verify none;`), and delivers accepted requests as `Received` events
+(`WebhookDelivery`, body byte for byte) through the endpoint's own durable
+consumer. Keys, tokens, and passwords name `secret` settings of the same
+service; set them with `trellis svc <name> config set-secret`. `mode async`
+(the default) stores, answers 2xx at once, and verifies afterwards; `mode
+sync` verifies first and can return the service's decide-handler response,
+for handshakes. `decide { deadline 2s; }` lets the service accept, ignore, or
+reject after the standard verifiers. `dedupe "{header:...}"` drops the
+sender's retries on a best-effort basis; handlers must still be idempotent.
+Every member but title and description is part of the build and needs
+approval; `verify none` also needs `--acknowledge-unauthenticated-webhooks`.
+Watch and operate endpoints with `trellis svc <name> webhooks [<endpoint>]`,
+`... attempts`, `... attempt <id> [--body]`, `... reverify <id>`, `...
+enable|disable|rotate-url|retire-url`, and `... set <setting> <value>`. Tests
+send real HTTPS requests to the URL `Webhooks.Endpoints.List` returns.
+
 #### Resource lifecycle
 
 Resource commitments are approvals of hard semantics; desired capacities are
@@ -1946,6 +1971,19 @@ defaults. In the testkit, `runtime.services.createInstance({ ..., config: {
 values, secrets } })` stores initial values through `Auth.Config.Set`, and
 `runtime.registerClient` attaches an app's declaration to its client.
 
+#### Webhooks
+
+Each declared webhook endpoint is `service.webhooks.NAME`.
+`onReceived(({ event }) => ...)` handles accepted requests; `event.body` is a
+`Uint8Array`, and serving starts with `service.wait()`. `decide((request) =>
+({ verdict: "accept" | "ignore" | "reject", response?, dedupeKey? }))`
+answers an endpoint that declares `decide`. `@oatscenter/trellis/service`
+exports `webhookHmac`, `verifyWebhookHmac`, `webhookEqual`,
+`withinWebhookWindow`, and `webhookResponse({ status, contentType, body })`,
+and the `WebhookDelivery`, `WebhookDecideRequest`, and `WebhookDecision`
+types. In the testkit, `runtime.callAdminRpc("webhooksEndpointsList", {
+service: deploymentId })` returns each endpoint's URL.
+
 #### SQL outbox
 
 When SQL writes and event/job intents need one atomic commit, configure
@@ -2437,6 +2475,17 @@ don't fit its types, never reach `changed()`. `connect` returns only once every
 required field has a value that fits. Rust native apps have no settings handle.
 In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
 stores values through `Auth.Config.Set`.
+
+#### Webhooks
+
+The generated provider has one method per webhook endpoint returning
+`trellis_rs::client::WebhookHandle`. `subscribe()` streams accepted
+`WebhookDelivery` values from the endpoint's durable consumer;
+`decide(|request| async { Ok::<_, E>(decision) })` answers decide calls until
+the returned `WebhookDecideHandle` is dropped. `webhook_hmac`,
+`verify_webhook_hmac`, `webhook_equal`, `within_webhook_window`, and
+`webhook_response` help decide handlers; the Rust helpers cover SHA-256 and
+SHA-512.
 
 #### Transfers
 

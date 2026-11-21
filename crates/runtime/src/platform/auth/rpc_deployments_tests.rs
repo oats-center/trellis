@@ -30,6 +30,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     .unwrap();
     let create = AuthDeploymentCreateRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         package_evidence: evidence.clone(),
         participant_id: graph
             .root_package()
@@ -74,6 +75,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     );
     let unchanged = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         deployment_id: created.deployment.deployment_id,
         expected_revision: created.deployment.revision,
         package_evidence: evidence,
@@ -114,6 +116,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
         .unwrap();
     let apply = AuthDeploymentApplyRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         package_evidence: evidence,
         expected_revision: applied.deployment.revision,
         ..unchanged.clone()
@@ -224,6 +227,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         .to_string();
     let create = AuthDeploymentCreateRequest {
         acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
         package_evidence: evidence.clone(),
         participant_id: participant,
         kind: AuthDeploymentKind::Service,
@@ -816,6 +820,7 @@ async fn public_provision_materializes_empty_and_kv_declarations_before_signed_s
             .unwrap();
         let create = AuthDeploymentCreateRequest {
             acknowledge_shared_apis: None,
+            acknowledge_unauthenticated_webhooks: None,
             package_evidence: serde_json::from_value(evidence).unwrap(),
             participant_id: participant.identity().to_string(),
             kind: AuthDeploymentKind::Service,

@@ -308,6 +308,14 @@ fn databases(config: &RuntimeConfig) -> Result<Vec<(&'static str, PathBuf)>, Bac
         ("events", config.events_storage_backend()),
     ] {
         let StorageBackend::Sqlite(storage) = backend?;
+        if name == "platform" {
+            databases.push((
+                "webhooks",
+                storage
+                    .path
+                    .with_file_name(crate::storage::WEBHOOKS_DATABASE),
+            ));
+        }
         databases.push((name, storage.path));
     }
     Ok(databases)

@@ -131,3 +131,21 @@ export type {
   ParticipantConfig,
   ParticipantConfigOf,
 } from "./config.ts";
+export { type ProviderWebhooks } from "../provider.ts";
+export {
+  verifyWebhookHmac,
+  type WebhookDecideRequest,
+  type WebhookDecision,
+  type WebhookDelivery,
+  type WebhookEndpoint,
+  webhookEqual,
+  type WebhookField,
+  webhookHmac,
+  type WebhookHmacAlgorithm,
+  type WebhookReceivedArgs,
+  type WebhookReceivedOptions,
+  type WebhookResponse,
+  webhookResponse,
+  type WebhookSignatureEncoding,
+  withinWebhookWindow,
+} from "../webhooks.ts";

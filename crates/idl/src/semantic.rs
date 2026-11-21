@@ -883,7 +883,8 @@ pub struct CompanionDefinition {
 }
 
 /// Retry behavior.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RetryPolicy {
     /// Total delivery attempts.
     pub attempts: u32,
@@ -1011,6 +1012,144 @@ pub enum ResourceDefinition {
         /// Optional authored retry override.
         retry: Option<RetryPolicy>,
     },
+    /// HTTP webhook endpoint Trellis serves and verifies for the service.
+    Webhook {
+        /// Presentation metadata.
+        docs: Documentation,
+        /// Everything about the endpoint except its presentation.
+        endpoint: Box<WebhookDefinition>,
+    },
+}
+
+/// When Trellis answers a webhook sender.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WebhookMode {
+    /// Store the request, answer at once, and verify afterwards.
+    Async,
+    /// Verify first and answer only after the request is recorded.
+    Sync,
+}
+
+/// Compiled webhook endpoint declaration.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookDefinition {
+    /// When Trellis answers the sender.
+    pub mode: WebhookMode,
+    /// Accepted HTTP methods, uppercase and sorted.
+    pub methods: Vec<String>,
+    /// Standard verifiers in declared order. Empty only with `decide`.
+    pub verifiers: Vec<WebhookVerifier>,
+    /// Whether the service's decide handler runs, and its authored deadline.
+    pub decide: Option<WebhookDecide>,
+    /// Status answered for an accepted request.
+    pub status: u16,
+    /// Content encodings Trellis decodes before verifying.
+    pub content_encodings: Vec<String>,
+    /// Template locating the sender's delivery ID.
+    pub dedupe: Option<String>,
+    /// Local handler concurrency of the endpoint's consumer.
+    pub concurrency: u32,
+    /// Optional retry override of the endpoint's consumer.
+    pub retry: Option<RetryPolicy>,
+    /// The service's default body size limit in bytes.
+    pub max_body: Option<u64>,
+    /// The service's default dedupe window in milliseconds.
+    pub dedupe_window_ms: Option<u64>,
+    /// The service's default secret change overlap in milliseconds.
+    pub rotation_overlap_ms: Option<u64>,
+}
+
+/// The service's decide handler declaration.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookDecide {
+    /// Authored deadline in milliseconds, or the mode's runtime default.
+    pub deadline_ms: Option<u64>,
+}
+
+/// Where a signature or timestamp is read from.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookHeaderItem {
+    /// Header name.
+    pub header: String,
+    /// Optional item separator within each header value.
+    pub separator: Option<String>,
+    /// Optional prefix selecting and stripped from each item.
+    pub prefix: Option<String>,
+}
+
+/// A standard webhook verifier.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum WebhookVerifier {
+    /// HMAC signature over a template of the request.
+    Hmac(Box<WebhookHmac>),
+    /// A header value or query parameter equal to a secret.
+    Token {
+        /// Secret setting holding the token.
+        secret: String,
+        /// Header carrying the token, when not a query parameter.
+        header: Option<String>,
+        /// Query parameter carrying the token, when not a header.
+        query: Option<String>,
+        /// Prefix removed from the header value before comparing.
+        prefix: Option<String>,
+    },
+    /// HTTP Basic credentials.
+    Basic {
+        /// String setting holding the username.
+        username: String,
+        /// Secret setting holding the password.
+        password: String,
+    },
+    /// Client address within the CIDR ranges of a `list<string>` setting.
+    Address {
+        /// Setting holding the ranges.
+        ranges: String,
+    },
+    /// The endpoint checks nothing.
+    None,
+}
+
+/// An `hmac` verifier's configuration.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookHmac {
+    /// Secret setting holding the key.
+    pub key: String,
+    /// Prefix removed from the secret before decoding.
+    pub key_prefix: Option<String>,
+    /// `text`, `hex`, `base64`, or `base64url`.
+    pub key_encoding: String,
+    /// `sha1`, `sha256`, or `sha512`.
+    pub algorithm: String,
+    /// Template of the signed bytes.
+    pub signed: String,
+    /// Where signatures are read.
+    pub signature: WebhookHeaderItem,
+    /// `hex`, `base64`, or `base64url`.
+    pub signature_encoding: String,
+    /// Optional signed timestamp.
+    pub timestamp: Option<WebhookTimestamp>,
+}
+
+/// A signed timestamp's location, format, and tolerance.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookTimestamp {
+    /// Where the timestamp is read.
+    pub location: WebhookHeaderItem,
+    /// `unix_seconds`, `unix_millis`, or `rfc3339`.
+    pub format: String,
+    /// Allowed distance from the receive time in milliseconds.
+    pub tolerance_ms: u64,
 }
 
 impl ResourceDefinition {
@@ -1022,6 +1161,7 @@ impl ResourceDefinition {
             | Self::Store { optional, .. }
             | Self::Job { optional, .. }
             | Self::Consumer { optional, .. } => *optional,
+            Self::Webhook { .. } => false,
         }
     }
 }
