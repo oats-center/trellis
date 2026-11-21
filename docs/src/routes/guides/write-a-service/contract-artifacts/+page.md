@@ -15,8 +15,9 @@ intentionally resolving dependency changes.
 
 `trellis.toml` defines `[package]`, explicitly lists `[sources]`, declares
 `[dependencies]`, and configures language output. Local dependencies use
-`{ package, path }`; registry dependencies resolve to exact source bundles in
-the global content-addressed OCI cache.
+`{ package, path }`; registry dependencies use `{ package, workspace, version }`
+and resolve to exact source bundles in the global content-addressed OCI cache.
+`trellis.lock` keys each package by its full identity, workspace and name.
 
 Each language output is one ordinary package containing APIs, participants,
 types, codecs, and descriptors. Its version equals the source package version.

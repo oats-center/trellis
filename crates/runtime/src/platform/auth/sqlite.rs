@@ -81,6 +81,9 @@ pub(crate) enum AuthError {
     ResourceLimit,
     #[error("authorization session retired")]
     Retired,
+    /// The caller asked too often; the detail says what and when to retry.
+    #[error("rate limited: {0}")]
+    RateLimited(String),
     #[error("invalid authored input: {0}")]
     Invalid(String),
     #[error("authorization storage failure: {0}")]

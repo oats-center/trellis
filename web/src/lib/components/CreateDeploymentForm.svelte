@@ -16,7 +16,11 @@
   import { resolve } from "$lib/console_paths";
   import {
     freeSettings,
-    parseSetting,
+    hasProblem,
+    parseSecret,
+    settingSchema,
+    toJson,
+    type Draft,
     type FreeSetting,
   } from "$lib/console/settings.ts";
   import type { JsonValue } from "@oatscenter/trellis/generated";
@@ -26,6 +30,7 @@
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import PublishedPackagePicker from "$lib/components/PublishedPackagePicker.svelte";
   import SettingInput from "$lib/components/SettingInput.svelte";
+  import { idLabels } from "$lib/console/ids.ts";
 
   let { kind }: { kind: "service" | "device" } = $props();
   const trellis = getTrellis();
@@ -90,7 +95,8 @@
   let seedDialog: HTMLDialogElement | undefined = $state();
   // Settings saved with the new service: typed by its IDL when it has one,
   // otherwise named by hand.
-  let drafts = $state<Record<string, string>>({});
+  let drafts = $state<Record<string, Draft>>({});
+  // Typed secrets shown rather than masked; nothing is saved yet to reveal.
   let revealed = $state<Record<string, boolean>>({});
   let freeRows = $state<FreeSetting[]>([]);
 
@@ -99,6 +105,16 @@
       .filter((participant) => participant.kind === kind)
       .map((participant) => participant.participantId),
   );
+  // Package and participant IDs read without their workspace unless two of
+  // those shown share a name.
+  const labels = $derived(
+    idLabels([
+      ...participants,
+      ...(resolution?.dependencies ?? []).map((dependency) => dependency.name),
+      ...wanted.map((missing) => missing.name),
+    ]),
+  );
+  const label = (id: string) => labels.get(id) ?? id;
   const participantId = $derived(
     participants.length === 1
       ? participants[0]
@@ -132,7 +148,7 @@
   const usedPackages = $derived(
     (resolution?.dependencies ?? []).map(
       (dependency) =>
-        `${dependency.name} ${dependency.version} (${
+        `${label(dependency.name)} ${dependency.version} (${
           dependency.origin === "builtin"
             ? "built in"
             : dependency.origin === "supplied"
@@ -291,10 +307,10 @@
       extraErrors = {
         ...extraErrors,
         [name]: !chosen
-          ? `Choose the trellis.toml and .trellis files for ${name}.`
+          ? `Choose the trellis.toml and .trellis files for ${label(name)}.`
           : !chosen.manifest
-            ? `Add the trellis.toml for ${name} with its files.`
-            : `Add the .trellis files for ${name} with its trellis.toml.`,
+            ? `Add the trellis.toml for ${label(name)} with its files.`
+            : `Add the .trellis files for ${label(name)} with its trellis.toml.`,
       };
       return;
     }
@@ -401,7 +417,7 @@
           ...Object.fromEntries(
             dropped.map((name) => [
               name,
-              `These files don't provide a ${name} that matches.`,
+              `These files don't provide a ${label(name)} that matches.`,
             ]),
           ),
         };
@@ -592,11 +608,21 @@
   } {
     const values: Record<string, JsonValue> = {};
     const secrets: Record<string, JsonValue> = {};
+    const unfit: string[] = [];
     for (const field of declaredSettings) {
-      const text = drafts[field.name];
-      if (text === undefined || text === "") continue;
-      (field.secret ? secrets : values)[field.name] = parseSetting(field, text);
+      if (!(field.name in drafts)) continue;
+      const draft = drafts[field.name];
+      if (field.secret) {
+        if (typeof draft === "string" && draft !== "")
+          secrets[field.name] = parseSecret(field, draft);
+        continue;
+      }
+      const { root, defs } = settingSchema(field);
+      if (hasProblem(root, defs, draft)) unfit.push(field.title);
+      else values[field.name] = toJson(draft);
     }
+    if (unfit.length > 0)
+      throw new Error(`Fix ${unfit.join(", ")} before adding the ${kind}.`);
     return { values, secrets };
   }
 
@@ -745,7 +771,7 @@
           <span id="deployment-idl-help" class="trellis-field-help"
             >{#if idlProblem}<span class="text-error">{idlProblem}</span
               >{:else if resolving}Checking its IDL…{:else if evidence}{#if participants.length === 1}Adds
-                {participants[0]}.{/if}
+                {label(participants[0])}.{/if}
               {#if usedPackages.length > 0}Uses {usedPackages.join(
                   ", ",
                 )}.{/if}{:else if resolution}Add the packages below.{:else if kind === "service"}Choose
@@ -792,7 +818,7 @@
             {#each wanted as missing (missing.name)}
               <li class="rounded-box border border-base-300 p-3">
                 <p class="text-sm">
-                  <span class="font-mono">{missing.name}</span>
+                  <span class="font-mono">{label(missing.name)}</span>
                   <span class="text-base-content/60"
                     >{missing.requirements.length > 0
                       ? missing.requirements.join(", ")
@@ -813,7 +839,7 @@
                     multiple
                     class="file-input file-input-sm w-full sm:w-auto"
                     accept=".trellis,.toml"
-                    aria-label={`Files for ${missing.name}`}
+                    aria-label={`Files for ${label(missing.name)}`}
                     disabled={busy || uncertain}
                     onchange={(event) => void chooseExtra(missing.name, event)}
                   />
@@ -826,7 +852,7 @@
                       type="file"
                       class="sr-only"
                       webkitdirectory
-                      aria-label={`Folder for ${missing.name}`}
+                      aria-label={`Folder for ${label(missing.name)}`}
                       disabled={busy || uncertain}
                       onchange={(event) =>
                         void chooseExtra(missing.name, event)}
@@ -841,7 +867,7 @@
                 {#if extras[missing.name]}
                   <ul
                     class="mt-2 font-mono text-xs text-base-content/70"
-                    aria-label={`Files used for ${missing.name}`}
+                    aria-label={`Files used for ${label(missing.name)}`}
                   >
                     {#each extras[missing.name].names as name (name)}<li>
                         {name}
@@ -853,7 +879,7 @@
                     type="button"
                     class="btn btn-ghost btn-xs mt-1"
                     disabled={busy || uncertain}
-                    aria-label={`Remove files for ${missing.name}`}
+                    aria-label={`Remove files for ${label(missing.name)}`}
                     onclick={() => removeExtra(missing.name)}>Remove</button
                   >
                 {/if}
@@ -932,29 +958,37 @@
       {#if withIdl && declaredSettings.length > 0}
         <fieldset class="trellis-field" disabled={busy || uncertain}>
           <legend class="trellis-field-label mb-1.5">Settings</legend>
-          <div class="space-y-3">
+          <div class="divide-y divide-base-300">
             {#each declaredSettings as field (field.name)}
               <SettingInput
                 {field}
                 id={`new-setting-${field.name}`}
-                value={drafts[field.name] ?? ""}
-                placeholder={field.default === undefined
-                  ? ""
-                  : `Default: ${typeof field.default === "string" ? field.default : JSON.stringify(field.default)}`}
+                value={field.name in drafts
+                  ? drafts[field.name]
+                  : field.secret
+                    ? ""
+                    : field.default}
+                edited={field.name in drafts}
                 disabled={busy || uncertain}
-                missing={field.required && !drafts[field.name]}
-                revealed={revealed[field.name] ?? false}
-                oninput={(text) => {
-                  drafts = { ...drafts, [field.name]: text };
-                  if (!text && revealed[field.name])
+                missing={field.required && !(field.name in drafts)}
+                onchange={(next) => {
+                  if (field.secret && next === "") {
+                    drafts = Object.fromEntries(
+                      Object.entries(drafts).filter(
+                        ([name]) => name !== field.name,
+                      ),
+                    );
                     revealed = { ...revealed, [field.name]: false };
+                  } else drafts = { ...drafts, [field.name]: next };
                 }}
+                secretShown={revealed[field.name] ?? false}
                 onreveal={() => {
                   revealed = {
                     ...revealed,
                     [field.name]: !revealed[field.name],
                   };
                 }}
+                revealBlocked="Type a value to see it."
               />
             {/each}
           </div>

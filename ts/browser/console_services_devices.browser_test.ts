@@ -144,7 +144,7 @@ version = "1.0.0"
 gauges = "gauges.trellis"
 
 [dependencies]
-units = { package = "units", version = "^2.1.0", registry = "ghcr.io/example" }
+units = { package = "units", workspace = "ghcr.io/example", version = "^2.1.0" }
 `;
 const GAUGES = `import { Measure } from units;
 api gauges@v1 {
@@ -159,6 +159,7 @@ service Gauge { implements gauges; }
 `;
 const UNITS_MANIFEST = `[package]
 name = "units"
+workspace = "ghcr.io/example"
 version = "2.1.3"
 
 [sources]
@@ -183,8 +184,8 @@ version = "1.0.0"
 meters = "meters.trellis"
 
 [dependencies]
-units = { package = "units", version = "^2.1.0", registry = "ghcr.io/example" }
-scales = { package = "scales", version = "^1.0.0", registry = "ghcr.io/example" }
+units = { package = "units", workspace = "ghcr.io/example", version = "^2.1.0" }
+scales = { package = "scales", workspace = "ghcr.io/example", version = "^1.0.0" }
 `;
 const METERS = `import { Measure } from units;
 import { Scale } from scales;
@@ -201,6 +202,7 @@ service Meter { implements meters; }
 `;
 const SCALES_MANIFEST = `[package]
 name = "scales"
+workspace = "ghcr.io/example"
 version = "1.0.2"
 
 [sources]
@@ -581,7 +583,7 @@ test("B01c a dependency Trellis doesn't have is listed, and adding its files let
       const stored = await runtime.callAdminRpc("authDeploymentsGet", {
         deploymentId,
       });
-      assert.equal(stored.deployment.participantId, "gauges.Gauge");
+      assert.equal(stored.deployment.participantId, "localhost/gauges.Gauge");
       assert.equal(stored.deployment.title, displayName);
       await assertNoBrowserErrors(errors);
     } finally {

@@ -87,7 +87,8 @@ service OrdersService {
   nothing waits for it. `region` above is optional.
 - `restart` marks a field the service reads only when it connects. A change
   reaches the service when it next connects, not before.
-- `secret` marks a write-only field. A secret can't have a default other than
+- `secret` marks a field kept sealed and shown only on request (see
+  [Secrets](#secrets)). A secret can't have a default other than
   `null`, since the default would sit in the source, so an optional secret is
   written `type string | null; secret;`. Only a service may declare `secret`.
   A device runs where its user can read anything it holds, and an app's
@@ -260,18 +261,36 @@ The service's page has a **Settings** section, and so does each device type's
 page and the editor of each app that has settings. The link a waiting service
 prints opens it.
 
-- Each declared field shows its title, its value or default, where the value
-  comes from, and badges for **Required**, **Secret**, and **Applies after
-  restart**.
+- Each declared field is a row: its title, description, and badges for
+  **Required**, **Secret**, and **Applies after restart** on the left, and on
+  the right an input that fits its type, where the value comes from, and its
+  default.
+- The input follows the IDL type. A `bool` is a switch. A number takes only
+  numbers and says its bounds; a value outside them is marked beside the
+  field and isn't saved. An enum is a list to choose from, with **Other
+  value** since enums are open. A `list<T>` is a list of rows, each typed as
+  `T`, which you add, remove, and move up or down. A model shows its own
+  fields, with **Add** and **Remove** for optional ones. A `map<T>` takes named
+  entries. A `timestamp` takes a date and time in your local time. A nullable
+  field inside a list or model has **No value**. Only a `json` field, or a
+  type nested too deeply for a form, is typed as JSON, and the form says so.
+- What's wrong with a value shows under it in plain words while you edit, and
+  **Save settings** saves nothing until every edited field fits.
 - **For** picks **Every instance** (the deployment's values) or one instance's
   overrides. It appears once the deployment has an instance.
 - **Clear** stores null, for a field whose type allows it. **Reset** removes
   the stored value so the default applies. On an instance it reads **Use
   service-wide** and removes the override.
-- **Not used by this build** lists stored values the build doesn't declare,
-  each with **Remove**.
-- **Add by name** takes rows of a name, a format (**Text** or **JSON**), a
-  value, and a **Secret** box, for fields no installed build declares yet.
+- A secret's field is masked with the same dots whatever its length. Its eye
+  shows what you typed or, for a saved secret, asks Auth for the value (see
+  [Seeing a secret](#seeing-a-secret)). Hiding it again drops the value from
+  the page.
+- **Not used by this build** is its own section listing stored values the
+  build doesn't declare, secrets included. Each has **Remove**, which asks
+  first and then unsets it.
+- **Add by name** takes rows of a name, a format (**Text**, **Number**, **On
+  or off**, or **JSON** for lists and objects), a value, and a **Secret** box,
+  for fields no installed build declares yet.
 - **Save settings** writes one new revision. When it changes a `restart` field
   it first asks you to confirm, since you restart the service yourself.
 - **Earlier versions** lists older revisions, each with **Restore** and
@@ -295,6 +314,7 @@ service ID can be a deployment's ID or title, or a waiting claim's.
 | `config set --null FIELD`         | Store null for a setting whose type allows it. Repeat for several.                                          |
 | `config set-secret FIELD`         | Set a secret: asked for on a terminal, or read from standard input or a file with `--from-file PATH`.       |
 | `config set-secret FIELD --null`  | Store null for a secret whose type allows it.                                                               |
+| `config reveal FIELD`             | Print a saved secret to standard output. Needs `config.manageSecrets`, and each reveal is recorded.         |
 | `config unset FIELD ...`          | Remove stored values, so the default applies, or the deployment's value for an instance.                    |
 | `config history`                  | Revisions, newest first, with what each changed, when, and by whom. Secrets are listed by name.             |
 | `config rollback REVISION`        | Write an earlier revision's values as a new revision.                                                       |
@@ -362,7 +382,7 @@ once.
 
 The whole upgrade can then happen before build 2's image starts. Set its
 values, install its published package with `trellis svc <ID> apply --package
-NAME@VERSION` (or **Install a build** on the service's page), then roll out the
+WORKSPACE/NAME@VERSION` (or **Install a build** on the service's page), then roll out the
 image: its instances have their build and their settings, and nothing waits for
 approval. See [Upgrade](/guides/install-service-from-image#6-upgrade).
 
@@ -406,11 +426,11 @@ the **Secret** box for a field no build declares yet.
 Three administrative capabilities cover settings. All three are in the default
 `administration` group.
 
-| Capability                             | Allows                                                                                 |
-| -------------------------------------- | -------------------------------------------------------------------------------------- |
-| `trellis.auth.v1:config.read`          | See settings and their history. Secrets show only whether they are set.                |
-| `trellis.auth.v1:config.manage`        | Change, roll back, and delete settings, and attach app declarations. No secrets.       |
-| `trellis.auth.v1:config.manageSecrets` | Set and replace secrets, roll back, and delete revisions. Secrets are never read back. |
+| Capability                             | Allows                                                                                   |
+| -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `trellis.auth.v1:config.read`          | See settings and their history. Secrets show only whether they are set.                  |
+| `trellis.auth.v1:config.manage`        | Change, roll back, and delete settings, and attach app declarations. No secrets.         |
+| `trellis.auth.v1:config.manageSecrets` | Set, replace, and see secrets, roll back, and delete revisions. Each reveal is recorded. |
 
 A write that touches a secret needs `config.manageSecrets`, and one that
 touches a plain setting needs `config.manage`, so a role can tune settings
@@ -419,19 +439,47 @@ changes touch. Deleting a revision that holds a secret destroys that secret,
 so it needs `config.manageSecrets`. `config.manage` can delete a revision with
 no secrets in it. A refusal names the capability that was missing.
 
-No administrator capability reads a secret. Only the deployment's own instances
-receive secret values, through `Config.Own.Get` under
-`trellis.auth.v1:config.readOwn`, which every service and device instance holds
-for itself. In the service, secrets are plain values in `config.current`.
+Only `config.manageSecrets` reads a secret, and only on explicit request (see
+below). The deployment's own instances receive secret values through
+`Config.Own.Get` under `trellis.auth.v1:config.readOwn`, which every service
+and device instance holds for itself. In the service, secrets are plain values
+in `config.current`.
 
-### Never shown back
+### Shown only on request
 
-A secret's field in the Console is empty, with a placeholder saying whether it
-is set, and an unused secret reads "Secret, set". The CLI shows `(secret, set)` or
+A secret's field in the Console is masked with a fixed row of dots when it is
+set, whatever its length, and reads "Not set" otherwise. An unused secret
+reads "Secret, set". The CLI's `config show` prints `(secret, set)` or
 `(secret, not set)`. `Config.Get` returns only `isSet` for a secret, and the
 reason given for a mismatch never contains its value. Revision history and
-audit records name the secrets a write changed, never their values. The
-Console's show button reveals only what you are typing before you save it.
+audit records name the secrets a write changed, never their values.
+
+### Seeing a secret
+
+An administrator holding `config.manageSecrets` can ask for a saved secret's
+value. In the Console, the eye on a secret's field fetches it and shows it in
+the field. Hiding it again, typing over it, saving, or choosing another
+instance drops the value from the page; the Console keeps it nowhere else. On
+the command line:
+
+```sh
+trellis svc orders config reveal databasePassword
+trellis svc orders config --instance orders-2 reveal databasePassword
+```
+
+`reveal` prints the value alone on standard output, so a script can capture
+it: a text secret as written, any other as JSON, and with `--format json` an
+object with `value` and `source`. When standard output is a terminal, it first
+warns on standard error that the value stays in the terminal's scrollback.
+
+Both call `Config.Secrets.Reveal` with the target and the field. It works on a
+deployment, an instance, and a waiting claim. On an instance without its own
+value it shows the deployment's, and `source` says which. Auth records every
+reveal in its security audit log, with who asked, the target, the field, and
+the revision, never the value. Each administrator can see 30 secrets in any 10
+minutes; the next request is refused with `rate_limited` until the window
+moves on. `config.read` and `config.manage` reach the same RPC only to be
+refused with a message naming `config.manageSecrets`.
 
 ### Setting a secret
 

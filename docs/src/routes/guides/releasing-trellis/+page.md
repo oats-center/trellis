@@ -606,7 +606,7 @@ every publish step compares what is already published with this run's verified
 artifact:
 
 - GitHub release: an existing asset must match the verified file byte for byte; missing assets are uploaded. A draft that targets another commit stops the run; delete that draft to release this commit.
-- Canonical APIs: `trellis publish` skips a version GHCR holds with the same package and distribution digests and refuses one with different content.
+- Canonical APIs: `trellis publish` pushes the built-in `trellis` package, which has no workspace, to `ghcr.io/oats-center/trellis`; it skips a version GHCR holds with the same package and distribution digests and refuses one with different content. The CLI of the same release carries that package byte for byte and uses it for `trellis` dependencies it satisfies, so projects need not download it.
 - Crates: `check-published` compares every crate version crates.io holds with the verified archive and fails on any difference; matching versions are skipped.
 - Images: a version tag that already exists must point at the recorded digest.
 - npm: each tarball's sha512 must equal the integrity recorded at verification, and a version the registry holds must report that integrity; matching versions are skipped. Nothing uploads unless every package passes.

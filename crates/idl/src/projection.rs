@@ -49,6 +49,26 @@ pub fn expression_json_schema(
 /// For reading; validators and compatibility use the undescribed form.
 pub fn described_json_schema(graph: &PackageGraph, root: &TypeRef) -> miette::Result<Value> {
     let mut schema = json_schema(graph, root)?;
+    describe(graph, &mut schema);
+    Ok(schema)
+}
+
+/// [`expression_json_schema`] with authored descriptions on each definition
+/// and field, such as a settings form shows. For reading only.
+pub fn described_expression_json_schema(
+    graph: &PackageGraph,
+    root: &TypeExpression,
+) -> miette::Result<Value> {
+    let mut schema = expression_json_schema(graph, root)?;
+    describe(graph, &mut schema);
+    Ok(schema)
+}
+
+/// Put each reachable definition's and model field's doc comment on it.
+fn describe(graph: &PackageGraph, schema: &mut Value) {
+    if schema.get("$defs").is_none() {
+        return;
+    }
     for (package_id, package) in graph.packages() {
         for id in package.types().keys() {
             let reference = TypeRef {
@@ -73,7 +93,6 @@ pub fn described_json_schema(graph: &PackageGraph, root: &TypeRef) -> miette::Re
             }
         }
     }
-    Ok(schema)
 }
 
 fn project_named(

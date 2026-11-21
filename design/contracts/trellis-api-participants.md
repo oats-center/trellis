@@ -12,10 +12,19 @@ frozen resolution metadata. Runtime JSON Schema is a validator projection only.
 
 ## Identity and evidence
 
-- API identity is `<package>.<ApiName>@v<major>`.
+- `<package>` is the package's full identity, `<workspace>/<name>` such as
+  `ghcr.io/acme/orders`, `localhost/<name>` for a package that declares no
+  workspace, and the bare `trellis` for the built-in package. See
+  [workspaces.md](./workspaces.md).
+- API identity is `<package>.<ApiName>@v<major>`, such as
+  `ghcr.io/acme/orders.billing@v1`, at most 255 bytes.
 - Participant identity is `<package>.<lexical-path>`.
 - Capability identity is `<package>.<ApiName>.v<major>:<area>.<action>`, for
-  example `trellis.auth.v1:users.edit`.
+  example `trellis.auth.v1:users.edit` or
+  `ghcr.io/acme/orders.billing.v1:invoices.read`.
+- An ID's short form drops its workspace. Human-readable CLI and Console output
+  shows it while it is unique; the wire, storage, logs, and `--format json`
+  carry full IDs.
 - Resource identity is the owner binding, participant identity, kind, and local
   resource name.
 
@@ -25,7 +34,8 @@ digest with its exact lexical participant path; source filenames and generated
 symbol spellings are not identity.
 
 Package evidence carries presentation-preserving canonical source for the exact
-dependency closure. The server parses and resolves it, verifies every frozen
+dependency closure, naming the root, every package, and every dependency edge
+by full identity. The server parses and resolves it, verifies every frozen
 edge/version/digest, and recomputes semantic digests. Externally supplied
 evidence for the reserved `trellis` package must match an explicitly trusted
 installed digest.

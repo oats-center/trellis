@@ -17,6 +17,7 @@ Put `trellis.toml` alongside the source file:
 ```toml
 [package]
 name = "acme-orders"
+workspace = "ghcr.io/acme"
 version = "1.0.0"
 
 [sources]
@@ -26,7 +27,12 @@ orders = "contract.trellis"
 output = "trellis"
 ```
 
-Choose `[generate.rust]` with an `output` path instead for a Rust service, or
+`workspace` is where the package is published, and with the name it makes the
+package's identity, `ghcr.io/acme/acme-orders`, which starts every ID it
+defines: the service below is `ghcr.io/acme/acme-orders.OrdersService`. Leave
+it out for a package you will never publish; it then gets `localhost`. See
+[Workspaces](/design/contracts/workspaces) for how IDs are formed. Choose
+`[generate.rust]` with an `output` path instead for a Rust service, or
 configure both targets. Source aliases such as `orders` are local names used by
 imports in other `.trellis` files; list every source explicitly.
 
@@ -133,8 +139,10 @@ output. If consumers must build without the CLI or package cache, commit the
 generated package too. Do not hand-edit generated files.
 
 For a dependency, add a package alias under `[dependencies]` and explicitly
-import its types or APIs in the source file. Published dependencies use a
-registry and a version range; local development dependencies use a `path`.
+import its types or APIs in the source file. Published dependencies name their
+workspace and a version range, `{ package = "acme-common", workspace =
+"ghcr.io/acme", version = "^1.4" }`; local development dependencies use a
+`path`.
 The [contract artifacts guide](/guides/write-a-service/contract-artifacts)
 covers the lockfile and build lifecycle. Consult the
 [IDL design reference](/design/contracts/trellis-idl) for the full grammar and

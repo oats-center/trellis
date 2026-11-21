@@ -183,6 +183,7 @@ export const CONSOLE_OPERATIONS = {
   configRevisionsList: authRpc("Config.Revisions.List"),
   configRevisionsDelete: authRpc("Config.Revisions.Delete"),
   configRollback: authRpc("Config.Rollback"),
+  configSecretsReveal: authRpc("Config.Secrets.Reveal"),
 
   // Auth: devices, authorities, reviews.
   devicesList: authRpc("Devices.List"),

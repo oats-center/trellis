@@ -277,6 +277,32 @@ service ConfiguredService {
   config region { title "Region"; description "Where work is placed, when it matters."; type string | null; }
   config port { title "Port"; description "Port the service listens on."; type int32; default 8080; restart; }
 }
+enum TypedMode { "fast"; "safe"; "thorough"; }
+type TypedWorkers = int32(min=1, max=16);
+type TypedHost = string(min_length=1, max_length=64);
+type TypedTimeout = uint32(min=1, max=300);
+/// Where the service forwards work.
+model TypedUpstream {
+  /// Base URL of the upstream service.
+  url: string;
+  /// Seconds before a forwarded request gives up.
+  timeoutSeconds: TypedTimeout;
+  /// Retry a failed request once.
+  retry: bool;
+  /// Sent as the team header when set.
+  team?: string;
+}
+// Settings of every shape the Console's form edits field by field.
+service TypedSettingsService {
+  config hosts { title "Hosts"; description "Hosts the service answers for, most preferred first."; type list<TypedHost>; }
+  config verbose { title "Verbose logging"; description "Write every request to the log."; type bool; default false; }
+  config mode { title "Mode"; description "How carefully work is checked."; type TypedMode; default "safe"; }
+  config workers { title "Workers"; description "Requests handled at once."; type TypedWorkers; default 4; }
+  config upstream { title "Upstream"; description "Where the service forwards work."; type TypedUpstream; }
+  config labels { title "Labels"; description "Tags added to every record."; type map<string> | null; }
+  config startAt { title "Start at"; description "When the service begins taking work."; type timestamp | null; }
+  config partnerToken { title "Partner token"; description "Token the partner API accepts."; type string | null; secret; }
+}
 service ConfiguredGrowthService {
   use transport_growth { capability growth.extend; }
   config level { title "Log level"; description "Lowest level the service writes."; type ConfiguredLevel; default "info"; }

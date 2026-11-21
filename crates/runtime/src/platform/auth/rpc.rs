@@ -271,6 +271,9 @@ pub(super) fn rpc_error(error: AuthError) -> ServerError {
             "session_retired",
             "Authorization session retired",
         ),
+        AuthError::RateLimited(detail) => {
+            (errors::AuthError::TYPE, "rate_limited", detail.as_str())
+        }
         AuthError::Invalid(detail) => (
             errors::ValidationError::TYPE,
             "invalid_request",

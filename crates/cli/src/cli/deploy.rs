@@ -200,6 +200,14 @@ pub enum ConfigCommand {
         #[arg(long, conflicts_with = "from_file")]
         null: bool,
     },
+    /// Print a stored secret's value to standard output. Needs
+    /// `config.manageSecrets`, and Trellis records who asked for which
+    /// secret, never the value. A text secret prints as written; any other
+    /// prints as JSON.
+    Reveal {
+        #[arg(value_name = "FIELD")]
+        field: String,
+    },
     /// Remove stored values so the default, or the deployment's value for an
     /// instance, applies.
     Unset {

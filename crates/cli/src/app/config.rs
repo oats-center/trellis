@@ -163,6 +163,25 @@ pub(super) async fn run(
                 .into_diagnostic()?;
             changed(format, &label, prefix, id, &to_value(updated)?)
         }
+        ConfigCommand::Reveal { field } => {
+            let revealed = to_value(
+                auth.config_secrets_reveal(&wire(json!({ "target": target, "field": field }))?)
+                    .await
+                    .into_diagnostic()?,
+            )?;
+            if output::is_json(format) {
+                return output::print_json(&revealed);
+            }
+            // The value is the output, so a script can capture it; on a
+            // terminal it stays in the scrollback, which is worth knowing.
+            if std::io::stdout().is_terminal() {
+                output::warning(format!(
+                    "The value of {field} is shown below and stays in this terminal's scrollback."
+                ));
+            }
+            println!("{}", display(&revealed["value"]));
+            Ok(())
+        }
         ConfigCommand::Unset { fields } => {
             let updated = auth
                 .config_set(&wire(set(json!({ "unset": fields })))?)
