@@ -128,6 +128,16 @@ the URL's host, or not chaining to the trusted CA, fails with
 `TrellisClientError::NatsConnectConfig`, which retrying won't fix; other
 connect failures are `TrellisClientError::NatsConnect` and can pass.
 
+Without a provisioned seed, connect with
+`ServiceConnectOptions::enrolling(server.nats_servers, server.trust, server.issuer)`;
+it reads `TRELLIS_ENROLLMENT_SECRET` (`trellis_rs::service::ENROLLMENT_SECRET_ENV`)
+unless `.with_enrollment_secret(secret)` names one. `.with_key_file(path)` keeps
+the key across restarts (an administrator's removal fails `connect` with
+`ServiceRuntimeError::InstanceRemoved`), and `.with_instance_title(title)`
+replaces the host-name title. Without a key file, a graceful stop retires the
+instance; an enrolled instance retired while disconnected ends `run` with
+`ServiceRuntimeError::InstanceRetired`.
+
 When the build differs from the revision its instance runs, `connect` submits
 the build and returns once it installs. A build that asks for new access waits
 for an administrator, logging the review link and printing it as a QR code on

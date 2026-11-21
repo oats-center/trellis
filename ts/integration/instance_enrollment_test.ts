@@ -26,7 +26,8 @@ async function deployment(runtime: TrellisTestRuntime, name: string) {
     deployment: name,
     contract: participant,
   });
-  return deploymentId;
+  assert(deploymentId, "applying the participant created a deployment");
+  return codecs.ulid.decode(deploymentId);
 }
 
 async function issue(
