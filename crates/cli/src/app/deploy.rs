@@ -1060,6 +1060,9 @@ async fn service_instances(
 /// `waitingForSettings` while required settings have no value, and
 /// `starting` otherwise. A heartbeat still reporting `connecting` also reads
 /// as `starting`: the instance is connected but not serving yet.
+///
+/// Its health is the report's effective status and the checks that heartbeat
+/// carries as failing; an instance with no current heartbeat has none.
 fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Value> {
     instances
         .into_iter()
@@ -1115,8 +1118,38 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
                 .and_then(Value::as_str);
             let version =
                 reporting.and_then(|report| report.pointer("/latestSample/participant/version"));
+            // Health is the instance's effective status with the checks its
+            // current heartbeat reports failing; a disconnected instance is
+            // offline whatever it last reported.
+            let health = if connected_at.is_none() {
+                json!({ "status": "offline", "failingChecks": [] })
+            } else if let Some(report) = reporting {
+                let failing = report
+                    .pointer("/latestSample/checks")
+                    .and_then(Value::as_array)
+                    .map_or(&[][..], Vec::as_slice)
+                    .iter()
+                    .filter(|check| output::field(check, "status") != "ok")
+                    .map(|check| {
+                        let mut failing = json!({
+                            "name": check.get("name"),
+                            "status": check.get("status"),
+                            "summary": check.get("summary"),
+                            "error": check.get("error"),
+                        });
+                        if let Some(failing) = failing.as_object_mut() {
+                            failing.retain(|_, value| !value.is_null());
+                        }
+                        failing
+                    })
+                    .collect::<Vec<_>>();
+                json!({ "status": report.get("effectiveStatus"), "failingChecks": failing })
+            } else {
+                Value::Null
+            };
             let mut status = json!({
                 "state": state,
+                "health": health,
                 "build": {
                     "digest": digest,
                     "version": version,
@@ -1356,6 +1389,7 @@ fn print_service_instances_result<T: serde::Serialize>(
             &[
                 output::col("Name", "principal.title"),
                 output::state_col("State", "status.state"),
+                output::state_col("Health", "status.health.status"),
                 output::col("Build", "status.build.label"),
                 output::time_col("Connected", "status.connectedAt"),
                 output::time_col("Last heartbeat", "status.lastHeartbeat"),
@@ -1364,9 +1398,28 @@ fn print_service_instances_result<T: serde::Serialize>(
             ],
             "No instances. Provision one with `provision`.",
         )?;
-        // What a waiting instance needs, which the table has no room for.
+        // What a waiting instance needs and which checks fail, which the
+        // table has no room for.
         for instance in output::list(value, "instances") {
             let name = output::field(instance, "principal.title");
+            for check in output::list(&instance["status"]["health"], "failingChecks") {
+                // The error says what went wrong; a summary stands in without one.
+                let message = [
+                    output::field(check, "error"),
+                    output::field(check, "summary"),
+                ]
+                .into_iter()
+                .find(|message| !message.is_empty())
+                .map(|message| format!(": {message}"))
+                .unwrap_or_default();
+                // Instances of one service share its name, so the ID says which.
+                println!(
+                    "{}: check {} {}{message}",
+                    output::field(instance, "instanceId"),
+                    output::field(check, "name"),
+                    output::field(check, "status"),
+                );
+            }
             let url = output::field(instance, "status.reviewUrl");
             if output::field(instance, "status.state") == "waitingForApproval" {
                 if url.is_empty() {

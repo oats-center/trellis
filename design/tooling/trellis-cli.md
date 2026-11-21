@@ -191,9 +191,16 @@ accept a waiting claim's ID or name as well as a deployment's.
 `status` to each instance: `state` (`offline`, `starting`,
 `waitingForApproval`, `waitingForSettings`, `serving`, `stopping`), `build`
 (`digest`, `version`, `current`, and a short `label`), `connectedAt`,
-`lastHeartbeat`, and while waiting `reviewUrl` or `missingSettings`. The text
-table shows state, build, connected and last heartbeat, and names what a waiting
-instance needs below it. The states follow `design/auth/service-updates.md`.
+`lastHeartbeat`, `health`, and while waiting `reviewUrl` or `missingSettings`.
+`health` is `{ status, failingChecks }`: the heartbeat's effective status
+(`healthy`, `degraded`, `unhealthy`, `offline`) and each failing check's
+`name`, `status`, and the `summary` and `error` it reported. A disconnected
+instance is `offline` with no checks; a connected one with no current
+heartbeat has no `health`. The text table shows state, health, build,
+connected and last heartbeat, and below it prints one line per failing check
+(`<instance ID>: check <name> failed: <error or summary>`) and what a waiting
+instance needs. The Console's service page shows the same health and failing
+checks. The states follow `design/auth/service-updates.md`.
 
 `svc updates` lists the builds a service submitted for itself
 (`Auth.ServiceUpdates.List`) with what each asks for and gives up;

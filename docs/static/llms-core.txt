@@ -573,7 +573,8 @@ signal handlers in service code.
 Upgrade by overlapping: run each process as its own instance, start the new
 build, wait until it serves, stop the old one. `trellis svc <ID> instances`
 (`--format json`) and the Console service page show each instance's build,
-whether it is current or older, its state, connected-at and last heartbeat. A
+whether it is current or older, its state, its health with the name and
+message of each failing check, connected-at and last heartbeat. A
 build that drops an API or a resource such as a job queue the older build
 declares, or that replaces an API with its next major, stops older builds at
 once; add the new major beside the old one and drop the old one in a later
