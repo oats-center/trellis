@@ -386,6 +386,21 @@ impl AuthorizationContextCache {
         }
     }
 
+    /// Withdraw application usability if own authority is not current.
+    ///
+    /// The check and the withdrawal hold the own-transition guard together. A
+    /// check made before the revocation mirror commits a new generation would
+    /// otherwise suspend after that commit made it usable, and nothing would
+    /// restore usability: every transport acquisition would then wait out its
+    /// deadline.
+    pub(crate) fn suspend_unless_own_authority(&self) {
+        if let Ok(transition) = self.lock_own_transition() {
+            if self.owner.own_authority().is_err() {
+                self.suspend_locked(&transition);
+            }
+        }
+    }
+
     pub(crate) fn suspend_locked(&self, _transition: &OwnTransitionGuard<'_>) {
         let previous = self.availability.borrow().clone();
         self.availability

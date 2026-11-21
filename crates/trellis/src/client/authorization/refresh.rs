@@ -279,7 +279,7 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                             continue;
                         }
                     } else {
-                        runtime.contexts.suspend();
+                        runtime.contexts.suspend_unless_own_authority();
                         runtime.generations.authorization_promoted();
                         if runtime.contexts.owner.staged_own_authority().is_ok() {
                             // Coverage-only recovery belongs to the mirror supervisor.
@@ -288,14 +288,10 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                     }
                 }
             }
-            if runtime.contexts.owner.own_authority().is_err() {
-                runtime.contexts.suspend();
-            }
+            runtime.contexts.suspend_unless_own_authority();
             if let Err(error) = install_prepared_authorization(&runtime, None).await {
                 tracing::warn!(%error, "own-authority renewal unavailable");
-                if runtime.contexts.owner.own_authority().is_err() {
-                    runtime.contexts.suspend();
-                }
+                runtime.contexts.suspend_unless_own_authority();
                 if runtime
                     .generations
                     .pace_or_terminal(Duration::from_secs(1))
