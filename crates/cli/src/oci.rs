@@ -23,15 +23,15 @@ use trellis_idl::distribution::{
     MAX_ARCHIVE_BYTES, MAX_CONFIG_BYTES, MAX_MANIFEST_BYTES, RESOLUTION_PATH, SOURCE_MEDIA_TYPE,
 };
 
-use crate::project::{LockedDependency, LockedPackage, LockedSource, ProjectLock, RegistryConfig};
+use crate::project::{LockedDependency, LockedPackage, LockedSource, ProjectLock};
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Validated source files and immutable distribution identity for one package release.
 #[derive(Clone, Debug)]
 pub(crate) struct SourcePackage {
-    /// Stable package name and OCI repository suffix.
-    pub name: String,
+    /// Full package identity, `<workspace>/<name>`, which names its repository.
+    pub id: String,
     /// Immutable package release version.
     pub version: Version,
     /// Base64url SHA-256 digest of the compiled package semantics.
@@ -46,7 +46,7 @@ pub(crate) struct SourcePackage {
 
 /// Build a normalized source package from its explicit manifest and IDL sources.
 pub(crate) fn source_package(
-    name: &str,
+    id: &str,
     version: &Version,
     package_digest: &str,
     mut files: BTreeMap<PathBuf, Vec<u8>>,
@@ -68,13 +68,13 @@ pub(crate) fn source_package(
     validate_files(&files)?;
     let manifest = package_manifest(&files)?;
     miette::ensure!(
-        manifest.package.name == name && manifest.package.version == *version,
+        manifest.identity() == id && manifest.package.version == *version,
         "source package identity differs from trellis.toml"
     );
     let bytes = archive(&files)?;
     validate_package_digest(package_digest)?;
     Ok(SourcePackage {
-        name: name.to_owned(),
+        id: id.to_owned(),
         version: version.clone(),
         package_digest: package_digest.to_owned(),
         distribution_digest: sha256(&bytes),
@@ -95,21 +95,21 @@ impl SourcePackage {
         );
         let mut packages = resolution.packages;
         miette::ensure!(
-            packages.iter().all(|package| package.name != self.name),
+            packages.iter().all(|package| package.id != self.id),
             "frozen resolution repeats its root package"
         );
         packages.push(LockedPackage {
-            name: self.name.clone(),
+            id: self.id.clone(),
             version: self.version.clone(),
             digest: self.package_digest.clone(),
             distribution_digest: self.distribution_digest.clone(),
             dependencies: resolution.dependencies,
             source,
         });
-        packages.sort_by(|left, right| left.name.cmp(&right.name));
+        packages.sort_by(|left, right| left.id.cmp(&right.id));
         let lock = ProjectLock {
-            format: 2,
-            root: self.name.clone(),
+            format: 3,
+            root: self.id.clone(),
             packages,
         };
         lock.validate()?;
@@ -117,18 +117,19 @@ impl SourcePackage {
     }
 }
 
-/// Derive the one OCI repository owned by a package name.
-pub(crate) fn repository(config: &RegistryConfig, name: &str) -> Result<String> {
-    let repository = format!("{}/{name}", config.prefix.trim_end_matches('/'));
+/// Derive the one OCI repository a package identity owns: its workspace
+/// followed by its name.
+pub(crate) fn repository(id: &str) -> Result<String> {
+    let repository = trellis_idl::project::package_repository(id)?;
     Reference::from_str(&repository)
-        .map_err(|error| miette!("invalid OCI repository for package '{name}': {error}"))?;
+        .map_err(|error| miette!("invalid OCI repository for package '{id}': {error}"))?;
     Ok(repository)
 }
 
 /// List every valid SemVer release tag in one package repository.
-pub(crate) async fn versions(config: &RegistryConfig, name: &str) -> Result<Vec<Version>> {
-    let reference = Reference::from_str(&repository(config, name)?)
-        .map_err(|error| miette!(error.to_string()))?;
+pub(crate) async fn versions(name: &str) -> Result<Vec<Version>> {
+    let reference =
+        Reference::from_str(&repository(name)?).map_err(|error| miette!(error.to_string()))?;
     let auth = registry_auth(reference.resolve_registry())?;
     let client = client(reference.resolve_registry())?;
     let mut tags = Vec::new();
@@ -164,12 +165,8 @@ pub(crate) async fn versions(config: &RegistryConfig, name: &str) -> Result<Vec<
 }
 
 /// Pull and validate a tagged source-package release.
-pub(crate) async fn pull_tag(
-    config: &RegistryConfig,
-    name: &str,
-    version: &Version,
-) -> Result<SourcePackage> {
-    let reference = Reference::from_str(&format!("{}:{version}", repository(config, name)?))
+pub(crate) async fn pull_tag(name: &str, version: &Version) -> Result<SourcePackage> {
+    let reference = Reference::from_str(&format!("{}:{version}", repository(name)?))
         .map_err(|error| miette!(error.to_string()))?;
     let pulled = pull_reference(&reference).await?;
     validate_package(&pulled, name, &version.to_string(), None)?;
@@ -179,7 +176,6 @@ pub(crate) async fn pull_tag(
 
 /// Read a locked package from cache or pull its exact OCI manifest digest.
 pub(crate) async fn pull_locked(
-    config: &RegistryConfig,
     name: &str,
     version: &str,
     package_digest: &str,
@@ -196,9 +192,8 @@ pub(crate) async fn pull_locked(
         return Ok(pulled);
     }
     let _ = fs::remove_dir_all(cache_entry(manifest_digest)?);
-    let reference =
-        Reference::from_str(&format!("{}@{manifest_digest}", repository(config, name)?))
-            .map_err(|error| miette!(error.to_string()))?;
+    let reference = Reference::from_str(&format!("{}@{manifest_digest}", repository(name)?))
+        .map_err(|error| miette!(error.to_string()))?;
     let pulled = pull_reference(&reference)
         .await
         .wrap_err_with(|| format!("locked source package {manifest_digest} is unavailable"))?;
@@ -213,6 +208,47 @@ pub(crate) async fn pull_locked(
     );
     write_cache(&pulled)?;
     Ok(pulled)
+}
+
+/// The built-in `trellis` package this CLI was built with, byte for byte the
+/// release the Trellis project publishes for this version, cached like a pulled
+/// one. Its authority is the Trellis build, not a registry, so the CLI uses it
+/// instead of downloading the same release.
+pub(crate) fn builtin_package() -> Result<SourcePackage> {
+    let files: BTreeMap<PathBuf, String> = serde_json::from_str(include_str!(concat!(
+        env!("OUT_DIR"),
+        "/builtin-package.json"
+    )))
+    .into_diagnostic()?;
+    let files = files
+        .into_iter()
+        .map(|(path, text)| (path, text.into_bytes()))
+        .collect::<BTreeMap<_, _>>();
+    let manifest: trellis_idl::project::PackageManifest =
+        toml::from_slice(&files[Path::new("trellis.toml")]).into_diagnostic()?;
+    let sources = manifest
+        .sources
+        .iter()
+        .map(|(alias, path)| {
+            Ok(trellis_idl::SourceUnit {
+                alias: alias.clone(),
+                path: PathBuf::from(path),
+                source: String::from_utf8(files[Path::new(path)].clone()).into_diagnostic()?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let graph = trellis_idl::compile_project(&manifest, sources, BTreeMap::new())?;
+    let mut package = source_package(
+        &manifest.identity(),
+        &manifest.package.version,
+        graph.root_digest(),
+        files,
+        Vec::new(),
+        Vec::new(),
+    )?;
+    package.manifest_digest = image(&package)?.3;
+    write_cache(&package)?;
+    Ok(package)
 }
 
 /// Read and verify an exact locked package without credentials or network access.
@@ -233,19 +269,16 @@ pub(crate) fn read_locked(
 }
 
 /// Publish one deterministic source package.
-pub(crate) async fn publish(config: &RegistryConfig, package: &SourcePackage) -> Result<String> {
-    let reference = Reference::from_str(&format!(
-        "{}:{}",
-        repository(config, &package.name)?,
-        package.version
-    ))
-    .map_err(|error| miette!(error.to_string()))?;
+pub(crate) async fn publish(package: &SourcePackage) -> Result<String> {
+    let reference =
+        Reference::from_str(&format!("{}:{}", repository(&package.id)?, package.version))
+            .map_err(|error| miette!(error.to_string()))?;
     let auth = registry_auth(reference.resolve_registry())?;
     let (layer, config_blob, manifest, expected_digest) = image(package)?;
     client(reference.resolve_registry())?
         .push(&reference, &[layer], config_blob, &auth, Some(manifest))
         .await
-        .map_err(|error| miette!("failed to publish {}: {error}", package.name))?;
+        .map_err(|error| miette!("failed to publish {}: {error}", package.id))?;
     let pulled = pull_reference(&reference).await?;
     miette::ensure!(
         pulled.manifest_digest == expected_digest,
@@ -253,7 +286,7 @@ pub(crate) async fn publish(config: &RegistryConfig, package: &SourcePackage) ->
     );
     validate_package(
         &pulled,
-        &package.name,
+        &package.id,
         &package.version.to_string(),
         Some(&package.package_digest),
     )?;
@@ -325,7 +358,7 @@ async fn pull_reference(reference: &Reference) -> Result<SourcePackage> {
     );
     let files = extract_archive(&bytes)?;
     Ok(SourcePackage {
-        name: config.name,
+        id: config.id,
         version: Version::parse(&config.version).into_diagnostic()?,
         package_digest: config.package_digest,
         distribution_digest: sha256(&bytes),
@@ -359,9 +392,14 @@ fn validate_package(
     version: &str,
     digest: Option<&str>,
 ) -> Result<()> {
+    // The repository is derived from the identity asked for, so a release
+    // whose config or trellis.toml declares another workspace or name was
+    // published under a location it does not own.
     miette::ensure!(
-        package.name == name,
-        "remote package name differs from request"
+        package.id == name,
+        "{} holds package '{}', not '{name}'",
+        repository(name).unwrap_or_else(|_| name.to_owned()),
+        package.id
     );
     miette::ensure!(
         package.version.to_string() == version,
@@ -370,7 +408,7 @@ fn validate_package(
     validate_files(&package.files)?;
     let manifest = package_manifest(&package.files)?;
     miette::ensure!(
-        manifest.package.name == package.name && manifest.package.version == package.version,
+        manifest.identity() == package.id && manifest.package.version == package.version,
         "source package identity differs from trellis.toml"
     );
     validate_package_digest(&package.package_digest)?;
@@ -388,7 +426,7 @@ fn validate_package(
 
 fn config_bytes(package: &SourcePackage) -> Result<Vec<u8>> {
     canonical_json(&PackageConfig::new(
-        &package.name,
+        &package.id,
         &package.version,
         &package.package_digest,
     ))
@@ -504,7 +542,7 @@ fn read_cache(digest: &str) -> Result<SourcePackage> {
         "cached source-package layer digest mismatch"
     );
     Ok(SourcePackage {
-        name: config.name,
+        id: config.id,
         version: Version::parse(&config.version).into_diagnostic()?,
         package_digest: config.package_digest,
         distribution_digest: sha256(&bytes),
@@ -577,7 +615,7 @@ mod tests {
             (PathBuf::from("main.trellis"), b"api test@v1 {}\n".to_vec()),
             (
                 PathBuf::from("trellis.toml"),
-                b"[package]\nname='acme-orders'\nversion='1.2.3'\n[sources]\nmain='main.trellis'\n"
+                b"[package]\nname='acme-orders'\nworkspace='ghcr.io/acme'\nversion='1.2.3'\n[sources]\nmain='main.trellis'\n"
                     .to_vec(),
             ),
         ])
@@ -586,7 +624,7 @@ mod tests {
     #[test]
     fn package_config_has_required_v1_identity() {
         let package = source_package(
-            "acme-orders",
+            "ghcr.io/acme/acme-orders",
             &Version::parse("1.2.3").unwrap(),
             &URL_SAFE_NO_PAD.encode([0_u8; 32]),
             files(),
@@ -597,7 +635,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_slice(&config_bytes(&package).unwrap()).unwrap();
         assert_eq!(value["format"], "trellis.package.source.v1");
-        assert_eq!(value["name"], "acme-orders");
+        assert_eq!(value["id"], "ghcr.io/acme/acme-orders");
         assert_eq!(value["version"], "1.2.3");
         assert_eq!(value["packageDigest"], package.package_digest);
         let (_, _, manifest, manifest_digest) = image(&package).unwrap();
@@ -610,8 +648,8 @@ mod tests {
         let lock = package
             .lock(LockedSource::Path { path: ".".into() })
             .unwrap();
-        assert_eq!(lock.format, 2);
-        assert_eq!(lock.root, "acme-orders");
+        assert_eq!(lock.format, 3);
+        assert_eq!(lock.root, "ghcr.io/acme/acme-orders");
         assert_eq!(lock.packages.len(), 1);
     }
 
@@ -621,7 +659,7 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("TRELLIS_CACHE", cache.path()) };
         let mut package = source_package(
-            "acme-orders",
+            "ghcr.io/acme/acme-orders",
             &Version::parse("1.2.3").unwrap(),
             &URL_SAFE_NO_PAD.encode([0_u8; 32]),
             files(),
@@ -640,7 +678,7 @@ mod tests {
         );
         assert_eq!(
             read_locked(
-                &package.name,
+                &package.id,
                 &package.version.to_string(),
                 &package.package_digest,
                 &package.distribution_digest,
@@ -658,7 +696,7 @@ mod tests {
         )
         .unwrap();
         assert!(read_locked(
-            &package.name,
+            &package.id,
             &package.version.to_string(),
             &package.package_digest,
             &package.distribution_digest,

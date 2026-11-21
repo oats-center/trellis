@@ -35,7 +35,7 @@ import { connectNativeClient } from "../native.ts";
 import { TransportError, createAuth } from "../portable.ts";
 import { TrellisService } from "../service/mod.ts";
 
-const echoCapability = "runtime-trellis.runtime.v1:echo.call";
+const echoCapability = "localhost/runtime-trellis.runtime.v1:echo.call";
 type ReplyFrame = Extract<NatsOp, { kind: "msg" }>;
 type ReplyMutation = (
   frame: ReplyFrame,

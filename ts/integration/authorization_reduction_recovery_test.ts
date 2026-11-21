@@ -41,7 +41,7 @@ test("optional authority reduction reaps wider transport and revokes old Live wh
           contract,
         });
         const capabilityId =
-          "runtime-trellis.transport_growth.v1:growth.extend";
+          "localhost/runtime-trellis.transport_growth.v1:growth.extend";
         const initial = await runtime.callAdminRpc("authCapabilityGrantsList", {
           capabilityId,
         });
@@ -141,7 +141,7 @@ test("optional authority reduction reaps wider transport and revokes old Live wh
           await runtime.waitFor(
             () =>
               service.connection.allowsAction(
-                "runtime-trellis.transport_growth@v1",
+                "localhost/runtime-trellis.transport_growth@v1",
                 "rpc",
                 "Extend",
                 "call",

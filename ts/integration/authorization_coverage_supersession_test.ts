@@ -22,9 +22,9 @@ test("a superseding capability publication does not wait for a stale mirror repl
         contract,
       });
       const firstCapability =
-        "runtime-trellis.transport_growth.v1:growth.extend";
+        "localhost/runtime-trellis.transport_growth.v1:growth.extend";
       const secondCapability =
-        "runtime-trellis.transport_growth.v1:growth.extendAgain";
+        "localhost/runtime-trellis.transport_growth.v1:growth.extendAgain";
       const firstGrants = await runtime.callAdminRpc(
         "authCapabilityGrantsList",
         { capabilityId: firstCapability },

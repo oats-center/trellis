@@ -18,7 +18,7 @@ use crate::{
     project::{
         read_lock, read_manifest, restore_project_files, write_lock, write_manifest_and_lock,
         LockedDependency, LockedPackage, LockedSource, PackageDependency, ProjectLock,
-        ProjectManifest, RegistryConfig,
+        ProjectManifest,
     },
 };
 
@@ -49,38 +49,41 @@ pub async fn add(format: OutputFormat, args: &AddArgs) -> Result<()> {
         let child = read_manifest(&root.join(source).join("trellis.toml"))?;
         PackageDependency {
             package: child.package.name,
+            workspace: None,
             version: None,
             path: Some(args.source.clone()),
-            registry: None,
         }
     } else {
-        let registry = args
-            .registry
-            .clone()
-            .or_else(|| manifest.default_registry.clone())
-            .ok_or_else(|| miette!("remote add requires --registry or default-registry"))?;
-        registry_config(&manifest, &registry)?;
+        // A registry package is named by its full identity, such as
+        // ghcr.io/acme/orders; its workspace says where it is published.
+        let (workspace, name) = trellis_idl::project::split_package_identity(&args.source)
+            .wrap_err_with(|| {
+                format!(
+                    "'{}' is neither a project directory nor a published package such as \
+                    ghcr.io/acme/orders",
+                    args.source
+                )
+            })?;
+        let identity = args.source.clone();
+        oci::repository(&identity)?;
         let requested = args
             .version
             .as_deref()
             .map(VersionReq::parse)
             .transpose()
             .map_err(|error| miette!("invalid version requirement: {error}"))?;
-        let release = select_remote_version(
-            registry_config(&manifest, &registry)?,
-            &args.source,
-            requested.as_ref().unwrap_or(&VersionReq::STAR),
-        )
-        .await?;
+        let release =
+            select_remote_version(&identity, requested.as_ref().unwrap_or(&VersionReq::STAR))
+                .await?;
         let requirement = args
             .version
             .clone()
             .unwrap_or_else(|| format!("^{release}"));
         PackageDependency {
-            package: args.source.clone(),
+            package: name.to_owned(),
+            workspace: workspace.map(str::to_owned),
             version: Some(requirement),
             path: None,
-            registry: Some(registry),
         }
     };
     let alias = dependency.package.replace('-', "_");
@@ -88,6 +91,19 @@ pub async fn add(format: OutputFormat, args: &AddArgs) -> Result<()> {
         !manifest.sources.contains_key(&alias),
         "dependency alias '{alias}' collides with a source alias"
     );
+    // Two packages with one name from different workspaces need their own
+    // aliases, which only the author can choose.
+    if let Some(existing) = manifest.dependencies.get(&alias) {
+        miette::ensure!(
+            existing.identity() == dependency.identity(),
+            "dependency alias '{alias}' already names {}; add {} to trellis.toml under \
+            another alias",
+            existing
+                .identity()
+                .unwrap_or_else(|| existing.package.clone()),
+            args.source
+        );
+    }
     manifest.dependencies.insert(alias.clone(), dependency);
     let edited = edit_manifest_dependency(
         &previous_manifest,
@@ -120,7 +136,10 @@ pub async fn remove(format: OutputFormat, args: &RmArgs) -> Result<()> {
         .dependencies
         .iter()
         .find_map(|(alias, dependency)| {
-            (dependency.package == args.api_id || alias == &args.api_id).then(|| alias.clone())
+            (dependency.package == args.api_id
+                || alias == &args.api_id
+                || dependency.identity().as_deref() == Some(args.api_id.as_str()))
+            .then(|| alias.clone())
         })
         .ok_or_else(|| miette!("package '{}' is not in trellis.toml", args.api_id))?;
     manifest.dependencies.remove(&alias);
@@ -145,18 +164,18 @@ pub async fn check(format: OutputFormat, args: &ProjectRootArgs) -> Result<()> {
     let package = lock
         .packages
         .iter()
-        .find(|package| package.name == lock.root)
+        .find(|package| package.id == lock.root)
         .expect("resolved lock contains root package");
     if output::is_json(format) {
         output::print_json(&serde_json::json!({
-            "package": package.name,
+            "package": package.id,
             "packageDigest": package.digest,
             "version": package.version,
         }))
     } else {
         output::success(format!(
             "{} {} is valid",
-            output::strong(&package.name),
+            output::strong(trellis_protocol::short_id(&package.id)),
             package.version
         ));
         Ok(())
@@ -181,14 +200,14 @@ pub async fn update(format: OutputFormat, args: &UpdateArgs) -> Result<()> {
             if current_alias == alias || dependency.path.is_some() {
                 continue;
             }
+            let identity = dependency.identity().expect("registry dependency identity");
             let locked = current
                 .packages
                 .iter()
-                .find(|package| package.name == dependency.package)
+                .find(|package| package.id == identity)
                 .ok_or_else(|| {
                     miette!(
-                        "package '{}' is absent from trellis.lock; run `trellis update`",
-                        dependency.package
+                        "package '{identity}' is absent from trellis.lock; run `trellis update`"
                     )
                 })?;
             dependency.version = Some(format!("={}", locked.version));
@@ -202,22 +221,22 @@ pub async fn update(format: OutputFormat, args: &UpdateArgs) -> Result<()> {
             .dependencies
             .iter()
             .filter(|(current_alias, _)| *current_alias != alias)
-            .map(|(_, dependency)| dependency.package.as_str())
-            .collect::<Vec<_>>();
+            .map(|(_, dependency)| dependency_identity(&root, dependency))
+            .collect::<Result<Vec<_>>>()?;
         let mut checked = BTreeSet::new();
         while let Some(name) = pending.pop() {
-            if !checked.insert(name) {
+            if !checked.insert(name.clone()) {
                 continue;
             }
             let old = previous
                 .packages
                 .iter()
-                .find(|package| package.name == name)
+                .find(|package| package.id == name)
                 .ok_or_else(|| miette!("package '{name}' is absent from trellis.lock"))?;
             let new = lock
                 .packages
                 .iter()
-                .find(|package| package.name == name)
+                .find(|package| package.id == name)
                 .ok_or_else(|| {
                     miette!("updating dependency alias '{alias}' changed locked package '{name}'")
                 })?;
@@ -229,7 +248,7 @@ pub async fn update(format: OutputFormat, args: &UpdateArgs) -> Result<()> {
             pending.extend(
                 old.dependencies
                     .iter()
-                    .map(|dependency| dependency.name.as_str()),
+                    .map(|dependency| dependency.id.clone()),
             );
         }
     }
@@ -282,7 +301,7 @@ pub async fn publish(format: OutputFormat, args: &PublishArgs) -> Result<()> {
             .values()
             .all(|dependency| dependency.path.is_none())
             && lock.packages.iter().all(|locked| {
-                locked.name == lock.root || matches!(&locked.source, LockedSource::Registry { .. })
+                locked.id == lock.root || matches!(&locked.source, LockedSource::Registry { .. })
             }),
         "publish requires every dependency to be an exact registry package; \
         replace path dependencies first"
@@ -290,20 +309,17 @@ pub async fn publish(format: OutputFormat, args: &PublishArgs) -> Result<()> {
     let graph = compile_project(&root, &manifest)?;
     validate_lock(&manifest, &lock, &graph)?;
     let package = package_from_lock(&root, &manifest, graph.root_digest(), &lock)?;
-    let registry = args
-        .registry
-        .as_ref()
-        .or(manifest.default_registry.as_ref())
-        .ok_or_else(|| miette!("publish requires --registry or default-registry"))?;
-    let config = registry_config(&manifest, registry)?;
-    let versions = oci::versions(config, &package.name).await?;
+    // The package publishes to its own workspace; the registry's own access
+    // control decides whether this publisher may write there.
+    oci::repository(&package.id).wrap_err("only a package with a workspace is published")?;
+    let versions = oci::versions(&package.id).await?;
     let existing = if versions.binary_search(&package.version).is_ok() {
-        let remote = oci::pull_tag(config, &package.name, &package.version).await?;
+        let remote = oci::pull_tag(&package.id, &package.version).await?;
         miette::ensure!(
             remote.package_digest == package.package_digest
                 && remote.distribution_digest == package.distribution_digest,
             "release {} {} already exists with different content",
-            package.name,
+            package.id,
             package.version
         );
         Some(remote.manifest_digest)
@@ -320,23 +336,27 @@ pub async fn publish(format: OutputFormat, args: &PublishArgs) -> Result<()> {
     let changed = existing.is_none();
     let digest = match existing {
         Some(digest) => digest,
-        None => oci::publish(config, &package).await?,
+        None => oci::publish(&package).await?,
     };
     if output::is_json(format) {
         output::print_json(&serde_json::json!({
-            "name": package.name,
+            "name": package.id,
             "version": package.version,
             "digest": digest,
             "changed": changed
         }))
     } else {
-        let name = format!("{} {}", output::strong(&package.name), package.version);
+        let name = format!(
+            "{} {}",
+            output::strong(trellis_protocol::short_id(&package.id)),
+            package.version
+        );
         if changed {
             output::success(format!("Published {name}"));
         } else {
             output::unchanged(format!("{name} is already published"));
         }
-        println!("{}@{digest}", oci::repository(config, &package.name)?);
+        println!("{}@{digest}", oci::repository(&package.id)?);
         Ok(())
     }
 }
@@ -359,8 +379,8 @@ async fn resolve_lock(
     )
     .await?;
     Ok(ProjectLock {
-        format: 2,
-        root: manifest.package.name.clone(),
+        format: 3,
+        root: manifest.identity(),
         packages: resolution.packages.into_values().collect(),
     })
 }
@@ -374,10 +394,10 @@ fn resolve_package<'a>(
     stack: &'a mut BTreeSet<String>,
 ) -> Pin<Box<dyn Future<Output = Result<Resolution>> + 'a>> {
     Box::pin(async move {
+        let identity = manifest.identity();
         miette::ensure!(
-            stack.insert(manifest.package.name.clone()),
-            "package dependency cycle through '{}'",
-            manifest.package.name
+            stack.insert(identity.clone()),
+            "package dependency cycle through '{identity}'"
         );
         let mut supplied = BTreeMap::new();
         let mut packages = BTreeMap::new();
@@ -387,8 +407,7 @@ fn resolve_package<'a>(
                 let child = package_root.join(path).canonicalize().into_diagnostic()?;
                 if matches!(&source, LockedSource::Registry { .. }) {
                     return Err(miette!(
-                        "registry package '{}' contains a path dependency",
-                        manifest.package.name
+                        "registry package '{identity}' contains a path dependency"
                     ));
                 }
                 // Record the canonical dependency location relative to the
@@ -405,34 +424,46 @@ fn resolve_package<'a>(
                     .into_owned();
                 (child, LockedSource::Path { path: relative }, None)
             } else {
-                let registry = dependency
-                    .registry
-                    .as_deref()
-                    .or(manifest.default_registry.as_deref())
-                    .expect("validated registry dependency");
-                let config = registry_config(manifest, registry)?;
+                let wanted = dependency.identity().expect("registry dependency identity");
                 let requirement =
                     VersionReq::parse(dependency.version.as_deref().expect("validated version"))
                         .into_diagnostic()?;
-                let version =
-                    select_remote_version(config, &dependency.package, &requirement).await?;
-                let package = oci::pull_tag(config, &dependency.package, &version).await?;
+                // The built-in package this CLI ships is the release the
+                // Trellis project publishes; any other release is pulled from
+                // the dependency's own workspace and must declare that same
+                // identity.
+                let builtin = (wanted == trellis_idl::project::BUILTIN_PACKAGE)
+                    .then(oci::builtin_package)
+                    .transpose()?
+                    .filter(|package| requirement.matches(&package.version));
+                let package = match builtin {
+                    Some(package) => package,
+                    None => {
+                        let version = select_remote_version(&wanted, &requirement).await?;
+                        oci::pull_tag(&wanted, &version).await?
+                    }
+                };
                 let directory = materialize(&package)?;
                 (
                     directory.path().to_path_buf(),
                     LockedSource::Registry {
-                        registry: config.prefix.clone(),
+                        workspace: trellis_idl::project::package_source_workspace(&wanted)?,
                         oci_digest: package.manifest_digest.clone(),
                     },
                     Some((package, directory)),
                 )
             };
             let child_manifest = read_manifest(&child_root.join("trellis.toml"))?;
+            let child_identity = child_manifest.identity();
             miette::ensure!(
-                child_manifest.package.name == dependency.package,
-                "dependency '{alias}' contains package '{}' instead of '{}'",
-                child_manifest.package.name,
-                dependency.package
+                dependency.identity().map_or(
+                    child_manifest.package.name == dependency.package,
+                    |wanted| { wanted == child_identity }
+                ),
+                "dependency '{alias}' contains package '{child_identity}' instead of '{}'",
+                dependency
+                    .identity()
+                    .unwrap_or_else(|| dependency.package.clone())
             );
             let child = if let Some((pulled, _)) = &pulled {
                 let lock = pulled.lock(child_source)?;
@@ -448,15 +479,14 @@ fn resolve_package<'a>(
                 validate_lock(&child_manifest, &lock, &graph)?;
                 miette::ensure!(
                     pulled.package_digest == graph.root_digest(),
-                    "remote package '{}' semantic digest is invalid",
-                    dependency.package
+                    "remote package '{child_identity}' semantic digest is invalid"
                 );
                 Resolution {
                     graph,
                     packages: lock
                         .packages
                         .into_iter()
-                        .map(|package| (package.name.clone(), package))
+                        .map(|package| (package.id.clone(), package))
                         .collect(),
                 }
             } else {
@@ -471,14 +501,13 @@ fn resolve_package<'a>(
                 .await?
             };
             direct.push(LockedDependency {
-                name: dependency.package.clone(),
+                id: child_identity,
                 version: child_manifest.package.version.clone(),
                 digest: child.graph.root_digest().to_owned(),
             });
             miette::ensure!(
-                !child.packages.contains_key(&manifest.package.name),
-                "package dependency cycle through '{}'",
-                manifest.package.name
+                !child.packages.contains_key(&identity),
+                "package dependency cycle through '{identity}'"
             );
             merge_packages(&mut packages, child.packages)?;
             supplied.insert(alias.clone(), child.graph);
@@ -498,9 +527,9 @@ fn resolve_package<'a>(
             packages.values().cloned().collect(),
         )?;
         packages.insert(
-            manifest.package.name.clone(),
+            identity.clone(),
             LockedPackage {
-                name: manifest.package.name.clone(),
+                id: identity.clone(),
                 version: manifest.package.version.clone(),
                 digest: graph.root_digest().to_owned(),
                 distribution_digest: source_package.distribution_digest,
@@ -508,7 +537,7 @@ fn resolve_package<'a>(
                 source,
             },
         );
-        stack.remove(&manifest.package.name);
+        stack.remove(&identity);
         Ok(Resolution { graph, packages })
     })
 }
@@ -533,18 +562,11 @@ async fn install_root(
 async fn install_locked_packages(lock: &ProjectLock) -> Result<usize> {
     let mut changed = 0;
     for package in &lock.packages {
-        let LockedSource::Registry {
-            registry,
-            oci_digest,
-        } = &package.source
-        else {
+        let LockedSource::Registry { oci_digest, .. } = &package.source else {
             continue;
         };
-        let config = RegistryConfig {
-            prefix: registry.clone(),
-        };
         if oci::read_locked(
-            &package.name,
+            &package.id,
             &package.version.to_string(),
             &package.digest,
             &package.distribution_digest,
@@ -552,16 +574,20 @@ async fn install_locked_packages(lock: &ProjectLock) -> Result<usize> {
         )
         .is_err()
         {
+            changed += 1;
+            if package.id == trellis_idl::project::BUILTIN_PACKAGE
+                && oci::builtin_package()?.manifest_digest == *oci_digest
+            {
+                continue;
+            }
             oci::pull_locked(
-                &config,
-                &package.name,
+                &package.id,
                 &package.version.to_string(),
                 &package.digest,
                 &package.distribution_digest,
                 oci_digest,
             )
             .await?;
-            changed += 1;
         }
     }
     Ok(changed)
@@ -575,16 +601,12 @@ pub(crate) fn relock_own_package(root: &Path, manifest: &ProjectManifest) -> Res
     let mut lock = read_lock(&path).wrap_err("trellis.lock is missing; run `trellis update`")?;
     let graph = compile_locked(root, root, manifest, &lock, true, &mut BTreeSet::new())?;
     let source = package_from_lock(root, manifest, graph.root_digest(), &lock)?;
+    let identity = manifest.identity();
     let own = lock
         .packages
         .iter_mut()
-        .find(|package| package.name == manifest.package.name)
-        .ok_or_else(|| {
-            miette!(
-                "package '{}' is absent from trellis.lock",
-                manifest.package.name
-            )
-        })?;
+        .find(|package| package.id == identity)
+        .ok_or_else(|| miette!("package '{identity}' is absent from trellis.lock"))?;
     if own.digest == graph.root_digest() && own.distribution_digest == source.distribution_digest {
         return Ok(false);
     }
@@ -606,7 +628,7 @@ pub(crate) fn compile_project(
     miette::ensure!(
         lock.packages
             .iter()
-            .any(|package| package.name == manifest.package.name
+            .any(|package| package.id == manifest.identity()
                 && matches!(&package.source, LockedSource::Path { path } if path == ".")),
         "root package must use the exact project path in trellis.lock"
     );
@@ -623,39 +645,29 @@ fn compile_locked(
     refresh_root: bool,
     stack: &mut BTreeSet<String>,
 ) -> Result<trellis_idl::PackageGraph> {
+    let identity = manifest.identity();
     miette::ensure!(
-        stack.insert(manifest.package.name.clone()),
-        "package dependency cycle through '{}'",
-        manifest.package.name
+        stack.insert(identity.clone()),
+        "package dependency cycle through '{identity}'"
     );
     let locked = lock
         .packages
         .iter()
-        .find(|package| package.name == manifest.package.name)
-        .ok_or_else(|| {
-            miette!(
-                "package '{}' is absent from trellis.lock",
-                manifest.package.name
-            )
-        })?;
+        .find(|package| package.id == identity)
+        .ok_or_else(|| miette!("package '{identity}' is absent from trellis.lock"))?;
     miette::ensure!(
         manifest.package.version == locked.version,
-        "package '{}' version differs from trellis.lock",
-        manifest.package.name
+        "package '{identity}' version differs from trellis.lock"
     );
     let mut supplied = BTreeMap::new();
     let mut exact_dependencies = Vec::new();
     for (alias, dependency) in &manifest.dependencies {
+        let child_identity = dependency_identity(package_root, dependency)?;
         let child_lock = lock
             .packages
             .iter()
-            .find(|package| package.name == dependency.package)
-            .ok_or_else(|| {
-                miette!(
-                    "package '{}' is absent from trellis.lock",
-                    dependency.package
-                )
-            })?;
+            .find(|package| package.id == child_identity)
+            .ok_or_else(|| miette!("package '{child_identity}' is absent from trellis.lock"))?;
         match (&dependency.path, &dependency.version, &child_lock.source) {
             (Some(path), None, LockedSource::Path { path: locked_path }) => {
                 let declared = package_root.join(path).canonicalize().into_diagnostic()?;
@@ -665,16 +677,10 @@ fn compile_locked(
                     "locked path for dependency '{alias}' differs from trellis.toml"
                 );
             }
-            (None, Some(requirement), LockedSource::Registry { registry, .. }) => {
+            (None, Some(requirement), LockedSource::Registry { .. }) => {
                 let requirement = VersionReq::parse(requirement).into_diagnostic()?;
-                let configured = dependency
-                    .registry
-                    .as_deref()
-                    .or(manifest.default_registry.as_deref())
-                    .expect("validated registry dependency");
                 miette::ensure!(
-                    requirement.matches(&child_lock.version)
-                        && registry_config(manifest, configured)?.prefix == *registry,
+                    requirement.matches(&child_lock.version),
                     "locked registry release for dependency '{alias}' differs from trellis.toml"
                 );
             }
@@ -690,7 +696,7 @@ fn compile_locked(
             }
             LockedSource::Registry { oci_digest, .. } => {
                 let package = oci::read_locked(
-                    &child_lock.name,
+                    &child_lock.id,
                     &child_lock.version.to_string(),
                     &child_lock.digest,
                     &child_lock.distribution_digest,
@@ -699,7 +705,7 @@ fn compile_locked(
                 .map_err(|error| {
                     miette!(
                         "cached package '{}' {} is unavailable: {error}; run `trellis install`",
-                        child_lock.name,
+                        child_lock.id,
                         child_lock.version
                     )
                 })?;
@@ -709,13 +715,13 @@ fn compile_locked(
         };
         let child_manifest = read_manifest(&child_root.join("trellis.toml"))?;
         miette::ensure!(
-            child_manifest.package.name == child_lock.name
+            child_manifest.identity() == child_lock.id
                 && child_manifest.package.version == child_lock.version,
             "locked identity for dependency '{alias}' differs from its source package"
         );
         let graph = compile_locked(root, &child_root, &child_manifest, lock, false, stack)?;
         exact_dependencies.push(LockedDependency {
-            name: child_lock.name.clone(),
+            id: child_lock.id.clone(),
             version: child_lock.version.clone(),
             digest: child_lock.digest.clone(),
         });
@@ -726,28 +732,40 @@ fn compile_locked(
     miette::ensure!(
         exact_dependencies == locked.dependencies,
         "locked dependencies for '{}' differ from trellis.toml",
-        locked.name
+        locked.id
     );
     let graph = compile_graph(package_root, manifest, supplied)?;
     // Generation may re-record the project's own edited sources; every
     // dependency stays exactly as locked.
     if refresh_root && package_root == root {
-        stack.remove(&manifest.package.name);
+        stack.remove(&identity);
         return Ok(graph);
     }
     miette::ensure!(
         graph.root_digest() == locked.digest,
         "package '{}' semantic digest differs from trellis.lock; run `trellis generate` or `trellis update`",
-        locked.name
+        locked.id
     );
     let source = package_from_lock(package_root, manifest, graph.root_digest(), lock)?;
     miette::ensure!(
         source.distribution_digest == locked.distribution_digest,
         "package '{}' source differs from trellis.lock; run `trellis generate` or `trellis update`",
-        locked.name
+        locked.id
     );
-    stack.remove(&manifest.package.name);
+    stack.remove(&identity);
     Ok(graph)
+}
+
+/// The full identity a dependency resolves to: a registry dependency names
+/// it, and a path dependency's own manifest declares it.
+fn dependency_identity(package_root: &Path, dependency: &PackageDependency) -> Result<String> {
+    match (&dependency.path, dependency.identity()) {
+        (_, Some(identity)) => Ok(identity),
+        (Some(path), None) => {
+            Ok(read_manifest(&package_root.join(path).join("trellis.toml"))?.identity())
+        }
+        (None, None) => unreachable!("a dependency without a path has an identity"),
+    }
 }
 
 fn compile_graph(
@@ -769,7 +787,7 @@ fn validate_lock(
 ) -> Result<()> {
     lock.validate()?;
     miette::ensure!(
-        lock.root == manifest.package.name && graph.root().as_str() == lock.root,
+        lock.root == manifest.identity() && graph.root().as_str() == lock.root,
         "trellis.lock belongs to a different root package"
     );
     miette::ensure!(
@@ -782,14 +800,14 @@ fn validate_lock(
                 graph
                     .packages()
                     .keys()
-                    .find(|id| id.as_str() == package.name)
+                    .find(|id| id.as_str() == package.id)
                     .ok_or_else(|| miette!(
                         "locked package '{}' is absent from compiled graph",
-                        package.name
+                        package.id
                     ))?
             ) == Some(package.digest.as_str()),
             "locked digest for '{}' differs from compiled graph",
-            package.name
+            package.id
         );
     }
     Ok(())
@@ -815,7 +833,7 @@ fn package_from_root(
         files.insert(PathBuf::from(relative), fs::read(path).into_diagnostic()?);
     }
     oci::source_package(
-        &manifest.package.name,
+        &manifest.identity(),
         &manifest.package.version,
         digest,
         files,
@@ -830,21 +848,17 @@ fn package_from_lock(
     digest: &str,
     lock: &ProjectLock,
 ) -> Result<oci::SourcePackage> {
+    let identity = manifest.identity();
     let locked = lock
         .packages
         .iter()
-        .find(|package| package.name == manifest.package.name)
-        .ok_or_else(|| {
-            miette!(
-                "package '{}' is absent from trellis.lock",
-                manifest.package.name
-            )
-        })?;
+        .find(|package| package.id == identity)
+        .ok_or_else(|| miette!("package '{identity}' is absent from trellis.lock"))?;
     let mut names = BTreeSet::new();
     let mut pending = locked
         .dependencies
         .iter()
-        .map(|dependency| dependency.name.as_str())
+        .map(|dependency| dependency.id.as_str())
         .collect::<Vec<_>>();
     while let Some(name) = pending.pop() {
         if !names.insert(name) {
@@ -853,13 +867,13 @@ fn package_from_lock(
         let package = lock
             .packages
             .iter()
-            .find(|package| package.name == name)
+            .find(|package| package.id == name)
             .ok_or_else(|| miette!("package '{name}' is absent from trellis.lock"))?;
         pending.extend(
             package
                 .dependencies
                 .iter()
-                .map(|dependency| dependency.name.as_str()),
+                .map(|dependency| dependency.id.as_str()),
         );
     }
     package_from_root(
@@ -870,7 +884,7 @@ fn package_from_lock(
         locked.dependencies.clone(),
         lock.packages
             .iter()
-            .filter(|package| names.contains(package.name.as_str()))
+            .filter(|package| names.contains(package.id.as_str()))
             .cloned()
             .collect(),
     )
@@ -903,22 +917,8 @@ fn merge_packages(
     Ok(())
 }
 
-fn registry_config<'a>(
-    manifest: &'a ProjectManifest,
-    registry: &str,
-) -> Result<&'a RegistryConfig> {
-    manifest
-        .registries
-        .get(registry)
-        .ok_or_else(|| miette!("registry '{registry}' is not configured"))
-}
-
-async fn select_remote_version(
-    config: &RegistryConfig,
-    name: &str,
-    requirement: &VersionReq,
-) -> Result<Version> {
-    oci::versions(config, name)
+async fn select_remote_version(name: &str, requirement: &VersionReq) -> Result<Version> {
+    oci::versions(name)
         .await?
         .into_iter()
         .filter(|version| requirement.matches(version))
@@ -1075,7 +1075,6 @@ mod tests {
             &AddArgs {
                 source: "child".into(),
                 version: None,
-                registry: None,
                 project: ProjectRootArgs {
                     root: root.path().to_path_buf(),
                 },
@@ -1104,17 +1103,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_dependency_without_a_registry_uses_the_default_registry() {
+    async fn registry_dependency_is_pulled_from_the_workspace_it_names() {
         let _guard = oci::TEST_ENV_LOCK.lock().await;
         let root = tempfile::tempdir().unwrap();
-        // Nothing listens on port 1, so resolution reaches the default
-        // registry and reports that it cannot list releases there.
+        // Nothing listens on port 1, so resolution reaches the dependency's
+        // own workspace and reports that it cannot list releases there.
         fs::write(
             root.path().join("trellis.toml"),
-            "default-registry = \"main\"\n[package]\nname = \"root\"\nversion = \
-            \"1.0.0\"\n[sources]\nmain = \"main.trellis\"\n[registries.main]\nprefix = \
-            \"127.0.0.1:1/trellis\"\n[dependencies.acme]\npackage = \"acme\"\nversion = \
-            \"^1\"\n",
+            "[package]\nname = \"root\"\nversion = \"1.0.0\"\n[sources]\nmain = \
+            \"main.trellis\"\n[dependencies.acme]\npackage = \"acme\"\nworkspace = \
+            \"127.0.0.1:1/trellis\"\nversion = \"^1\"\n",
         )
         .unwrap();
         fs::write(root.path().join("main.trellis"), "model Root {}\n").unwrap();
@@ -1132,10 +1130,29 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            error.contains("failed to list releases for 'acme'"),
+            error.contains("failed to list releases for '127.0.0.1:1/trellis/acme'"),
             "{error}"
         );
         assert!(!root.path().join("trellis.lock").exists());
+    }
+
+    #[tokio::test]
+    async fn a_package_without_a_workspace_is_never_published() {
+        let _guard = oci::TEST_ENV_LOCK.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        write_package(root.path(), "local", "value");
+        let project = ProjectRootArgs {
+            root: root.path().to_path_buf(),
+        };
+        install(OutputFormat::Text, &project).await.unwrap();
+
+        let error = format!(
+            "{:?}",
+            publish(OutputFormat::Text, &PublishArgs { project })
+                .await
+                .unwrap_err()
+        );
+        assert!(error.contains("declares no workspace"), "{error}");
     }
 
     #[tokio::test]
@@ -1168,7 +1185,10 @@ mod tests {
         .await
         .unwrap_err()
         .to_string();
-        assert!(error.contains("changed locked package 'beta'"), "{error}");
+        assert!(
+            error.contains("changed locked package 'localhost/beta'"),
+            "{error}"
+        );
         assert_eq!(fs::read(root.path().join("trellis.lock")).unwrap(), before);
     }
 
@@ -1176,6 +1196,12 @@ mod tests {
     async fn locked_acquisition_cannot_hide_an_authored_path_dependency() {
         let root = tempfile::tempdir().unwrap();
         write_package(&root.path().join("child"), "child", "value");
+        let child_manifest = root.path().join("child/trellis.toml");
+        let text = fs::read_to_string(&child_manifest).unwrap().replace(
+            "name = \"child\"\n",
+            "name = \"child\"\nworkspace = \"registry.example/trellis\"\n",
+        );
+        fs::write(&child_manifest, text).unwrap();
         fs::write(
             root.path().join("trellis.toml"),
             "[package]\nname = \"root\"\nversion = \"1.0.0\"\n[sources]\nmain = \
@@ -1189,10 +1215,10 @@ mod tests {
         let child = lock
             .packages
             .iter_mut()
-            .find(|package| package.name == "child")
+            .find(|package| package.id == "registry.example/trellis/child")
             .unwrap();
         child.source = LockedSource::Registry {
-            registry: "registry.example/trellis".into(),
+            workspace: "registry.example/trellis".into(),
             oci_digest: format!("sha256:{}", "0".repeat(64)),
         };
         write_lock(&root.path().join("trellis.lock"), &lock).unwrap();
@@ -1204,7 +1230,6 @@ mod tests {
         let error = publish(
             OutputFormat::Text,
             &PublishArgs {
-                registry: None,
                 project: ProjectRootArgs {
                     root: root.path().to_path_buf(),
                 },

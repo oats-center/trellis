@@ -9,7 +9,89 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-/// A format-2 Trellis source-package manifest.
+/// The name of the built-in package that ships inside `trellis-server`.
+///
+/// Its authority is the server binary, not a registry, so it has no
+/// workspace and its IDs carry none. The name is reserved in every workspace.
+pub const BUILTIN_PACKAGE: &str = "trellis";
+
+/// Where the Trellis project publishes the built-in package. It is a download
+/// source only and never part of the package's identity.
+pub const BUILTIN_PACKAGE_WORKSPACE: &str = "ghcr.io/oats-center";
+
+/// The full identity of package `name` in `workspace`: `<workspace>/<name>`,
+/// with [`trellis_protocol::LOCAL_WORKSPACE`] for a package that declares none,
+/// and the bare name for the built-in package.
+pub fn package_identity(workspace: Option<&str>, name: &str) -> String {
+    if name == BUILTIN_PACKAGE && workspace.is_none() {
+        return name.to_owned();
+    }
+    format!(
+        "{}/{name}",
+        workspace.unwrap_or(trellis_protocol::LOCAL_WORKSPACE)
+    )
+}
+
+/// Split and validate a full package identity into its workspace and name.
+///
+/// The built-in package's identity is its bare name and has no workspace.
+///
+/// # Errors
+///
+/// Returns an error when the identity names no valid workspace and package,
+/// or names the reserved `trellis` package in a workspace.
+pub fn split_package_identity(identity: &str) -> Result<(Option<&str>, &str)> {
+    let (workspace, name) = trellis_protocol::split_workspace(identity);
+    validate_package_name(name)?;
+    match workspace {
+        None if name == BUILTIN_PACKAGE => Ok((None, name)),
+        None => Err(miette!(
+            "package identity '{identity}' names no workspace; expected <workspace>/<name>"
+        )),
+        Some(_) if name == BUILTIN_PACKAGE => Err(miette!(
+            "the package name 'trellis' is reserved for the built-in package"
+        )),
+        Some(workspace) => {
+            trellis_protocol::validate_workspace(workspace).map_err(|error| {
+                miette!("package identity '{identity}' has an invalid workspace: {error}")
+            })?;
+            Ok((Some(workspace), name))
+        }
+    }
+}
+
+/// The registry repository a published package with this identity lives at:
+/// the identity itself, or the built-in package's download location.
+///
+/// # Errors
+///
+/// Returns an error for a `localhost` package, which names no shared location.
+pub fn package_repository(identity: &str) -> Result<String> {
+    match split_package_identity(identity)? {
+        (None, name) => Ok(format!("{BUILTIN_PACKAGE_WORKSPACE}/{name}")),
+        (Some(trellis_protocol::LOCAL_WORKSPACE), name) => Err(miette!(
+            "package '{name}' declares no workspace, so it cannot come from a registry; \
+            add `workspace` to its trellis.toml"
+        )),
+        (Some(_), _) => Ok(identity.to_owned()),
+    }
+}
+
+/// The workspace a published package with this identity is pulled from.
+///
+/// # Errors
+///
+/// Returns an error for a `localhost` package, which names no shared location.
+pub fn package_source_workspace(identity: &str) -> Result<String> {
+    Ok(
+        trellis_protocol::split_workspace(&package_repository(identity)?)
+            .0
+            .unwrap_or_default()
+            .to_owned(),
+    )
+}
+
+/// A Trellis source-package manifest.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageManifest {
@@ -23,20 +105,19 @@ pub struct PackageManifest {
     /// Generated package outputs.
     #[serde(default)]
     pub generate: GenerateConfig,
-    /// Registry used when tooling does not name one.
-    #[serde(rename = "default-registry", skip_serializing_if = "Option::is_none")]
-    pub default_registry: Option<String>,
-    /// Named registry addresses retained from the existing project configuration.
-    #[serde(default)]
-    pub registries: BTreeMap<String, RegistryConfig>,
 }
 
 /// Logical package metadata.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackageMetadata {
-    /// Logical package identity.
+    /// Package name, unique within its workspace.
     pub name: String,
+    /// The registry location the package is published from, such as
+    /// `ghcr.io/acme`; absent for an unpublished package, which gets
+    /// `localhost`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     /// Authored package release version.
     pub version: Version,
 }
@@ -45,25 +126,29 @@ pub struct PackageMetadata {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Dependency {
-    /// Logical package identity.
+    /// Package name.
     pub package: String,
+    /// Workspace of a registry dependency; absent for a path dependency,
+    /// whose identity comes from its own `trellis.toml`, and for the built-in
+    /// `trellis` package.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     /// Registry version requirement; absent for local paths.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// Local package root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Registry acquisition address or configured registry name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub registry: Option<String>,
 }
 
-/// One named registry.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RegistryConfig {
-    /// OCI registry/repository prefix.
-    pub prefix: String,
+impl Dependency {
+    /// The full identity of a registry dependency; `None` for a path
+    /// dependency, whose identity its own manifest declares.
+    pub fn identity(&self) -> Option<String> {
+        self.path
+            .is_none()
+            .then(|| package_identity(self.workspace.as_deref(), &self.package))
+    }
 }
 
 /// Configured generated package destinations.
@@ -90,9 +175,15 @@ pub struct GenerateTarget {
 }
 
 impl PackageManifest {
+    /// The package's full identity, `<workspace>/<name>`.
+    pub fn identity(&self) -> String {
+        package_identity(self.package.workspace.as_deref(), &self.package.name)
+    }
+
     /// Validate package identity, source aliases, dependencies, and outputs.
     pub fn validate(&self) -> Result<()> {
         validate_package_name(&self.package.name)?;
+        validate_declared_workspace(&self.package.name, self.package.workspace.as_deref())?;
         if self.sources.is_empty() {
             return Err(miette!("manifest must list at least one source"));
         }
@@ -113,27 +204,27 @@ impl PackageManifest {
                 ));
             }
         }
+        let identity = self.identity();
         let mut packages = BTreeSet::new();
         for (alias, dependency) in &self.dependencies {
             validate_alias(alias)?;
             validate_package_name(&dependency.package)?;
-            if dependency.package == self.package.name {
-                return Err(miette!("package cannot depend on itself"));
-            }
-            if !packages.insert(&dependency.package) {
-                return Err(miette!(
-                    "package '{}' is present under more than one dependency alias",
-                    dependency.package
-                ));
-            }
-            match (&dependency.path, &dependency.version, &dependency.registry) {
-                (Some(path), None, None) if !path.is_empty() && !Path::new(path).is_absolute() => {}
-                (None, Some(requirement), registry)
-                    if match registry {
-                        Some(value) => !value.is_empty(),
-                        None => self.default_registry.is_some(),
-                    } =>
-                {
+            match (&dependency.path, &dependency.version) {
+                (Some(path), None)
+                    if !path.is_empty()
+                        && !Path::new(path).is_absolute()
+                        && dependency.workspace.is_none() => {}
+                (None, Some(requirement)) => {
+                    validate_declared_workspace(
+                        &dependency.package,
+                        dependency.workspace.as_deref(),
+                    )?;
+                    if dependency.workspace.is_none() && dependency.package != BUILTIN_PACKAGE {
+                        return Err(miette!(
+                            "registry dependency '{alias}' must name the workspace it is \
+                            published from, such as workspace = \"ghcr.io/acme\""
+                        ));
+                    }
                     VersionReq::parse(requirement).map_err(|error| {
                         miette!("invalid version requirement for '{alias}': {error}")
                     })?;
@@ -141,20 +232,19 @@ impl PackageManifest {
                 _ => {
                     return Err(miette!(
                         "dependency '{alias}' must use either {{ package, path }} or {{ package, \
-                        version, registry }}"
+                        workspace, version }}"
                     ))
                 }
             }
-        }
-        if let Some(default) = &self.default_registry {
-            if !self.registries.contains_key(default) {
-                return Err(miette!("default registry '{default}' is not configured"));
-            }
-        }
-        for (name, registry) in &self.registries {
-            validate_alias(name)?;
-            if registry.prefix.is_empty() || registry.prefix.chars().any(char::is_whitespace) {
-                return Err(miette!("registry '{name}' has an invalid prefix"));
+            if let Some(dependency) = dependency.identity() {
+                if dependency == identity {
+                    return Err(miette!("package cannot depend on itself"));
+                }
+                if !packages.insert(dependency.clone()) {
+                    return Err(miette!(
+                        "package '{dependency}' is present under more than one dependency alias"
+                    ));
+                }
             }
         }
         for target in [
@@ -172,15 +262,15 @@ impl PackageManifest {
     }
 }
 
-/// Format-2 exact source-package resolution.
+/// Format-3 exact source-package resolution, keyed by full package identity.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PackageLock {
-    /// Lock format, always `2`.
+    /// Lock format, always `3`.
     pub format: u32,
-    /// Root package identity.
+    /// Root package's full identity.
     pub root: String,
-    /// Complete package closure sorted by identity.
+    /// Complete package closure sorted by full identity.
     pub packages: Vec<LockedPackage>,
 }
 
@@ -188,8 +278,8 @@ pub struct PackageLock {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct LockedPackage {
-    /// Logical package identity.
-    pub name: String,
+    /// Full package identity, `<workspace>/<name>`.
+    pub id: String,
     /// Exact package version.
     pub version: Version,
     /// Semantic package digest.
@@ -207,8 +297,8 @@ pub struct LockedPackage {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct LockedDependency {
-    /// Logical dependency identity.
-    pub name: String,
+    /// Full dependency identity.
+    pub id: String,
     /// Exact dependency version.
     pub version: Version,
     /// Exact semantic dependency digest.
@@ -226,8 +316,8 @@ pub enum LockedSource {
     },
     /// Immutable cached OCI source package.
     Registry {
-        /// Registry configuration name or address.
-        registry: String,
+        /// The workspace the package was pulled from.
+        workspace: String,
         /// Exact OCI manifest digest.
         oci_digest: String,
     },
@@ -236,108 +326,101 @@ pub enum LockedSource {
 impl PackageLock {
     /// Validate format, deterministic ordering, exact edges, and digest syntax.
     pub fn validate(&self) -> Result<()> {
-        if self.format != 2 {
-            return Err(miette!("lock format must equal 2"));
+        if self.format != 3 {
+            return Err(miette!(
+                "lock format must equal 3; run `trellis update` to write a new trellis.lock"
+            ));
         }
-        validate_package_name(&self.root)?;
+        split_package_identity(&self.root)?;
         let mut previous = None;
-        let identities = self
+        let by_id = self
             .packages
             .iter()
-            .map(|package| package.name.as_str())
-            .collect::<BTreeSet<_>>();
-        let by_name = self
-            .packages
-            .iter()
-            .map(|package| (package.name.as_str(), package))
+            .map(|package| (package.id.as_str(), package))
             .collect::<BTreeMap<_, _>>();
         for package in &self.packages {
-            validate_package_name(&package.name)?;
-            if previous.is_some_and(|name| name >= package.name.as_str()) {
+            split_package_identity(&package.id)?;
+            if previous.is_some_and(|id| id >= package.id.as_str()) {
                 return Err(miette!(
                     "locked packages must be uniquely sorted by identity"
                 ));
             }
-            previous = Some(package.name.as_str());
+            previous = Some(package.id.as_str());
             validate_digest("package digest", &package.digest)?;
             validate_distribution_digest(&package.distribution_digest)?;
-            match &package.source {
-                LockedSource::Path { path }
-                    if !path.is_empty() && !Path::new(path).is_absolute() => {}
-                LockedSource::Registry {
-                    registry,
-                    oci_digest,
-                } if !registry.is_empty() => validate_distribution_digest(oci_digest)?,
-                _ => return Err(miette!("locked package has an invalid acquisition source")),
-            }
             if !package
                 .dependencies
                 .windows(2)
-                .all(|pair| pair[0].name < pair[1].name)
+                .all(|pair| pair[0].id < pair[1].id)
             {
                 return Err(miette!(
                     "dependencies of '{}' must be uniquely sorted",
-                    package.name
+                    package.id
                 ));
             }
             for dependency in &package.dependencies {
-                validate_package_name(&dependency.name)?;
+                split_package_identity(&dependency.id)?;
                 validate_digest("dependency digest", &dependency.digest)?;
-                if !identities.contains(dependency.name.as_str()) {
+                let Some(locked) = by_id.get(dependency.id.as_str()) else {
                     return Err(miette!(
                         "locked dependency '{}' is missing from the closure",
-                        dependency.name
+                        dependency.id
                     ));
-                }
-                let locked = by_name[dependency.name.as_str()];
+                };
                 if dependency.version != locked.version || dependency.digest != locked.digest {
                     return Err(miette!(
                         "locked edge '{} -> {}' disagrees with the target package",
-                        package.name,
-                        dependency.name
+                        package.id,
+                        dependency.id
                     ));
                 }
             }
             match &package.source {
                 LockedSource::Path { path }
                     if !path.is_empty() && !Path::new(path).is_absolute() => {}
+                // A registry package comes from its own workspace; there are
+                // no mirrors.
                 LockedSource::Registry {
-                    registry,
+                    workspace,
                     oci_digest,
-                } if !registry.is_empty() => validate_distribution_digest(oci_digest)?,
+                } if package_source_workspace(&package.id)
+                    .is_ok_and(|expected| expected == *workspace) =>
+                {
+                    validate_distribution_digest(oci_digest)?
+                }
                 _ => {
                     return Err(miette!(
                         "locked package '{}' has an invalid acquisition source",
-                        package.name
+                        package.id
                     ))
                 }
             }
         }
-        if !identities.contains(self.root.as_str()) {
+        if !by_id.contains_key(self.root.as_str()) {
             return Err(miette!("root package '{}' is absent from lock", self.root));
         }
         fn visit<'a>(
-            name: &'a str,
+            id: &'a str,
             packages: &BTreeMap<&'a str, &'a LockedPackage>,
             visiting: &mut BTreeSet<&'a str>,
             complete: &mut BTreeSet<&'a str>,
         ) -> Result<()> {
-            if complete.contains(name) {
+            if complete.contains(id) {
                 return Ok(());
             }
-            if !visiting.insert(name) {
-                return Err(miette!("package dependency cycle includes '{name}'"));
+            if !visiting.insert(id) {
+                return Err(miette!("package dependency cycle includes '{id}'"));
             }
-            for dependency in &packages[name].dependencies {
-                visit(&dependency.name, packages, visiting, complete)?;
+            for dependency in &packages[id].dependencies {
+                visit(&dependency.id, packages, visiting, complete)?;
             }
-            visiting.remove(name);
-            complete.insert(name);
+            visiting.remove(id);
+            complete.insert(id);
             Ok(())
         }
         let mut complete = BTreeSet::new();
-        visit(&self.root, &by_name, &mut BTreeSet::new(), &mut complete)?;
-        if complete.len() != identities.len() {
+        visit(&self.root, &by_id, &mut BTreeSet::new(), &mut complete)?;
+        if complete.len() != by_id.len() {
             return Err(miette!(
                 "lock contains packages outside the root dependency closure"
             ));
@@ -355,7 +438,7 @@ pub fn read_manifest(path: &Path) -> Result<PackageManifest> {
     Ok(manifest)
 }
 
-/// Read and validate format-2 `trellis.lock`.
+/// Read and validate format-3 `trellis.lock`.
 pub fn read_lock(path: &Path) -> Result<PackageLock> {
     let lock = toml::from_str::<PackageLock>(&fs::read_to_string(path).into_diagnostic()?)
         .into_diagnostic()
@@ -416,6 +499,27 @@ fn validate_package_name(value: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// A declared workspace must be canonical, and the built-in package's name is
+/// reserved in every workspace. `localhost` is never written: a package
+/// without a workspace already has it.
+fn validate_declared_workspace(name: &str, workspace: Option<&str>) -> Result<()> {
+    let Some(workspace) = workspace else {
+        return Ok(());
+    };
+    if name == BUILTIN_PACKAGE {
+        return Err(miette!(
+            "the package name 'trellis' is reserved for the built-in package"
+        ));
+    }
+    if workspace == trellis_protocol::LOCAL_WORKSPACE {
+        return Err(miette!(
+            "leave out `workspace` for an unpublished package; `localhost` is what it gets"
+        ));
+    }
+    trellis_protocol::validate_workspace(workspace)
+        .map_err(|error| miette!("invalid workspace '{workspace}': {error}"))
 }
 
 fn package_relative(path: &Path) -> bool {

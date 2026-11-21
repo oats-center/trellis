@@ -747,7 +747,7 @@ for (const adoption of ["after", "during"] as const) {
           contract,
         });
         const capabilityId =
-          "runtime-trellis.transport_growth.v1:growth.extend";
+          "localhost/runtime-trellis.transport_growth.v1:growth.extend";
         const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
           capabilityId,
         });
@@ -905,7 +905,8 @@ test("a stopping typescript instance ends at once a Live session it accepted on 
         name: "installing-live",
         contract,
       });
-      const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
+      const capabilityId =
+        "localhost/runtime-trellis.transport_growth.v1:growth.extend";
       const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
         capabilityId,
       });

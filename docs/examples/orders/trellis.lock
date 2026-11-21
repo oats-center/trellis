@@ -1,10 +1,10 @@
-format = 2
-root = "acme-orders"
+format = 3
+root = "localhost/acme-orders"
 
 [[packages]]
-name = "acme-orders"
+id = "localhost/acme-orders"
 version = "1.0.0"
-digest = "AAy7usJhL7d1rMvPvUFjZ3xJXUj-Onue-1kpPrMclOw"
+digest = "LP_rx3y9Y4DT8L0eHim5kJUKkFYW-vIoxlSspln4GJA"
 distribution-digest = "sha256:d36928ea6cf2e5b301b65ac33fee4d900d41444e7e5b24e186dfc075449a6cb6"
 dependencies = []
 

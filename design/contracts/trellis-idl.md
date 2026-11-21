@@ -13,6 +13,7 @@ Rust and TypeScript are generated targets, not authoring languages.
 ```toml
 [package]
 name = "acme-orders"
+workspace = "ghcr.io/acme"
 version = "2.3.1"
 
 [sources]
@@ -20,7 +21,8 @@ types = "types.trellis"
 orders = "orders.trellis"
 
 [dependencies]
-common = { package = "acme-common", version = "^1.4", registry = "ghcr.io/acme/trellis" }
+trellis = { package = "trellis", version = "0.100.0" }
+common = { package = "acme-common", workspace = "ghcr.io/acme", version = "^1.4" }
 
 [generate.rust]
 output = "trellis"
@@ -38,11 +40,23 @@ outputs, even if another toolchain file exists. With no target configured, a sin
 detected language defaults to `trellis`; multiple targets require explicit
 `output` paths.
 
-Package names are lower-case ASCII identifiers with hyphens. Sources are
-explicit regular files beneath the package root after canonical path resolution.
-Source and direct-dependency aliases share one namespace. Local dependencies use
-`{ package, path }`; published packages freeze identities and never contain
-filesystem paths.
+Package names are lower-case ASCII identifiers with hyphens. A package's full
+identity is its workspace, the registry location it is published from,
+followed by its name: `ghcr.io/acme/acme-orders`. A package that declares no
+`workspace` gets `localhost`, which can be installed from source but never
+published; the built-in `trellis` package has no workspace, and its name is
+reserved in every workspace. [workspaces.md](./workspaces.md) covers
+identity, ownership, and the ID forms. The package's identity is the first
+part of every ID it defines and is covered by its semantic digest.
+
+Sources are explicit regular files beneath the package root after canonical
+path resolution. Source and direct-dependency aliases share one namespace.
+Local dependencies use `{ package, path }`, and take their identity from their
+own `trellis.toml`; registry dependencies use `{ package, workspace, version }`,
+with no workspace only for `trellis`. Two dependencies are the same package
+only when workspace and name both match, so a package may depend on another
+of the same name in a different workspace under its own alias. Published
+packages freeze identities and never contain filesystem paths.
 
 Imports are explicit per file:
 
@@ -56,10 +70,16 @@ cycles are allowed; package dependency cycles, wildcard/transitive lookup,
 suffix matching, escaping paths, duplicate canonical files, and multiple
 versions of one package identity in a resolved graph are errors.
 
-`trellis.lock` format 2 records exact versions, semantic and distribution
-digests, direct edges, and acquisition locations. `install` preserves valid
-locked choices; `update` deliberately resolves; `generate` uses the exact
-lock/cache without upgrading.
+`trellis.lock` format 3 keys each package by its full identity and records
+exact versions, semantic and distribution digests, direct edges by full
+identity, and acquisition locations; a registry package records the workspace
+it was pulled from, which is always its own (the built-in package's is
+`ghcr.io/oats-center`). `install` preserves valid locked choices; `update`
+deliberately resolves; `generate` uses the exact lock/cache without upgrading.
+A `trellis` dependency that the CLI's own build of the built-in package
+satisfies is taken from that build: it is byte for byte the release published
+at `ghcr.io/oats-center/trellis`, so the CLI locks and caches it without
+downloading it.
 
 ## APIs and participants
 
@@ -328,15 +348,19 @@ Auth can also build the evidence itself from a root package's own files
 the closure. The client sends the root's `trellis.toml` and `.trellis` files.
 A listed source is matched to a file by its path relative to the manifest, or
 by file name when exactly one file has it. Without a manifest the client gives
-the package name and version, every `.trellis` file is a source named after its
-file, and each import from outside the package names the package of that name;
+the package name (or full identity) and version, every `.trellis` file is a
+source named after its file, and each import from outside the package names the
+package of that name;
 an import naming no package Auth holds or was given is reported, since only
 the package's own manifest can say what it is.
 
-Each dependency is satisfied by name and version requirement from three
-places: packages the client supplies with the request (each its own manifest
-and files), the built-in `trellis` package the server ships, and the packages
-in every installed participant's stored evidence. A path dependency has no
+Each dependency is satisfied by full identity and version requirement from
+three places: packages the client supplies with the request (each its own
+manifest and files), the built-in `trellis` package the server ships, and the
+packages in every installed participant's stored evidence. A registry
+dependency names its identity. A path dependency or a manifest-less import
+names only a package: it means the one supplied package of that name, and
+otherwise the `localhost` package of that name or the built-in `trellis`. A path dependency has no
 requirement, so any version matches. A supplied package wins; otherwise the
 highest matching version does, the built-in copy on a tie, and the result
 names the other versions that also matched. A held package's own dependencies
@@ -347,16 +371,25 @@ match, for the client to supply. Resolution writes nothing, and the evidence it
 returns is checked again by `Deployments.Create` like any other.
 
 A published release is the other way to hand Auth a build.
-`Auth.Packages.Pull` fetches it from an administrator's named registry and
-offers the resolver only the release and the exact packages its frozen
-resolution names, each pulled by its recorded manifest digest, so the frozen
+`Auth.Packages.Pull` takes the package's full identity, fetches the release
+from its own workspace, and accepts it only when it declares that identity. It
+offers the resolver only the release, the built-in `trellis` package the
+server ships, and the exact packages its frozen resolution names, each pulled
+from its own recorded workspace by its recorded manifest digest, so the frozen
 resolution is the resolution; the compiled digests must equal the recorded
 ones. The format checks (normalized tar, exact file set, canonical config and
 resolution) live in `trellis_idl::distribution`, shared by the CLI's
 `add`/`publish` and Auth.
 
 Published OCI source bundles contain the manifest, listed source, and frozen
-resolution metadata—not canonical API JSON. Generated implementations are
+resolution metadata—not canonical API JSON. Their config names the package by
+full identity.
+
+Generated evidence names every package and every dependency edge by full
+identity: the evidence root, each package entry, and each canonical
+`dependency` line. The offline evidence compiler resolves by those identities,
+so two packages of the same name in one graph stay apart; the import aliases
+in canonical source are positional (`d0`, `d1`). Generated implementations are
 disposable build/release artifacts, not committed source; run generation before
 building local consumers and package generated code when distributing them.
 

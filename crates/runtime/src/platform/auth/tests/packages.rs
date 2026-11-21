@@ -63,21 +63,25 @@ fn a_project_depending_on_trellis_resolves_to_the_evidence_the_cli_builds() {
     assert!(resolved
         .participants
         .iter()
-        .any(
-            |participant| participant.participant_id == "runtime-trellis.LiveV1Provider"
-                && participant.kind == AuthDeploymentKind::Service
-        ));
+        .any(|participant| participant.participant_id
+            == "localhost/runtime-trellis.LiveV1Provider"
+            && participant.kind == AuthDeploymentKind::Service));
 
     let built = trellis_cli::app::deploy::compile_participant_input(
         &project,
-        Some("runtime-trellis.LiveV1Provider"),
+        Some("localhost/runtime-trellis.LiveV1Provider"),
         Some(trellis_idl::ParticipantKind::Service),
     )
     .unwrap();
     let evidence = resolved.package_evidence.unwrap();
     assert_eq!(evidence, built.package_evidence);
 
-    let created = create(&f, "Live", "runtime-trellis.LiveV1Provider", evidence);
+    let created = create(
+        &f,
+        "Live",
+        "localhost/runtime-trellis.LiveV1Provider",
+        evidence,
+    );
     assert_eq!(
         created.deployment.implementation_digest.0,
         built.participant_digest
@@ -98,13 +102,13 @@ service Warehouse { implements inventory; }
 "#;
 
 fn inventory_manifest(version: &str) -> String {
-    format!("[package]\nname = \"inventory\"\nversion = \"{version}\"\n\n[sources]\nmain = \"inventory.trellis\"\n")
+    format!("[package]\nname = \"inventory\"\nworkspace = \"ghcr.io/example\"\nversion = \"{version}\"\n\n[sources]\nmain = \"inventory.trellis\"\n")
 }
 
 fn shop_manifest(requirement: &str) -> String {
     format!(
         "[package]\nname = \"shop\"\nversion = \"1.0.0\"\n\n[sources]\nshop = \"src/shop.trellis\"\n\n\
-        [dependencies]\ninventory = {{ package = \"inventory\", version = \"{requirement}\", registry = \"ghcr.io/example\" }}\n"
+        [dependencies]\ninventory = {{ package = \"inventory\", workspace = \"ghcr.io/example\", version = \"{requirement}\" }}\n"
     )
 }
 
@@ -127,7 +131,12 @@ fn a_dependency_on_an_installed_service_package_takes_the_highest_matching_insta
         .unwrap()
     };
     let first = install("1.0.0", INVENTORY);
-    let warehouse = create(&f, "Warehouse", "inventory.Warehouse", first.clone());
+    let warehouse = create(
+        &f,
+        "Warehouse",
+        "ghcr.io/example/inventory.Warehouse",
+        first.clone(),
+    );
     let newer = INVENTORY.replace(
         "rpc Get { input Item; output Item; }",
         "rpc Get { input Item; output Item; }\n  rpc Count { input Item; output Item; }",
@@ -161,7 +170,11 @@ fn a_dependency_on_an_installed_service_package_takes_the_highest_matching_insta
             chosen.version.0.as_str(),
             &chosen.origin
         ),
-        ("inventory", "1.2.0", &AuthPackageOrigin::Installed)
+        (
+            "ghcr.io/example/inventory",
+            "1.2.0",
+            &AuthPackageOrigin::Installed
+        )
     );
     assert_eq!(
         chosen
@@ -175,10 +188,10 @@ fn a_dependency_on_an_installed_service_package_takes_the_highest_matching_insta
     let installed = second
         .packages
         .iter()
-        .find(|package| package.name.0 == "inventory")
+        .find(|package| package.name.0 == "ghcr.io/example/inventory")
         .unwrap();
     assert!(evidence.packages.contains(installed));
-    create(&f, "Shop", "shop.Shop", evidence);
+    create(&f, "Shop", "localhost/shop.Shop", evidence);
 
     // The requirement decides, not recency.
     let pinned = shop("=1.0.0");
@@ -188,7 +201,8 @@ fn a_dependency_on_an_installed_service_package_takes_the_highest_matching_insta
         .unwrap()
         .packages
         .iter()
-        .any(|package| first.packages.contains(package) && package.name.0 == "inventory"));
+        .any(|package| first.packages.contains(package)
+            && package.name.0 == "ghcr.io/example/inventory"));
 }
 
 const GAUGES: &str = r#"
@@ -222,26 +236,35 @@ fn a_dependency_nothing_holds_is_reported_by_name_until_its_files_are_supplied()
     let f = fixture();
     let root = package(
         "[package]\nname = \"gauges\"\nversion = \"1.0.0\"\n\n[sources]\ngauges = \"gauges.trellis\"\n\n\
-        [dependencies]\nunits = { package = \"units\", version = \"^2.1.0\", registry = \"ghcr.io/example\" }\n",
+        [dependencies]\nunits = { package = \"units\", workspace = \"ghcr.io/example\", version = \"^2.1.0\" }\n",
         "gauges.trellis",
         GAUGES,
     );
-    let units = |version: &str| {
+    let units_in = |workspace: &str, version: &str| {
         package(
-            &format!("[package]\nname = \"units\"\nversion = \"{version}\"\n\n[sources]\nunits = \"units.trellis\"\n"),
+            &format!("[package]\nname = \"units\"\nworkspace = \"{workspace}\"\nversion = \"{version}\"\n\n[sources]\nunits = \"units.trellis\"\n"),
             "units.trellis",
             UNITS,
         )
     };
+    let units = |version: &str| units_in("ghcr.io/example", version);
 
     let alone = resolve_with(&f, serde_json::json!({ "root": root }));
     assert!(alone.package_evidence.is_none());
     let [missing] = alone.missing.as_slice() else {
         panic!("{:?}", alone.missing)
     };
-    assert_eq!(missing.name.0, "units");
+    assert_eq!(missing.name.0, "ghcr.io/example/units");
     assert_eq!(missing.requirements, ["^2.1.0"]);
-    assert_eq!(missing.required_by[0].0, "gauges");
+    assert_eq!(missing.required_by[0].0, "localhost/gauges");
+
+    // A package of the same name from another workspace is another package.
+    let elsewhere = resolve_with(
+        &f,
+        serde_json::json!({ "root": root, "packages": [units_in("ghcr.io/other", "2.1.3")] }),
+    );
+    assert!(elsewhere.package_evidence.is_none());
+    assert_eq!(elsewhere.missing[0].name.0, "ghcr.io/example/units");
 
     // A supplied version outside the requirement does not satisfy it.
     let old = resolve_with(
@@ -256,7 +279,7 @@ fn a_dependency_nothing_holds_is_reported_by_name_until_its_files_are_supplied()
     let broken = resolve_with(
         &f,
         serde_json::json!({ "root": root, "packages": [package(
-            "[package]\nname = \"units\"\nversion = \"2.1.3\"\n\n[sources]\nunits = \"units.trellis\"\n",
+            "[package]\nname = \"units\"\nworkspace = \"ghcr.io/example\"\nversion = \"2.1.3\"\n\n[sources]\nunits = \"units.trellis\"\n",
             "units.trellis",
             "model Measure { value: }",
         )] }),
@@ -265,7 +288,7 @@ fn a_dependency_nothing_holds_is_reported_by_name_until_its_files_are_supplied()
     let [rejected] = broken.rejected.as_slice() else {
         panic!("{:?}", broken.rejected)
     };
-    assert_eq!(rejected.name.0, "units");
+    assert_eq!(rejected.name.0, "ghcr.io/example/units");
     assert_eq!(rejected.index, 0);
 
     let supplied = resolve_with(
@@ -281,9 +304,12 @@ fn a_dependency_nothing_holds_is_reported_by_name_until_its_files_are_supplied()
             .iter()
             .map(|package| (package.name.0.as_str(), package.version.0.as_str()))
             .collect::<Vec<_>>(),
-        [("gauges", "1.0.0"), ("units", "2.1.3")]
+        [
+            ("ghcr.io/example/units", "2.1.3"),
+            ("localhost/gauges", "1.0.0")
+        ]
     );
-    create(&f, "Gauge", "gauges.Gauge", evidence);
+    create(&f, "Gauge", "localhost/gauges.Gauge", evidence);
 }
 
 #[test]
@@ -312,4 +338,103 @@ fn without_a_manifest_imports_name_their_packages_only_when_trellis_holds_them()
     );
     assert_eq!(unknown.unknown_imports, ["elsewhere"]);
     assert!(unknown.package_evidence.is_none());
+}
+
+const SAMPLES: &str = r#"
+model Sample { id: string; }
+api samples@v1 {
+  title "Samples";
+  description "Lab samples.";
+  rpc Get { input Sample; output Sample; }
+  capabilities {
+    capability samples.read { title "Read samples"; description "Read samples."; grants "Sees samples."; allows { rpc Get; } }
+  }
+}
+"#;
+
+#[test]
+fn same_named_packages_from_two_workspaces_install_with_their_own_api_identities() {
+    let f = fixture();
+    let theirs_manifest = "[package]\nname = \"krishi\"\nworkspace = \"ghcr.io/qlever-llc\"\n\
+        version = \"1.0.0\"\n\n[sources]\nsamples = \"samples.trellis\"\n";
+    let theirs_source = format!(
+        "{}service Lab {{ implements samples; }}\n",
+        SAMPLES.replace("Sample", "Record")
+    );
+    let theirs = resolve_with(
+        &f,
+        serde_json::json!({ "root": package(theirs_manifest, "samples.trellis", &theirs_source) }),
+    );
+    create(
+        &f,
+        "QLever lab",
+        "ghcr.io/qlever-llc/krishi.Lab",
+        theirs.package_evidence.unwrap(),
+    );
+
+    // Krishi's own `krishi` depends on the other one under the alias qlever.
+    let ours = resolve_with(
+        &f,
+        serde_json::json!({
+            "root": package(
+                "[package]\nname = \"krishi\"\nworkspace = \"ghcr.io/krishi-diagnostics\"\n\
+                version = \"2.1.0\"\n\n[sources]\nsherpa = \"sherpa.trellis\"\n\n\
+                [dependencies]\nqlever = { package = \"krishi\", workspace = \
+                \"ghcr.io/qlever-llc\", version = \"^1.0\" }\n",
+                "sherpa.trellis",
+                &format!(
+                    "import {{ samples as theirs }} from qlever;\n{SAMPLES}\
+                    service SherpaService {{ implements samples; use theirs {{ capability \
+                    samples.read; }} }}\n"
+                ),
+            ),
+        }),
+    );
+    assert!(ours.missing.is_empty(), "{:?}", ours.missing);
+    let [qlever] = ours.dependencies.as_slice() else {
+        panic!("{:?}", ours.dependencies)
+    };
+    assert_eq!(
+        (qlever.name.0.as_str(), &qlever.origin),
+        ("ghcr.io/qlever-llc/krishi", &AuthPackageOrigin::Installed)
+    );
+    let evidence = ours.package_evidence.unwrap();
+    assert_eq!(
+        evidence
+            .packages
+            .iter()
+            .map(|package| package.name.0.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "ghcr.io/krishi-diagnostics/krishi",
+            "ghcr.io/qlever-llc/krishi"
+        ]
+    );
+    // Its own API is not the other package's, so nothing is shared.
+    create(
+        &f,
+        "Sherpa",
+        "ghcr.io/krishi-diagnostics/krishi.SherpaService",
+        evidence,
+    );
+    let accepted = f
+        .store
+        .transaction(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT api_id FROM auth_accepted_apis WHERE api_id LIKE 'ghcr.io/%' \
+                ORDER BY api_id",
+            )?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .unwrap();
+    assert_eq!(
+        accepted,
+        [
+            "ghcr.io/krishi-diagnostics/krishi.samples@v1",
+            "ghcr.io/qlever-llc/krishi.samples@v1"
+        ]
+    );
 }

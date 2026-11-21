@@ -370,7 +370,7 @@ async fn typescript_upload_cancellation_and_live_renewal_reduction_against_rust(
                     .iter()
                     .find(|grant| {
                         grant.capability.capability_id.0
-                            == "runtime-trellis.runtime.v1:transfers.transport"
+                            == "localhost/runtime-trellis.runtime.v1:transfers.transport"
                     })
                     .unwrap();
                 admin

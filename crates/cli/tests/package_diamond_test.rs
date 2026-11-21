@@ -59,7 +59,7 @@ fn source_path(lock: &PackageLock, name: &str) -> String {
     let package = lock
         .packages
         .iter()
-        .find(|package| package.name.as_str() == name)
+        .find(|package| package.id == format!("localhost/{name}"))
         .unwrap_or_else(|| panic!("{name} is absent from the lock"));
     match &package.source {
         LockedSource::Path { path } => path.clone(),
@@ -70,7 +70,7 @@ fn source_path(lock: &PackageLock, name: &str) -> String {
 fn digest(lock: &PackageLock, name: &str) -> String {
     lock.packages
         .iter()
-        .find(|package| package.name.as_str() == name)
+        .find(|package| package.id == format!("localhost/{name}"))
         .unwrap_or_else(|| panic!("{name} is absent from the lock"))
         .digest
         .clone()
@@ -80,12 +80,12 @@ fn assert_dependency(lock: &PackageLock, owner: &str, dependency: &str) {
     let package = lock
         .packages
         .iter()
-        .find(|package| package.name.as_str() == owner)
+        .find(|package| package.id == format!("localhost/{owner}"))
         .unwrap_or_else(|| panic!("{owner} is absent from the lock"));
     let edge = package
         .dependencies
         .iter()
-        .find(|edge| edge.name.as_str() == dependency)
+        .find(|edge| edge.id == format!("localhost/{dependency}"))
         .unwrap_or_else(|| panic!("{owner} does not depend on {dependency}"));
     assert_eq!(
         edge.digest,
@@ -130,7 +130,7 @@ async fn diamond_local_dependency_resolves_one_exact_source() {
     assert_eq!(
         lock.packages
             .iter()
-            .filter(|package| package.name.as_str() == "pkg-a")
+            .filter(|package| package.id == "localhost/pkg-a")
             .count(),
         1,
         "the shared dependency appears exactly once"
@@ -185,4 +185,94 @@ async fn symlinked_parent_traversal_records_canonical_source() {
     assert_dependency(&lock, "pkg-c", "pkg-a");
     assert_dependency(&lock, "pkg-c", "pkg-b");
     assert!(root.path().join("generated/index.js").is_file());
+}
+
+/// Two packages may share a name when their workspaces differ: a `krishi`
+/// package depends on another `krishi`, and each API keeps its own identity.
+#[tokio::test]
+async fn same_named_packages_from_two_workspaces_stay_apart() {
+    const SAMPLES: &str = "model Sample { id: string; }\napi samples@v1 {\n  title \
+        \"Samples\";\n  description \"Samples\";\n  rpc Get { input Sample; output Sample; }\n  \
+        capabilities { public { allows { rpc Get; } } }\n}\n";
+    let root = tempfile::tempdir().unwrap();
+    write(
+        &root.path().join("trellis.toml"),
+        "[package]\nname = \"krishi\"\nworkspace = \"ghcr.io/krishi-diagnostics\"\nversion = \
+        \"2.1.0\"\n\n[sources]\nsherpa = \"sherpa.trellis\"\n\n[dependencies]\nqlever = { \
+        package = \"krishi\", path = \"qlever\" }\n\n[generate.typescript]\noutput = \
+        \"generated\"\n",
+    );
+    write(
+        &root.path().join("sherpa.trellis"),
+        &format!(
+            "import {{ samples as theirs }} from qlever;\n{SAMPLES}service SherpaService {{ \
+            implements samples; use theirs {{ required capability public; }} }}\n"
+        ),
+    );
+    write(
+        &root.path().join("qlever/trellis.toml"),
+        "[package]\nname = \"krishi\"\nworkspace = \"ghcr.io/qlever-llc\"\nversion = \
+        \"1.0.0\"\n\n[sources]\nsamples = \"samples.trellis\"\n",
+    );
+    // Public type names must still differ; only the API names are shared.
+    write(
+        &root.path().join("qlever/samples.trellis"),
+        &SAMPLES.replace("Sample", "Record"),
+    );
+
+    install_and_generate(root.path()).await;
+
+    let lock = trellis_idl::project::read_lock(&root.path().join("trellis.lock")).unwrap();
+    let ids = lock
+        .packages
+        .iter()
+        .map(|package| package.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        [
+            "ghcr.io/krishi-diagnostics/krishi",
+            "ghcr.io/qlever-llc/krishi"
+        ]
+    );
+    let compile = |root: &Path, dependencies| {
+        let manifest = trellis_idl::project::read_manifest(&root.join("trellis.toml")).unwrap();
+        trellis_idl::compile_project(
+            &manifest,
+            trellis_idl::project::load_sources(root, &manifest).unwrap(),
+            dependencies,
+        )
+        .unwrap()
+    };
+    let theirs = compile(&root.path().join("qlever"), Default::default());
+    let graph = compile(
+        root.path(),
+        std::collections::BTreeMap::from([("qlever".to_owned(), theirs)]),
+    );
+    let sherpa = graph.root_package().participants().values().next().unwrap();
+    assert_eq!(
+        sherpa.identity().as_str(),
+        "ghcr.io/krishi-diagnostics/krishi.SherpaService"
+    );
+    assert_eq!(
+        sherpa
+            .implements()
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["ghcr.io/krishi-diagnostics/krishi.samples@v1"]
+    );
+    assert_eq!(
+        sherpa
+            .uses()
+            .keys()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["ghcr.io/qlever-llc/krishi.samples@v1"]
+    );
+    // The evidence names every package by full identity, so Auth compiles
+    // the same graph offline.
+    let evidence = trellis_idl::package_evidence(&graph).unwrap();
+    let recompiled = trellis_idl::compile_evidence(evidence).unwrap();
+    assert_eq!(recompiled.root_digest(), graph.root_digest());
 }

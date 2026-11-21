@@ -195,15 +195,14 @@ pub struct BuildArgs {
     /// Directory containing the package's `trellis.toml`.
     #[arg(long, group = "build")]
     pub source: Option<PathBuf>,
-    /// A published release, `NAME@VERSION` or `NAME@sha256:DIGEST`. Trellis
-    /// pulls it from `--registry`, checks its digests, and builds it from the
-    /// exact dependencies it was published with.
-    #[arg(long, value_name = "NAME@VERSION", group = "build")]
+    /// A published release by its full identity, `WORKSPACE/NAME@VERSION` or
+    /// `WORKSPACE/NAME@sha256:DIGEST`, such as `ghcr.io/acme/orders@1.2.0`.
+    /// Trellis pulls it from its own workspace, signing in with the registry
+    /// added for that workspace, checks that it declares that identity and
+    /// its digests, and builds it from the exact dependencies it was
+    /// published with.
+    #[arg(long, value_name = "WORKSPACE/NAME@VERSION", group = "build")]
     pub package: Option<String>,
-    /// The registry to pull `--package` from, by the name `trellis registries
-    /// list` shows; needed when Trellis has more than one.
-    #[arg(long, value_name = "NAME", requires = "package")]
-    pub registry: Option<String>,
     /// Participant identity; asked for when the package has several.
     #[arg(long, requires = "build")]
     pub participant: Option<String>,

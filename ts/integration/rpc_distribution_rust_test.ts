@@ -29,7 +29,7 @@ for (const grow of [false, true]) {
             contract,
           });
           const capabilityId =
-            "runtime-trellis.transport_growth.v1:growth.extend";
+            "localhost/runtime-trellis.transport_growth.v1:growth.extend";
           const grants = await runtime.callAdminRpc(
             "authCapabilityGrantsList",
             { capabilityId },

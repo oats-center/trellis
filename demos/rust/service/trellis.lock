@@ -1,25 +1,25 @@
-format = 2
-root = "demo-rust-service"
+format = 3
+root = "localhost/demo-rust-service"
 
 [[packages]]
-name = "demo-rust-service"
+id = "localhost/demo-rust-service"
 version = "1.0.0"
-digest = "fFSr04_B_mJbJjjgYF9H1QGCfhwytxACkgZxCaGTo3I"
-distribution-digest = "sha256:6cd396374239afaa2d7c16b7bf5d82032ac68dbbe21a576f658ccf6b947f1f60"
+digest = "b5nPGE7gM4g6GTb9Hp8Szb5u1xgvhqszRSNt2Dkz3zI"
+distribution-digest = "sha256:2910a1310bc70356d12906505157656736b83d3e9bb5011cab07ea1e5911cdb0"
 
 [[packages.dependencies]]
-name = "demo-service"
+id = "localhost/demo-service"
 version = "1.0.0"
-digest = "ckwqGMiLhfjIVUOZOYKCUHcTdICbTUC9BFXf46yASW0"
+digest = "5S7RslTMMzoGW3pPH1gd7P6auGREQJeN_Gi0ZSjRda0"
 
 [packages.source]
 kind = "path"
 path = "."
 
 [[packages]]
-name = "demo-service"
+id = "localhost/demo-service"
 version = "1.0.0"
-digest = "ckwqGMiLhfjIVUOZOYKCUHcTdICbTUC9BFXf46yASW0"
+digest = "5S7RslTMMzoGW3pPH1gd7P6auGREQJeN_Gi0ZSjRda0"
 distribution-digest = "sha256:a70ea2741e8c37810a7e6eb57ea98ca6916186d0d834f9ab2c9a68087bb3dd70"
 dependencies = []
 

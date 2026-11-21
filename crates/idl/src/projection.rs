@@ -10,7 +10,7 @@ pub fn json_schema(graph: &PackageGraph, root: &TypeRef) -> miette::Result<Value
     project_named(graph, root, &mut definitions, &mut visiting)?;
     let mut schema = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$ref": format!("#/$defs/{}", definition_key(root)),
+        "$ref": definition_ref(root),
         "$defs": null,
     });
     schema["$defs"] = Value::Object(definitions);
@@ -136,7 +136,7 @@ fn project_expr(
     Ok(match value {
         TypeExpression::Named(reference) => {
             project_named(graph, reference, definitions, visiting)?;
-            json!({"$ref":format!("#/$defs/{}", definition_key(reference))})
+            json!({"$ref": definition_ref(reference)})
         }
         TypeExpression::Primitive(primitive, bounds) => primitive_schema(*primitive, bounds),
         TypeExpression::List(member, bounds) => {
@@ -285,4 +285,15 @@ fn apply_count(value: &mut Value, bounds: &Bounds, min: &str, max: &str) {
 }
 fn definition_key(reference: &TypeRef) -> String {
     format!("{}.{}", reference.package, reference.id)
+}
+
+/// A JSON pointer to a definition. A workspace puts `/` in the key, which a
+/// pointer escapes as `~1` (RFC 6901).
+fn definition_ref(reference: &TypeRef) -> String {
+    format!(
+        "#/$defs/{}",
+        definition_key(reference)
+            .replace('~', "~0")
+            .replace('/', "~1")
+    )
 }
