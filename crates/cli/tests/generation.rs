@@ -53,7 +53,7 @@ api ping@v1 {
         .unwrap();
 
     let lock = trellis_idl::project::read_lock(&root.path().join("trellis.lock")).unwrap();
-    assert_eq!(lock.root, "fixture");
+    assert_eq!(lock.root, "localhost/fixture");
     assert_eq!(lock.packages.len(), 1);
     let metadata: serde_json::Value =
         serde_json::from_slice(&fs::read(root.path().join("generated/package.json")).unwrap())

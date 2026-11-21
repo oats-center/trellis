@@ -43,8 +43,8 @@ pub const MAX_ARCHIVE_BYTES: u64 = MAX_PACKAGE_BYTES + MAX_FILES as u64 * 4 * 51
 pub struct PackageConfig {
     /// Always `trellis.package.source.v1`.
     pub format: String,
-    /// Package name.
-    pub name: String,
+    /// Full package identity, `<workspace>/<name>`.
+    pub id: String,
     /// Release version.
     pub version: String,
     /// Base64url SHA-256 semantic digest of the compiled package.
@@ -53,10 +53,10 @@ pub struct PackageConfig {
 
 impl PackageConfig {
     /// The config for one release.
-    pub fn new(name: &str, version: &semver::Version, package_digest: &str) -> Self {
+    pub fn new(id: &str, version: &semver::Version, package_digest: &str) -> Self {
         Self {
             format: "trellis.package.source.v1".to_owned(),
-            name: name.to_owned(),
+            id: id.to_owned(),
             version: version.to_string(),
             package_digest: package_digest.to_owned(),
         }
@@ -245,11 +245,11 @@ pub fn frozen_resolution(files: &BTreeMap<PathBuf, Vec<u8>>) -> Result<FrozenRes
         resolution
             .dependencies
             .windows(2)
-            .all(|pair| pair[0].name < pair[1].name)
+            .all(|pair| pair[0].id < pair[1].id)
             && resolution
                 .packages
                 .windows(2)
-                .all(|pair| pair[0].name < pair[1].name),
+                .all(|pair| pair[0].id < pair[1].id),
         "frozen resolution entries must be uniquely sorted"
     );
     Ok(resolution)

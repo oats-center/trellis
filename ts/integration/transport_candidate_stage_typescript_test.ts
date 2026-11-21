@@ -281,7 +281,7 @@ for (const closeWhileHeld of [false, true]) {
               "authCapabilityGrantsList",
               {
                 capabilityId:
-                  "runtime-trellis.transport_growth.v1:growth.extend",
+                  "localhost/runtime-trellis.transport_growth.v1:growth.extend",
               },
             );
             const grant = page.items[0];

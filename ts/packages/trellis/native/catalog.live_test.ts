@@ -188,7 +188,7 @@ test(
           })
           .orThrow();
         assert(user.account);
-        const capabilityId = "runtime-trellis.runtime.v1:echo.call";
+        const capabilityId = "localhost/runtime-trellis.runtime.v1:echo.call";
         await admin
           .capabilityGrantsGrant({
             principalId: user.principalId,

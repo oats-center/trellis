@@ -32,6 +32,28 @@ macro_rules! identifier {
 }
 
 identifier!(PackageId);
+
+impl PackageId {
+    /// The workspace part of the identity; `None` for the built-in package.
+    pub fn workspace(&self) -> Option<&str> {
+        trellis_protocol::split_workspace(&self.0).0
+    }
+
+    /// The package name, without its workspace.
+    pub fn name(&self) -> &str {
+        trellis_protocol::split_workspace(&self.0).1
+    }
+}
+
+/// Split a package-qualified ID, such as `ghcr.io/acme/orders.billing@v1`,
+/// into the owning package's full identity and the rest of the ID.
+///
+/// The package name runs from after the workspace's last `/` to the first `.`.
+pub fn split_package_qualified(id: &str) -> Option<(&str, &str)> {
+    let start = id.rfind('/').map_or(0, |index| index + 1);
+    let dot = start + id[start..].find('.')?;
+    Some((&id[..dot], &id[dot + 1..]))
+}
 identifier!(TypeId);
 identifier!(ApiId);
 identifier!(ParticipantId);

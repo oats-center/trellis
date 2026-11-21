@@ -284,7 +284,7 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
         .capability_grants_grant(
             &serde_json::from_value(json!({
                 "principalId":user.principal.principal_id,
-                "capabilityId":"trellis-test-fixture.echo.v1:echo.invoke",
+                "capabilityId":"localhost/trellis-test-fixture.echo.v1:echo.invoke",
                 "expectedRevision":"0",
                 "idempotencyKey":ulid::Ulid::generate().to_string()
             }))
@@ -296,13 +296,12 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
         &PackageManifest {
             package: PackageMetadata {
                 name: "trellis-test-fixture".into(),
+                workspace: None,
                 version: "0.100.0".parse().unwrap(),
             },
             sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
             dependencies: BTreeMap::new(),
             generate: GenerateConfig::default(),
-            default_registry: None,
-            registries: BTreeMap::new(),
         },
         vec![SourceUnit {
             alias: "main".into(),
@@ -531,7 +530,7 @@ async fn enrolled_companions_require_their_own_consent_and_revoke_only_their_gra
         .capability_grants_grant(
             &serde_json::from_value(json!({
                 "principalId":user.principal.principal_id,
-                "capabilityId":"trellis-test-fixture.echo.v1:echo.invoke",
+                "capabilityId":"localhost/trellis-test-fixture.echo.v1:echo.invoke",
                 "expectedRevision":"0",
                 "idempotencyKey":ulid::Ulid::generate().to_string()
             }))

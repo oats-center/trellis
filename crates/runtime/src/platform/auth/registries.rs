@@ -1,13 +1,17 @@
 //! Registries Auth pulls published packages from, and the pull itself.
 //!
-//! An administrator adds a registry by name with its OCI prefix, and for a
-//! private one the user and secret Trellis signs in with; the secret is
+//! An administrator adds a registry by name with the workspace it serves, and
+//! for a private one the user and secret Trellis signs in with; the secret is
 //! sealed with the storage key and never returned. `Packages.Pull` fetches a
-//! release from one of them, checks the manifest, config, and source-layer
+//! release from its package's own workspace, signing in with the registry
+//! added for that workspace or anonymously, and accepts it only when the
+//! release declares the identity it was pulled under: whoever can push to a
+//! workspace owns its names. It checks the manifest, config, and source-layer
 //! digests and the release's own frozen resolution, pulls every package of
-//! that resolution by its exact manifest digest, and compiles the release
-//! from exactly those packages. The evidence it returns is ordinary package
-//! evidence, so `Deployments.Create` and `Apply` still recompile all of it.
+//! that resolution from its own workspace by its exact manifest digest, and
+//! compiles the release from exactly those packages. The evidence it returns
+//! is ordinary package evidence, so `Deployments.Create` and `Apply` still
+//! recompile all of it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -93,19 +97,19 @@ fn registries(connection: &Connection, storage: &OAuthStorage) -> Result<Vec<Reg
         .collect()
 }
 
-/// A prefix is a registry host and repository path, never a URL, so it names
-/// one place every package of the registry is pulled from.
+/// A prefix is a workspace: a registry host and repository path, never a
+/// URL, so it names one place packages are pulled from.
 fn validate_prefix(prefix: &str) -> Result<(), AuthError> {
-    let valid = !prefix.contains("://")
-        && !prefix.chars().any(char::is_whitespace)
-        && Reference::from_str(&format!("{}/package", prefix.trim_end_matches('/')))
+    let valid = prefix != trellis_protocol::LOCAL_WORKSPACE
+        && trellis_protocol::validate_workspace(prefix).is_ok()
+        && Reference::from_str(&format!("{prefix}/package"))
             .is_ok_and(|reference| prefix.starts_with(reference.resolve_registry()));
     if valid {
         Ok(())
     } else {
         Err(AuthError::Invalid(format!(
-            "registry prefix {prefix} is not a registry host and repository path, such as \
-            ghcr.io/oats-center"
+            "registry prefix {prefix} is not a workspace, a lower-case registry host and \
+            repository path such as ghcr.io/oats-center"
         )))
     }
 }
@@ -387,9 +391,7 @@ async fn pull_release(reference: &Reference, auth: &RegistryAuth) -> Result<Rele
     let files =
         extract_archive(&layer).map_err(|error| invalid(format!("{reference}: {error}")))?;
     let manifest = package_manifest(&files).map_err(|error| invalid(error.to_string()))?;
-    if manifest.package.name != config.name
-        || manifest.package.version.to_string() != config.version
-    {
+    if manifest.identity() != config.id || manifest.package.version.to_string() != config.version {
         return Err(invalid(format!(
             "{reference}'s trellis.toml names a different package than its config"
         )));
@@ -418,7 +420,7 @@ fn sources(release: &Release) -> Result<AuthPackageSources, AuthError> {
         String::from_utf8(bytes.to_vec()).map_err(|_| {
             invalid(format!(
                 "{} {}'s {} is not UTF-8",
-                release.config.name,
+                release.config.id,
                 release.config.version,
                 path.display()
             ))
@@ -446,19 +448,42 @@ fn sources(release: &Release) -> Result<AuthPackageSources, AuthError> {
     })
 }
 
+/// How Trellis signs in to `workspace`: with the one registry added for it,
+/// or anonymously when there is none. Several would leave the credentials to
+/// chance.
+fn workspace_auth(
+    registries: &[Registry],
+    workspace: &str,
+    package: &str,
+) -> Result<RegistryAuth, AuthError> {
+    let matching = registries
+        .iter()
+        .filter(|registry| registry.prefix == workspace)
+        .collect::<Vec<_>>();
+    match matching.as_slice() {
+        [] => Ok(RegistryAuth::Anonymous),
+        [only] => Ok(only.auth.clone()),
+        several => Err(invalid(format!(
+            "{package} is pulled from {workspace}, which registries {} all name; keep one of \
+            them",
+            several
+                .iter()
+                .map(|registry| registry.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
 async fn pull(
     registries: &[Registry],
     input: &AuthPackagePullRequest,
 ) -> Result<AuthPackagePullResponse, AuthError> {
-    let registry = registries
-        .iter()
-        .find(|registry| registry.name == input.registry.0)
-        .ok_or_else(|| {
-            invalid(format!(
-                "no registry is named {}; add it first",
-                input.registry.0
-            ))
-        })?;
+    let identity = input.package.0.as_str();
+    let repository = trellis_idl::project::package_repository(identity)
+        .map_err(|error| invalid(error.to_string()))?;
+    let workspace = trellis_idl::project::package_source_workspace(identity)
+        .map_err(|error| invalid(error.to_string()))?;
     let wanted = match (&input.version, &input.digest) {
         (Some(version), None) => {
             semver::Version::parse(version)
@@ -468,9 +493,11 @@ async fn pull(
         (None, Some(digest)) => digest.0.as_str(),
         _ => return Err(invalid("give exactly one of version and digest")),
     };
-    let repository = format!("{}/{}", registry.prefix, input.name.0);
-    let root = pull_release(&reference(&repository, wanted)?, &registry.auth).await?;
-    if root.config.name != input.name.0
+    let auth = workspace_auth(registries, &workspace, identity)?;
+    let root = pull_release(&reference(&repository, wanted)?, &auth).await?;
+    // The repository is the identity asked for, so a release that declares
+    // another workspace or name was pushed somewhere it does not own.
+    if root.config.id != identity
         || input
             .version
             .as_ref()
@@ -478,63 +505,54 @@ async fn pull(
     {
         return Err(invalid(format!(
             "{repository} holds {} {}, not the release asked for",
-            root.config.name, root.config.version
+            root.config.id, root.config.version
         )));
     }
     let resolution = frozen_resolution(&root.files).map_err(|error| invalid(error.to_string()))?;
-    // Every package the release was published with, pulled by the exact
-    // manifest digest it was published with.
+    // Every package the release was published with, pulled from its own
+    // workspace by the exact manifest digest it was published with.
     let mut dependencies = Vec::with_capacity(resolution.packages.len());
     for locked in &resolution.packages {
-        let LockedSource::Registry {
-            registry: prefix,
-            oci_digest,
-        } = &locked.source
+        // The built-in package's authority is this server, not a registry:
+        // the release compiles against the copy it ships, and the compiled
+        // digests below must still equal the ones it was published with.
+        if locked.id == trellis_idl::project::BUILTIN_PACKAGE {
+            continue;
+        }
+        let (
+            LockedSource::Registry {
+                workspace: recorded,
+                oci_digest,
+            },
+            Ok(expected),
+        ) = (
+            &locked.source,
+            trellis_idl::project::package_source_workspace(&locked.id),
+        )
         else {
             return Err(invalid(format!(
-                "{} was published with a path dependency on {}",
-                root.config.name, locked.name
+                "{} was published with a dependency on {} that no registry holds",
+                root.config.id, locked.id
             )));
         };
-        // A dependency under the chosen registry's prefix is pulled the way the
-        // root was. Elsewhere, the one registry added at that prefix signs in;
-        // several would leave the credentials to chance.
-        let prefix = prefix.trim_end_matches('/');
-        let auth = if prefix == registry.prefix {
-            registry.auth.clone()
-        } else {
-            let matching = registries
-                .iter()
-                .filter(|other| other.prefix == prefix)
-                .collect::<Vec<_>>();
-            match matching.as_slice() {
-                [] => RegistryAuth::Anonymous,
-                [only] => only.auth.clone(),
-                several => {
-                    return Err(invalid(format!(
-                        "{} depends on {} from {prefix}, which registries {} all name; \
-                        keep one of them",
-                        root.config.name,
-                        locked.name,
-                        several
-                            .iter()
-                            .map(|other| other.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )))
-                }
-            }
-        };
-        let repository = format!("{prefix}/{}", locked.name);
+        if *recorded != expected {
+            return Err(invalid(format!(
+                "{} records {} as pulled from {recorded}, which is not its workspace",
+                root.config.id, locked.id
+            )));
+        }
+        let repository = trellis_idl::project::package_repository(&locked.id)
+            .map_err(|error| invalid(error.to_string()))?;
+        let auth = workspace_auth(registries, recorded, &locked.id)?;
         let release = pull_release(&reference(&repository, oci_digest)?, &auth).await?;
-        if release.config.name != locked.name
+        if release.config.id != locked.id
             || release.config.version != locked.version.to_string()
             || release.config.package_digest != locked.digest
             || release.distribution_digest != locked.distribution_digest
         {
             return Err(invalid(format!(
                 "{repository}@{oci_digest} is not the {} {} {} was published with",
-                locked.name, locked.version, root.config.name
+                locked.id, locked.version, root.config.id
             )));
         }
         dependencies.push(release);
@@ -547,20 +565,20 @@ async fn pull(
     let frozen = resolution
         .packages
         .iter()
-        .map(|locked| (locked.name.clone(), locked.digest.clone()))
-        .chain([(root.config.name.clone(), root.config.package_digest.clone())])
+        .map(|locked| (locked.id.clone(), locked.digest.clone()))
+        .chain([(root.config.id.clone(), root.config.package_digest.clone())])
         .collect::<BTreeMap<_, _>>();
     let published = AuthPublishedPackage {
-        registry: AuthShortName(registry.name.clone()),
-        name: AuthName(root.config.name.clone()),
+        package: AuthName(root.config.id.clone()),
         version: AuthShortName(root.config.version.clone()),
         digest: AuthDigest(root.manifest_digest.clone()),
         extra: Default::default(),
     };
     blocking(move || {
-        // Only the release's own packages are offered, so nothing Auth holds
-        // can stand in for one of them.
-        let resolved = super::packages::resolve(Vec::new(), &request)?;
+        // Only the release's own packages and the built-in package are
+        // offered, so nothing an installed participant holds can stand in for
+        // one of them.
+        let resolved = super::packages::resolve(super::packages::builtin_evidence()?, &request)?;
         let problems = resolved
             .missing
             .iter()
@@ -577,7 +595,7 @@ async fn pull(
             _ => {
                 return Err(invalid(format!(
                     "{} {} doesn't compile from the packages it was published with: {}",
-                    published.name.0,
+                    published.package.0,
                     published.version.0,
                     problems.join("; ")
                 )))
@@ -591,7 +609,7 @@ async fn pull(
         if compiled != frozen {
             return Err(invalid(format!(
                 "{} {} compiles to different packages than it was published with",
-                published.name.0, published.version.0
+                published.package.0, published.version.0
             )));
         }
         Ok(AuthPackagePullResponse {

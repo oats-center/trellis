@@ -74,8 +74,8 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             .await
             .unwrap();
         for capability in [
-            "runtime-trellis.events.v1:alpha.publish",
-            "runtime-trellis.events.v1:events.inspect",
+            "localhost/runtime-trellis.events.v1:alpha.publish",
+            "localhost/runtime-trellis.events.v1:events.inspect",
         ] {
             auth.capability_grants_grant(
                 &serde_json::from_value(serde_json::json!({
@@ -107,8 +107,8 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 {
                     "type":"trellis_capabilities",
                     "required": [
-                        "runtime-trellis.events.v1:alpha.publish",
-                        "runtime-trellis.events.v1:events.inspect",
+                        "localhost/runtime-trellis.events.v1:alpha.publish",
+                        "localhost/runtime-trellis.events.v1:events.inspect",
                         "trellis.events.v1:events.query",
                         "trellis.events.v1:consumers.inspect",
                         "trellis.events.v1:deadLetters.inspect",

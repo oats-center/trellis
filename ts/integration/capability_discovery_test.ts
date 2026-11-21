@@ -6,7 +6,7 @@ import { withTrellisRuntime } from "./_support/runtime.ts";
 
 test("capability discovery pages the currently accepted API definitions", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const apiId = "runtime-trellis.events@v1";
+    const apiId = "localhost/runtime-trellis.events@v1";
     await runtime.contracts.install({
       contract: earlier.EventService.participant,
     });

@@ -212,13 +212,12 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
         &PackageManifest {
             package: PackageMetadata {
                 name: current.root_package.clone(),
+                workspace: None,
                 version: "0.100.0".parse().unwrap(),
             },
             sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
             dependencies: BTreeMap::new(),
             generate: GenerateConfig::default(),
-            default_registry: None,
-            registries: BTreeMap::new(),
         },
         vec![SourceUnit {
             alias: "main".into(),

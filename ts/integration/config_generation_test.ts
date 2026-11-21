@@ -18,7 +18,8 @@ import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 import { spawnTracked } from "./_support/process.ts";
 
 const contract = participants.ConfiguredGrowthService.participant;
-const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
+const capabilityId =
+  "localhost/runtime-trellis.transport_growth.v1:growth.extend";
 
 /**
  * Authority lives 90s and renews about halfway through, which is when a

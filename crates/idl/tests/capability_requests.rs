@@ -45,13 +45,12 @@ fn compile(source: &str) -> miette::Result<PackageGraph> {
         &PackageManifest {
             package: PackageMetadata {
                 name: "capability-fixture".into(),
+                workspace: None,
                 version: Version::new(1, 0, 0),
             },
             sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
             dependencies: BTreeMap::new(),
             generate: GenerateConfig::default(),
-            default_registry: None,
-            registries: BTreeMap::new(),
         },
         vec![SourceUnit {
             alias: "main".into(),
@@ -212,6 +211,7 @@ app Reader {
         &PackageManifest {
             package: PackageMetadata {
                 name: "trellis".into(),
+                workspace: None,
                 version: Version::new(1, 0, 0),
             },
             sources: sources
@@ -220,8 +220,6 @@ app Reader {
                 .collect(),
             dependencies: BTreeMap::new(),
             generate: GenerateConfig::default(),
-            default_registry: None,
-            registries: BTreeMap::new(),
         },
         sources
             .iter()
@@ -284,7 +282,7 @@ fn selecting_a_group_selects_what_its_members_allow() {
             .iter()
             .map(|id| id.as_str())
             .collect::<Vec<_>>(),
-        ["capability-fixture.documents.v1:editor"]
+        ["localhost/capability-fixture.documents.v1:editor"]
     );
     let actions: Vec<_> = selection
         .actions
@@ -331,7 +329,7 @@ fn a_capability_action_may_be_dotted() {
             .iter()
             .map(|id| id.as_str())
             .collect::<Vec<_>>(),
-        ["capability-fixture.documents.v1:documents.exports.create"]
+        ["localhost/capability-fixture.documents.v1:documents.exports.create"]
     );
     let actions: Vec<_> = selection
         .actions

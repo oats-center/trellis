@@ -20,7 +20,7 @@ test("names read as short sentences", () => {
 
 test("API IDs show their short name", () => {
   assert.equal(apiLabel("trellis.health@v1"), "Health");
-  assert.equal(apiLabel("runtime-trellis.events@v1"), "Events");
+  assert.equal(apiLabel("localhost/runtime-trellis.events@v1"), "Events");
   assert.equal(apiLabel(undefined), "Unknown");
 });
 

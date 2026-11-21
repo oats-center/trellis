@@ -2,11 +2,9 @@
   import { type apis } from "$lib/trellis-apis";
   import { onMount } from "svelte";
   import { getTrellis } from "$lib/trellis";
-  import { resolve } from "$lib/console_paths";
   import { projectConsoleError } from "$lib/console/display_value.ts";
 
   type Pulled = apis.auth.PackagesPullOutput;
-  type Registry = apis.auth.PackageRegistriesListOutput["registries"][number];
 
   let {
     disabled = false,
@@ -18,8 +16,6 @@
   } = $props();
 
   const trellis = getTrellis();
-  let registries = $state<Registry[] | null>(null);
-  let registry = $state("");
   let name = $state("");
   let release = $state("");
   let pulling = $state(false);
@@ -30,28 +26,11 @@
   let disposed = false;
 
   const ready = $derived(
-    !disabled &&
-      !pulling &&
-      registry !== "" &&
-      name.trim() !== "" &&
-      release.trim() !== "",
+    !disabled && !pulling && name.trim() !== "" && release.trim() !== "",
   );
 
-  onMount(() => {
-    void (async () => {
-      try {
-        const listed = await trellis.packageRegistriesList({}).orThrow();
-        if (disposed) return;
-        registries = listed.registries;
-        if (listed.registries.length === 1)
-          registry = listed.registries[0].name;
-      } catch (cause) {
-        if (!disposed) error = projectConsoleError(cause).message;
-      }
-    })();
-    return () => {
-      disposed = true;
-    };
+  onMount(() => () => {
+    disposed = true;
   });
 
   /** Forget a looked-up release once what it was looked up by changes. */
@@ -79,8 +58,7 @@
     try {
       const response = await trellis
         .packagesPull({
-          registry,
-          name: name.trim(),
+          package: name.trim(),
           ...(wanted.startsWith("sha256:")
             ? { digest: wanted }
             : { version: wanted }),
@@ -99,58 +77,37 @@
 </script>
 
 <div class="space-y-3">
-  {#if registries !== null && registries.length === 0}
-    <p class="text-sm">
-      Trellis doesn't pull from any registry yet. <a
-        class="link"
-        href={resolve("/admin/services/registries")}>Add a registry</a
-      >
-    </p>
-  {:else}
-    <div class="grid gap-3 sm:grid-cols-3">
-      <label class="trellis-field"
-        ><span class="trellis-field-label">Registry</span><select
-          class="select w-full"
-          bind:value={registry}
-          disabled={disabled || registries === null}
-          onchange={changed}
-        >
-          <option value="" disabled>Choose one</option>
-          {#each registries ?? [] as item (item.name)}
-            <option value={item.name}>{item.name}</option>
-          {/each}
-        </select></label
-      >
-      <label class="trellis-field"
-        ><span class="trellis-field-label">Package</span><input
-          class="input w-full font-mono"
-          bind:value={name}
-          autocomplete="off"
-          spellcheck="false"
-          {disabled}
-          oninput={changed}
-        /></label
-      >
-      <label class="trellis-field"
-        ><span class="trellis-field-label">Version</span><input
-          class="input w-full font-mono"
-          bind:value={release}
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="1.0.0"
-          {disabled}
-          oninput={changed}
-        /></label
-      >
-    </div>
-    <button
-      type="button"
-      class="btn btn-outline btn-sm"
-      disabled={!ready}
-      onclick={() => void lookUp()}
-      >{pulling ? "Looking it up…" : "Look up package"}</button
+  <div class="grid gap-3 sm:grid-cols-3">
+    <label class="trellis-field sm:col-span-2"
+      ><span class="trellis-field-label">Package</span><input
+        class="input w-full font-mono"
+        bind:value={name}
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="ghcr.io/acme/orders"
+        {disabled}
+        oninput={changed}
+      /></label
     >
-  {/if}
+    <label class="trellis-field"
+      ><span class="trellis-field-label">Version</span><input
+        class="input w-full font-mono"
+        bind:value={release}
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="1.0.0"
+        {disabled}
+        oninput={changed}
+      /></label
+    >
+  </div>
+  <button
+    type="button"
+    class="btn btn-outline btn-sm"
+    disabled={!ready}
+    onclick={() => void lookUp()}
+    >{pulling ? "Looking it up…" : "Look up package"}</button
+  >
   {#if error}<p class="text-sm text-error" role="alert">{error}</p>{/if}
   {#if pulled}
     <div
@@ -159,7 +116,7 @@
       aria-label="Published package"
     >
       <p class="font-medium">
-        {pulled.published.name}
+        {pulled.published.package}
         {pulled.published.version}
       </p>
       {#if pulled.dependencies.length > 0}
@@ -174,7 +131,7 @@
           >Technical details</summary
         >
         <p class="mt-1">
-          From {pulled.published.registry}, digest
+          Digest
           <span class="trellis-identifier">{pulled.published.digest}</span>
         </p>
       </details>

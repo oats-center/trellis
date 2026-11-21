@@ -39,7 +39,7 @@ test("Rust preserves accepted Live during blocked preparation and publishes gran
         contract: participants.TransportGrowthSubject.participant,
       });
       const firstCapability =
-        "runtime-trellis.transport_growth.v1:growth.extend";
+        "localhost/runtime-trellis.transport_growth.v1:growth.extend";
       const firstGrants = await runtime.callAdminRpc(
         "authCapabilityGrantsList",
         { capabilityId: firstCapability },

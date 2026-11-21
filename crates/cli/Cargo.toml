@@ -57,6 +57,7 @@ ulid.workspace = true
 [build-dependencies]
 serde_json.workspace = true
 trellis-builtin-contracts = { path = "../builtin-contracts" }
+trellis-idl = { path = "../idl", version = "0.100.0-rc.52" }
 trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.52" }
 
 [dev-dependencies]

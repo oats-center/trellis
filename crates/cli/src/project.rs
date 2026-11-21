@@ -6,7 +6,7 @@ use miette::{miette, IntoDiagnostic, Result};
 
 pub(crate) use trellis_idl::project::{
     read_lock, read_manifest, Dependency as PackageDependency, LockedDependency, LockedPackage,
-    LockedSource, PackageLock as ProjectLock, PackageManifest as ProjectManifest, RegistryConfig,
+    LockedSource, PackageLock as ProjectLock, PackageManifest as ProjectManifest,
 };
 
 pub(crate) fn write_lock(path: &Path, lock: &ProjectLock) -> Result<()> {
