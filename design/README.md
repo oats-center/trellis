@@ -73,7 +73,7 @@ These headings are intentionally named for fast human and AI lookup.
 | `contracts/trellis-idl.md`                     | You are changing Trellis authoring or compilation                   | IDL syntax, semantic types, dependencies, and protocol lowering           |
 | `contracts/trellis-rust-contract-libraries.md` | You are changing generated Rust libraries                           | Rust participant facades, alias model, generation rules                   |
 | `tooling/trellis-cli.md`                       | You are changing Trellis CLI behavior or contract tooling workflows | CLI command architecture, install and upgrade flows, contract generation  |
-| `core/webhooks.md`                             | You are designing how services receive webhooks (proposal)          | Endpoint declarations, verifiers, decide RPC, delivery events, retention  |
+| `core/webhooks.md`                             | You are designing how services receive webhooks (proposal)          | Endpoints, verifiers, decide handler, events, runtime settings            |
 
 ## Cross-Cutting Pattern Docs
 
