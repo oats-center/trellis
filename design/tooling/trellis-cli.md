@@ -199,7 +199,19 @@ registers the owner's key as an instance, or selects the instance that already
 has it, and prints no seed. `updates`, `approve`, and `reject`
 accept a waiting claim's ID or name as well as a deployment's.
 
-`svc <id> instances` joins `Auth.ServiceInstances.List` with
+`svc <id> enrollment issue|list|edit|revoke` manages the deployment's
+enrollment secrets (`Auth.EnrollmentSecrets.*`). `issue` prints the secret
+alone on standard output, so it pipes into a secret store, and reports on
+standard error; with `--format json` the secret is the response's `text`.
+`edit` reads the secret's current limits and replaces only the flags given.
+`revoke --retire-instances` reports how many instances were retired and how
+many of their connections were still being closed when the revocation
+committed. `svc <id> instance-policy show|set` and `instance-policy show|set`
+read and change `Auth.InstancePolicy` at the deployment and installation
+level; see `design/auth/instance-enrollment.md`.
+
+`svc <id> instances` hides retired and removed instances unless `--all` is
+given, and shows each instance's origin. It joins `Auth.ServiceInstances.List` with
 `Health.Inspect` (the `cli` agent selects `health.inspect`) and adds a
 `status` to each instance: `state` (`offline`, `starting`,
 `waitingForApproval`, `waitingForSettings`, `serving`, `stopping`), `build`

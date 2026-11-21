@@ -69,6 +69,21 @@ impl TestServiceIdentity {
             .with_name(&self.name)
             .with_timeout_ms(self.timeout_ms)
     }
+
+    /// Options for connecting a new instance of this deployment that enrolls
+    /// itself with `secret`, an enrollment secret issued for the deployment,
+    /// instead of using the provisioned seed.
+    #[must_use]
+    pub fn enrolling_options(&self, secret: &str) -> ServiceConnectOptions<'_> {
+        ServiceConnectOptions::enrolling(
+            self.nats_servers.clone(),
+            self.trust.clone(),
+            self.trellis_url.clone(),
+        )
+        .with_enrollment_secret(secret)
+        .with_name(&self.name)
+        .with_timeout_ms(self.timeout_ms)
+    }
 }
 
 impl fmt::Debug for TestServiceIdentity {

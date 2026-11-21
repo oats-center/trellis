@@ -616,6 +616,36 @@ awaits the native resource producer before success (empty declarations and KV
 are supported; other declarations fail explicitly). Retry the same request after
 broker failure; retained allocations are never destroyed.
 
+### Enrolled service instances
+
+For processes that come and go (Kubernetes pods, rolling releases), issue the
+deployment an enrollment secret instead of provisioning each instance:
+`trellis svc <id> enrollment issue` prints it once (Trellis keeps only its
+hash). A process given it, through the SDK option or
+`TRELLIS_ENROLLMENT_SECRET`, makes its own identity key, registers it with a
+signed `POST /auth/service/enroll`, and connects with that key through ordinary
+admission; the secret never reaches NATS. A seed and a secret together are an
+error. Each secret has an instance cap (20), an hourly rate (100), an optional
+expiry, and `currentBuildOnly` (its instances' own `ServiceUpdates.Submit` is
+refused, so install builds with `svc <id> apply` first). At the cap a new
+enrollment replaces the secret's longest-offline instance, never a connected
+one or one enrolled within the first-connect grace (10 min) that has not
+connected yet; otherwise it is refused (`instance_limit`). Retrying an
+enrollment with the same key returns the same instance, even at the cap or
+rate. A memory-only key enrolls a new instance per start and retires it at a
+graceful stop (`ServiceInstances.RetireOwn`); with a key file the process keeps
+its instance: it connects with the stored key first, stops when an
+administrator removed the instance, and enrolls a new key only when Auth
+reports the old one retired or unregistered (`POST /auth/service/identity`). An
+enrolled instance retired while it was disconnected stops, and its restart
+enrolls anew. Enrolled instances offline past the retirement period (24 h,
+`Auth.InstancePolicy`, per deployment or installation) are retired; disabled
+deployments are skipped, and provisioned instances only with
+`retireProvisioned`. `enrollment revoke --retire-instances` revokes a leaked
+secret and disconnects everything it created. Instance states are `active`,
+`disabled`, `removed`, and `retired` (with `retiredReason`); `origin` says
+`provisioned` or `enrolled`.
+
 Auth Callout resolves the deployment, installed artifacts, capabilities,
 resources, online issuer, inbox, and exact transport permissions, and returns
 signed session authority that clients verify. Own-context bootstrap signs the

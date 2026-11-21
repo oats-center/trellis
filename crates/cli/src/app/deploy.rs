@@ -57,6 +57,12 @@ async fn run_svc_resource(format: OutputFormat, command: SvcResourceCommand) -> 
         }
         SvcResourceAction::Instances(args) => service_instances(format, &command.id, &args).await,
         SvcResourceAction::Provision(args) => provision_service(format, &command.id, &args).await,
+        SvcResourceAction::Enrollment(enrollment) => {
+            super::enrollment::run(format, &command.id, enrollment).await
+        }
+        SvcResourceAction::InstancePolicy(policy) => {
+            super::enrollment::deployment_policy(format, &command.id, policy).await
+        }
         SvcResourceAction::Updates => service_updates(format, &command.id).await,
         SvcResourceAction::Approve(args) => {
             decide_service_update(format, &command.id, &args, true).await
@@ -971,7 +977,17 @@ async fn service_instances(
             }),
             extra: Default::default(),
         })
-        .try_filter(|item| std::future::ready(args.disabled || item.principal.enabled))
+        .try_filter(|item| {
+            let ended = matches!(
+                item.state,
+                auth_types::AuthInstanceState::Retired | auth_types::AuthInstanceState::Removed
+            );
+            std::future::ready(if ended {
+                args.all
+            } else {
+                args.disabled || args.all || item.principal.enabled
+            })
+        })
         .try_collect::<Vec<_>>()
         .await
         .into_diagnostic()?;
@@ -1049,7 +1065,10 @@ fn with_status(instances: Vec<Value>, health: &[Value], current: &str) -> Vec<Va
             let reporting =
                 reported.filter(|report| output::field(report, "effectiveStatus") != "offline");
             let waiting = instance.get("waiting");
-            let state = if connected_at.is_none() {
+            let ended = output::field(&instance, "state");
+            let state = if ended == "retired" || ended == "removed" {
+                ended
+            } else if connected_at.is_none() {
                 "offline".to_owned()
             } else if let Some(report) = reported {
                 report
@@ -1361,9 +1380,11 @@ fn print_service_instances_result<T: serde::Serialize>(
                 output::time_col("Connected", "status.connectedAt"),
                 output::time_col("Last heartbeat", "status.lastHeartbeat"),
                 output::state_col("Enabled", "principal.enabled"),
+                output::col("Origin", "origin.kind"),
                 output::muted("ID", "instanceId"),
             ],
-            "No instances. Provision one with `provision`.",
+            "No instances. Provision one with `provision`, or issue an enrollment secret with \
+            `enrollment issue`.",
         )?;
         // What a waiting instance needs and which checks fail, which the
         // table has no room for.
@@ -1578,7 +1599,7 @@ pub(super) async fn resolve_deployment_id(
         .map(str::to_owned)
 }
 
-async fn find_deployment(
+pub(super) async fn find_deployment(
     connected: &Client,
     deployment_id: &str,
     kind: DeploymentKind,

@@ -620,6 +620,36 @@ awaits the native resource producer before success (empty declarations and KV
 are supported; other declarations fail explicitly). Retry the same request after
 broker failure; retained allocations are never destroyed.
 
+#### Enrolled service instances
+
+For processes that come and go (Kubernetes pods, rolling releases), issue the
+deployment an enrollment secret instead of provisioning each instance:
+`trellis svc <id> enrollment issue` prints it once (Trellis keeps only its
+hash). A process given it, through the SDK option or
+`TRELLIS_ENROLLMENT_SECRET`, makes its own identity key, registers it with a
+signed `POST /auth/service/enroll`, and connects with that key through ordinary
+admission; the secret never reaches NATS. A seed and a secret together are an
+error. Each secret has an instance cap (20), an hourly rate (100), an optional
+expiry, and `currentBuildOnly` (its instances' own `ServiceUpdates.Submit` is
+refused, so install builds with `svc <id> apply` first). At the cap a new
+enrollment replaces the secret's longest-offline instance, never a connected
+one or one enrolled within the first-connect grace (10 min) that has not
+connected yet; otherwise it is refused (`instance_limit`). Retrying an
+enrollment with the same key returns the same instance, even at the cap or
+rate. A memory-only key enrolls a new instance per start and retires it at a
+graceful stop (`ServiceInstances.RetireOwn`); with a key file the process keeps
+its instance: it connects with the stored key first, stops when an
+administrator removed the instance, and enrolls a new key only when Auth
+reports the old one retired or unregistered (`POST /auth/service/identity`). An
+enrolled instance retired while it was disconnected stops, and its restart
+enrolls anew. Enrolled instances offline past the retirement period (24 h,
+`Auth.InstancePolicy`, per deployment or installation) are retired; disabled
+deployments are skipped, and provisioned instances only with
+`retireProvisioned`. `enrollment revoke --retire-instances` revokes a leaked
+secret and disconnects everything it created. Instance states are `active`,
+`disabled`, `removed`, and `retired` (with `retiredReason`); `origin` says
+`provisioned` or `enrolled`.
+
 Auth Callout resolves the deployment, installed artifacts, capabilities,
 resources, online issuer, inbox, and exact transport permissions, and returns
 signed session authority that clients verify. Own-context bootstrap signs the
@@ -1597,7 +1627,12 @@ heartbeat interval. Deployment/instance assignment, installed
 package/participant evidence, capabilities, resources, signed session authority,
 and transport permissions are resolved server-side; no authorization-context
 store or client-supplied deployment/digest fields exist. The complete example is
-in `/guides/write-a-service/service-entrypoint`. When the build differs from the
+in `/guides/write-a-service/service-entrypoint`. Without `seed`, the service
+enrolls itself with `enrollment: { secret, keyFile?, title? }` or, when no
+secret is given, `TRELLIS_ENROLLMENT_SECRET` (exported as
+`ENROLLMENT_SECRET_ENV`); `keyFile` keeps the key across restarts, and without
+it `stop()` retires the in-memory instance. Giving both `seed` and
+`enrollment` is an error. When the build differs from the
 revision its instance runs, `TrellisService.connect` submits the build and
 resolves once it installs; a build that asks for new access keeps `connect`
 pending until an administrator approves it, logging the review link and printing
@@ -2184,6 +2219,16 @@ loopback `nats://` broker still connects. A broker certificate not issued for
 the URL's host, or not chaining to the trusted CA, fails with
 `TrellisClientError::NatsConnectConfig`, which retrying won't fix; other
 connect failures are `TrellisClientError::NatsConnect` and can pass.
+
+Without a provisioned seed, connect with
+`ServiceConnectOptions::enrolling(server.nats_servers, server.trust, server.issuer)`;
+it reads `TRELLIS_ENROLLMENT_SECRET` (`trellis_rs::service::ENROLLMENT_SECRET_ENV`)
+unless `.with_enrollment_secret(secret)` names one. `.with_key_file(path)` keeps
+the key across restarts (an administrator's removal fails `connect` with
+`ServiceRuntimeError::InstanceRemoved`), and `.with_instance_title(title)`
+replaces the host-name title. Without a key file, a graceful stop retires the
+instance; an enrolled instance retired while disconnected ends `run` with
+`ServiceRuntimeError::InstanceRetired`.
 
 When the build differs from the revision its instance runs, `connect` submits
 the build and returns once it installs. A build that asks for new access waits

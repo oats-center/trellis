@@ -74,7 +74,12 @@ heartbeat interval. Deployment/instance assignment, installed
 package/participant evidence, capabilities, resources, signed session authority,
 and transport permissions are resolved server-side; no authorization-context
 store or client-supplied deployment/digest fields exist. The complete example is
-in `/guides/write-a-service/service-entrypoint`. When the build differs from the
+in `/guides/write-a-service/service-entrypoint`. Without `seed`, the service
+enrolls itself with `enrollment: { secret, keyFile?, title? }` or, when no
+secret is given, `TRELLIS_ENROLLMENT_SECRET` (exported as
+`ENROLLMENT_SECRET_ENV`); `keyFile` keeps the key across restarts, and without
+it `stop()` retires the in-memory instance. Giving both `seed` and
+`enrollment` is an error. When the build differs from the
 revision its instance runs, `TrellisService.connect` submits the build and
 resolves once it installs; a build that asks for new access keeps `connect`
 pending until an administrator approves it, logging the review link and printing
