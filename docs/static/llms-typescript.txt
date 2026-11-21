@@ -201,7 +201,10 @@ const order = await client.ordersCreate({ customerId: "customer-1" }).orThrow();
 ```
 
 Generated flat names depend on action names and alias collisions; inspect the
-generated participant when choosing names. Editor hover on a flat method
+generated participant when choosing names. An action whose flat name another
+action already gives, such as an RPC `OrdersGet` beside a qualified
+`orders.Get`, is qualified by its own API name too, so every flat method stays
+callable. Editor hover on a flat method
 (`client.ordersCreate`, `service.handleOrdersCreate`, `publish…`, `on…`) shows
 the action's `///` description, declared errors, and allowing capabilities.
 There is no `client.rpc.orders.create`

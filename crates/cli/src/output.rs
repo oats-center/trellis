@@ -32,6 +32,12 @@ static JSON: AtomicBool = AtomicBool::new(false);
 /// Select the output mode for this process.
 pub fn init(format: OutputFormat) {
     JSON.store(matches!(format, OutputFormat::Json), Ordering::Relaxed);
+    // anstream turns color on for any terminal when `CI` is set, even under
+    // `TERM=dumb`; only `CLICOLOR_FORCE` outranks a dumb terminal here.
+    let forced = std::env::var_os("CLICOLOR_FORCE").is_some_and(|value| value != "0");
+    if !forced && std::env::var_os("TERM").is_some_and(|term| term == "dumb") {
+        anstream::ColorChoice::Never.write_global();
+    }
 }
 
 pub fn is_json(format: OutputFormat) -> bool {
