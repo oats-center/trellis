@@ -1,14 +1,14 @@
 ---
 title: Workspaces
-description: Proposal to make the registry location a package is published from part of its identity, so independent communities can use the same package names without a central authority.
+description: The registry location a package is published from is part of its identity, so independent communities can use the same package names without a central authority.
 ---
 
 # Design: Workspaces
 
-> **Status: proposal awaiting review.** Nothing in this document is
-> implemented. It records the decision to use registry-based workspaces and
-> works out what that decision changes. The decisions taken during review are
-> listed under [Decisions](#decisions). No questions are open.
+> **Status: implemented.** This document describes registry-based workspaces
+> as built. The decisions taken during review are listed under
+> [Decisions](#decisions), and what the implementation settled beyond them
+> under [As built](#as-built).
 
 ## Prerequisites
 
@@ -30,15 +30,16 @@ has the ID `krishi.samples@v1`, and its capabilities look like
 remembered consent under these IDs.
 
 A package is published to an OCI registry, at a repository such as
-`ghcr.io/krishi-diagnostics/krishi`. Today that location only says where to
-download the package. It is not part of any ID.
+`ghcr.io/krishi-diagnostics/krishi`. Before workspaces that location only said
+where to download the package, and was not part of any ID.
 
-So package names are global. Two communities that never coordinated can both
-publish a package named `krishi`, one at `ghcr.io/krishi-diagnostics` and one at
-`ghcr.io/qlever-llc`. Trellis treats them as the same package. When one depends
-on the other, `trellis-idl` stops with `package cannot depend on itself`, because
-both manifests say `name = "krishi"`. If both were installed in one Trellis,
-their IDs would collide in Auth.
+Before workspaces, package names were global. Two communities that never
+coordinated could both publish a package named `krishi`, one at
+`ghcr.io/krishi-diagnostics` and one at `ghcr.io/qlever-llc`, and Trellis
+treated them as the same package. When one depended on the other, `trellis-idl`
+stopped with `package cannot depend on itself`, because both manifests said
+`name = "krishi"`. If both were installed in one Trellis, their IDs collided in
+Auth.
 
 There is no registry of Trellis package names, and there should not be one.
 Communities need a way to own their names without asking anyone.
@@ -87,8 +88,8 @@ location never become two identities:
 
 ### How IDs are written
 
-IDs keep their current shape. A workspace-qualified ID puts the workspace and
-a `/` in front of today's ID. For Krishi's `krishi` package (the API `samples` and the group `lab` are
+IDs keep the shape they had. A workspace-qualified ID puts the workspace and
+a `/` in front of the short ID. For Krishi's `krishi` package (the API `samples` and the group `lab` are
 examples):
 
 | What        | Short ID                         | Full ID                                                     |
@@ -100,7 +101,7 @@ examples):
 | Group       | `krishi.samples.v1:lab`          | `ghcr.io/krishi-diagnostics/krishi.samples.v1:lab`          |
 
 The **short ID** is the full ID without its workspace. It is what every ID
-looks like today.
+looked like before workspaces.
 
 A full ID splits without ambiguity. Everything before the last `/` is the
 workspace. Package names contain no `/` or `.`, so the package name runs from
@@ -109,8 +110,8 @@ works for a registry host with a port. Only the built-in `trellis` package has
 IDs with no `/`.
 
 The longest API ID the protocol accepts (`validate_api_id` in
-`crates/protocol/src/identifiers.rs`) grows from 128 bytes to 255 bytes, to
-make room for the workspace.
+`crates/protocol/src/identifiers.rs`) is 255 bytes, which makes room for the
+workspace; it was 128 before.
 
 ### Where each form appears
 
@@ -159,8 +160,8 @@ time. The package's semantic digest covers its identity, so it covers the
 workspace too. Publishing cannot add the workspace afterwards without changing
 every digest the author has already tested against.
 
-A registry dependency names its workspace with `workspace`. That replaces
-today's `registry` field, the `[registries]` table, and `default-registry`. The
+A registry dependency names its workspace with `workspace`. That replaced the
+`registry` field, the `[registries]` table, and `default-registry`. The
 dependency's full address is in the manifest, where a reader can see it. A path
 dependency stays `{ package, path }`; its identity comes from its own
 `trellis.toml`, so switching it to a registry dependency later changes nothing.
@@ -168,7 +169,7 @@ dependency stays `{ package, path }`; its identity comes from its own
 A dependency is the same package only when workspace and name both match. The
 self-dependency check compares full identities, so the manifest above is
 valid. In imports the two `krishi` packages are told apart by their aliases,
-as any two dependencies are today.
+as any two dependencies are.
 
 `trellis.lock` moves to format 3, which keys each package by its full identity
 and records the workspace it was pulled from. `trellis update` writes it.
@@ -191,7 +192,7 @@ registry on their own machine gives the package a real workspace such as
 `localhost:5000/dev`, which is an ordinary workspace and publishes normally.
 
 Every `localhost` package shares one unowned namespace. Two of them with the
-same name collide, and Auth reports the collision as it does today. That is
+same name collide, and Auth reports the collision as it did before. That is
 fine for development and tests, which usually run against a fresh
 installation.
 
@@ -303,21 +304,21 @@ Event subjects already carry the full API ID, base64url-encoded:
 `ghcr.io/krishi-diagnostics/krishi.samples@v1` the token is
 `Z2hjci5pby9rcmlzaGktZGlhZ25vc3RpY3Mva3Jpc2hpLnNhbXBsZXNAdjE`.
 
-RPC and Operation subjects do not carry the package at all. They are built
-from the API's short name and the action, as in `rpc.v1.samples.Get` (see
-`derive_rpc_subject` in `crates/protocol/src/subjects.rs`). Two APIs named
-`samples@v1` in different packages share that subject and, through it, one NATS
-queue group, so callers' requests are split between two unrelated services.
-This already happens today between packages with different names. Workspaces
-mean nothing on the wire until it is fixed.
+RPC and Operation subjects used not to carry the package at all. They were
+built from the API's short name and the action, as in `rpc.v1.samples.Get`, so
+two APIs named `samples@v1` in different packages shared that subject and,
+through it, one NATS queue group, and callers' requests were split between two
+unrelated services. That happened between packages with different names too.
 
-This proposal changes RPC and Operation subjects to carry the API identity
-token the way events do: `rpc.v1.<token>.<Action>` and
-`operations.v1.<token>.<Action>`. Live routes already use the token. The
-built-in APIs follow the same rule, including the hand-written subjects in the
-runtime such as `rpc.v1.jobs.History`. Auth stores each accepted action's
-route (`auth_api_actions.route_json`), so those stored routes are derived again
-(see [Migration](#migration)).
+RPC and Operation subjects now carry the API identity token the way events and
+live routes do: `rpc.v1.<token>.<Action>` and
+`operations.v1.<token>.<Action>` (`derive_rpc_subject` and
+`derive_operation_subject` in `crates/protocol/src/subjects.rs`). The built-in
+APIs follow the same rule; the runtime's and SDKs' hand-written subjects, such
+as Jobs `History`, are derived from the API ID or taken from generated
+descriptors. Auth stores each accepted action's route
+(`auth_api_actions.route_json`) as derived, and a fresh installation derives
+them again (see [Migration](#migration)).
 
 Only the canonical start subject of an Operation gains the API identity. Once
 an Operation starts, its reference routes later status and control calls by
@@ -340,18 +341,22 @@ Generated client methods and handler names come from API and action names, so
 
 Generated module and export names are built from IDs, and full IDs would make
 them unreadable (`ghcr_io_krishi_diagnostics_krishi_sherpa_service`). They are
-built from the short ID instead. The TypeScript generator today names an API
-by its short name and falls back to the whole API ID when two APIs share a name
-(`api_modules` in `crates/codegen-ts/src/lib.rs`). The fallback becomes the
-short ID, then the full ID only when the short IDs also collide. A Krishi
-package that uses both `krishi` packages' `samples` APIs gets
-`GhcrIoKrishiDiagnosticsKrishiSamplesV1`, which is long and also rare.
+built from the short ID instead. The TypeScript generator names an API by its
+name and, when two APIs in the graph share a name, falls back to the short ID,
+then to the full ID only when the short IDs also collide (`api_modules` in
+`crates/codegen-ts/src/lib.rs`). The Rust generator names modules by short ID
+and falls back the same way. A Krishi package that uses both `krishi`
+packages' `samples` APIs gets `GhcrIoKrishiDiagnosticsKrishiSamplesV1`, which
+is long and also rare.
 
 Different full IDs can still produce the same generated name, because the
 generator splits on punctuation: `ghcr.io/acme-lab` and `ghcr.io/acme/lab`
-both become `GhcrIoAcmeLab`. When generated names collide, the generator adds a
-short deterministic suffix derived from a hash of each full identity, to the
-colliding names only. Every other name stays readable.
+both become `GhcrIoAcmeLab`. When generated names collide, the generator adds
+`_` and the first eight hex digits of the SHA-256 of each full identity, to
+the colliding names only (`trellis_idl::generated_names`, shared by both
+generators). Every other name stays readable. A participant or app that uses
+or serves two APIs of the same name takes its flat method names, such as
+`client.samplesGet`, from those generated names instead.
 
 ### Evidence
 
@@ -377,7 +382,7 @@ built-in `trellis`.
 Trellis is pre-release, so this is a clean break with no compatibility path
 for old formats or old IDs. Upgrading means starting a fresh installation.
 
-**Every ID changes once.** Each installed package either declares a workspace
+**Every ID changed once.** Each installed package either declares a workspace
 or becomes a `localhost` package, so every ID outside the built-in package
 gains a workspace: `krishi.SherpaService` becomes
 `localhost/krishi.SherpaService` or
@@ -415,6 +420,9 @@ through the services themselves after the new deployments exist.
 - `trellis.lock` format 2, the `registry` dependency field, `[registries]`, and
   `default-registry` are no longer accepted. `trellis update` writes format 3
   after the manifest names workspaces.
+- The OCI config of a published package names it by full identity (`id`), so
+  releases published before workspaces, the built-in `trellis` package's
+  included, cannot be read.
 - Releases published before workspaces declare none, so Auth will not pull
   them. Packages are published again with a workspace.
 
@@ -496,6 +504,52 @@ These were open during review and are now settled.
 - Compile a consumer that calls two APIs whose generated names collide, such
   as ones from `ghcr.io/acme-lab` and `ghcr.io/acme/lab`, and check that it
   builds and each call reaches its own API.
+
+## As built
+
+The implementation settled these points the decisions left open.
+
+- **Where identity lives.** `[package] workspace` sits beside `name`. A
+  package that declares none is `localhost/<name>`; writing
+  `workspace = "localhost"` is refused, so there is one spelling. A
+  dependency is `{ package, path }` or `{ package, workspace, version }`, and
+  only `trellis` is a registry dependency without a workspace. Workspaces are
+  validated by `trellis_protocol::validate_workspace`: a lower-case host that
+  has a `.` or a port, or is `localhost`, at least one OCI path segment, at
+  most 128 bytes.
+- **Lock and evidence fields.** Lock format 3 keys packages and dependency
+  edges by `id` (the full identity) and records a registry package's
+  `source.workspace`; a lock whose recorded workspace is not the package's own
+  is invalid, so there are no mirrors. Evidence keeps its fields
+  (`rootPackage`, `packages[].name`, and each canonical `dependency` line) and
+  puts the full identity in each. A published package's OCI config names it as
+  `id`. JSON Schema definitions are keyed by full type identity, so `$ref`
+  pointers escape `/` as `~1`.
+- **The built-in package from the build.** A `trellis` dependency that the
+  CLI's own build of the built-in package satisfies is locked as the release
+  at `ghcr.io/oats-center/trellis` and taken from that build, byte for byte the
+  release the Pipeline publishes, without downloading it. `Packages.Pull`
+  compiles a release against the built-in package the server ships, and the
+  compiled digests must still equal the ones the release was published with.
+- **Resolution in Auth.** A registry dependency names its identity. A path
+  dependency or a manifest-less import names only a package: it is the one
+  supplied package of that name, and otherwise the `localhost` package or the
+  built-in `trellis`.
+- **Registries.** An administrator's registry is a name, a prefix that is a
+  workspace, and optional credentials. `Packages.Pull` takes the package's full
+  identity and signs in with the registry whose prefix is that workspace, or
+  pulls anonymously; several registries naming one workspace are refused
+  rather than chosen between.
+- **Short IDs in the CLI.** Listing tables (`svc list`, `apis list`,
+  `resources list`) show each ID's short form on a terminal while no other row
+  shares it. Detail views, piped tab-separated output, and `--format json`
+  keep full IDs. `--participant` and role and app capability flags take a
+  short ID that names exactly one candidate; the capability flags look the
+  short ID up in Auth's capability catalog.
+- **Short IDs in the Console.** Pages label IDs by short form while none of the
+  IDs on the page share it (`web/src/lib/console/ids.ts`): the services list,
+  the APIs page's package groups, and the Add service form. A published
+  package is looked up by its full identity, with no registry to choose.
 
 ## Out of scope
 

@@ -26,6 +26,7 @@
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import PublishedPackagePicker from "$lib/components/PublishedPackagePicker.svelte";
   import SettingInput from "$lib/components/SettingInput.svelte";
+  import { idLabels } from "$lib/console/ids.ts";
 
   let { kind }: { kind: "service" | "device" } = $props();
   const trellis = getTrellis();
@@ -96,6 +97,16 @@
       .filter((participant) => participant.kind === kind)
       .map((participant) => participant.participantId),
   );
+  // Package and participant IDs read without their workspace unless two of
+  // those shown share a name.
+  const labels = $derived(
+    idLabels([
+      ...participants,
+      ...(resolution?.dependencies ?? []).map((dependency) => dependency.name),
+      ...wanted.map((missing) => missing.name),
+    ]),
+  );
+  const label = (id: string) => labels.get(id) ?? id;
   const participantId = $derived(
     participants.length === 1
       ? participants[0]
@@ -129,7 +140,7 @@
   const usedPackages = $derived(
     (resolution?.dependencies ?? []).map(
       (dependency) =>
-        `${dependency.name} ${dependency.version} (${
+        `${label(dependency.name)} ${dependency.version} (${
           dependency.origin === "builtin"
             ? "built in"
             : dependency.origin === "supplied"
@@ -287,10 +298,10 @@
       extraErrors = {
         ...extraErrors,
         [name]: !chosen
-          ? `Choose the trellis.toml and .trellis files for ${name}.`
+          ? `Choose the trellis.toml and .trellis files for ${label(name)}.`
           : !chosen.manifest
-            ? `Add the trellis.toml for ${name} with its files.`
-            : `Add the .trellis files for ${name} with its trellis.toml.`,
+            ? `Add the trellis.toml for ${label(name)} with its files.`
+            : `Add the .trellis files for ${label(name)} with its trellis.toml.`,
       };
       return;
     }
@@ -397,7 +408,7 @@
           ...Object.fromEntries(
             dropped.map((name) => [
               name,
-              `These files don't provide a ${name} that matches.`,
+              `These files don't provide a ${label(name)} that matches.`,
             ]),
           ),
         };
@@ -730,7 +741,7 @@
           <span id="deployment-idl-help" class="trellis-field-help"
             >{#if idlProblem}<span class="text-error">{idlProblem}</span
               >{:else if resolving}Checking its IDL…{:else if evidence}{#if participants.length === 1}Adds
-                {participants[0]}.{/if}
+                {label(participants[0])}.{/if}
               {#if usedPackages.length > 0}Uses {usedPackages.join(
                   ", ",
                 )}.{/if}{:else if resolution}Add the packages below.{:else if kind === "service"}Choose
@@ -777,7 +788,7 @@
             {#each wanted as missing (missing.name)}
               <li class="rounded-box border border-base-300 p-3">
                 <p class="text-sm">
-                  <span class="font-mono">{missing.name}</span>
+                  <span class="font-mono">{label(missing.name)}</span>
                   <span class="text-base-content/60"
                     >{missing.requirements.length > 0
                       ? missing.requirements.join(", ")
@@ -798,7 +809,7 @@
                     multiple
                     class="file-input file-input-sm w-full sm:w-auto"
                     accept=".trellis,.toml"
-                    aria-label={`Files for ${missing.name}`}
+                    aria-label={`Files for ${label(missing.name)}`}
                     disabled={busy || uncertain}
                     onchange={(event) => void chooseExtra(missing.name, event)}
                   />
@@ -811,7 +822,7 @@
                       type="file"
                       class="sr-only"
                       webkitdirectory
-                      aria-label={`Folder for ${missing.name}`}
+                      aria-label={`Folder for ${label(missing.name)}`}
                       disabled={busy || uncertain}
                       onchange={(event) =>
                         void chooseExtra(missing.name, event)}
@@ -826,7 +837,7 @@
                 {#if extras[missing.name]}
                   <ul
                     class="mt-2 font-mono text-xs text-base-content/70"
-                    aria-label={`Files used for ${missing.name}`}
+                    aria-label={`Files used for ${label(missing.name)}`}
                   >
                     {#each extras[missing.name].names as name (name)}<li>
                         {name}
@@ -838,7 +849,7 @@
                     type="button"
                     class="btn btn-ghost btn-xs mt-1"
                     disabled={busy || uncertain}
-                    aria-label={`Remove files for ${missing.name}`}
+                    aria-label={`Remove files for ${label(missing.name)}`}
                     onclick={() => removeExtra(missing.name)}>Remove</button
                   >
                 {/if}

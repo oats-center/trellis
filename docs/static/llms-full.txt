@@ -73,11 +73,36 @@ A minimal `trellis.toml` is:
 ```toml
 [package]
 name = "orders-trellis"
+workspace = "ghcr.io/acme"
 version = "1.0.0"
 
 [sources]
 orders = "contract.trellis"
 ```
+
+#### Workspaces and IDs
+
+A package's workspace is the registry location it is published from, a
+lower-case registry host and repository path such as `ghcr.io/acme` or
+`localhost:5000/dev`. Workspace and name are its full identity,
+`ghcr.io/acme/orders-trellis`, which is also its repository. Whoever can push
+there owns the names under it, so two communities can each publish a package
+named `orders-trellis`. A package without `workspace` gets `localhost`: it can
+be a path dependency, installed from source, and used in tests, but never
+published, and a published package cannot depend on it. Declare the workspace
+from the start for anything you will publish; changing it later is a new
+package with new IDs and needs a new deployment. The built-in `trellis`
+package has no workspace, and the name `trellis` is reserved everywhere.
+
+Every ID a package defines starts with its full identity: participant
+`ghcr.io/acme/orders-trellis.OrdersService`, API
+`ghcr.io/acme/orders-trellis.orders@v1`, capability
+`ghcr.io/acme/orders-trellis.orders.v1:orders.read`. The short ID is the same
+without the workspace. IDL source never spells an ID. The wire, Auth, logs,
+and `--format json` always carry full IDs; CLI and Console human output show the
+short ID while no other installed package has the same one, and CLI input takes
+a short ID when it names exactly one thing. Built-in IDs stay `trellis.auth@v1`
+and `trellis.auth.v1:users.manage`.
 
 #### Authoring
 
@@ -132,14 +157,25 @@ parameter or job key. There are no string formats: a UUID or email is a
 
 #### Dependencies
 
-- `trellis add` and `trellis rm` change dependency declarations.
+- `trellis add <path>` or `trellis add <workspace>/<name>` (such as
+  `trellis add ghcr.io/acme/orders`) and `trellis rm` change dependency
+  declarations.
 - `trellis update` resolves dependencies and updates `trellis.lock`.
 - `trellis install` reproduces locked dependencies and generated outputs.
 - `trellis generate` compiles local IDL and generates packages using locally
   available dependencies. Use `--watch` for continuous offline generation.
 
-Dependencies reference local or OCI native source packages. Remote locks pin
-release and digests; credentials use the Docker credential configuration. If a
+Dependencies reference local or OCI native source packages: `{ package, path }`
+for a local package, whose own `trellis.toml` gives its identity, or
+`{ package, workspace, version }` for a published one (`trellis` alone names no
+workspace). Two dependencies are the same package only when workspace and name
+both match, so a package may depend on another of the same name from another
+workspace under its own alias. `trellis.lock` (format 3) keys each package by
+full identity and pins release and digests; each registry dependency is pulled
+from the workspace it names, and a release that declares another identity is
+refused. Credentials use the Docker credential configuration. `trellis publish`
+pushes to the package's own `<workspace>/<name>`; the registry's access control
+decides who may. If a
 participant declares a durable `consumer`, add a direct `trellis` source package
 dependency containing `trellis.events@v1`, choose its version in `trellis.toml`,
 and run `trellis update` to lock it. Compilation fails if the dependency or the
@@ -441,31 +477,35 @@ The Console's Add service form takes only the service's `trellis.toml` and
 (`trellis.auth.v1:users.manage`, like `Deployments.Create`) builds the package
 evidence from them: each dependency comes from packages supplied with the
 request, the `trellis` package the server ships, or an installed participant's
-packages, by name and version requirement (a path dependency takes any
-version; the highest match wins and the result says which). A dependency none
+packages, by full identity and version requirement (a path dependency takes
+any version and means the supplied package of its name, else the `localhost`
+or built-in one; the highest match wins and the result says which). A dependency none
 of these satisfy is returned by name and requirement for the caller to supply;
 nothing is fetched from a registry. The returned evidence goes to
 `Deployments.Create`, which checks it like any other.
 
 A service published with `trellis publish` is installed from its release
 instead, so its container connects at once with nothing to approve:
-`trellis svc <name> create --package <name>@<version> [--registry <name>]
+`trellis svc <name> create --package <workspace>/<name>@<version>
 [--participant <package>.<Name>]`, and for a new release `trellis svc <id>
-apply --package <name>@<version>` before rolling out its image (`dev
-create|apply` take the same flags). `<name>@sha256:<manifest digest>`, as
-`publish` prints, pins exactly the reviewed release. `--package` and `--source`
-exclude each other. `Auth.Packages.Pull` (`users.manage`) does the work for the
-CLI and the Console's "From a published package" option alike: it pulls the
-release from a registry the administrator added, checks the manifest, config,
-and source digests, pulls each dependency by the digest its frozen resolution
-records, compiles from exactly those packages without resolving again, and
-returns the evidence and participants for `Create` or `Apply`. A release whose
-bytes don't match its digests is refused. Registries are Auth state, not server
-config: `trellis registries set <name> --prefix <host>/<path> [--username <user>
+apply --package <workspace>/<name>@<version>` before rolling out its image
+(`dev create|apply` take the same flags). `<workspace>/<name>@sha256:<manifest
+digest>`, as `publish` prints, pins exactly the reviewed release. `--package`
+and `--source` exclude each other. `Auth.Packages.Pull` (`users.manage`) does
+the work for the CLI and the Console's "From a published package" option alike:
+it pulls the release from the package's own workspace and accepts it only when
+it declares that identity, checks the manifest, config, and source digests,
+pulls each dependency from its own workspace by the digest its frozen
+resolution records, compiles from exactly those packages and the built-in
+`trellis` package without resolving again, and returns the evidence and
+participants for `Create` or `Apply`. A release whose bytes don't match its
+digests is refused. Registry credentials are Auth state, not server config:
+`trellis registries set <name> --prefix <workspace> [--username <user>
 --secret-file <path|->]`, `registries list|remove`, or the Console's Services >
-Package registries (`Auth.PackageRegistries.*`). A public registry needs no
-credentials; a private registry's secret is sealed with the storage key and
-never returned. The repository is the prefix followed by the package name.
+Package registries (`Auth.PackageRegistries.*`). Trellis signs in to a
+workspace with the registry added for it and pulls anonymously when there is
+none; a private registry's secret is sealed with the storage key and never
+returned.
 
 A running service updates itself. When its generated participant digest differs
 from the revision its instance runs, the service SDK submits its package evidence
