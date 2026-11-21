@@ -75,11 +75,13 @@ trellis svc billing config set-secret stripeSigningSecret
 The Console's service page has the same in its Webhooks section, with a copy
 button for each URL.
 
-When the sender changes its secret, set the new one. Trellis accepts the
-previous secret for 24 hours, so requests the sender signed before the change
-still pass. The endpoint shows when a request last matched the old secret.
-`trellis svc billing config delete-revision <revision>` ends the overlap at
-once.
+When the sender changes its secret, token, or password, set the new one.
+Trellis accepts the previous value for 24 hours, so requests the sender made
+before the change still pass. Only the value the change replaced is accepted,
+never an older one. The endpoint shows until when the old value is accepted
+and when a request last matched it. Deleting the previous settings revision
+with `trellis svc billing config delete-revision <revision>` ends the overlap
+at once.
 
 ## Handle requests in TypeScript
 
@@ -105,8 +107,8 @@ await service.wait();
 
 Delivery is at least once with no ordering guarantee, so the handler must be
 safe to run twice. `dedupe` drops the sender's own retries on a best-effort
-basis; deduplicating by business meaning, such as one charge per payment ID,
-is the service's job.
+basis, including retries that arrive at the same moment; deduplicating by
+business meaning, such as one charge per payment ID, is the service's job.
 
 ## Answer handshakes with a decide handler
 
@@ -163,7 +165,8 @@ trellis svc billing webhooks stripe attempt <attempt-id>
 trellis svc billing webhooks stripe reverify <attempt-id>
 ```
 
-A request rejected because the secret was wrong can be verified again once the
+`attempt` and `reverify` act only on a request of the endpoint you name. A
+request rejected because the secret was wrong can be verified again once the
 secret is fixed, while the intake stream still holds it (7 days by default).
 A request refused at intake for a wrong token or password cannot: its
 credential was never stored.
@@ -178,8 +181,9 @@ trellis svc billing webhooks stripe disable
 trellis svc billing webhooks stripe rotate-url
 ```
 
-`rotate-url` gives the endpoint a new URL and keeps the old one working until
-`retire-url`.
+Durations take `ms`, `s`, `m`, `h`, or `d`, sizes take `B`, `KiB`, `MiB`, or
+`GiB`, and counts are plain numbers; `set max-body 5m` is refused. `rotate-url`
+gives the endpoint a new URL and keeps the old one working until `retire-url`.
 
 ## Testing
 

@@ -45,6 +45,25 @@ pub(crate) struct Secrets {
     pub(crate) previous: Option<String>,
 }
 
+impl Secrets {
+    /// Which secret a presented credential matches, where `expected` gives
+    /// the credential each secret makes.
+    pub(crate) fn matching(
+        &self,
+        presented: &[u8],
+        expected: impl Fn(&str) -> Vec<u8>,
+    ) -> Option<KeyMatch> {
+        [
+            (&self.current, KeyMatch::Current),
+            (&self.previous, KeyMatch::Previous),
+        ]
+        .into_iter()
+        .filter_map(|(secret, key)| Some((secret.as_deref()?, key)))
+        .find(|(secret, _)| equal(presented, &expected(secret)))
+        .map(|(_, key)| key)
+    }
+}
+
 /// Whether two byte strings are equal, in time that depends only on their lengths.
 pub(crate) fn equal(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len() && bool::from(left.ct_eq(right))

@@ -165,14 +165,18 @@ model WebhooksAttemptsQueryRequest {
 }
 model WebhooksAttemptsQueryResponse { attempts: list<WebhookAttempt>; next: ulid | null; }
 
-model WebhooksAttemptsInspectRequest { attemptId: ulid; }
+/// A request record of one endpoint. A record of another service or endpoint
+/// is not found.
+model WebhooksAttemptsInspectRequest { service: string; endpoint: string; attemptId: ulid; }
 model WebhooksAttemptsInspectResponse {
   attempt: WebhookAttempt;
   /// The stored request, while the intake stream still holds it.
   delivery: WebhookDelivery | null;
 }
 
-model WebhooksAttemptsReverifyRequest { attemptId: ulid; }
+/// A stored request of one endpoint. A record of another service or endpoint
+/// is not found.
+model WebhooksAttemptsReverifyRequest { service: string; endpoint: string; attemptId: ulid; }
 model WebhooksAttemptsReverifyResponse { attempt: WebhookAttempt; }
 
 model WebhooksErrorData { message: string; }

@@ -268,6 +268,18 @@ service WebhookService {
     }
     decide { deadline 5s; }
   }
+  webhook receipt {
+    title "Receipt";
+    description "A signed endpoint answered once verified, deduplicated by a header.";
+    mode sync;
+    verify hmac {
+      key config signing;
+      algorithm sha256;
+      signed "{body}";
+      signature { header "X-Body-Signature"; prefix "sha256="; encoding hex; }
+    }
+    dedupe "{header:X-Delivery-Id}";
+  }
 }
 service ConfiguredService {
   config endpoint { title "Endpoint"; description "Where the service sends work."; type string; }

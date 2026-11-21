@@ -221,6 +221,33 @@ fn check_setting(name: &str, value: i64) -> Result<(), AuthError> {
     Ok(())
 }
 
+/// Every deployment's own deployment-wide webhook settings, by deployment,
+/// whether or not it still has an endpoint, so its records keep expiring.
+pub(crate) fn load_retention(
+    storage: &OAuthStorage,
+) -> Result<BTreeMap<String, BTreeMap<String, u64>>, AuthError> {
+    storage.authority.read(|connection| {
+        let mut statement = connection.prepare(
+            "SELECT deployment_id,setting,value FROM auth_webhook_settings WHERE endpoint=?1",
+        )?;
+        let mut settings: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+        for row in statement.query_map([DEPLOYMENT_WIDE], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u64>(2)?,
+            ))
+        })? {
+            let (deployment, setting, value) = row?;
+            settings
+                .entry(deployment)
+                .or_default()
+                .insert(setting, value);
+        }
+        Ok(settings)
+    })
+}
+
 /// One endpoint as intake serves it.
 #[derive(Clone, Debug)]
 pub(crate) struct WebhookEndpointRecord {

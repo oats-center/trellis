@@ -16,7 +16,7 @@ use trellis_idl::{WebhookMode, WebhookVerifier};
 use super::process::{Answer, Verdict};
 use super::records::{NewAttempt, Outcome};
 use super::request::{dropped, Check, Disposition, StoredRequest};
-use super::verify::equal;
+use super::verify::KeyMatch;
 use super::{Endpoint, Webhooks};
 
 /// Most request headers, and most header bytes, Trellis accepts.
@@ -95,14 +95,11 @@ async fn handle(
     let host = request
         .headers()
         .get(header::HOST)
-        .and_then(|host| host.to_str().ok())
-        .map(|host| {
-            host.rsplit_once(':')
-                .map_or(host, |(name, _)| name)
-                .to_ascii_lowercase()
-        });
-    if webhooks.inner.console_host.is_some() && host == webhooks.inner.console_host {
-        return empty(StatusCode::NOT_FOUND);
+        .and_then(|host| host.to_str().ok());
+    if let (Some(console), Some(host)) = (&webhooks.inner.console, host) {
+        if console.names(host) {
+            return empty(StatusCode::NOT_FOUND);
+        }
     }
     let directory = webhooks.directory();
     let Some(endpoint) = directory
@@ -372,8 +369,11 @@ async fn intake(
     let size = stored.body.len();
     let sha = stored.body_sha256();
     let fail = |refusal: Refusal| (refusal, size, sha.clone());
+    let records = &webhooks.inner.records;
+    let (deployment, endpoint_name) = (&endpoint.record.deployment_id, &endpoint.record.endpoint);
     // Credentials are checked as the request arrives, then removed, so they
-    // never reach the intake stream, the record, or the event.
+    // never reach the intake stream, the record, or the event. The secret
+    // before a change is accepted while the change overlap lasts.
     for verifier in &definition.verifiers {
         match verifier {
             WebhookVerifier::Address { ranges } => {
@@ -415,13 +415,14 @@ async fn intake(
                 query,
                 prefix,
             } => {
-                let Some(expected) = endpoint.text(secret) else {
+                let secrets = endpoint.secrets(secret, received_at_ms);
+                if secrets.current.is_none() {
                     return Err(fail(refuse(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "unavailable",
                         format!("secret {secret} not set"),
                     )));
-                };
+                }
                 let presented = match (name, query) {
                     (Some(name), _) => parts
                         .headers
@@ -437,25 +438,28 @@ async fn intake(
                         .map(|(_, value)| value.into_owned()),
                     (None, None) => None,
                 };
-                if !presented
-                    .is_some_and(|presented| equal(presented.as_bytes(), expected.as_bytes()))
-                {
-                    strip(&mut stored, name.as_deref(), query.as_deref());
+                let matched = presented.and_then(|presented| {
+                    secrets.matching(presented.as_bytes(), |secret| secret.as_bytes().to_vec())
+                });
+                strip(&mut stored, name.as_deref(), query.as_deref());
+                let Some(matched) = matched else {
                     return Err(fail(refuse(
                         StatusCode::UNAUTHORIZED,
                         "rejected",
                         "token does not match",
                     )));
+                };
+                if matched == KeyMatch::Previous {
+                    let _ = records.note_previous_match(deployment, endpoint_name).await;
                 }
-                strip(&mut stored, name.as_deref(), query.as_deref());
                 stored.checks.push(Check {
                     kind: "token".into(),
-                    key: Some("current".into()),
+                    key: Some(matched.as_str().into()),
                 });
             }
             WebhookVerifier::Basic { username, password } => {
-                let (Some(user), Some(secret)) = (endpoint.text(username), endpoint.text(password))
-                else {
+                let secrets = endpoint.secrets(password, received_at_ms);
+                let (Some(user), Some(_)) = (endpoint.text(username), &secrets.current) else {
                     return Err(fail(refuse(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "unavailable",
@@ -473,18 +477,22 @@ async fn intake(
                             .ok()
                     })
                     .unwrap_or_default();
-                let expected = format!("{user}:{secret}");
                 strip(&mut stored, Some("authorization"), None);
-                if !equal(&presented, expected.as_bytes()) {
+                let Some(matched) =
+                    secrets.matching(&presented, |secret| format!("{user}:{secret}").into_bytes())
+                else {
                     return Err(fail(refuse(
                         StatusCode::UNAUTHORIZED,
                         "rejected",
                         "basic credentials do not match",
                     )));
+                };
+                if matched == KeyMatch::Previous {
+                    let _ = records.note_previous_match(deployment, endpoint_name).await;
                 }
                 stored.checks.push(Check {
                     kind: "basic".into(),
-                    key: Some("current".into()),
+                    key: Some(matched.as_str().into()),
                 });
             }
             WebhookVerifier::None => stored.checks.push(Check {
@@ -505,7 +513,6 @@ async fn intake(
         body_size: size,
         body_sha256: &sha,
     };
-    let records = &webhooks.inner.records;
     match definition.mode {
         WebhookMode::Async => {
             let _ = records
@@ -554,7 +561,7 @@ async fn intake(
             let verdict = webhooks
                 .verify(endpoint, &stored, WebhookMode::Sync, 1)
                 .await;
-            let outcome = verdict.outcome(attempt_id, false);
+            let outcome = verdict.outcome(false);
             let label = outcome.outcome;
             let status = outcome.status.unwrap_or(definition.status);
             let _ = records.insert(new(), outcome).await;

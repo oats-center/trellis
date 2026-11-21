@@ -1455,12 +1455,17 @@ service; set them with `trellis svc <name> config set-secret`. `mode async`
 sync` verifies first and can return the service's decide-handler response,
 for handshakes. `decide { deadline 2s; }` lets the service accept, ignore, or
 reject after the standard verifiers. `dedupe "{header:...}"` drops the
-sender's retries on a best-effort basis; handlers must still be idempotent.
+sender's retries, including simultaneous ones, on a best-effort basis;
+handlers must still be idempotent. After a secret, token, or password changes,
+`hmac`, `token`, and `basic` also accept the value it replaced for the
+endpoint's rotation overlap (24 h by default); deleting the settings revision
+that holds it ends the overlap, and no older value is ever accepted.
 Every member but title and description is part of the build and needs
 approval; `verify none` also needs `--acknowledge-unauthenticated-webhooks`.
 Watch and operate endpoints with `trellis svc <name> webhooks [<endpoint>]`,
 `... attempts`, `... attempt <id> [--body]`, `... reverify <id>`, `...
-enable|disable|rotate-url|retire-url`, and `... set <setting> <value>`. Tests
+enable|disable|rotate-url|retire-url`, and `... set <setting> <value>`, where
+durations take `ms|s|m|h|d`, sizes `B|KiB|MiB|GiB`, and counts no unit. Tests
 send real HTTPS requests to the URL `Webhooks.Endpoints.List` returns.
 
 ### Resource lifecycle

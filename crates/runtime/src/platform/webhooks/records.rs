@@ -1,5 +1,6 @@
 //! Request records in `webhooks.sqlite`, beside the platform database.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -55,6 +56,23 @@ pub(crate) struct NewAttempt<'a> {
     pub(crate) method: &'a str,
     pub(crate) body_size: usize,
     pub(crate) body_sha256: &'a str,
+}
+
+/// How long a deployment keeps stored requests waiting for verification,
+/// and request records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Retention {
+    pub(crate) intake_ms: u64,
+    pub(crate) records_ms: u64,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Self {
+            intake_ms: 7 * 86_400_000,
+            records_ms: 30 * 86_400_000,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -281,25 +299,35 @@ impl Records {
         .await
     }
 
-    /// Pending records older than the deployment's intake retention left the
-    /// stream unverified; records older than the record retention go.
+    /// For every deployment with records, whether or not it still has an
+    /// endpoint: pending records older than its intake retention left the
+    /// stream unverified, and records older than its record retention go. A
+    /// deployment missing from `retention` uses the Trellis defaults.
     pub(crate) async fn sweep(
         &self,
-        deployment_id: &str,
-        pending_before_ms: i64,
-        records_before_ms: i64,
+        now_ms: i64,
+        retention: BTreeMap<String, Retention>,
     ) -> Result<()> {
-        let deployment_id = deployment_id.to_owned();
+        let before = move |retention: u64| {
+            now_ms.saturating_sub(i64::try_from(retention).unwrap_or(i64::MAX))
+        };
         self.with(move |connection| {
-            connection.execute(
-                "UPDATE webhook_attempts SET outcome='expired',stream_sequence=NULL,updated_at=?3 \
-                WHERE deployment_id=?1 AND outcome='pending' AND received_at<?2",
-                params![deployment_id, pending_before_ms, now_ms()],
-            )?;
-            connection.execute(
-                "DELETE FROM webhook_attempts WHERE deployment_id=?1 AND received_at<?2",
-                params![deployment_id, records_before_ms],
-            )?;
+            let deployments = connection
+                .prepare("SELECT DISTINCT deployment_id FROM webhook_attempts")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>>>()?;
+            for deployment_id in deployments {
+                let kept = retention.get(&deployment_id).copied().unwrap_or_default();
+                connection.execute(
+                    "UPDATE webhook_attempts SET outcome='expired',stream_sequence=NULL,updated_at=?3 \
+                    WHERE deployment_id=?1 AND outcome='pending' AND received_at<?2",
+                    params![deployment_id, before(kept.intake_ms), now_ms],
+                )?;
+                connection.execute(
+                    "DELETE FROM webhook_attempts WHERE deployment_id=?1 AND received_at<?2",
+                    params![deployment_id, before(kept.records_ms)],
+                )?;
+            }
             Ok(())
         })
         .await
@@ -343,4 +371,140 @@ fn attempt(row: &rusqlite::Row<'_>) -> Result<Attempt> {
         stored: stream_sequence.is_some(),
         stream_sequence: stream_sequence.and_then(|value| u64::try_from(value).ok()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{NewAttempt, Outcome, Records, Retention};
+
+    const DAY: i64 = 86_400_000;
+
+    async fn record(
+        records: &Records,
+        id: &str,
+        deployment: &str,
+        age: i64,
+        outcome: &'static str,
+    ) {
+        records
+            .insert(
+                NewAttempt {
+                    attempt_id: id,
+                    deployment_id: deployment,
+                    endpoint: "signed",
+                    received_at_ms: super::now_ms() - age,
+                    client_address: "127.0.0.1",
+                    method: "POST",
+                    body_size: 2,
+                    body_sha256: "",
+                },
+                Outcome {
+                    outcome,
+                    ..Outcome::default()
+                },
+            )
+            .await
+            .expect("record inserted");
+    }
+
+    async fn outcome(records: &Records, id: &str) -> Option<String> {
+        records
+            .get(id)
+            .await
+            .expect("record read")
+            .map(|attempt| attempt.outcome)
+    }
+
+    #[tokio::test]
+    async fn records_expire_for_deployments_without_endpoints() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let records = Records::open(&directory.path().join("webhooks.sqlite")).expect("opened");
+        // A deployment whose last endpoint is gone keeps the Trellis defaults.
+        record(
+            &records,
+            "01JA0000000000000000000001",
+            "gone",
+            31 * DAY,
+            "accepted",
+        )
+        .await;
+        record(
+            &records,
+            "01JA0000000000000000000002",
+            "gone",
+            8 * DAY,
+            "pending",
+        )
+        .await;
+        record(
+            &records,
+            "01JA0000000000000000000003",
+            "gone",
+            DAY,
+            "accepted",
+        )
+        .await;
+        // A deployment that chose a longer record retention keeps it.
+        record(
+            &records,
+            "01JA0000000000000000000004",
+            "kept",
+            31 * DAY,
+            "accepted",
+        )
+        .await;
+        // One that chose a shorter one loses records sooner.
+        record(
+            &records,
+            "01JA0000000000000000000005",
+            "short",
+            2 * 3_600_000,
+            "accepted",
+        )
+        .await;
+
+        let retention = BTreeMap::from([
+            (
+                "kept".to_owned(),
+                Retention {
+                    records_ms: 365 * 86_400_000,
+                    ..Retention::default()
+                },
+            ),
+            (
+                "short".to_owned(),
+                Retention {
+                    records_ms: 3_600_000,
+                    ..Retention::default()
+                },
+            ),
+        ]);
+        records
+            .sweep(super::now_ms(), retention)
+            .await
+            .expect("swept");
+
+        assert_eq!(outcome(&records, "01JA0000000000000000000001").await, None);
+        assert_eq!(
+            outcome(&records, "01JA0000000000000000000002")
+                .await
+                .as_deref(),
+            Some("expired")
+        );
+        assert_eq!(
+            outcome(&records, "01JA0000000000000000000003")
+                .await
+                .as_deref(),
+            Some("accepted")
+        );
+        assert_eq!(
+            outcome(&records, "01JA0000000000000000000004")
+                .await
+                .as_deref(),
+            Some("accepted")
+        );
+        assert_eq!(outcome(&records, "01JA0000000000000000000005").await, None);
+    }
 }
