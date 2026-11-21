@@ -8,8 +8,7 @@ description: Proposal to make the registry location a package is published from 
 > **Status: proposal awaiting review.** Nothing in this document is
 > implemented. It records the decision to use registry-based workspaces and
 > works out what that decision changes. The decisions taken during review are
-> listed under [Decisions](#decisions), and the one question still open is at
-> the end.
+> listed under [Decisions](#decisions). No questions are open.
 
 ## Prerequisites
 
