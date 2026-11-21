@@ -580,6 +580,14 @@ pub(super) fn change_deployment(
                 "UPDATE auth_deployments SET state=?2 WHERE deployment_id=?1",
                 params![deployment, state],
             )?;
+            if state == "active" && current.state == AuthDeploymentState::Disabled {
+                // Its instances could not connect while it was disabled, so
+                // each gets a full retirement period from now.
+                connection.execute(
+                    "UPDATE auth_deployments SET enabled_at=?2 WHERE deployment_id=?1",
+                    params![deployment, now],
+                )?;
+            }
             connection.execute(
                 "UPDATE auth_deployment_bindings SET revision=revision+1 WHERE deployment_id=?1",
                 [&deployment],
@@ -608,6 +616,12 @@ pub(super) fn change_deployment(
                     SET resource_commitments_json='{}' \
                     WHERE deployment_id=?1",
                     [&deployment],
+                )?;
+                connection.execute(
+                    "INSERT OR IGNORE INTO auth_identity_tombstones(identity_key_id,outcome,\
+                    recorded_at) SELECT identity_key_id,'removed',?2 \
+                    FROM auth_provisioned_identities WHERE deployment_id=?1 AND state='active'",
+                    params![deployment, now],
                 )?;
                 connection.execute(
                     "UPDATE auth_provisioned_identities \
@@ -730,13 +744,16 @@ pub(super) fn change_instance(
                 "UPDATE auth_instances \
                 SET state=?2,version=version+1,updated_at=?3 \
                 WHERE instance_id=?1 \
-                AND version=?4 AND state!='revoked'",
+                AND version=?4 AND state NOT IN ('revoked','retired')",
                 params![instance_id, state, now, input.expected_revision.0 .0],
             )? != 1
             {
                 return Err(AuthError::Conflict);
             }
             if state == "revoked" {
+                // A returning process is told it was removed, even after the
+                // instance's own rows are cleaned up.
+                super::instances::tombstone(connection, &instance_id, "removed", now)?;
                 connection.execute(
                     "UPDATE auth_provisioned_identities \
                     SET state='revoked',revoked_at=?2 \
@@ -820,6 +837,31 @@ pub(super) fn read_instance(
             |row| row.get(0),
         )
         .optional()?;
+    // enrolling secret and its title, last seen, retired at, retired reason
+    type Lifecycle = (
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+    );
+    let (secret, secret_title, last_seen, retired_at, retired_reason): Lifecycle = connection
+        .query_row(
+            "SELECT i.enrollment_secret_id,e.title,i.last_seen_at,i.retired_at,i.retired_reason \
+        FROM auth_instances i \
+        LEFT JOIN auth_enrollment_secrets e ON e.secret_id=i.enrollment_secret_id \
+        WHERE i.instance_id=?1",
+            [instance_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
     // A logical connection keeps its runtime ID across authorization renewals,
     // so it began when the first session of a still admitted runtime was issued.
     let connected_at: Option<i64> = connection.query_row(
@@ -839,8 +881,26 @@ pub(super) fn read_instance(
         state: match instance_state.as_str() {
             "active" => AuthInstanceState::Active,
             "revoked" => AuthInstanceState::Removed,
+            "retired" => AuthInstanceState::Retired,
             _ => AuthInstanceState::Disabled,
         },
+        origin: AuthInstanceOrigin {
+            kind: if secret.is_some() {
+                AuthInstanceOriginKind::Enrolled
+            } else {
+                AuthInstanceOriginKind::Provisioned
+            },
+            secret_id: secret
+                .map(|secret| secret.parse().map_err(|_| AuthError::Unavailable))
+                .transpose()?,
+            secret_title: secret_title.map(Into::into),
+            extra: Default::default(),
+        },
+        last_seen_at: last_seen.map(timestamp).transpose()?,
+        retired_at: retired_at.map(timestamp).transpose()?,
+        retired_reason: retired_reason
+            .map(|reason| serde_json::from_value(reason.into()))
+            .transpose()?,
         up_to_date,
         participant_digest: participant_digest.map(Into::into),
         connected_at: connected_at.map(timestamp).transpose()?,

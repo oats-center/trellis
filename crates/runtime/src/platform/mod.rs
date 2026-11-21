@@ -241,6 +241,11 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             let mut queued = store.work_signal();
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Offline instances are retired, and long-ended ones cleaned up,
+            // every five minutes, but not in the first minutes after Auth
+            // starts, while processes that were connected reconnect.
+            let quiet_until = crate::clock::unix_now() + auth::STARTUP_QUIET_SECONDS;
+            let mut next_retirement = 0;
             loop {
                 let ticked = tokio::select! {
                     () = worker_stop.stopped() => return Ok(()),
@@ -279,11 +284,22 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 if ticked {
                     let now = crate::clock::unix_now();
                     let (pruned, cleaned) = (store.clone(), engine.server.store().clone());
+                    let retire = now >= next_retirement;
+                    if retire {
+                        next_retirement = now + 300;
+                    }
                     auth::blocking(move || {
                         pruned.prune_expired_artifacts(now)?;
                         cleaned
                             .cleanup_expired(now)
                             .map_err(|error| auth::AuthError::Invalid(error.to_string()))?;
+                        if retire {
+                            let retired = pruned.retire_offline_instances(now, quiet_until)?;
+                            let deleted = pruned.clean_ended_instances(now)?;
+                            if retired + deleted > 0 {
+                                tracing::info!(retired, deleted, "Retired offline instances");
+                            }
+                        }
                         Ok::<_, auth::AuthError>(())
                     })
                     .await

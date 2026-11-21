@@ -125,6 +125,14 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         .route("/token", post(token))
         .route("/device_authorization", post(super::device::start))
         .route("/auth/device/enroll", post(super::enrollment::http_enroll))
+        .route(
+            "/auth/service/enroll",
+            post(super::super::instances::http_enroll),
+        )
+        .route(
+            "/auth/service/identity",
+            post(super::super::instances::http_identity_status),
+        )
         .route("/revoke", post(revoke))
         .layer(
             CorsLayer::new()

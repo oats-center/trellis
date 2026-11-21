@@ -126,8 +126,33 @@ CREATE TABLE auth_deployments (
     participant_kind TEXT NOT NULL CHECK (participant_kind IN ('service', 'device')),
     state TEXT NOT NULL CHECK (state IN ('active', 'disabled', 'revoked')),
     expires_at INTEGER CHECK (expires_at BETWEEN 0 AND 9007199254740991),
+    -- When it was last enabled after being disabled. Offline retirement counts
+    -- no earlier than this, so its instances get a full period to reconnect.
+    enabled_at INTEGER CHECK (enabled_at BETWEEN 0 AND 9007199254740991),
     UNIQUE (deployment_id, participant_id)
 );
+
+-- A secret that lets its holder register new instances of one deployment.
+-- Only the SHA-256 hash of the secret's text is stored; the text is shown
+-- once, when it is issued. Revoked secrets stay so later use can be reported.
+CREATE TABLE auth_enrollment_secrets (
+    secret_id TEXT PRIMARY KEY CHECK (length(secret_id) = 26),
+    deployment_id TEXT NOT NULL REFERENCES auth_deployments(deployment_id) ON DELETE CASCADE,
+    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
+    secret_hash TEXT NOT NULL UNIQUE CHECK (length(secret_hash) = 43),
+    expires_at INTEGER CHECK (expires_at BETWEEN 0 AND 9007199254740991),
+    max_instances INTEGER NOT NULL CHECK (max_instances BETWEEN 1 AND 1000000),
+    enrollments_per_hour INTEGER NOT NULL CHECK (enrollments_per_hour BETWEEN 1 AND 1000000),
+    current_build_only INTEGER NOT NULL CHECK (current_build_only IN (0, 1)),
+    created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND 9007199254740991),
+    created_by TEXT NOT NULL,
+    updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN 0 AND 9007199254740991),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 9007199254740991),
+    last_used_at INTEGER CHECK (last_used_at BETWEEN 0 AND 9007199254740991),
+    revoked_at INTEGER CHECK (revoked_at BETWEEN 0 AND 9007199254740991)
+);
+CREATE INDEX auth_enrollment_secrets_deployment
+    ON auth_enrollment_secrets(deployment_id, secret_id);
 
 CREATE TABLE auth_instances (
     instance_id TEXT PRIMARY KEY CHECK (length(instance_id) > 0),
@@ -136,11 +161,59 @@ CREATE TABLE auth_instances (
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id) ON DELETE CASCADE,
     -- Exact participant revision this instance's software is actually running.
     installed_revision INTEGER NOT NULL CHECK (installed_revision >= 1),
-    state TEXT NOT NULL CHECK (state IN ('active', 'disabled', 'revoked', 'stale')),
+    -- 'revoked' is an administrator's removal; 'retired' is automatic cleanup.
+    state TEXT NOT NULL CHECK (state IN ('active', 'disabled', 'revoked', 'retired')),
     created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND 9007199254740991),
     updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN 0 AND 9007199254740991),
     version INTEGER NOT NULL CHECK (version BETWEEN 1 AND 9007199254740991),
+    -- The secret that enrolled the instance; NULL for a provisioned one.
+    enrollment_secret_id TEXT REFERENCES auth_enrollment_secrets(secret_id),
+    -- When one of its connections was last admitted or closed. NULL until it
+    -- first connects.
+    last_seen_at INTEGER CHECK (last_seen_at BETWEEN 0 AND 9007199254740991),
+    retired_at INTEGER CHECK (retired_at BETWEEN 0 AND 9007199254740991),
+    retired_reason TEXT CHECK (retired_reason IN ('offline', 'stopped', 'replaced', 'secretRevoked')),
+    CHECK ((state = 'retired') = (retired_at IS NOT NULL)),
+    CHECK ((retired_at IS NULL) = (retired_reason IS NULL)),
     UNIQUE (instance_id, deployment_id)
+);
+CREATE INDEX auth_instances_enrollment_secret
+    ON auth_instances(enrollment_secret_id, state, created_at);
+CREATE INDEX auth_instances_ended ON auth_instances(state, updated_at);
+
+-- What finally became of an identity key: an administrator removed its
+-- instance, or Trellis retired it. Kept forever, after the instance's own rows
+-- are deleted, so a returning process is still told which.
+CREATE TABLE auth_identity_tombstones (
+    identity_key_id TEXT PRIMARY KEY CHECK (length(identity_key_id) = 43),
+    outcome TEXT NOT NULL CHECK (outcome IN ('removed', 'retired')),
+    recorded_at INTEGER NOT NULL CHECK (recorded_at BETWEEN 0 AND 9007199254740991)
+);
+CREATE TRIGGER auth_identity_tombstones_retained BEFORE DELETE ON auth_identity_tombstones
+BEGIN SELECT RAISE(ABORT, 'identity tombstones are retained'); END;
+
+-- Installation-wide rules for enrolled and offline instances. One row.
+CREATE TABLE auth_instance_policy (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    retire_offline INTEGER NOT NULL CHECK (retire_offline IN (0, 1)),
+    retire_offline_after INTEGER NOT NULL CHECK (retire_offline_after BETWEEN 3600 AND 4294967295),
+    retire_provisioned INTEGER NOT NULL CHECK (retire_provisioned IN (0, 1)),
+    retired_record_days INTEGER NOT NULL CHECK (retired_record_days BETWEEN 1 AND 36500),
+    first_connect_grace INTEGER NOT NULL CHECK (first_connect_grace BETWEEN 0 AND 86400),
+    secret_max_instances INTEGER NOT NULL CHECK (secret_max_instances BETWEEN 1 AND 1000000),
+    secret_enrollments_per_hour INTEGER NOT NULL
+        CHECK (secret_enrollments_per_hour BETWEEN 1 AND 1000000),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 9007199254740991)
+);
+INSERT INTO auth_instance_policy VALUES (1, 1, 86400, 0, 30, 600, 20, 100, 1);
+
+-- A deployment's own retirement rules. A NULL column follows the installation.
+CREATE TABLE auth_deployment_instance_policies (
+    deployment_id TEXT PRIMARY KEY REFERENCES auth_deployments(deployment_id) ON DELETE CASCADE,
+    retire_offline INTEGER CHECK (retire_offline IN (0, 1)),
+    retire_offline_after INTEGER CHECK (retire_offline_after BETWEEN 3600 AND 4294967295),
+    retire_provisioned INTEGER CHECK (retire_provisioned IN (0, 1)),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 9007199254740991)
 );
 
 CREATE TABLE auth_devices (
@@ -1060,7 +1133,9 @@ CREATE TABLE auth_deployment_bindings (
 CREATE TABLE auth_provider_certificates (
     certificate_digest TEXT PRIMARY KEY CHECK (length(certificate_digest) = 43),
     deployment_id TEXT NOT NULL REFERENCES auth_deployments(deployment_id),
-    instance_id TEXT NOT NULL REFERENCES auth_instances(instance_id),
+    -- No foreign key: certificates are retained after a retired or removed
+    -- instance's own row is deleted. The principal row is kept forever.
+    instance_id TEXT NOT NULL CHECK (length(instance_id) > 0),
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
     api_id TEXT NOT NULL,
     api_generation INTEGER NOT NULL CHECK (api_generation >= 1),

@@ -744,11 +744,26 @@ fn submit(
             return submit_to_claim(connection, store, &claim, submitted, evidence, now);
         }
         let (instance, deployment, pinned) = submitting_instance(connection, principal)?;
+        let current_build_only: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM auth_instances i \
+            JOIN auth_enrollment_secrets e ON e.secret_id=i.enrollment_secret_id \
+            WHERE i.instance_id=?1 AND e.current_build_only=1)",
+            [&instance],
+            |row| row.get(0),
+        )?;
         let participant: String = connection.query_row(
             "SELECT participant_id FROM auth_deployments WHERE deployment_id=?1",
             [&deployment],
             |row| row.get(0),
         )?;
+        if current_build_only {
+            // A process holding only the secret may not propose a build; an
+            // administrator installs it first.
+            return Err(AuthError::DeniedNeeding(format!(
+                "this instance was enrolled with a secret limited to the installed build; \
+                install the new build first with `trellis svc {deployment} apply`"
+            )));
+        }
         if submitted != participant {
             return Err(AuthError::Invalid(format!(
                 "this identity belongs to a deployment of {participant}, not {submitted}"

@@ -121,6 +121,17 @@ import {
   AuthInstanceProvisionResponse,
   AuthInstanceMutationRequest,
   AuthInstanceMutationResponse,
+  AuthEnrollmentSecretIssueRequest,
+  AuthEnrollmentSecretIssueResponse,
+  AuthEnrollmentSecretsListRequest,
+  AuthEnrollmentSecretsListResponse,
+  AuthEnrollmentSecretUpdateRequest,
+  AuthEnrollmentSecretResponse,
+  AuthEnrollmentSecretRevokeRequest,
+  AuthEnrollmentSecretRevokeResponse,
+  AuthInstancePolicyGetRequest,
+  AuthInstancePolicyResponse,
+  AuthInstancePolicySetRequest,
   AuthServiceUpdateSubmitRequest,
   AuthServiceUpdateStatusRequest,
   AuthServiceUpdateResponse,
@@ -405,6 +416,20 @@ api auth@v1 {
   rpc ServiceInstances.Disable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Remove a service instance.
   rpc ServiceInstances.Remove { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// An enrolled instance retires itself at a graceful stop, since its in-memory key goes with the process.
+  rpc ServiceInstances.RetireOwn { input AuthEmpty; output AuthEmpty; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Issue an enrollment secret for one deployment. Its text is returned once.
+  rpc EnrollmentSecrets.Issue { input AuthEnrollmentSecretIssueRequest; output AuthEnrollmentSecretIssueResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// List a deployment's enrollment secrets, revoked ones included.
+  rpc EnrollmentSecrets.List { input AuthEnrollmentSecretsListRequest; output AuthEnrollmentSecretsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  /// Change an enrollment secret's title and limits.
+  rpc EnrollmentSecrets.Update { input AuthEnrollmentSecretUpdateRequest; output AuthEnrollmentSecretResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Stop an enrollment secret from creating instances, optionally retiring the ones it created.
+  rpc EnrollmentSecrets.Revoke { input AuthEnrollmentSecretRevokeRequest; output AuthEnrollmentSecretRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Read the installation's rules for enrolled and offline instances, and one deployment's.
+  rpc InstancePolicy.Get { input AuthInstancePolicyGetRequest; output AuthInstancePolicyResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Change the installation's or one deployment's rules for enrolled and offline instances.
+  rpc InstancePolicy.Set { input AuthInstancePolicySetRequest; output AuthInstancePolicyResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// List devices.
   rpc Devices.List { input AuthInstancesListRequest; output AuthInstancesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   /// Provision a device with its own identity.
@@ -535,7 +560,7 @@ api auth@v1 {
       title "Manage sign-in and services";
       description "Change sign-in providers, services, devices, storage, sessions, and connections.";
       grants "Can change any service or device in this Trellis and sign anyone out.";
-      allows { rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Enable; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Packages.Resolve; rpc Packages.Pull; rpc PackageRegistries.List; rpc PackageRegistries.Put; rpc PackageRegistries.Remove; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceUpdates.List; rpc ServiceUpdates.Get; rpc ServiceUpdates.Decide; rpc ServiceClaims.Create; rpc ServiceClaims.List; rpc ServiceClaims.Remove; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; }
+      allows { rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Enable; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Packages.Resolve; rpc Packages.Pull; rpc PackageRegistries.List; rpc PackageRegistries.Put; rpc PackageRegistries.Remove; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceUpdates.List; rpc ServiceUpdates.Get; rpc ServiceUpdates.Decide; rpc ServiceClaims.Create; rpc ServiceClaims.List; rpc ServiceClaims.Remove; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc EnrollmentSecrets.Issue; rpc EnrollmentSecrets.List; rpc EnrollmentSecrets.Update; rpc EnrollmentSecrets.Revoke; rpc InstancePolicy.Get; rpc InstancePolicy.Set; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; }
     }
     capability roles.manage {
       administrative;
@@ -616,6 +641,12 @@ api auth@v1 {
       description "A service submits a new version of itself for installation.";
       grants "The service can ask to be updated; new access still needs an administrator.";
       allows { rpc ServiceUpdates.Submit; rpc ServiceUpdates.Status; }
+    }
+    capability instances.retireOwn {
+      title "Retire itself";
+      description "An enrolled service instance retires itself when it stops.";
+      grants "The instance can end its own registration; it cannot affect any other.";
+      allows { rpc ServiceInstances.RetireOwn; }
     }
     capability bindings.readJobs {
       title "Read job storage settings";
