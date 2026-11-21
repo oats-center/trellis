@@ -10,6 +10,11 @@
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
+  import {
+    parseWebhookSetting,
+    showWebhookSetting,
+    type WebhookSettingUnit,
+  } from "$lib/console/webhook_settings.ts";
   import ActionMenu from "$lib/components/ActionMenu.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import CopyButton from "$lib/components/CopyButton.svelte";
@@ -42,7 +47,7 @@
     setting: Setting;
     field: keyof Endpoint["settings"];
     label: string;
-    unit: "count" | "ms" | "bytes";
+    unit: WebhookSettingUnit;
   }[] = [
     {
       setting: "requestsPerSecond",
@@ -88,47 +93,6 @@
       unit: "ms",
     },
   ];
-
-  function show(value: unknown, unit: "count" | "ms" | "bytes"): string {
-    const number = Number(value);
-    if (unit === "bytes") {
-      if (number % (1 << 20) === 0) return `${number / (1 << 20)} MiB`;
-      if (number % 1024 === 0) return `${number / 1024} KiB`;
-      return `${number} B`;
-    }
-    if (unit === "ms") {
-      for (const [size, word] of [
-        [86_400_000, "d"],
-        [3_600_000, "h"],
-        [60_000, "m"],
-        [1000, "s"],
-      ] as const) {
-        if (number >= size && number % size === 0)
-          return `${number / size}${word}`;
-      }
-      return `${number} ms`;
-    }
-    return String(number);
-  }
-
-  function parse(text: string, unit: "count" | "ms" | "bytes"): bigint | null {
-    const match = /^(\d+)\s*(ms|s|m|h|d|B|KiB|MiB|GiB)?$/u.exec(text.trim());
-    if (!match) return null;
-    const multiplier: Record<string, bigint> = {
-      ms: 1n,
-      s: 1000n,
-      m: 60_000n,
-      h: 3_600_000n,
-      d: 86_400_000n,
-      B: 1n,
-      KiB: 1024n,
-      MiB: 1_048_576n,
-      GiB: 1_073_741_824n,
-    };
-    const suffix = match[2];
-    if (suffix && unit === "count") return null;
-    return BigInt(match[1]!) * (suffix ? multiplier[suffix]! : 1n);
-  }
 
   $effect(() => {
     void deploymentId;
@@ -227,9 +191,15 @@
     editing = null;
     if (text.trim() === "")
       return update(endpoint.endpoint, "set", entry.setting, null);
-    const value = parse(text, entry.unit);
+    const value = parseWebhookSetting(text, entry.unit);
     if (value === null) {
-      error = `${entry.label} takes a number${entry.unit === "count" ? "" : " with a unit, such as 5m or 512KiB"}.`;
+      error = `${entry.label} takes ${
+        {
+          count: "a number, such as 50",
+          ms: "a duration, such as 30s, 5m, or 7d",
+          bytes: "a size, such as 512KiB or 16MiB",
+        }[entry.unit]
+      }.`;
       return;
     }
     await update(endpoint.endpoint, "set", entry.setting, value);
@@ -391,7 +361,11 @@
                     >
                   </form>
                 {:else}
-                  <span>{show(endpoint.settings[entry.field], entry.unit)}</span
+                  <span
+                    >{showWebhookSetting(
+                      endpoint.settings[entry.field],
+                      entry.unit,
+                    )}</span
                   >
                   {#if manage}
                     <button
@@ -402,7 +376,7 @@
                       onclick={() =>
                         (editing = {
                           key: `${endpoint.endpoint}:${entry.setting}`,
-                          text: show(
+                          text: showWebhookSetting(
                             endpoint.settings[entry.field],
                             entry.unit,
                           ),

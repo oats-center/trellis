@@ -111,8 +111,10 @@ impl Settings {
             rotation_overlap_ms: set("rotationOverlap")
                 .or(definition.rotation_overlap_ms)
                 .unwrap_or(24 * 3_600_000),
-            record_retention_ms: set("recordRetention").unwrap_or(30 * 86_400_000),
-            intake_retention_ms: set("intakeRetention").unwrap_or(7 * 86_400_000),
+            record_retention_ms: set("recordRetention")
+                .unwrap_or(records::Retention::default().records_ms),
+            intake_retention_ms: set("intakeRetention")
+                .unwrap_or(records::Retention::default().intake_ms),
             intake_max_bytes: set("intakeMaxBytes").unwrap_or(1 << 30),
         }
     }
@@ -232,8 +234,8 @@ struct Inner {
     publisher: watch::Receiver<Option<trellis_rs::service::EventPublisher>>,
     /// The configured Trellis origin, without a trailing slash.
     origin: String,
-    /// The Console's own host when it has one; webhook paths 404 there.
-    console_host: Option<String>,
+    /// The Console's own origin when it has one; webhook paths 404 there.
+    console: Option<ConsoleHost>,
     /// The largest body that fits one event in a NATS message.
     ceiling: u64,
     limits: limits::Limits,
@@ -295,11 +297,7 @@ impl Webhooks {
         };
         let max_payload = u64::try_from(nats.server_info().max_payload).unwrap_or(1 << 20);
         let origin = origin.trim_end_matches('/').to_owned();
-        let console_host = url::Url::parse(console_origin)
-            .ok()
-            .zip(url::Url::parse(&origin).ok())
-            .filter(|(console, trellis)| console.origin() != trellis.origin())
-            .and_then(|(console, _)| console.host_str().map(str::to_ascii_lowercase));
+        let console = ConsoleHost::new(&origin, console_origin);
         let webhooks = Self {
             inner: Arc::new(Inner {
                 storage,
@@ -310,7 +308,7 @@ impl Webhooks {
                 dedupe,
                 publisher,
                 origin,
-                console_host,
+                console,
                 // The body travels base64-encoded inside the event, beside its
                 // headers and envelope.
                 ceiling: max_payload.saturating_sub(64 << 10) / 4 * 3,
@@ -497,25 +495,38 @@ impl Webhooks {
     }
 
     /// Expire requests that left the intake stream unverified and drop
-    /// records past their retention, per deployment.
+    /// records past their retention, per deployment. Retention is the
+    /// deployment's setting even once it has no endpoint left.
     async fn sweep(&self) {
-        let now = now_ms();
-        let before =
-            |retention: u64| now.saturating_sub(i64::try_from(retention).unwrap_or(i64::MAX));
-        for (deployment, endpoint) in self.directory().deployments() {
-            let settings = &endpoint.settings;
-            let swept = self
-                .inner
-                .records
-                .sweep(
-                    &deployment,
-                    before(settings.intake_retention_ms),
-                    before(settings.record_retention_ms),
-                )
-                .await;
-            if let Err(error) = swept {
-                tracing::warn!(%deployment, %error, "webhook record retention failed");
+        let storage = self.inner.storage.clone();
+        let stored =
+            super::auth::blocking(move || super::auth::webhooks::load_retention(&storage)).await;
+        let stored = match stored {
+            Ok(stored) => stored,
+            Err(error) => {
+                tracing::warn!(%error, "webhook record retention could not be read");
+                return;
             }
+        };
+        let retention = stored
+            .into_iter()
+            .map(|(deployment, settings)| {
+                let defaults = records::Retention::default();
+                let retention = records::Retention {
+                    intake_ms: settings
+                        .get("intakeRetention")
+                        .copied()
+                        .unwrap_or(defaults.intake_ms),
+                    records_ms: settings
+                        .get("recordRetention")
+                        .copied()
+                        .unwrap_or(defaults.records_ms),
+                };
+                (deployment, retention)
+            })
+            .collect();
+        if let Err(error) = self.inner.records.sweep(now_ms(), retention).await {
+            tracing::warn!(%error, "webhook record retention failed");
         }
     }
 
@@ -577,6 +588,63 @@ impl Webhooks {
     }
 }
 
+/// Where the Console has its own origin: its hostname, and its port when it
+/// shares the Trellis hostname on another port.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ConsoleHost {
+    host: String,
+    /// Set when only the port tells the two origins apart.
+    port: Option<u16>,
+    /// Whether a `Host` without a port is the Console's: true when the
+    /// Console's port is its scheme's default and the Trellis port is not.
+    portless: bool,
+}
+
+impl ConsoleHost {
+    /// The Console's origin, when it is not the Trellis origin.
+    pub(crate) fn new(trellis_origin: &str, console_origin: &str) -> Option<Self> {
+        let trellis = url::Url::parse(trellis_origin).ok()?;
+        let console = url::Url::parse(console_origin).ok()?;
+        if console.origin() == trellis.origin() {
+            return None;
+        }
+        let host = console.host_str()?.to_ascii_lowercase();
+        if trellis.host_str().map(str::to_ascii_lowercase) != Some(host.clone()) {
+            return Some(Self {
+                host,
+                port: None,
+                portless: true,
+            });
+        }
+        let port = console.port_or_known_default()?;
+        // Origins that differ only by scheme share every port; nothing tells
+        // a webhook request for the Console apart.
+        if trellis.port_or_known_default() == Some(port) {
+            return None;
+        }
+        Some(Self {
+            host,
+            port: Some(port),
+            portless: console.port().is_none(),
+        })
+    }
+
+    /// Whether a request's `Host` header names the Console's origin.
+    pub(crate) fn names(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        let (name, port) = match host.rsplit_once(':') {
+            Some((name, port)) if !port.contains(']') => (name, port.parse::<u16>().ok()),
+            _ => (host.as_str(), None),
+        };
+        name == self.host
+            && match (self.port, port) {
+                (None, _) => true,
+                (Some(console), Some(port)) => port == console,
+                (Some(_), None) => self.portless,
+            }
+    }
+}
+
 /// The dedupe key stored for a delivery ID.
 fn dedupe_entry(deployment: &str, endpoint: &str, id: &str) -> String {
     use sha2::Digest as _;
@@ -586,4 +654,38 @@ fn dedupe_entry(deployment: &str, endpoint: &str, id: &str) -> String {
         trellis_protocol::encode_subject_token(endpoint),
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(id))
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConsoleHost;
+
+    fn refused(trellis: &str, console: &str, host: &str) -> bool {
+        ConsoleHost::new(trellis, console).is_some_and(|console| console.names(host))
+    }
+
+    #[test]
+    fn webhook_paths_are_refused_only_on_the_consoles_own_origin() {
+        // The Console on the same hostname, another port: the Trellis port
+        // serves webhooks, the Console's does not.
+        let (trellis, console) = ("https://trellis.example:8443", "https://trellis.example");
+        assert!(!refused(trellis, console, "trellis.example:8443"));
+        assert!(!refused(trellis, console, "TRELLIS.example:8443"));
+        assert!(refused(trellis, console, "trellis.example"));
+        assert!(refused(trellis, console, "trellis.example:443"));
+        let (trellis, console) = ("https://trellis.example", "https://trellis.example:9443");
+        assert!(!refused(trellis, console, "trellis.example"));
+        assert!(!refused(trellis, console, "trellis.example:443"));
+        assert!(refused(trellis, console, "trellis.example:9443"));
+        let (trellis, console) = ("https://[::1]:8443", "https://[::1]:9443");
+        assert!(!refused(trellis, console, "[::1]:8443"));
+        assert!(refused(trellis, console, "[::1]:9443"));
+        // A Console with its own hostname refuses webhook paths on any port.
+        let (trellis, console) = ("https://trellis.example", "https://console.example:8443");
+        assert!(!refused(trellis, console, "trellis.example"));
+        assert!(refused(trellis, console, "console.example"));
+        assert!(refused(trellis, console, "console.example:8443"));
+        // The Console at /console on the Trellis origin refuses nothing.
+        assert!(!refused(trellis, trellis, "trellis.example"));
+    }
 }

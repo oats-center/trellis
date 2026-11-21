@@ -79,8 +79,9 @@ mod body {
 /// What verification concluded.
 #[derive(Debug)]
 pub(crate) enum Verdict {
-    /// Genuine; published as `Received`.
+    /// Genuine; published as `Received` with the event ID `delivery_id`.
     Accepted {
+        delivery_id: String,
         matched: Option<KeyMatch>,
         decided: Option<String>,
         answer: Option<Answer>,
@@ -116,10 +117,11 @@ pub(crate) enum Verdict {
 
 impl Verdict {
     /// The record for this verdict.
-    pub(crate) fn outcome(&self, delivery_id: &str, pending: bool) -> Outcome {
+    pub(crate) fn outcome(&self, pending: bool) -> Outcome {
         let key = |matched: &Option<KeyMatch>| matched.map(KeyMatch::as_str);
         match self {
             Self::Accepted {
+                delivery_id,
                 matched,
                 decided,
                 status,
@@ -129,7 +131,7 @@ impl Verdict {
                 matched_key: key(matched),
                 verdict: decided.clone(),
                 status: Some(*status),
-                delivery_id: Some(delivery_id.to_owned()),
+                delivery_id: Some(delivery_id.clone()),
                 ..Outcome::default()
             },
             Self::Ignored {
@@ -254,13 +256,36 @@ fn checked(response: DecisionResponse) -> Result<Answer, String> {
     })
 }
 
-/// What a duplicate gets: the original's answer.
+/// How long a request that claimed a delivery ID may take to publish before
+/// another request with that ID takes the claim over.
+const CLAIM_STALE_MS: i64 = 30_000;
+/// How long a request waits for another one handling the same delivery ID.
+const CLAIM_WAIT: Duration = Duration::from_secs(5);
+
+/// A delivery ID's entry in the dedupe bucket. A request claims it before
+/// publishing, so requests with the same ID publish once even when they
+/// arrive together, and fills in its answer once it is done.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Kept {
     expires_at_ms: i64,
-    status: u16,
+    /// The `Received` event's ID. A claim taken over keeps it, so a publish
+    /// that did land before an interruption is stored once.
+    delivery_id: String,
+    /// When the claim was made; 0 once its publish failed.
+    claimed_at_ms: i64,
+    /// The original's answer, absent while the claiming request publishes.
+    status: Option<u16>,
     answer: Option<Answer>,
+}
+
+/// What claiming a delivery ID found.
+enum Claim {
+    /// This request publishes, as `delivery_id`, then finishes the entry at
+    /// `revision`.
+    Owned { revision: u64, delivery_id: String },
+    /// Seen before within the dedupe window.
+    Duplicate { status: u16, answer: Option<Answer> },
 }
 
 impl Webhooks {
@@ -383,40 +408,68 @@ impl Webhooks {
         let status = answer
             .as_ref()
             .map_or(definition.status, |answer| answer.status);
-        // Keep an ID only once a request passed verification, so a forged
+        // Claim an ID only once a request passed verification, so a forged
         // request with a captured ID cannot get the real one dropped.
         let kept_key = dedupe_key
             .as_deref()
             .map(|key| super::dedupe_entry(&request.deployment_id, &request.endpoint, key));
+        let mut claimed = None;
+        let mut delivery_id = request.attempt_id.clone();
         if let Some(entry) = &kept_key {
-            if let Ok(Some(value)) = self.inner.dedupe.get(entry).await {
-                if let Ok(kept) = serde_json::from_slice::<Kept>(&value) {
-                    if kept.expires_at_ms > super::now_ms() {
-                        return Verdict::Duplicate {
-                            matched,
-                            answer: kept.answer,
-                            status: kept.status,
-                        };
+            match self.claim(entry, &request.attempt_id, endpoint).await {
+                Ok(Claim::Duplicate { status, answer }) => {
+                    return Verdict::Duplicate {
+                        matched,
+                        answer,
+                        status,
                     }
                 }
+                Ok(Claim::Owned {
+                    revision,
+                    delivery_id: claimed_id,
+                }) => {
+                    claimed = Some(revision);
+                    delivery_id = claimed_id;
+                }
+                Err(reason) => return Verdict::Unavailable(reason),
             }
         }
+        let window = i64::try_from(endpoint.settings.dedupe_window_ms).unwrap_or(i64::MAX);
+        let finish = |claimed_at_ms: i64, done: bool| Kept {
+            expires_at_ms: super::now_ms().saturating_add(window),
+            delivery_id: delivery_id.clone(),
+            claimed_at_ms,
+            status: done.then_some(status),
+            answer: answer.clone().filter(|_| done),
+        };
         if !ignore {
-            if let Err(reason) = self.publish(request, &checks, dedupe_key.as_deref()).await {
+            if let Err(reason) = self
+                .publish(request, &delivery_id, &checks, dedupe_key.as_deref())
+                .await
+            {
+                // Release the claim at once, keeping its event ID, so the
+                // sender's retry publishes the same event.
+                if let (Some(entry), Some(revision)) = (&kept_key, claimed) {
+                    if let Ok(value) = serde_json::to_vec(&finish(0, false)) {
+                        let _ = self
+                            .inner
+                            .dedupe
+                            .update(entry, value.into(), revision)
+                            .await;
+                    }
+                }
                 return Verdict::Unavailable(reason);
             }
         }
-        if let Some(entry) = kept_key {
-            let kept = Kept {
-                expires_at_ms: super::now_ms().saturating_add(
-                    i64::try_from(endpoint.settings.dedupe_window_ms).unwrap_or(i64::MAX),
-                ),
-                status,
-                answer: answer.clone(),
-            };
-            if let Ok(value) = serde_json::to_vec(&kept) {
-                // Best effort: losing it only lets a retry through again.
-                let _ = self.inner.dedupe.put(entry, value.into()).await;
+        if let (Some(entry), Some(revision)) = (&kept_key, claimed) {
+            if let Ok(value) = serde_json::to_vec(&finish(super::now_ms(), true)) {
+                // Losing this leaves the claim to go stale, after which a
+                // retry publishes the same event again.
+                let _ = self
+                    .inner
+                    .dedupe
+                    .update(entry, value.into(), revision)
+                    .await;
             }
         }
         if ignore {
@@ -427,10 +480,94 @@ impl Webhooks {
             }
         } else {
             Verdict::Accepted {
+                delivery_id,
                 matched,
                 decided,
                 answer,
                 status,
+            }
+        }
+    }
+
+    /// Claim a delivery ID's dedupe entry before publishing: create it, take
+    /// over an expired entry or a stale claim, or wait briefly for the request
+    /// that holds it to finish and answer as a duplicate.
+    async fn claim(
+        &self,
+        entry: &str,
+        attempt_id: &str,
+        endpoint: &Endpoint,
+    ) -> Result<Claim, String> {
+        use async_nats::jetstream::kv::Operation;
+        let unavailable = || "dedupe storage unavailable".to_owned();
+        let window = i64::try_from(endpoint.settings.dedupe_window_ms).unwrap_or(i64::MAX);
+        let deadline = Instant::now() + CLAIM_WAIT;
+        loop {
+            let now = super::now_ms();
+            let claim = |delivery_id: &str| {
+                serde_json::to_vec(&Kept {
+                    expires_at_ms: now.saturating_add(window),
+                    delivery_id: delivery_id.to_owned(),
+                    claimed_at_ms: now,
+                    status: None,
+                    answer: None,
+                })
+                .map_err(|error| error.to_string())
+            };
+            let found = self
+                .inner
+                .dedupe
+                .entry(entry)
+                .await
+                .map_err(|_| unavailable())?
+                .filter(|found| found.operation == Operation::Put);
+            let written = match found {
+                None => self
+                    .inner
+                    .dedupe
+                    .create(entry, claim(attempt_id)?.into())
+                    .await
+                    .ok()
+                    .map(|revision| (revision, attempt_id.to_owned())),
+                Some(found) => {
+                    let kept = serde_json::from_slice::<Kept>(&found.value)
+                        .ok()
+                        .filter(|kept| kept.expires_at_ms > now);
+                    let delivery_id = match kept {
+                        Some(Kept {
+                            status: Some(status),
+                            answer,
+                            ..
+                        }) => return Ok(Claim::Duplicate { status, answer }),
+                        Some(kept) if kept.claimed_at_ms.saturating_add(CLAIM_STALE_MS) > now => {
+                            // Another request is publishing this delivery.
+                            if Instant::now() >= deadline {
+                                return Err("the same delivery is still being handled".into());
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            continue;
+                        }
+                        Some(kept) => kept.delivery_id,
+                        None => attempt_id.to_owned(),
+                    };
+                    self.inner
+                        .dedupe
+                        .update(entry, claim(&delivery_id)?.into(), found.revision)
+                        .await
+                        .ok()
+                        .map(|revision| (revision, delivery_id))
+                }
+            };
+            match written {
+                Some((revision, delivery_id)) => {
+                    return Ok(Claim::Owned {
+                        revision,
+                        delivery_id,
+                    })
+                }
+                // Another request changed the entry first; look again.
+                None if Instant::now() < deadline => {}
+                None => return Err(unavailable()),
             }
         }
     }
@@ -471,11 +608,13 @@ impl Webhooks {
         serde_json::from_slice(&reply.payload).map_err(|_| "decide handler failed".to_owned())
     }
 
-    /// Publish the `Received` event. Its ID is the request's, so a publish
-    /// retried after a lost confirmation is stored once.
+    /// Publish the `Received` event as `delivery_id`, which is also its
+    /// JetStream message ID, so a publish retried after a lost confirmation
+    /// is stored once.
     async fn publish(
         &self,
         request: &StoredRequest,
+        delivery_id: &str,
         checks: &[Check],
         dedupe_key: Option<&str>,
     ) -> Result<(), String> {
@@ -485,9 +624,8 @@ impl Webhooks {
             .borrow()
             .clone()
             .ok_or("Trellis is not connected yet")?;
-        let payload =
-            serde_json::to_vec(&request.delivery(&request.attempt_id, checks, dedupe_key))
-                .map_err(|error| error.to_string())?;
+        let payload = serde_json::to_vec(&request.delivery(delivery_id, checks, dedupe_key))
+            .map_err(|error| error.to_string())?;
         let descriptor = trellis_protocol::encode_event_descriptor_identity(
             "trellis.webhooks@v1",
             "Received",
@@ -498,7 +636,7 @@ impl Webhooks {
             Self::received_subject(&request.deployment_id, &request.endpoint),
             payload.into(),
             descriptor,
-            request.attempt_id.clone(),
+            delivery_id.to_owned(),
             super::rfc3339(super::now_ms()),
         )
         .map_err(|error| error.to_string())?;
@@ -552,7 +690,7 @@ impl Webhooks {
             })),
             _ => None,
         };
-        let outcome = verdict.outcome(&request.attempt_id, true);
+        let outcome = verdict.outcome(true);
         self.count(&endpoint.record.endpoint, outcome.outcome);
         let _ = self
             .inner

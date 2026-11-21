@@ -17,31 +17,61 @@ fn wire<T: serde::de::DeserializeOwned>(value: Value) -> miette::Result<T> {
     serde_json::from_value(value).into_diagnostic()
 }
 
-/// Parse a setting's value: a duration such as `5m`, a size such as
-/// `512KiB`, a count, or `default` to return to the default.
-fn setting_value(setting: &str, raw: &str) -> miette::Result<Option<u64>> {
+/// What a setting measures, which decides the units its value takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dimension {
+    /// Milliseconds, typed as `500ms`, `30s`, `5m`, `2h`, or `7d`.
+    Duration,
+    /// Bytes, typed as `512B`, `256KiB`, `16MiB`, or `1GiB`.
+    Size,
+    /// A plain number.
+    Count,
+}
+
+/// What a setting measures, by its stored name.
+fn dimension(name: &str) -> Dimension {
+    match name {
+        "maxBody" | "intakeMaxBytes" => Dimension::Size,
+        "requestsPerSecond" | "burst" | "failuresPerMinute" => Dimension::Count,
+        _ => Dimension::Duration,
+    }
+}
+
+/// Parse a setting's value in its dimension's units: a duration such as
+/// `5m`, a size such as `512KiB`, a count, or `default` to return to the
+/// default. A bare number is milliseconds, bytes, or the count.
+fn setting_value(setting: &str, dimension: Dimension, raw: &str) -> miette::Result<Option<u64>> {
     if raw == "default" {
         return Ok(None);
     }
+    let example = match dimension {
+        Dimension::Duration => "such as 30s, 5m, or 7d",
+        Dimension::Size => "such as 512KiB or 16MiB",
+        Dimension::Count => "such as 50",
+    };
     let split = raw
         .find(|character: char| !character.is_ascii_digit())
         .unwrap_or(raw.len());
     let (number, unit) = raw.split_at(split);
     let number: u64 = number
         .parse()
-        .map_err(|_| miette::miette!("{setting} takes a number, such as 5m, 512KiB, or 50"))?;
-    let multiplier = match unit {
-        "" => 1,
-        "ms" => 1,
-        "s" => 1_000,
-        "m" => 60_000,
-        "h" => 3_600_000,
-        "d" => 86_400_000,
-        "B" => 1,
-        "KiB" => 1 << 10,
-        "MiB" => 1 << 20,
-        "GiB" => 1 << 30,
-        _ => return Err(miette::miette!("unknown unit '{unit}' in {raw}")),
+        .map_err(|_| miette::miette!("{setting} takes a number, {example}"))?;
+    let multiplier = match (dimension, unit) {
+        (_, "") => 1,
+        (Dimension::Duration, "ms") => 1,
+        (Dimension::Duration, "s") => 1_000,
+        (Dimension::Duration, "m") => 60_000,
+        (Dimension::Duration, "h") => 3_600_000,
+        (Dimension::Duration, "d") => 86_400_000,
+        (Dimension::Size, "B") => 1,
+        (Dimension::Size, "KiB") => 1 << 10,
+        (Dimension::Size, "MiB") => 1 << 20,
+        (Dimension::Size, "GiB") => 1 << 30,
+        _ => {
+            return Err(miette::miette!(
+                "{setting} does not take '{unit}'; give a number, {example}"
+            ))
+        }
     };
     number
         .checked_mul(multiplier)
@@ -264,7 +294,7 @@ pub(super) async fn run(format: OutputFormat, id: &str, args: WebhooksArgs) -> m
                 request["outcome"] = json!(outcome);
             }
             if let Some(since) = since {
-                let ms = setting_value("--since", &since)?.unwrap_or(0);
+                let ms = setting_value("--since", Dimension::Duration, &since)?.unwrap_or(0);
                 let at = time::OffsetDateTime::now_utc()
                     - time::Duration::milliseconds(i64::try_from(ms).unwrap_or(i64::MAX));
                 request["since"] = json!(at
@@ -296,7 +326,11 @@ pub(super) async fn run(format: OutputFormat, id: &str, args: WebhooksArgs) -> m
         Some(WebhooksCommand::Attempt { attempt, body }) => {
             let found = cli
                 .trellis_webhooks_v1()
-                .attempts_inspect(&wire(json!({ "attemptId": attempt }))?)
+                .attempts_inspect(&wire(json!({
+                    "service": deployment,
+                    "endpoint": endpoint,
+                    "attemptId": attempt,
+                }))?)
                 .await
                 .into_diagnostic()?;
             let value = serde_json::to_value(&found).into_diagnostic()?;
@@ -354,7 +388,11 @@ pub(super) async fn run(format: OutputFormat, id: &str, args: WebhooksArgs) -> m
         Some(WebhooksCommand::Reverify { attempt }) => {
             let found = cli
                 .trellis_webhooks_v1()
-                .attempts_reverify(&wire(json!({ "attemptId": attempt }))?)
+                .attempts_reverify(&wire(json!({
+                    "service": deployment,
+                    "endpoint": endpoint,
+                    "attemptId": attempt,
+                }))?)
                 .await
                 .into_diagnostic()?;
             let value = serde_json::to_value(&found).into_diagnostic()?;
@@ -403,7 +441,7 @@ pub(super) async fn run(format: OutputFormat, id: &str, args: WebhooksArgs) -> m
         }
         Some(WebhooksCommand::Set { setting, value }) => {
             let name = setting_name(&setting)?;
-            let parsed = setting_value(&setting, &value)?;
+            let parsed = setting_value(&setting, dimension(name), &value)?;
             cli.trellis_auth_v1()
                 .webhooks_update(&update("set", Some(name), Some(parsed))?)
                 .await
@@ -413,5 +451,32 @@ pub(super) async fn run(format: OutputFormat, id: &str, args: WebhooksArgs) -> m
                 None => format!("Returned {setting} to its default for webhook {endpoint}."),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dimension, setting_name, setting_value};
+
+    fn parse(setting: &str, raw: &str) -> Option<u64> {
+        let name = setting_name(setting).expect("a known setting");
+        setting_value(setting, dimension(name), raw).ok().flatten()
+    }
+
+    #[test]
+    fn each_setting_takes_only_its_own_units() {
+        assert_eq!(parse("max-body", "512KiB"), Some(512 << 10));
+        assert_eq!(parse("intake-max-bytes", "1GiB"), Some(1 << 30));
+        assert_eq!(parse("dedupe-window", "5m"), Some(300_000));
+        assert_eq!(parse("record-retention", "7d"), Some(7 * 86_400_000));
+        assert_eq!(parse("burst", "200"), Some(200));
+        // A duration is not a size, a size is not a duration, and a count
+        // takes no unit.
+        assert_eq!(parse("max-body", "5m"), None);
+        assert_eq!(parse("intake-max-bytes", "2h"), None);
+        assert_eq!(parse("rotation-overlap", "512KiB"), None);
+        assert_eq!(parse("sync-decide-deadline", "1B"), None);
+        assert_eq!(parse("requests-per-second", "5s"), None);
+        assert_eq!(parse("failures-per-minute", "1KiB"), None);
     }
 }

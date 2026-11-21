@@ -144,8 +144,10 @@ Routing follows these rules:
 
 - `/webhooks/` is a reserved path prefix. An unknown path gets 404. The query
   string passes through unchanged.
-- When the Console has its own hostname, that hostname does not serve webhook
-  paths.
+- When the Console has its own origin, that origin does not serve webhook
+  paths. A Console with its own hostname refuses them on every port. A Console
+  on the Trellis hostname but another port refuses them only on its port, so
+  the advertised Trellis URL keeps working.
 - A proxy in front of Trellis must keep the `Host` header, the path, and the
   query unchanged. Senders that sign the URL, such as Twilio, fail otherwise.
 - Webhook routes never send CORS headers. They have their own request budget,
@@ -221,7 +223,9 @@ verify basic { username config partnerUser; password config partnerPassword; }
 ```
 
 `token` requires a header value (after `prefix`) or a query parameter to equal
-a secret. `basic` requires matching HTTP Basic credentials.
+a secret. `basic` requires matching HTTP Basic credentials. Both accept the previous
+token or password during a [change overlap](#changing-a-secret), as `hmac`
+accepts the previous signing secret.
 
 In both modes, `token`, `basic`, and `address` run at intake, when the request
 arrives and before anything is written. Trellis then removes the header or
@@ -277,16 +281,21 @@ verified once the secret is set. A `sync` request, and any request for a
 
 ### Changing a secret
 
-When an administrator changes a signing secret, the sender may keep signing
-with the old one for a while. The two sides cannot switch at the same moment,
-and some senders sign with both secrets during their own change. So after a
-change, Trellis accepts both the new secret and the previous one for an overlap
-period, 24 hours by default and changeable at [runtime](#runtime-settings).
+When an administrator changes a signing secret, token, or Basic password, the
+sender may keep using the old one for a while. The two sides cannot switch at
+the same moment, and some senders sign with both secrets during their own
+change. So after a change, Trellis accepts both the new secret and the
+previous one for an overlap period, 24 hours by default and changeable at
+[runtime](#runtime-settings). The `hmac`, `token`, and `basic` verifiers all
+honor it, and the endpoint reports until when the previous value is accepted.
 
-Deleting the earlier settings revision with `trellis svc <name> config
-delete-revision <revision>` ends the overlap at once and destroys the old
-secret. The Console shows when the old secret last matched a request, so the
-administrator can see when the sender has switched.
+The previous secret is the one the newest change replaced, which the settings
+revision just before that change holds. Nothing older is ever accepted.
+Deleting that revision with `trellis svc <name> config delete-revision
+<revision>` ends the overlap at once and destroys the old secret. Deleting
+any other revision never brings an older secret back. The Console shows when
+the old secret last matched a request, so the administrator can see when the
+sender has switched.
 
 ## The two modes step by step
 
@@ -547,17 +556,26 @@ timestamp is too old. Trellis provides no replay protection for senders that
 sign neither a timestamp nor the delivery ID.
 
 `dedupe` names where the sender's delivery ID is, usually a header. After a
-request passes verification, Trellis keeps its ID for the dedupe window, 72
-hours by default. A later verified request with the same ID within the window
-is recorded as `duplicate`, gets the original's answer, and publishes nothing.
-Trellis keeps an ID only after verification. Otherwise anyone who learned a
-delivery ID could send a forged request first and make Trellis drop the real
-one.
+request passes verification, Trellis claims its ID in the dedupe bucket before
+publishing, and keeps it for the dedupe window, 72 hours by default. A later
+verified request with the same ID within the window is recorded as
+`duplicate`, gets the original's answer, and publishes nothing. The claim is
+atomic, so two requests with the same ID that arrive together publish once:
+the second waits up to 5 seconds for the first to finish and then answers as
+its duplicate, or gets 503 if the first is still publishing. Trellis claims an
+ID only after verification. Otherwise anyone who learned a delivery ID could
+send a forged request first and make Trellis drop the real one.
 
-This suppression is best effort. After an uncertain outcome, such as a crash
-between publishing the event and recording the ID, the same delivery can be
-published again. That fits at-least-once delivery. Deduplication by business
-meaning, such as one charge per payment ID, is the service's job.
+A claim records the event ID it publishes under. When the publish fails, the
+claim is released at once; when Trellis stops between claiming and finishing,
+the claim goes stale after 30 seconds. Either way the next request with that
+ID takes the claim over and publishes under the same event ID, so a publish
+that did land is stored once within the event stream's duplicate window.
+
+This suppression is still best effort. After an uncertain outcome that
+outlasts that window, the same delivery can be published again. That fits
+at-least-once delivery. Deduplication by business meaning, such as one charge
+per payment ID, is the service's job.
 
 An endpoint without `dedupe` gets no deduplication. Trellis does not compare
 bodies instead, because two identical pings are both legitimate. The event's
@@ -572,7 +590,10 @@ the deployment's own value overrides the IDL at runtime, without a new build or
 an approval. Trellis keeps the values in the Auth database. They are edited in
 the Webhooks section of the service's Console page, or with `trellis svc <name>
 webhooks <endpoint> set <setting> <value>`. None of them is server
-configuration, and there is no installation-wide layer of defaults.
+configuration, and there is no installation-wide layer of defaults. Each
+setting takes only its own units: a duration such as `30s`, `5m`, or `7d`, a
+size such as `512KiB`, or a plain count. A bare number is milliseconds, bytes,
+or the count, and a value in another setting's units is refused.
 
 | Setting                                                               | Default                      | IDL member         |
 | --------------------------------------------------------------------- | ---------------------------- | ------------------ |
@@ -663,7 +684,10 @@ An administrator can verify a stored request again. Trellis runs the current
 verifiers over the original bytes and receive time, so a request rejected
 because of a wrong secret is recovered once the secret is fixed. Once the
 request has left the intake stream, its record can still be read but not
-verified again.
+verified again. Opening or verifying a record names its service and endpoint
+along with the attempt ID, and a record of another service or endpoint is not
+found, so an ID pasted under the wrong endpoint never acts on someone else's
+request.
 
 The `trellis.webhooks@v1` API has three capabilities, shaped like the Events
 API's:
@@ -712,6 +736,10 @@ policy:
 | Request records                   | `webhooks.sqlite`                   | 30 days after receipt             | Console and CLI request views                  |
 | Dedupe IDs                        | KV bucket `trellis_webhook_dedupe`  | the endpoint's dedupe window      | Dropping duplicates                            |
 | `Received` events                 | the event stream and Events history | the normal event policies         | Delivery and replay                            |
+
+Retention follows the deployment, not its endpoints. Records of a deployment
+whose last endpoint was removed keep expiring under its record and intake
+retention settings, and under the defaults once the deployment is gone.
 
 When a deployment's intake stream is full, Trellis refuses new requests with 503 rather
 than remove old ones, so a flood cannot push out requests still waiting for

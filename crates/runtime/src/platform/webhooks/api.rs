@@ -130,14 +130,21 @@ impl Webhooks {
         }))
     }
 
-    /// Verify a stored request again with the current verifiers and secrets,
-    /// against its original bytes and receive time.
-    async fn reverify(&self, attempt_id: &str) -> Result<serde_json::Value, ServerError> {
+    /// Verify a stored request of `service`'s `endpoint` again with the
+    /// current verifiers and secrets, against its original bytes and receive
+    /// time.
+    async fn reverify(
+        &self,
+        service: &str,
+        endpoint: &str,
+        attempt_id: &str,
+    ) -> Result<serde_json::Value, ServerError> {
         let records = &self.inner.records;
         let attempt = records
             .get(attempt_id)
             .await
             .map_err(unexpected)?
+            .filter(|attempt| attempt.service == service && attempt.endpoint == endpoint)
             .ok_or_else(|| not_found("no such request"))?;
         let sequence = attempt.stream_sequence.ok_or_else(|| {
             unavailable("this request was not stored, so it cannot be verified again")
@@ -156,7 +163,7 @@ impl Webhooks {
         let verdict = self
             .verify(&endpoint, &request, trellis_idl::WebhookMode::Async, 1)
             .await;
-        let outcome = verdict.outcome(attempt_id, true);
+        let outcome = verdict.outcome(true);
         self.count(&endpoint.record.endpoint, outcome.outcome);
         records
             .set_outcome(attempt_id, outcome)
@@ -246,6 +253,9 @@ where
                 .get(&input.attempt_id.to_string())
                 .await
                 .map_err(unexpected)?
+                .filter(|attempt| {
+                    attempt.service == input.service && attempt.endpoint == input.endpoint
+                })
                 .ok_or_else(|| not_found("no such request"))?;
             let delivery = match attempt.stream_sequence {
                 Some(sequence) => webhooks
@@ -263,7 +273,13 @@ where
     provider.register_attempts_reverify(move |_context, input| {
         let webhooks = shared.clone();
         async move {
-            let attempt = webhooks.reverify(&input.attempt_id.to_string()).await?;
+            let attempt = webhooks
+                .reverify(
+                    &input.service,
+                    &input.endpoint,
+                    &input.attempt_id.to_string(),
+                )
+                .await?;
             wire(serde_json::json!({ "attempt": attempt }))
         }
     });
