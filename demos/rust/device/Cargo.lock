@@ -468,7 +468,6 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
- "trellis-models",
  "trellis-protocol",
  "trellis-rs",
 ]
