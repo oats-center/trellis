@@ -151,6 +151,41 @@ test("a signed async endpoint answers at once, verifies afterwards, drops duplic
     });
     assert.equal(tooLarge.status, 413);
 
+    // A request rejected for a wrong secret is recovered once the secret is
+    // fixed: verifying it again uses its original bytes and receive time.
+    const wrongKey = (await attempts("signed")).find(
+      (attempt) => attempt.reason === "signature does not match",
+    )!;
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    const { revision } = await runtime.callAdminRpc("authConfigGet", {
+      target,
+    });
+    await runtime.callAdminRpc("authConfigSet", {
+      target,
+      secrets: { signing: "wrong-key" },
+      ...(revision === undefined ? {} : { expectedRevision: revision }),
+      idempotencyKey: codecs.ulid.decode(ulid()),
+    });
+    const reverified = await runtime.waitFor(async () => {
+      const { attempt } = await runtime.callAdminRpc(
+        "webhooksAttemptsReverify",
+        {
+          attemptId: codecs.ulid.decode(wrongKey.attemptId),
+        },
+      );
+      return attempt.outcome === "accepted" ? attempt : undefined;
+    });
+    assert.equal(reverified.matchedKey, "current");
+    await runtime.waitFor(() => (received.length === 2 ? true : undefined));
+    // The previous secret is still accepted during the change overlap.
+    const overlap = await post(body, { "test-signature": signed(body) });
+    assert.equal(overlap.status, 200);
+    await runtime.waitFor(() => (received.length === 3 ? true : undefined));
+    assert.deepEqual(
+      received[2]!.checks.map((check) => [check.kind, check.key]),
+      [["hmac", "previous"]],
+    );
+
     // A disabled deployment's endpoints answer 503 and store nothing.
     const { deployment } = await runtime.callAdminRpc("authDeploymentsGet", {
       deploymentId: codecs.ulid.decode(key.deploymentId),

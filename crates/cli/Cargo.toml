@@ -61,6 +61,7 @@ trellis-idl = { path = "../idl", version = "0.100.0-rc.52" }
 trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.52" }
 
 [dev-dependencies]
+reqwest.workspace = true
 rexpect = "0.7.1"
 runtime-trellis = { path = "../../integration/fixtures/runtime/crates/runtime-trellis" }
 trellis-rs = { path = "../trellis", version = "0.100.0-rc.52" }

@@ -216,16 +216,15 @@
     if (confirmed) await update(endpoint.endpoint, "disable");
   }
 
-  async function changeSetting(
+  // The setting being edited, by endpoint and setting, and what was typed.
+  let editing = $state<{ key: string; text: string } | null>(null);
+
+  async function saveSetting(
     endpoint: Endpoint,
     entry: (typeof SETTINGS)[number],
   ): Promise<void> {
-    const current = show(endpoint.settings[entry.field], entry.unit);
-    const text = globalThis.prompt(
-      `${entry.label} (now ${current}). Leave empty for the default.`,
-      current,
-    );
-    if (text === null) return;
+    const text = editing?.text ?? "";
+    editing = null;
     if (text.trim() === "")
       return update(endpoint.endpoint, "set", entry.setting, null);
     const value = parse(text, entry.unit);
@@ -366,16 +365,50 @@
             {#each SETTINGS as entry (entry.setting)}
               <dt class="text-base-content/65">{entry.label}</dt>
               <dd class="flex items-center gap-2">
-                <span>{show(endpoint.settings[entry.field], entry.unit)}</span>
-                {#if manage}
-                  <button
-                    type="button"
-                    class="btn btn-ghost btn-xs"
-                    disabled={busy}
-                    aria-label={`Change ${entry.label} of ${endpoint.title}`}
-                    onclick={() => void changeSetting(endpoint, entry)}
-                    >Change</button
+                {#if editing?.key === `${endpoint.endpoint}:${entry.setting}`}
+                  <form
+                    class="flex items-center gap-2"
+                    onsubmit={(event) => {
+                      event.preventDefault();
+                      void saveSetting(endpoint, entry);
+                    }}
                   >
+                    <input
+                      class="input input-sm w-32"
+                      aria-label={`${entry.label} of ${endpoint.title}`}
+                      placeholder="Default"
+                      bind:value={editing.text}
+                    />
+                    <button
+                      type="submit"
+                      class="btn btn-primary btn-xs"
+                      disabled={busy}>Save</button
+                    >
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-xs"
+                      onclick={() => (editing = null)}>Cancel</button
+                    >
+                  </form>
+                {:else}
+                  <span>{show(endpoint.settings[entry.field], entry.unit)}</span
+                  >
+                  {#if manage}
+                    <button
+                      type="button"
+                      class="btn btn-ghost btn-xs"
+                      disabled={busy}
+                      aria-label={`Change ${entry.label} of ${endpoint.title}`}
+                      onclick={() =>
+                        (editing = {
+                          key: `${endpoint.endpoint}:${entry.setting}`,
+                          text: show(
+                            endpoint.settings[entry.field],
+                            entry.unit,
+                          ),
+                        })}>Change</button
+                    >
+                  {/if}
                 {/if}
               </dd>
             {/each}

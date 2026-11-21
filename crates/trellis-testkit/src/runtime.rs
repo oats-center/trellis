@@ -1128,6 +1128,21 @@ impl TrellisTestRuntime {
             .await
     }
 
+    /// The URL senders use for each of a service's webhook endpoints, by
+    /// endpoint name. Tests send real requests to these URLs; nothing
+    /// bypasses intake or verification.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime stopped or the endpoints cannot be listed.
+    pub async fn webhook_urls(
+        &self,
+        service: &TestServiceIdentity,
+    ) -> Result<std::collections::BTreeMap<String, String>, TrellisTestError> {
+        self.ensure_running()?;
+        self.admin()?.webhook_urls(&service.deployment_id).await
+    }
+
     /// Registers `P` like [`Self::register_service`] when another deployment
     /// already serves an API `P` implements. Every deployment serving an API
     /// shares its requests at random, so Auth requires this explicit
