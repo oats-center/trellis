@@ -190,19 +190,18 @@
 
   function save(secret: Secret): Promise<void> {
     return run(async () => {
+      const expires = expiry();
       await trellis
-        .enrollmentSecretsUpdate(
-          apis.auth.API.actions["rpc:EnrollmentSecrets.Update"].input.decode({
-            secretId: secret.secretId,
-            title: form.title.trim(),
-            maxInstances: form.maxInstances,
-            enrollmentsPerHour: form.perHour,
-            currentBuildOnly: form.currentBuildOnly,
-            ...(expiry() ? { expiresAt: expiry() } : {}),
-            expectedRevision: secret.revision,
-            idempotencyKey: codecs.ulid.decode(ulid()),
-          }),
-        )
+        .enrollmentSecretsUpdate({
+          secretId: secret.secretId,
+          title: form.title.trim(),
+          maxInstances: form.maxInstances,
+          enrollmentsPerHour: form.perHour,
+          currentBuildOnly: form.currentBuildOnly,
+          ...(expires ? { expiresAt: codecs.timestamp.decode(expires) } : {}),
+          expectedRevision: secret.revision,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        })
         .orThrow();
       editing = null;
     }, "It's unknown whether the change was saved. Reload to check.");
@@ -211,14 +210,12 @@
   function revoke(secret: Secret): Promise<void> {
     return run(async () => {
       await trellis
-        .enrollmentSecretsRevoke(
-          apis.auth.API.actions["rpc:EnrollmentSecrets.Revoke"].input.decode({
-            secretId: secret.secretId,
-            ...(retireInstances ? { retireInstances: true } : {}),
-            expectedRevision: secret.revision,
-            idempotencyKey: codecs.ulid.decode(ulid()),
-          }),
-        )
+        .enrollmentSecretsRevoke({
+          secretId: secret.secretId,
+          ...(retireInstances ? { retireInstances: true } : {}),
+          expectedRevision: secret.revision,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        })
         .orThrow();
       revoking = null;
       retireInstances = false;
