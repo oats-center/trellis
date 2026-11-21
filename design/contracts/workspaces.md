@@ -436,6 +436,12 @@ These were open during review and are now settled.
 5. **The subject change ships with workspaces.** RPC and Operation subjects
    carry the API identity token in the same release, so each installation
    rebuilds once.
+6. **No data is carried across the ID change.** Every installation running
+   0.100 today is a development or test installation; Krishi's production
+   still runs 0.11 and moves to 0.100 later. So the release starts from a
+   fresh Auth database, as the pre-release rule says, with no migration code
+   that rewrites stored IDs. Krishi's production cutover from 0.11 should
+   happen after this release, so it isn't done twice.
 
 ## Out of scope
 
@@ -444,13 +450,3 @@ These were open during review and are now settled.
 - Mirrors for the CLI. `trellis add` and `update` pull from the workspace
   itself.
 - Aliases or rewrites that keep old IDs working after a workspace change.
-
-## Open questions
-
-1. **Does any installation's data have to survive the one-time ID change?**
-   This proposal starts from a fresh Auth database, which drops users, grants,
-   and the record of each deployment's resources. If Krishi's installation
-   needs its users and resource data carried across, the alternative is a
-   one-time step on first start that rewrites stored short IDs to
-   `localhost/...` IDs. That is migration code the project rules otherwise
-   avoid before the first release, so it needs an explicit decision.
