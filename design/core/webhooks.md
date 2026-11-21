@@ -7,8 +7,8 @@ order: 47
 # Design: Receiving Webhooks
 
 > **Status: proposal awaiting review.** Nothing in this document is
-> implemented. The [open questions](#open-questions) at the end need a decision
-> before work starts.
+> implemented. The questions it raised are settled in
+> [Decisions](#decisions) at the end.
 
 A webhook is an HTTP request that another system sends when something happens
 on its side. Stripe sends one when a payment succeeds, and GitHub sends one when
@@ -99,7 +99,7 @@ service Billing {
 | `content_encoding [gzip];`                      | Encodings Trellis decodes before verifying. Others get 415.                   | none                     |
 | `dedupe "<template>";`                          | Where the sender's delivery ID is, for [dropping duplicates](#duplicates)     | absent                   |
 | `concurrency N;`, `retry { ... }`               | How events reach the service, as for a `consumer`                             | the consumer defaults    |
-| `max_body`, `dedupe_window`, `rotation_overlap` | The service's own default for a [runtime setting](#runtime-settings)          | the installation default |
+| `max_body`, `dedupe_window`, `rotation_overlap` | The service's own default for a [runtime setting](#runtime-settings)          | the Trellis default      |
 
 The compiler enforces four rules:
 
@@ -279,8 +279,8 @@ administrator can see when the sender has switched.
 
 1. Trellis runs the cheap checks.
 2. Trellis writes the raw request to the intake stream and waits until NATS
-   JetStream confirms the write. The intake stream is a JetStream stream named
-   `TRELLIS_WEBHOOK_INTAKE` that holds each request's method, URL, headers,
+   JetStream confirms the write. The intake stream is a JetStream stream, one per
+   deployment, that holds each request's method, URL, headers,
    body, client address, and receive time.
 3. Trellis answers the declared status, or 503 if the write failed.
 4. A worker reads the request back, runs the verifiers and the decide handler,
@@ -301,7 +301,7 @@ administrator can see what failed and verify it again.
 | Situation                                               | Status                                                          |
 | ------------------------------------------------------- | --------------------------------------------------------------- |
 | Unknown or retired URL                                  | 404                                                             |
-| Endpoint disabled by an administrator                   | 503                                                             |
+| Endpoint or deployment disabled by an administrator     | 503, and nothing is stored                                      |
 | Method not declared                                     | 405 with `Allow`                                                |
 | Body over the size limit                                | 413                                                             |
 | Content encoding not declared                           | 415                                                             |
@@ -529,32 +529,41 @@ lost confirmation is stored once.
 
 ## Runtime settings
 
-Administrators change these settings at runtime, without a new build or an
-approval. Trellis keeps them in the Auth database. They are edited in the
-service's Webhooks section in the Console, with `trellis svc <name> webhooks
-<endpoint> set <setting> <value>`, and, for the installation defaults, with
-`trellis webhooks defaults set`. None of them is server configuration.
+Webhooks belong to a service deployment, so their runtime settings belong to
+that deployment too. The service's IDL gives a default for some of them, and
+the deployment's own value overrides the IDL at runtime, without a new build or
+an approval. Trellis keeps the values in the Auth database. They are edited in
+the Webhooks section of the service's Console page, or with `trellis svc <name>
+webhooks <endpoint> set <setting> <value>`. None of them is server
+configuration, and there is no installation-wide layer of defaults.
 
-| Setting                                                  | Default                      | IDL member         |
-| -------------------------------------------------------- | ---------------------------- | ------------------ |
-| Requests per endpoint                                    | 50 per second, bursts of 200 |                    |
-| Failed requests per client address, across all endpoints | 20 per minute                |                    |
-| Body size limit                                          | 256 KiB                      | `max_body`         |
-| Dedupe window                                            | 72 hours                     | `dedupe_window`    |
-| `sync` decide deadline                                   | 2 s, at most 10 s            | `decide`           |
-| `async` decide deadline                                  | 30 s, at most 60 s           | `decide`           |
-| Secret change overlap                                    | 24 hours                     | `rotation_overlap` |
-| Request record retention                                 | 30 days                      |                    |
-| Intake stream retention                                  | 7 days or 1 GiB              |                    |
+| Setting                                                               | Default                      | IDL member         |
+| --------------------------------------------------------------------- | ---------------------------- | ------------------ |
+| Requests per endpoint                                                 | 50 per second, bursts of 200 |                    |
+| Failed requests per client address, across the deployment's endpoints | 20 per minute                |                    |
+| Body size limit                                                       | 256 KiB                      | `max_body`         |
+| Dedupe window                                                         | 72 hours                     | `dedupe_window`    |
+| `sync` decide deadline                                                | 2 s, at most 10 s            | `decide`           |
+| `async` decide deadline                                               | 30 s, at most 60 s           | `decide`           |
+| Secret change overlap                                                 | 24 hours                     | `rotation_overlap` |
+| Request record retention                                              | 30 days                      |                    |
+| Intake retention                                                      | 7 days or 1 GiB              |                    |
 
-An administrator's value for one endpoint wins over the IDL member, and the IDL
-member wins over the installation default. Two limits apply:
+A value set on the deployment wins over the IDL member, and the IDL member wins
+over the Trellis default in the table. Two limits apply:
 
-- The body travels inside the event, so it must fit in one NATS message. With
-  the default 1 MiB message size, the limit is about 700 KiB after base64 and
-  the event envelope. A larger body gets 413.
-- The intake stream must keep requests longer than the longest `async` decide
-  retry, or requests would expire while the service is merely slow to return.
+- The body travels inside the event, so it must fit in one NATS message. This
+  is the one installation-wide ceiling, and it exists because no deployment
+  setting can make NATS carry a larger message. With the default 1 MiB message
+  size, the limit is about 700 KiB after base64 and the event envelope. A larger
+  body gets 413, whatever the deployment's body size limit says.
+- The intake retention must be longer than the longest `async` decide retry, or
+  requests would expire while the service is merely slow to return.
+
+Each deployment's raw requests live in its own intake stream, so one
+deployment's retention or volume never affects another's. When a deployment
+changes its intake retention, Trellis changes that stream's limits in place,
+the same way startup already converges stream limits.
 
 ## Approval
 
@@ -587,7 +596,7 @@ any time.
 | -------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------- |
 | No instance of the service runs  | Accepted. Events wait, and decide calls retry.                   | Accepted with standard verifiers only. With `decide`, 503. |
 | The event handler fails          | Event retries, then a dead letter                                | The same                                                   |
-| The service is disabled          | Accepted and held while the intake stream keeps it               | 503                                                        |
+| The deployment is disabled       | 503, and nothing is stored                                       | 503, and nothing is stored                                 |
 | The endpoint is disabled         | 503                                                              | 503                                                        |
 | Trellis is restarting            | Senders retry. A request already answered 2xx is already stored. | The same                                                   |
 | JetStream is unavailable or full | 503                                                              | 503                                                        |
@@ -645,7 +654,6 @@ trellis svc <name> webhooks <endpoint> attempt <attempt-id> [--body]
 trellis svc <name> webhooks <endpoint> reverify <attempt-id>
 trellis svc <name> webhooks <endpoint> enable|disable|rotate-url|retire-url
 trellis svc <name> webhooks <endpoint> set <setting> <value>
-trellis webhooks defaults [set <setting> <value>]
 ```
 
 Logs get one line per request with its ID, service, endpoint, outcome, status,
@@ -661,14 +669,14 @@ outcome), `trellis.webhooks.request.duration`,
 Following [data-retention.md](./data-retention.md), each new kind of data has a
 policy:
 
-| Data              | Where                               | Default                      | Needed for                                     |
-| ----------------- | ----------------------------------- | ---------------------------- | ---------------------------------------------- |
-| Raw requests      | stream `TRELLIS_WEBHOOK_INTAKE`     | 7 days or 1 GiB              | `async` verification, retries, verifying again |
-| Request records   | `webhooks.sqlite`                   | 30 days after receipt        | Console and CLI request views                  |
-| Dedupe IDs        | KV bucket `trellis_webhook_dedupe`  | the endpoint's dedupe window | Dropping duplicates                            |
-| `Received` events | the event stream and Events history | the normal event policies    | Delivery and replay                            |
+| Data              | Where                               | Default                           | Needed for                                     |
+| ----------------- | ----------------------------------- | --------------------------------- | ---------------------------------------------- |
+| Raw requests      | the deployment's intake stream      | the deployment's intake retention | `async` verification, retries, verifying again |
+| Request records   | `webhooks.sqlite`                   | 30 days after receipt             | Console and CLI request views                  |
+| Dedupe IDs        | KV bucket `trellis_webhook_dedupe`  | the endpoint's dedupe window      | Dropping duplicates                            |
+| `Received` events | the event stream and Events history | the normal event policies         | Delivery and replay                            |
 
-When the intake stream is full, Trellis refuses new requests with 503 rather
+When a deployment's intake stream is full, Trellis refuses new requests with 503 rather
 than remove old ones, so a flood cannot push out requests still waiting for
 verification.
 
@@ -707,28 +715,22 @@ implementation.
   because one endpoint that routes by a query parameter and verifies with
   `decide` covers that until a real service needs more.
 
-## Open questions
+## Decisions
 
-1. **Should an `async` endpoint keep accepting requests while its service is
-   disabled?**
-   Recommendation: yes, for as long as the intake stream keeps them. Disabling
-   a service stops it acting. A sender that gets 503 for days may turn the
-   endpoint off on its side, and turning it back on is manual work there. An
-   administrator who wants requests refused disables the endpoint itself.
-2. **Should the mode be set per HTTP method, so that Meta's GET handshake is
-   `sync` while its signed POSTs are `async`?**
-   Recommendation: no, not in this version. One mode per endpoint keeps the
-   declaration and the approval screen simple. A Meta endpoint uses `sync` with
-   `decide`, and its handler checks the POST signature with the SDK's HMAC
-   helper.
-3. **Should the intake stream's retention be a runtime setting, when every
-   other runtime stream's retention is server configuration?**
-   Recommendation: yes, to keep every webhook default changeable at runtime.
-   Trellis changes the stream's limits in place when the setting changes, the
-   same way startup already converges stream limits.
-4. **Should request records use new `trellis.webhooks.v1` capabilities, or the
-   existing Events capabilities?**
-   Recommendation: new capabilities, shaped like the Events ones. Records
+These questions came up during review and are settled.
+
+1. **A disabled deployment's endpoints stop accepting requests.** They answer
+   503 in both modes, and Trellis stores nothing from the request. Webhooks
+   are part of the deployment, so disabling the deployment turns them off with
+   everything else it owns.
+2. **The mode is set per endpoint, not per HTTP method.** One mode per endpoint
+   keeps the declaration and the approval screen simple. A Meta endpoint uses
+   `sync` with `decide`, answers the GET handshake from its handler, and checks
+   the POST signature with the SDK's HMAC helper.
+3. **Intake retention is a runtime setting.** It is set per deployment like the
+   other [runtime settings](#runtime-settings), and Trellis changes the
+   deployment's intake stream in place when it changes.
+4. **Request records use new `trellis.webhooks.v1` capabilities.** Records
    include rejected and pending requests that never became events, which the
    Events capabilities do not describe. An installation that wants one operator
    role adds both sets to it.
