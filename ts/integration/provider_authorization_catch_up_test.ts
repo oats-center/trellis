@@ -7,12 +7,13 @@ import { jetstreamManager, type ConsumerInfo } from "@nats-io/jetstream";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
+  apis,
   apps,
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-const ECHO = "rpc.v1.runtime.Echo";
+const ECHO = apis.runtime.API.actions["rpc:Echo"].subject;
 const MIRROR_STREAM = "KV_TRELLIS_AUTH_REVOCATIONS";
 
 test("a Node provider answers a request that arrives while its revocation mirror catches up", async () => {

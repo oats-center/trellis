@@ -838,3 +838,105 @@ async fn revoking_a_secret_with_its_instances_disconnects_them() {
         .all(|instance| instance["instanceId"] != enrolled["instanceId"]));
     runtime.shutdown().await.unwrap();
 }
+
+/// `svc <name> webhooks` lists a service's endpoints with their URLs, shows
+/// what each request to an endpoint became, and disables an endpoint so its
+/// URL answers 503.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn webhook_endpoints_and_their_requests_are_shown_and_managed() {
+    use runtime_trellis::participants::runtime_trellis_webhook_service::Participant;
+
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("billing")
+        .await
+        .unwrap();
+    runtime
+        .set_config(
+            &identity,
+            serde_json::json!({ "partnerUser": "partner" }),
+            serde_json::json!({
+                "signing": "signing-secret",
+                "hookToken": "right-token-value",
+                "partnerPassword": "partner-password",
+            }),
+        )
+        .await
+        .unwrap();
+    let cli = Cli::login(&mut runtime, None).await;
+    let deployment = identity.deployment_id();
+
+    let listed = cli.json(&["svc", deployment, "webhooks"]).await;
+    let endpoints = listed["endpoints"].as_array().unwrap();
+    let mut names: Vec<_> = endpoints
+        .iter()
+        .map(|endpoint| endpoint["endpoint"].as_str().unwrap())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["handshake", "partner", "query", "signed", "token"]);
+    let token = cli.json(&["svc", deployment, "webhooks", "token"]).await;
+    let url = token["url"].as_str().unwrap().to_owned();
+    assert!(url.contains("/webhooks/billing/"), "{url}");
+    assert_eq!(
+        token["verifiers"],
+        serde_json::json!(["Token in the x-hook-token header"])
+    );
+
+    let http = runtime.https_client_builder().build().unwrap();
+    let refused = http
+        .post(&url)
+        .header("x-hook-token", "wrong-token-value")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let attempts = cli
+        .json(&[
+            "svc",
+            deployment,
+            "webhooks",
+            "token",
+            "attempts",
+            "--outcome",
+            "rejected",
+        ])
+        .await;
+    let attempt = &attempts["attempts"][0];
+    assert_eq!(attempt["reason"], "token does not match");
+    assert_eq!(attempt["stored"], false);
+    let shown = cli
+        .json(&[
+            "svc",
+            deployment,
+            "webhooks",
+            "token",
+            "attempt",
+            attempt["attemptId"].as_str().unwrap(),
+        ])
+        .await;
+    assert!(!shown.to_string().contains("wrong-token-value"));
+
+    cli.json(&["svc", deployment, "webhooks", "token", "disable"])
+        .await;
+    let disabled = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let response = http
+                .post(&url)
+                .header("x-hook-token", "right-token-value")
+                .body("{}")
+                .send()
+                .await
+                .unwrap();
+            if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                return response;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("a disabled endpoint answers 503");
+    assert_eq!(disabled.text().await.unwrap(), "");
+    let shown = cli.json(&["svc", deployment, "webhooks", "token"]).await;
+    assert_eq!(shown["enabled"], false);
+}

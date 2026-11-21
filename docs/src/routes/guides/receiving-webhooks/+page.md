@@ -186,4 +186,5 @@ trellis svc billing webhooks stripe rotate-url
 Tests send real HTTPS requests to the endpoint URL of a service the testkit
 started, with secrets set through the normal settings RPCs. Nothing bypasses
 intake or verification. With the TypeScript testkit, list the endpoints with
-`runtime.callAdminRpc("webhooksEndpointsList", { service: deploymentId })`.
+`runtime.callAdminRpc("webhooksEndpointsList", { service: deploymentId })`. With the Rust testkit, `runtime.webhook_urls(&identity)` returns them by
+endpoint name.

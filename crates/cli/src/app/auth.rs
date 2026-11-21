@@ -709,7 +709,7 @@ async fn save_client(
             description: wire(&description)?,
             redirect_uris,
             development,
-            implied_consent: wire(&implied_consent)?,
+            implied_consent: wire(full_capability_ids(auth, &implied_consent).await?)?,
             expected_revision: current
                 .as_ref()
                 .map_or(0, |client| client.revision.0 .0)
@@ -785,7 +785,7 @@ pub(super) async fn apis(format: OutputFormat, command: ApisCommand) -> miette::
                 output::table(
                     output::list(page, "items"),
                     &[
-                        output::col("API", "apiId"),
+                        output::id_col("API", "apiId"),
                         output::col("Name", "title"),
                         output::col("Version", "version"),
                         output::time_col("Accepted", "acceptedAt"),
@@ -2468,6 +2468,60 @@ fn print_saved_role(
     })
 }
 
+/// Full capability IDs for what was typed. A full ID stands for itself; a
+/// short ID, without its workspace, stands for the one capability Trellis
+/// knows by it, and is refused with the full IDs it could mean when several
+/// share it.
+async fn full_capability_ids(
+    auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
+    typed: &[String],
+) -> miette::Result<Vec<String>> {
+    use futures_util::TryStreamExt as _;
+    let qualified = |id: &str| id.contains('/') || id.starts_with("trellis.");
+    if typed.iter().all(|id| qualified(id)) {
+        return Ok(typed.to_vec());
+    }
+    let known = auth
+        .capabilities_list_items(auth_types::AuthCapabilitiesListRequest {
+            page: Some(trellis_runtime_apis::CursorQuery {
+                cursor: None,
+                limit: Some(100),
+            }),
+            api_id: None,
+            search: None,
+            extra: Default::default(),
+        })
+        .map_ok(|capability| capability.identity.capability_id.to_string())
+        .try_collect::<std::collections::BTreeSet<_>>()
+        .await
+        .into_diagnostic()?;
+    typed
+        .iter()
+        .map(|id| {
+            if qualified(id) {
+                return Ok(id.clone());
+            }
+            let matching = known
+                .iter()
+                .filter(|full| trellis_protocol::short_id(full) == id)
+                .collect::<Vec<_>>();
+            match matching.as_slice() {
+                [only] => Ok((*only).clone()),
+                // Trellis refuses what it doesn't know, by the name typed.
+                [] => Ok(id.clone()),
+                several => Err(miette::miette!(
+                    "capability {id} could mean {}; give its full ID",
+                    several
+                        .iter()
+                        .map(|full| full.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" or ")
+                )),
+            }
+        })
+        .collect()
+}
+
 async fn roles_create_command(format: OutputFormat, args: &RoleCreateArgs) -> miette::Result<()> {
     let mut form = crate::prompt::Form::new(args.title.is_none());
     let title = form.required(
@@ -2510,8 +2564,10 @@ async fn roles_create_command(format: OutputFormat, args: &RoleCreateArgs) -> mi
         ],
     )?;
     let (_selection, connected) = connect_authenticated_cli_client().await?;
-    let role = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
-        .trellis_auth_v1()
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let capabilities = full_capability_ids(&auth, &capabilities).await?;
+    let role = auth
         .roles_put(&auth_types::AuthRolePutRequest {
             role_id: None,
             expected_revision: 0u64.into(),
@@ -2541,7 +2597,7 @@ async fn roles_edit_command(format: OutputFormat, args: &RoleEditArgs) -> miette
         .into_diagnostic()?
         .role;
     let capability_ids = match &args.capabilities {
-        Some(capabilities) => wire(capabilities)?,
+        Some(capabilities) => wire(full_capability_ids(&auth, capabilities).await?)?,
         None => current
             .capabilities
             .iter()

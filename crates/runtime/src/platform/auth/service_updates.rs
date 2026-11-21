@@ -869,7 +869,7 @@ fn submit(
             serde_json::from_value(json!({
                 "addedCapabilities": [], "removedCapabilities": [], "addedResources": [],
                 "changedResources": [], "reattachedResources": [], "removedResources": [], "addedApis": [],
-                "sharedApis": [],
+                "sharedApis": [], "webhooks": [],
                 "removedApis": [], "acceptedApis": [], "acceptedUsedApis": []
             }))?
         } else {

@@ -677,7 +677,7 @@ mod tests {
         assert_eq!(
             resolve_event_identity("events.v1.YWNtZS1vcmRlcnMucnVudGltZUB2MQ.Changed"),
             (
-                Some("localhost/acme-orders.runtime@v1".to_owned()),
+                Some("acme-orders.runtime@v1".to_owned()),
                 Some("Changed".to_owned())
             )
         );
@@ -691,7 +691,7 @@ mod tests {
     fn event_identity_does_not_guess_between_dotted_names_and_parameters() {
         assert_eq!(
             resolve_event_identity("events.v1.YWNtZS1vcmRlcnMucnVudGltZUB2MQ.Changed.customer"),
-            (Some("localhost/acme-orders.runtime@v1".to_owned()), None)
+            (Some("acme-orders.runtime@v1".to_owned()), None)
         );
     }
 

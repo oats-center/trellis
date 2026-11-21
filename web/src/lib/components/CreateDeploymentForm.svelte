@@ -84,6 +84,9 @@
   // implements; adding it anyway needs the administrator's explicit consent.
   let sharing = $state<string | null>(null);
   let sharingUnderstood = $state(false);
+  // Set when Auth asks to confirm a webhook that checks nothing.
+  let unauthenticated = $state(false);
+  let unauthenticatedUnderstood = $state(false);
   let added = $state<{ title: string; id: string; href: string } | null>(null);
   // A seed generated here. It never leaves the browser: only its public key is
   // sent, and closing the dialog drops the last reference to it.
@@ -169,6 +172,7 @@
       title.trim() !== "" &&
       (withIdl ? evidence !== undefined && participantId !== "" : true) &&
       (sharing === null || sharingUnderstood) &&
+      (!unauthenticated || unauthenticatedUnderstood) &&
       (kind === "device" ||
         keyMode === "create" ||
         (publicKey.trim() !== "" && publicKeyError === null)),
@@ -520,6 +524,9 @@
             ...(sharing && sharingUnderstood
               ? { acknowledgeSharedApis: true }
               : {}),
+            ...(unauthenticated && unauthenticatedUnderstood
+              ? { acknowledgeUnauthenticatedWebhooks: true }
+              : {}),
             idempotencyKey: codecs.ulid.decode(ulid()),
           })
           .orThrow();
@@ -561,6 +568,14 @@
       if (disposed) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
       const message = projectConsoleError(cause).message;
+      if (
+        !uncertain &&
+        message.includes("acknowledgeUnauthenticatedWebhooks")
+      ) {
+        unauthenticated = true;
+        unauthenticatedUnderstood = false;
+        return;
+      }
       if (!uncertain && message.includes("acknowledgeSharedApis")) {
         sharing = message;
         sharingUnderstood = false;
@@ -974,6 +989,22 @@
           <span class="trellis-field-help"
             >The service checks them against its IDL when it connects.</span
           >
+        </div>
+      {/if}
+      {#if unauthenticated}
+        <div class="alert alert-warning block space-y-2" role="alert">
+          <p class="font-semibold">A webhook in this build checks nothing.</p>
+          <p class="text-sm">
+            Anyone who learns its URL can send the service requests.
+          </p>
+          <label class="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              class="checkbox checkbox-sm"
+              bind:checked={unauthenticatedUnderstood}
+            />
+            I understand this webhook accepts requests from anyone with its URL
+          </label>
         </div>
       {/if}
       {#if sharing}

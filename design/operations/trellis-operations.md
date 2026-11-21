@@ -128,10 +128,14 @@ fences for takeover. Live cancellation retains authenticated owner-specific
 session control routing, not the queued open subject. No global routing directory
 or persistent caller-to-provider selection is involved.
 
-Canonical start subjects carry the generated API's major version. Established
-owner-directed subjects retain the fixed `operation.v1` transport-family prefix
-and encode the full API identity, including that API major. These versions are
-independent. Implementation-only providers can subscribe to their own
+Canonical start subjects, `operations.v1.<api-token>.<action>`, carry the full
+API identity token, workspace and API major included, so APIs that share a name
+in different packages or workspaces never share a start subject. Established
+owner-directed subjects keep the `operation.v1` transport-family prefix and
+encode the full API identity and the owning deployment; only the start subject
+is canonical, so a restored reference reaches its owner whatever other
+deployments serve the API. The `v1` in both is the transport family version,
+independent of the API major. Implementation-only providers can subscribe to their own
 deployment-scoped transient-update forwarding subject without selecting caller
 Observe authority; that maintenance right grants no observation of another
 deployment or caller authority.

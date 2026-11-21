@@ -122,7 +122,7 @@ async fn read(client: &TrellisClient, at_connect: bool) -> Result<Value, Trellis
         .request_json_value(
             AUTH_API,
             action,
-            "rpc.v1.auth.Config.Own.Get",
+            &trellis_protocol::derive_rpc_subject(AUTH_API, "Config.Own.Get")?,
             &serde_json::json!({ "atConnect": at_connect }),
         )
         .await

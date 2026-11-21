@@ -269,6 +269,7 @@ pub(crate) async fn approve_device(
 
 pub(crate) struct AdminSession {
     auth: AuthClient,
+    webhooks: crate::apis::trellis_webhooks_v1::Client,
     pub(crate) trust: RuntimeAuthorizationTrust,
     pub(crate) nats_servers: Vec<String>,
 }
@@ -322,6 +323,7 @@ impl AdminSession {
             )
         })?;
         Ok(Self {
+            webhooks: crate::apis::trellis_webhooks_v1::Client::from_generated(generated.clone()),
             auth: AuthClient::from_generated(generated),
             trust,
             nats_servers,
@@ -527,6 +529,27 @@ impl AdminSession {
 
     /// Store settings for a deployment, or one of its instances, as a new
     /// revision through the same `Config.Set` administrators use.
+    /// Each webhook endpoint of a deployment, by name, with the URL senders use.
+    pub(crate) async fn webhook_urls(
+        &self,
+        deployment_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, String>, TrellisTestError> {
+        let listed = self
+            .webhooks
+            .endpoints_list(
+                &serde_json::from_value(json!({ "service": deployment_id })).map_err(|error| {
+                    failure(TrellisTestStage::AdministratorLogin, error.to_string())
+                })?,
+            )
+            .await
+            .map_err(|error| failure(TrellisTestStage::AdministratorLogin, error.to_string()))?;
+        Ok(listed
+            .endpoints
+            .into_iter()
+            .map(|endpoint| (endpoint.endpoint, endpoint.url))
+            .collect())
+    }
+
     pub(crate) async fn set_config(
         &self,
         deployment_id: &str,

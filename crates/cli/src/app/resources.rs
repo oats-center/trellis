@@ -16,7 +16,7 @@ const COLUMNS: [output::Column<'static>; 6] = [
     output::col("Name", "localName"),
     output::col("Kind", "kind"),
     output::state_col("State", "state"),
-    output::col("Owner", "participantId"),
+    output::id_col("Owner", "participantId"),
     output::time_col("Updated", "updatedAt"),
     output::muted("ID", "resourceId"),
 ];

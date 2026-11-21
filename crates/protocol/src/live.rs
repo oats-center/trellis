@@ -24,10 +24,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::{
-    identifiers::{validate_logical_name, validate_version},
-    subjects, ProtocolError,
-};
+use crate::{identifiers::validate_logical_name, subjects, ProtocolError};
 
 /// Exact protocol discriminator for every live-session body.
 pub const LIVE_VERSION: &str = "trellis.live.v1";
@@ -1525,7 +1522,7 @@ pub fn derive_live_observe_wildcard_subject(
 /// Returns [`ProtocolError::Live`] unless the subject is exactly
 /// `live.v1.route.<api-token>.<action>`,
 /// `live.v1.route.<api-token>.<deployment-token>.<action>`,
-/// `operations.vN.<logical-name>`, or
+/// `operations.v1.<api-token>.<action>`, or
 /// `operation.v1.<api-token>.<deployment-token>.<action>`.
 /// A standalone Live action may contain dots, including a leading component that
 /// is also a valid deployment token. Its canonical or deployment-bound meaning
@@ -1543,15 +1540,11 @@ pub fn validate_base_subject(
     };
     let parts = base_subject.split('.').collect::<Vec<_>>();
     let (api_token, action) = match parts.as_slice() {
-        ["live", "v1", "route", api_token, action @ ..] => (*api_token, action),
+        ["live", "v1", "route", api_token, action @ ..]
+        | ["operations", "v1", api_token, action @ ..] => (*api_token, action),
         ["operation", "v1", api_token, deployment_token, action @ ..] => {
             validate_subject_token(deployment_token, ["baseSubject"])?;
             (*api_token, action)
-        }
-        ["operations", version, action @ ..] => {
-            validate_version(version).map_err(|_| invalid())?;
-            validate_logical_name(&action.join(".")).map_err(|_| invalid())?;
-            return Ok(base_subject);
         }
         _ => return Err(invalid()),
     };
@@ -1954,7 +1947,7 @@ mod tests {
         assert!(derive_live_data_subject("", consumer, &session).is_err());
         validate_live_subject(&derive_live_observe_subject(&base, provider, &session).unwrap())
             .unwrap();
-        let operation = crate::derive_operation_subject("v2", "documents.Work").unwrap();
+        let operation = crate::derive_operation_subject("acme.documents@v2", "Work").unwrap();
         let observe = derive_live_observe_subject(&operation, provider, &session).unwrap();
         validate_live_subject(&observe).unwrap();
         assert!(derive_live_observe_subject("events.v1.X.Watch", provider, &session).is_err());

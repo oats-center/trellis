@@ -1005,7 +1005,7 @@ fn resolve_api(
             return Err(miette!("duplicate group '{}'", group.name));
         }
     }
-    let subjects = derive_api_subjects(&identity, &raw.name, raw.major, &actions)?;
+    let subjects = derive_api_subjects(&identity, &actions)?;
     Ok(ApiDefinition {
         identity,
         name: raw.name.clone(),
@@ -1025,12 +1025,9 @@ fn resolve_api(
 
 fn derive_api_subjects(
     api_id: &ApiId,
-    api_name: &str,
-    major: u32,
     actions: &BTreeMap<ActionId, ActionDefinition>,
 ) -> miette::Result<trellis_protocol::DerivedApiSubjects> {
     let api_id = api_id.as_str();
-    let version = format!("v{major}");
     let mut result = trellis_protocol::DerivedApiSubjects {
         rpc: BTreeMap::new(),
         operations: BTreeMap::new(),
@@ -1038,7 +1035,6 @@ fn derive_api_subjects(
         lives: BTreeMap::new(),
     };
     for (id, action) in actions {
-        let logical_name = format!("{api_name}.{}", id.name);
         let protocol = |value: Result<String, trellis_protocol::ProtocolError>| {
             value.map_err(|error| miette!(error.to_string()))
         };
@@ -1046,19 +1042,13 @@ fn derive_api_subjects(
             ActionDefinition::Rpc { .. } => {
                 result.rpc.insert(
                     id.name.clone(),
-                    protocol(trellis_protocol::derive_rpc_subject(
-                        &version,
-                        &logical_name,
-                    ))?,
+                    protocol(trellis_protocol::derive_rpc_subject(api_id, &id.name))?,
                 );
             }
             ActionDefinition::Operation { .. } => {
                 result.operations.insert(
                     id.name.clone(),
-                    protocol(trellis_protocol::derive_operation_subject(
-                        &version,
-                        &logical_name,
-                    ))?,
+                    protocol(trellis_protocol::derive_operation_subject(api_id, &id.name))?,
                 );
             }
             ActionDefinition::Event { parameters, .. } => {

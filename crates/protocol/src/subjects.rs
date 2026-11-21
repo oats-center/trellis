@@ -4,10 +4,7 @@ use base64::Engine as _;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::{
-    identifiers::{validate_logical_name, validate_version},
-    ProtocolError,
-};
+use crate::{identifiers::validate_logical_name, ProtocolError};
 
 /// Exact generated event identity carried by a signed publication.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -292,27 +289,33 @@ pub fn route_queue_group(subscription_subject: &str) -> String {
     )
 }
 
-/// Derive an RPC subject from its version and logical name.
+/// Derive the canonical RPC subject of one action of a qualified API:
+/// `rpc.v1.<api-token>.<action>`.
+///
+/// The API identity token keeps two APIs that share a name in different
+/// packages or workspaces apart on the wire.
 ///
 /// # Errors
 ///
-/// Returns [`ProtocolError::InvalidIdentifier`] for an invalid `vN` version or
-/// logical surface name.
-pub fn derive_rpc_subject(version: &str, logical_name: &str) -> Result<String, ProtocolError> {
-    derive_subject("rpc", version, logical_name)
+/// Returns [`ProtocolError::InvalidIdentifier`] for an invalid qualified API ID
+/// or action name.
+pub fn derive_rpc_subject(api_id: &str, action: &str) -> Result<String, ProtocolError> {
+    derive_api_subject("rpc", api_id, action)
 }
 
-/// Derive an operation subject from its version and logical name.
+/// Derive the canonical start subject of one Operation of a qualified API:
+/// `operations.v1.<api-token>.<action>`.
+///
+/// Only the start subject is canonical; a started Operation's status and
+/// control requests go to its owner route
+/// ([`derive_bound_operation_subject`]).
 ///
 /// # Errors
 ///
-/// Returns [`ProtocolError::InvalidIdentifier`] for an invalid `vN` version or
-/// logical surface name.
-pub fn derive_operation_subject(
-    version: &str,
-    logical_name: &str,
-) -> Result<String, ProtocolError> {
-    derive_subject("operations", version, logical_name)
+/// Returns [`ProtocolError::InvalidIdentifier`] for an invalid qualified API ID
+/// or action name.
+pub fn derive_operation_subject(api_id: &str, action: &str) -> Result<String, ProtocolError> {
+    derive_api_subject("operations", api_id, action)
 }
 
 /// Derive an API-qualified event base subject.
@@ -374,14 +377,10 @@ pub fn event_patterns_overlap(left: &str, right: &str) -> bool {
             .all(|(left, right)| left == &"*" || right == "*" || left == &right)
 }
 
-fn derive_subject(
-    family: &str,
-    version: &str,
-    logical_name: &str,
-) -> Result<String, ProtocolError> {
-    validate_version(version)?;
-    validate_logical_name(logical_name)?;
-    Ok(format!("{family}.{version}.{logical_name}"))
+fn derive_api_subject(family: &str, api_id: &str, action: &str) -> Result<String, ProtocolError> {
+    crate::validate_api_id(api_id)?;
+    validate_logical_name(action)?;
+    Ok(format!("{family}.v1.{}.{action}", subject_token(api_id)))
 }
 
 #[cfg(test)]
@@ -404,17 +403,13 @@ mod tests {
     }
 
     #[test]
-    fn subject_versions_use_canonical_positive_decimals() {
-        assert_eq!(
-            derive_rpc_subject("v1", "Documents.Get").unwrap(),
-            "rpc.v1.Documents.Get"
-        );
-        assert_eq!(
-            derive_rpc_subject("v10", "Documents.Get").unwrap(),
-            "rpc.v10.Documents.Get"
-        );
-        assert!(derive_rpc_subject("v01", "Documents.Get").is_err());
-        assert!(derive_rpc_subject("v00", "Documents.Get").is_err());
+    fn rpc_subjects_keep_same_named_apis_of_two_workspaces_apart() {
+        let ours =
+            derive_rpc_subject("ghcr.io/krishi-diagnostics/krishi.samples@v1", "Get").unwrap();
+        let theirs = derive_rpc_subject("ghcr.io/qlever-llc/krishi.samples@v1", "Get").unwrap();
+        assert_ne!(ours, theirs);
+        assert_ne!(route_queue_group(&ours), route_queue_group(&theirs));
+        assert!(derive_rpc_subject("samples", "Get").is_err());
     }
 
     #[test]

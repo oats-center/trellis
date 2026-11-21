@@ -1080,7 +1080,12 @@ service Worker { implements work; }
     )
     .unwrap();
     let api = graph.root_package().apis().values().next().unwrap();
-    assert_eq!(api.subjects().operations["Run"], "operations.v2.work.Run");
+    // The start subject names the full API identity, workspace and major
+    // included: `operations.v1.<token of ghcr.io/acme/orders.work@v2>.Run`.
+    assert_eq!(
+        api.subjects().operations["Run"],
+        "operations.v1.Z2hjci5pby9hY21lL29yZGVycy53b3JrQHYy.Run"
+    );
     let action = api.actions().keys().next().unwrap();
     let codecs = graph.action_codecs(api.identity(), action).unwrap();
     assert!(codecs.input.is_some());

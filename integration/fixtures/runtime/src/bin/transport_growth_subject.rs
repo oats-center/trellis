@@ -243,7 +243,7 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
                         .as_ref()
                         .expect("connected client")
                         .availability()
-                        .localhost_runtime_trellis_transport_growth_v1_growth_extend
+                        .runtime_trellis_transport_growth_v1_growth_extend
                 ))?;
             }
             "START_ADVANCE" => {
@@ -280,7 +280,7 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
                 let deadline = Instant::now() + Duration::from_secs(60);
                 while !client
                     .availability()
-                    .action_localhost_runtime_trellis_transport_growth_v1_rpc_extend
+                    .action_runtime_trellis_transport_growth_v1_rpc_extend
                 {
                     if Instant::now() >= deadline {
                         return Err("grown capability never became available".into());
@@ -302,7 +302,7 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
                 let mut availability = client.watch_availability();
                 while !client
                     .availability()
-                    .action_localhost_runtime_trellis_transport_growth_v1_rpc_extend
+                    .action_runtime_trellis_transport_growth_v1_rpc_extend
                 {
                     if availability.next().await.is_none() {
                         return Err("connection closed before Extend became available".into());

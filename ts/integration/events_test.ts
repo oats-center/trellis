@@ -310,7 +310,7 @@ test("Events projector retains rejected unsafe times and advances", async () => 
       ),
     });
     try {
-      const subject = "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha";
+      const subject = "events.v1.bG9jYWxob3N0L3J1bnRpbWUtdHJlbGxpcy5ldmVudHNAdjE.Alpha";
       await alpha.publishAlpha({ site: "time", value: "source" }).orThrow();
       const manager = await jetstreamManager(nats);
       const stream = (await manager.streams.list().next()).find((entry) =>
@@ -449,7 +449,7 @@ test("Rust durable events match registrations and retain unhandled messages", as
           await manager.consumers.list(eventStream.config.name).next()
         ).filter((consumer) =>
           consumer.config.filter_subjects?.includes(
-            "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
+            "events.v1.bG9jYWxob3N0L3J1bnRpbWUtdHJlbGxpcy5ldmVudHNAdjE.Alpha",
           ),
         );
         assert.deepEqual(consumers.length, 1);
@@ -473,7 +473,7 @@ test("Rust durable events match registrations and retain unhandled messages", as
         const revokedEvent = await manager.streams.getMessage(
           eventStream.config.name,
           {
-            last_by_subj: "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
+            last_by_subj: "events.v1.bG9jYWxob3N0L3J1bnRpbWUtdHJlbGxpcy5ldmVudHNAdjE.Alpha",
           },
         );
         const revokedDigest = revokedEvent?.header?.get(
@@ -666,7 +666,7 @@ for (const sdk of ["rust", "typescript"] as const) {
           const entry = (await runtime.events.consumersQuery({})).items.find(
             (item) =>
               item.filterSubjects.includes(
-                "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
+                "events.v1.bG9jYWxob3N0L3J1bnRpbWUtdHJlbGxpcy5ldmVudHNAdjE.Alpha",
               ),
           );
           return entry || false;
@@ -890,7 +890,7 @@ test("explicit ephemeral delivery works alongside a declared durable consumer", 
       assert.deepEqual(
         consumers.items.some((item) =>
           item.filterSubjects.includes(
-            "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
+            "events.v1.bG9jYWxob3N0L3J1bnRpbWUtdHJlbGxpcy5ldmVudHNAdjE.Alpha",
           ),
         ),
         true,
@@ -1025,7 +1025,7 @@ test("a subscriber-only service receives explicit ephemeral delivery with no dur
       assert.deepEqual(
         consumers.items.some((item) =>
           item.filterSubjects.includes(
-            "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
+            "events.v1.bG9jYWxob3N0L3J1bnRpbWUtdHJlbGxpcy5ldmVudHNAdjE.Alpha",
           ),
         ),
         false,

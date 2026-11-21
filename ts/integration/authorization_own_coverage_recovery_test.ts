@@ -519,7 +519,7 @@ test("a granted optional RPC waits for coverage rather than being classified as 
             ] === true,
         );
         assert.deepEqual(await service.extend({}).orThrow(), {});
-        const route = "rpc.v1.transport_growth.Extend";
+        const route = `rpc.v1.${Buffer.from("localhost/runtime-trellis.transport_growth@v1").toString("base64url")}.Extend`;
         const sockets = gate
           .connections()
           .filter((connection) =>

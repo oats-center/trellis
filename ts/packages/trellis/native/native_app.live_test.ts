@@ -72,7 +72,7 @@ test(
       assert.equal(wrongRequest.error?.reason, "AppKindMismatch");
       assert.match(
         wrongRequest.error?.message ?? "",
-        /native app request.*'runtime-trellis\.StateCaller' is a browser app request/,
+        /native app request.*'localhost\/runtime-trellis\.StateCaller' is a browser app request/,
       );
 
       const device = (await login.startDevice(native, { signal })).orThrow();

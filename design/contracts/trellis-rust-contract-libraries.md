@@ -82,6 +82,13 @@ Package generated code when distributing a consumer, rather than tracking it in
 Git. Formatting checks apply to authored code, not generated implementations.
 Use current Rustdoc/generated source for exact participant-specific methods.
 
+Module names come from short IDs, the ID without its workspace, so
+`ghcr.io/acme/orders.billing@v1` is `apis::orders_billing_v1`. Packages, APIs,
+participants, and apps whose short IDs agree are named by full ID instead, and
+names that still agree after punctuation is dropped take `_` and an eight-digit
+hash of the full ID (`trellis_idl::generated_names`, shared with the
+TypeScript generator). Every other module keeps its readable name.
+
 Generation rejects collisions across the complete normalized Client method
 namespace, including API accessors, resource accessors, and runtime methods,
 before replacing last-good output. A service's Provider methods are checked the
