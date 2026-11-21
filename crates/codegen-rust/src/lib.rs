@@ -70,6 +70,7 @@ impl RustModelBinding {
         graph: &PackageGraph,
         manifest: &str,
     ) -> Result<Self, CodegenRustError> {
+        let _names = ModuleNames::install(graph);
         let manifest: toml::Value = toml::from_str(manifest).map_err(|error| {
             CodegenRustError::Semantic(format!("invalid model Cargo manifest: {error}"))
         })?;
@@ -275,6 +276,7 @@ pub fn render_rust_models(
     graph: &PackageGraph,
     bindings: &[RustModelBinding],
 ) -> Result<String, CodegenRustError> {
+    let _names = ModuleNames::install(graph);
     let source = render_internal_types(graph, bindings);
     let syntax = syn::parse_file(&source).map_err(|source| CodegenRustError::InvalidRust {
         path: "__types.rs".into(),
@@ -294,6 +296,7 @@ pub fn render_runtime_action(
     kind: ActionKind,
     name: &str,
 ) -> Result<String, CodegenRustError> {
+    let _names = ModuleNames::install(graph);
     let api = graph
         .packages()
         .values()
@@ -330,6 +333,7 @@ pub fn generate_rust_package(
     name: &str,
     model_bindings: &[RustModelBinding],
 ) -> Result<(), CodegenRustError> {
+    let _names = ModuleNames::install(graph);
     let root = graph.root_package();
     let public_types = api_reachable_types(graph);
     let participant_types = root
@@ -490,37 +494,10 @@ fn validate_names(
 ) -> Result<(), CodegenRustError> {
     let root = graph.root_package();
     reject_collisions(
-        "apis",
-        graph
-            .packages()
-            .values()
-            .flat_map(|package| package.apis().keys())
-            .map(|id| (id.as_str(), module_name(id.as_str()))),
-    )?;
-    reject_collisions(
-        "participants",
-        root.participants()
-            .keys()
-            .map(|id| (id.as_str(), module_name(id.as_str()))),
-    )?;
-    reject_collisions(
-        "apps",
-        root.app_requests()
-            .keys()
-            .map(|id| (id.as_str(), module_name(id.as_str()))),
-    )?;
-    reject_collisions(
         "types",
         public_types
             .iter()
             .map(|reference| (reference.id.as_str(), type_name(reference.id.as_str()))),
-    )?;
-    reject_collisions(
-        "type packages",
-        graph
-            .packages()
-            .keys()
-            .map(|id| (id.as_str(), module_name(id.as_str()))),
     )?;
     for (participant, types) in participant_types {
         reject_collisions(
@@ -1409,7 +1386,7 @@ fn render_action(
                 bool = {download}; pub const CURSOR_PAGINATION: bool = {}; }}\n",
                 type_path(input),
                 format!("rpc.{name}"),
-                &api.subjects().rpc[name],
+                api.subjects().rpc[name],
                 string_slice(capabilities(InteractionDirection::Call)),
                 qualified_errors(api, errors),
                 pagination.is_some(),
@@ -1547,7 +1524,7 @@ fn render_action(
                 str] = &{}; pub const ERRORS: &'static [&'static str] = &{}; pub const \
                 UPLOAD: bool = {upload}; pub const STREAM: bool = {stream}; }}\n",
                 format!("operation.{name}"),
-                &api.subjects().operations[name],
+                api.subjects().operations[name],
                 string_slice(capabilities(InteractionDirection::Invoke)),
                 qualified_errors(api, errors),
             ));
@@ -2793,8 +2770,14 @@ fn render_availability(graph: &PackageGraph, participant: &ParticipantDefinition
                             .map(|value| (&value.title, &value.description))
                     })
                     .expect("selected capability is declared");
+                // Named from the API's module name, so the field stays readable
+                // whatever workspace the API is published from.
                 fields.insert(
-                    capability.as_str().to_owned(),
+                    format!(
+                        "{}_{}",
+                        module_name(api.as_str()),
+                        trellis_idl::capability_name(capability.as_str())
+                    ),
                     (
                         format!(
                             "capability {} ({title}): {description}",
@@ -2808,7 +2791,12 @@ fn render_availability(graph: &PackageGraph, participant: &ParticipantDefinition
     }
     for (api, kind, name, direction) in optional_actions(graph, participant) {
         fields.insert(
-            format!("action_{api}_{}_{}", action_module(kind), name),
+            format!(
+                "action_{}_{}_{}",
+                module_name(&api),
+                action_module(kind),
+                name
+            ),
             (
                 format!("optional action {api} {name}"),
                 format!(
@@ -3259,10 +3247,65 @@ fn has_provider_accessor(graph: &PackageGraph, api: &ApiId) -> bool {
         })
 }
 
-/// A module name built from an ID's short form, so generated paths stay
-/// readable whatever workspace the package is published from.
+thread_local! {
+    /// Collision-free module names, by full ID, for the graph being rendered.
+    static MODULE_NAMES: std::cell::RefCell<BTreeMap<String, String>> =
+        const { std::cell::RefCell::new(BTreeMap::new()) };
+}
+
+/// The module names of one graph, in force while one rendering call runs.
+///
+/// Module names come from short IDs, so generated paths stay readable
+/// whatever workspace a package is published from. Two packages, or two
+/// APIs, whose short IDs agree are named by full ID instead, and names that
+/// still agree take a hash suffix (`trellis_idl::generated_names`).
+struct ModuleNames {
+    previous: BTreeMap<String, String>,
+}
+
+impl ModuleNames {
+    fn install(graph: &PackageGraph) -> Self {
+        let root = graph.root_package();
+        let scopes: [Vec<&str>; 4] = [
+            graph.packages().keys().map(|id| id.as_str()).collect(),
+            graph
+                .packages()
+                .values()
+                .flat_map(|package| package.apis().keys())
+                .map(|id| id.as_str())
+                .collect(),
+            root.participants().keys().map(|id| id.as_str()).collect(),
+            root.app_requests().keys().map(|id| id.as_str()).collect(),
+        ];
+        let mut names = BTreeMap::new();
+        for ids in scopes {
+            names.extend(
+                trellis_idl::generated_names(
+                    ids.into_iter()
+                        .map(|id| (id, key_to_snake(trellis_protocol::short_id(id)))),
+                    key_to_snake,
+                )
+                .into_iter()
+                .map(|(id, name)| (id.to_owned(), rust_ident(&name))),
+            );
+        }
+        Self {
+            previous: MODULE_NAMES.with(|cell| cell.replace(names)),
+        }
+    }
+}
+
+impl Drop for ModuleNames {
+    fn drop(&mut self) {
+        MODULE_NAMES.with(|cell| cell.replace(std::mem::take(&mut self.previous)));
+    }
+}
+
+/// The module name of one ID in the graph being rendered.
 fn module_name(value: &str) -> String {
-    rust_ident(&key_to_snake(trellis_protocol::short_id(value)))
+    MODULE_NAMES
+        .with(|names| names.borrow().get(value).cloned())
+        .unwrap_or_else(|| rust_ident(&key_to_snake(trellis_protocol::short_id(value))))
 }
 
 fn type_name(value: &str) -> String {

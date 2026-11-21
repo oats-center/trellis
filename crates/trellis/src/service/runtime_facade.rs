@@ -2417,6 +2417,11 @@ impl<C> ConnectedServiceRuntime<C> {
         if retire_on_stop {
             // The key ends with this process, so its instance could never
             // connect again: retire it rather than leave it offline.
+            let subject = trellis_protocol::derive_rpc_subject(
+                "trellis.auth@v1",
+                "ServiceInstances.RetireOwn",
+            )
+            .expect("a built-in RPC forms a valid subject");
             let retired = tokio::time::timeout(
                 Duration::from_secs(5),
                 client.request_json_value(
@@ -2426,7 +2431,7 @@ impl<C> ConnectedServiceRuntime<C> {
                         name: "ServiceInstances.RetireOwn".into(),
                         direction: trellis_protocol::PermissionAction::Call,
                     },
-                    "rpc.v1.auth.ServiceInstances.RetireOwn",
+                    &subject,
                     &serde_json::json!({}),
                 ),
             )

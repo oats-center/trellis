@@ -200,7 +200,9 @@ test("Rust fresh Jobs leases reject suspended own coverage and resume on the sam
             .outboundContexts.slice(outbound)
             .filter(
               (out) =>
-                out.subject.startsWith("rpc.v1.jobs.") ||
+                out.subject.startsWith(
+                  `rpc.v1.${Buffer.from("trellis.jobs@v1").toString("base64url")}.`,
+                ) ||
                 out.subject.startsWith("trellis.work.") ||
                 (out.subject.startsWith("trellis.jobs.") &&
                   !out.subject.startsWith("trellis.jobs.workers.")),

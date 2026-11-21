@@ -143,12 +143,11 @@ pub fn collect_ts_package_sources(
     let mut api_index = String::new();
     for package in graph.packages().values() {
         for api in package.apis().values() {
-            let (export, module) = &api_modules[api.identity().as_str()];
-            exports.push((format!("./apis/{export}"), format!("apis/{module}/mod")));
+            let module = &api_modules[api.identity().as_str()];
+            exports.push((format!("./apis/{module}"), format!("apis/{module}/mod")));
             writeln!(
                 api_index,
-                "export * as {} from \"./{}/mod.js\";",
-                export, module
+                "export * as {module} from \"./{module}/mod.js\";"
             )
             .unwrap();
             sources.push(GeneratedTsSource {
@@ -264,26 +263,9 @@ fn validate_names(
     public_types: &BTreeSet<TypeRef>,
     participant_types: &BTreeMap<&trellis_idl::ParticipantId, BTreeSet<TypeRef>>,
 ) -> Result<(), CodegenTsError> {
-    let api_modules = api_modules(graph);
-    let mut paths = BTreeMap::new();
-    let mut exports = BTreeMap::new();
     for package in graph.packages().values() {
         for api in package.apis().values() {
             validate_export_name("API", api.name())?;
-            let (export, path) = &api_modules[api.identity().as_str()];
-            if let Some(previous) = paths.insert(path.to_lowercase(), api.identity().as_str()) {
-                return Err(CodegenTsError::ExportNameCollision(format!(
-                    "apis/{path}: '{}' and '{}'",
-                    previous,
-                    api.identity()
-                )));
-            }
-            if let Some(previous) = exports.insert(export.to_lowercase(), api.identity().as_str()) {
-                return Err(CodegenTsError::ExportNameCollision(format!(
-                    "API export '{export}': '{previous}' and '{}'",
-                    api.identity()
-                )));
-            }
             let mut aliases = BTreeMap::from([
                 ("API".to_owned(), "generated API descriptor".to_owned()),
                 ("API_DIGEST".to_owned(), "generated API digest".to_owned()),
@@ -1301,7 +1283,7 @@ fn render_app_request(
         let alias = format!("Api{index}");
         lines.push(format!(
             "import * as {alias} from \"../../apis/{}/mod.js\";",
-            api_modules[id.as_str()].1
+            api_modules[id.as_str()]
         ));
         aliases.insert(id, alias);
     }
@@ -1386,7 +1368,9 @@ fn render_app_request(
                 descriptor_name(&selected.action)
             ));
             let name = if name_counts[&selected.action.name.to_ascii_lowercase()] > 1 {
-                format!("{}.{}", api.name(), selected.action.name)
+                // The API's generated name, which only differs from its own
+                // name when another API shares it.
+                format!("{}.{}", api_modules[id.as_str()], selected.action.name)
             } else {
                 selected.action.name.clone()
             };
@@ -1723,7 +1707,7 @@ fn render_participant(
         let alias = format!("Api{index}");
         lines.push(format!(
             "import * as {alias} from \"{api_prefix}apis/{}/mod.js\";",
-            api_modules[api.identity().as_str()].1
+            api_modules[api.identity().as_str()]
         ));
         aliases.insert(id.as_str(), alias);
     }
@@ -1741,7 +1725,7 @@ fn render_participant(
         for action in api.actions().keys() {
             let descriptor = descriptor_name(action);
             let name = if action_name_counts[&action.name.to_ascii_lowercase()] > 1 {
-                format!("{}.{}", api.name(), action.name)
+                format!("{}.{}", api_modules[api.identity().as_str()], action.name)
             } else {
                 action.name.clone()
             };
@@ -2642,31 +2626,22 @@ fn type_union(types: Vec<String>) -> String {
     }
 }
 
-fn api_modules(graph: &PackageGraph) -> BTreeMap<String, (String, String)> {
+fn api_modules(graph: &PackageGraph) -> BTreeMap<String, String> {
     let apis = graph
         .packages()
         .values()
         .flat_map(|package| package.apis().values())
         .collect::<Vec<_>>();
-    let mut counts = BTreeMap::<String, usize>::new();
-    for api in &apis {
-        *counts.entry(api.name().to_lowercase()).or_default() += 1;
-    }
-    apis.into_iter()
-        .map(|api| {
-            let export = if counts[&api.name().to_lowercase()] == 1 {
-                api.name().to_owned()
-            } else {
-                pascal(api.identity().as_str())
-            };
-            let module = if counts[&api.name().to_lowercase()] == 1 {
-                api.name().to_owned()
-            } else {
-                export.clone()
-            };
-            (api.identity().as_str().to_owned(), (export, module))
-        })
-        .collect()
+    // An API is named by its own name, and only when that is shared by its
+    // short ID, then its full ID, then a hash suffix.
+    trellis_idl::generated_names(
+        apis.iter()
+            .map(|api| (api.identity().as_str(), api.name().to_owned())),
+        pascal,
+    )
+    .into_iter()
+    .map(|(id, name)| (id.to_owned(), name))
+    .collect()
 }
 
 fn pascal(value: &str) -> String {
@@ -3344,7 +3319,9 @@ console.log(JSON.stringify({ errors, docs }));
         assert!(
             get.contains("Look up one order.")
                 && get.contains("Errors: Missing.")
-                && get.contains("Call is allowed by capability localhost/example.orders.v1:orders.read")
+                && get.contains(
+                    "Call is allowed by capability localhost/example.orders.v1:orders.read"
+                )
                 && get.contains("(Read orders): See every order."),
             "{result}"
         );
@@ -3364,8 +3341,9 @@ console.log(JSON.stringify({ errors, docs }));
         let changed = text(8);
         assert!(
             changed.contains("An order changed.")
-                && changed
-                    .contains("Subscribe is allowed by capability localhost/example.orders.v1:orders.read"),
+                && changed.contains(
+                    "Subscribe is allowed by capability localhost/example.orders.v1:orders.read"
+                ),
             "{result}"
         );
         assert_eq!(text(9), changed, "{result}");
