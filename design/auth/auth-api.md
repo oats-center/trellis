@@ -105,7 +105,13 @@ as it is:
 - A target in the wrong state is a validation error saying what state it is in
   and, where it helps, what to do instead: "issuer key <id> is already
   revoked", "session <id> has already ended", "service update <id> is already
-  rejected", "role <id> already exists; edit it instead".
+  rejected", "role <id> already exists; edit it instead". A role assignment
+  or direct grant created at revision 0 when one is saved is refused this way
+  too. An active one says "<user> already has role <role>"; an expired one
+  gives no access, so it says when it ended and which revision to update:
+  "<user>'s role <role> expired at <time>; renew it by updating revision <n>".
+  `RoleAssignments.Assign` and `CapabilityGrants.Grant` at that revision renew
+  it with the new `expiresAt`, or none.
 - A real conflict is `AuthError` `revision_conflict`, saying what changed:
   "user <id> changed since revision 3; reload and try again". Someone else
   changed the target after the caller read it, or a retry reused an

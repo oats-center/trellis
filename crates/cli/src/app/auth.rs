@@ -2657,15 +2657,16 @@ async fn roles_delete_command(format: OutputFormat, args: &RoleRefArgs) -> miett
     })
 }
 
-async fn roles_assign_command(format: OutputFormat, args: &RoleMemberArgs) -> miette::Result<()> {
+async fn roles_assign_command(format: OutputFormat, args: &RoleAssignArgs) -> miette::Result<()> {
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
+    let member = &args.member;
     let assignment = auth
         .role_assignments_assign(&auth_types::AuthRoleAssignRequest {
-            principal_id: wire(&args.user_id)?,
-            role_id: wire(&args.role_id)?,
-            expected_revision: 0u64.into(),
+            principal_id: wire(&member.user_id)?,
+            role_id: wire(&member.role_id)?,
+            expected_revision: args.revision.unwrap_or(0).into(),
             idempotency_key: wire(cli_idempotency_key())?,
             expires_at: None,
             extra: Default::default(),
@@ -2683,12 +2684,13 @@ async fn roles_assign_command(format: OutputFormat, args: &RoleMemberArgs) -> mi
         })
         .await
         .map(|response| response.role.title)
-        .unwrap_or_else(|_| args.role_id.clone());
-    output::success(format!(
-        "Gave role {} to user {}",
-        output::strong(role),
-        output::strong(&args.user_id)
-    ));
+        .unwrap_or_else(|_| member.role_id.clone());
+    let (role, user) = (output::strong(role), output::strong(&member.user_id));
+    output::success(if args.revision.is_some() {
+        format!("Renewed role {role} for user {user}")
+    } else {
+        format!("Gave role {role} to user {user}")
+    });
     Ok(())
 }
 

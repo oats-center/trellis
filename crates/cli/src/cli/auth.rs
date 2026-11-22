@@ -521,8 +521,8 @@ pub enum RolesSubcommand {
     Edit(RoleEditArgs),
     /// Delete one role and remove it from everyone who has it.
     Delete(RoleRefArgs),
-    /// Give one role to one user.
-    Assign(RoleMemberArgs),
+    /// Give one role to one user, or renew one that expired.
+    Assign(RoleAssignArgs),
     /// Take one role away from one user.
     Revoke(RoleMemberArgs),
 }
@@ -535,6 +535,19 @@ pub struct RoleMemberArgs {
 
     #[arg(value_name = "USER_ID")]
     pub user_id: String,
+}
+
+#[derive(Debug, Args)]
+/// Give one role to one user.
+pub struct RoleAssignArgs {
+    #[command(flatten)]
+    pub member: RoleMemberArgs,
+
+    /// Renew the user's saved assignment of this role, at the revision Auth
+    /// names when it refuses a new one because the saved one expired. The
+    /// renewed assignment doesn't expire.
+    #[arg(long, value_name = "REVISION")]
+    pub revision: Option<u64>,
 }
 
 #[derive(Debug, Args)]

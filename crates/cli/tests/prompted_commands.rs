@@ -1130,6 +1130,17 @@ async fn role_changes_say_why_they_are_refused() {
         "{}",
         String::from_utf8_lossy(&twice.stderr)
     );
+    // Naming the saved revision updates that assignment instead, which is how
+    // an expired one is renewed.
+    let renewed = cli
+        .json(&["roles", "assign", &role, &user, "--revision", "1"])
+        .await;
+    assert_eq!(
+        renewed["assignment"]["revision"]
+            .to_string()
+            .trim_matches('"'),
+        "2"
+    );
 
     let missing = ulid::Ulid::generate().to_string();
     let unknown = cli.script(&["roles", "delete", &missing]).await;

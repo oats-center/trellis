@@ -734,3 +734,93 @@ fn roles_marked_for_new_users_are_given_to_users_created_afterwards() {
     put_role(&f.store, &mutation(&f.admin, &unmarked), &unmarked, NOW + 2).unwrap();
     assert!(create("second", NOW + 3).is_empty());
 }
+
+/// A create refused because the record is saved says whether it still gives
+/// access. An expired role or grant names when it ended and the revision to
+/// update, and updating that revision gives the access back.
+#[test]
+fn expired_assignments_and_grants_say_so_and_renew_at_their_revision() {
+    let f = fixture();
+    let principal = crate::platform::auth::tests::create_user(&f.store, &f.admin, NOW);
+    let role = AuthRolePutRequest {
+        role_id: None,
+        expected_revision: 0.into(),
+        title: "Writers".to_string().into(),
+        description: "Write".to_string().into(),
+        capability_ids: vec![f.write.clone().into()],
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
+        extra: Default::default(),
+        assign_to_new_users: false,
+    };
+    let role_id = put_role(&f.store, &mutation(&f.admin, &role), &role, NOW)
+        .unwrap()
+        .role
+        .role_id
+        .to_string();
+    let until = Some(NOW + 10);
+    let assign = |expected_revision, expires_at, now| {
+        let command = PolicyMutation::RoleAssign {
+            principal_id: principal.clone(),
+            role_id: role_id.clone(),
+            expected_revision,
+            expires_at,
+        };
+        super::apply_policy(&f.store, &mutation(&f.admin, &command), &command, now)
+    };
+    let grant = |expected_revision, expires_at, now| {
+        let command = PolicyMutation::CapabilityGrant {
+            principal_id: principal.clone(),
+            capability_id: f.read.clone(),
+            expected_revision,
+            expires_at,
+        };
+        super::apply_policy(&f.store, &mutation(&f.admin, &command), &command, now)
+    };
+    let holds = |capability: &str, now| {
+        f.store
+            .transaction(|connection| read_effective_access(connection, &principal, now))
+            .unwrap()
+            .capabilities
+            .iter()
+            .any(|cap| cap.definition.identity.capability_id.as_ref() == capability)
+    };
+    let refusal = |result: Result<u64, AuthError>| match result {
+        Err(AuthError::Invalid(message)) => message,
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+    assert_eq!(assign(0, until, NOW).unwrap(), 1);
+    assert_eq!(grant(0, until, NOW).unwrap(), 1);
+
+    // While they last, a second create says the access is already there.
+    assert_eq!(
+        refusal(assign(0, None, NOW + 5)),
+        format!("{principal} already has role {role_id}")
+    );
+    assert_eq!(
+        refusal(grant(0, None, NOW + 5)),
+        format!("{principal} already has capability {}", f.read)
+    );
+
+    // Once they end, the refusal says so and names the revision to update.
+    assert!(!holds(&f.write, NOW + 20) && !holds(&f.read, NOW + 20));
+    let ended = time::OffsetDateTime::from_unix_timestamp(NOW + 10)
+        .unwrap()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    assert_eq!(
+        refusal(assign(0, None, NOW + 20)),
+        format!("{principal}'s role {role_id} expired at {ended}; renew it by updating revision 1")
+    );
+    assert_eq!(
+        refusal(grant(0, None, NOW + 20)),
+        format!(
+            "{principal}'s capability {} expired at {ended}; renew it by updating revision 1",
+            f.read
+        )
+    );
+
+    // Updating that revision renews them.
+    assert_eq!(assign(1, None, NOW + 20).unwrap(), 2);
+    assert_eq!(grant(1, Some(NOW + 100), NOW + 20).unwrap(), 2);
+    assert!(holds(&f.write, NOW + 30) && holds(&f.read, NOW + 30));
+}

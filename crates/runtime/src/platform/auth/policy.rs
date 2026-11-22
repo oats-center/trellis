@@ -589,6 +589,32 @@ pub(super) fn apply_policy_in_transaction(
     Ok(revision)
 }
 
+/// Why a create of a role assignment or direct grant that is already saved was
+/// refused. An expired record gives no access, so saying it is held would send
+/// an administrator away without restoring access: it says when it ended and
+/// which revision to update instead.
+fn already_held(
+    target: &str,
+    active: &str,
+    revision: u64,
+    expiry: Option<i64>,
+    now: i64,
+) -> String {
+    match expiry {
+        Some(deadline) if deadline <= now => {
+            let ended = time::OffsetDateTime::from_unix_timestamp(deadline)
+                .ok()
+                .and_then(|at| {
+                    at.format(&time::format_description::well_known::Rfc3339)
+                        .ok()
+                })
+                .unwrap_or_else(|| deadline.to_string());
+            format!("{target} expired at {ended}; renew it by updating revision {revision}")
+        }
+        _ => active.to_owned(),
+    }
+}
+
 pub(super) fn apply_policy(
     connection: &Connection,
     mutation: &PolicyMutation,
@@ -685,20 +711,25 @@ pub(super) fn apply_policy(
                 return Err(AuthError::Invalid("expired assignment".into()));
             }
             let (generation, _) = role(connection, role_id)?;
-            let current: Option<u64> = connection
+            let saved: Option<(u64, Option<i64>)> = connection
                 .query_row(
-                    "SELECT revision FROM auth_role_assignments \
+                    "SELECT revision,expires_at FROM auth_role_assignments \
                     WHERE principal_id=?1 \
                     AND role_id=?2 AND role_generation=?3",
                     params![principal_id, role_id, generation],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
-            if current.is_some() && *expected_revision == 0 {
-                return Err(AuthError::Invalid(format!(
-                    "{principal_id} already has role {role_id}"
+            if let (Some((revision, expiry)), 0) = (saved, *expected_revision) {
+                return Err(AuthError::Invalid(already_held(
+                    &format!("{principal_id}'s role {role_id}"),
+                    &format!("{principal_id} already has role {role_id}"),
+                    revision,
+                    expiry,
+                    now,
                 )));
             }
+            let current = saved.map(|(revision, _)| revision);
             expect_revision(
                 &format!("assignment of role {role_id} to {principal_id}"),
                 current,
@@ -783,21 +814,26 @@ pub(super) fn apply_policy(
                 }
                 super::deployments::native_health_capability(connection)?;
             }
-            let current: Option<u64> = connection
+            let saved: Option<(u64, Option<i64>)> = connection
                 .query_row(
-                    "SELECT revision FROM auth_direct_capabilities \
+                    "SELECT revision,expires_at FROM auth_direct_capabilities \
                     WHERE principal_id=?1 \
                     AND capability_id=?2 \
                     AND capability_generation=?3",
                     params![principal_id, capability_id, cap.identity_generation.get()],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
-            if current.is_some() && *expected_revision == 0 {
-                return Err(AuthError::Invalid(format!(
-                    "{principal_id} already has capability {capability_id}"
+            if let (Some((revision, expiry)), 0) = (saved, *expected_revision) {
+                return Err(AuthError::Invalid(already_held(
+                    &format!("{principal_id}'s capability {capability_id}"),
+                    &format!("{principal_id} already has capability {capability_id}"),
+                    revision,
+                    expiry,
+                    now,
                 )));
             }
+            let current = saved.map(|(revision, _)| revision);
             expect_revision(
                 &format!("grant of capability {capability_id} to {principal_id}"),
                 current,

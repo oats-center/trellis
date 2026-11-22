@@ -299,8 +299,9 @@ provider from a list) and reported as missing without one. Role commands use
 `Auth.Roles.*`; `--capability` names each capability a role gives, and
 `--new-users`/`--no-new-users` sets whether users created afterwards get the
 role. `roles show` lists who has the role; `roles assign|revoke <role> <user>`
-gives or takes it from one user. `sign-in` turns username-and-password sign-in and
-self sign-up on or off and sets the minimum password length, at once
+gives or takes it from one user, and `roles assign --revision <n>` renews an
+expired assignment at the revision Auth names when it refuses a new one.
+`sign-in` turns username-and-password sign-in and self sign-up on or off and sets the minimum password length, at once
 (`Auth.SignInSettings`). OIDC sign-in is on while any provider is.
 `sign-in providers` manages the OIDC providers (`Auth.OIDCProviders.*`):
 `enable` and `disable` turn one on and off, and `list` and `show` print
