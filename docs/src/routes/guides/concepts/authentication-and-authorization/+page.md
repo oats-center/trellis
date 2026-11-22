@@ -215,8 +215,9 @@ current policy and is converted to exact selected grants; it is not itself a
 runtime permission token.
 
 The consent page lists what the app requires without checkboxes: approving
-grants it. Optional capabilities start checked, except administration and
-anything the person declined before. The page remembers every answer,
+grants it. Optional capabilities start checked, administration included,
+except anything the person declined before. Administration then takes a
+separate confirmation step. The page remembers every answer,
 approvals and declines alike; there is no switch to forget them. A person who
 clears an optional capability isn't asked about it again at sign-in. The app
 asks again when they use it, and the page shows it unchecked. An

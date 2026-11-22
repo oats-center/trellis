@@ -828,7 +828,10 @@ generation-aware application handles. A lost connection is never reconnected
 in place: the SDK opens a fresh connection admitted with current authority,
 recreates subscriptions on it, and then routes requests. A request made during
 the gap, or one whose connection is lost while it is being signed, waits for
-it within its deadline and is never sent after the deadline.
+it within its deadline and is never sent after the deadline. The same holds
+for signing, which can read authorization material over the network: a request
+or event signed after its deadline is not sent, and the caller gets a timeout
+(`trellis.request.timeout`).
 
 Revocation is eventually consistent. Each participant's revocation mirror is
 used only to check other parties (a service checking a caller, a client checking
@@ -1049,9 +1052,8 @@ A running service whose new build adds an administrative capability waits for
 
 Apps request administrative capabilities like any other, through their generated
 required/optional selections; there is no separate privilege request. Optional
-administration is never preselected, and approving it is never remembered (other
-optional access starts selected unless declined before; required access has no
-checkbox). Delegating one to an app has
+administration starts selected unless declined before, like other optional
+access, and approving it is never remembered (required access has no checkbox). Delegating one to an app has
 two safeguards, on by default under `[auth.administration]`: a separate consent
 confirmation and registered clients only. The initialized administrator holds
 all seven inherently, and everything else through an editable Administrator role. Localhost or

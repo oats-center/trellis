@@ -204,8 +204,8 @@ renew its own authority either, and expired authority authorizes nothing.
 ## Consent and delegation
 
 Required access has no choice: approving the consent grants it. Optional
-access the user can be granted starts selected, unless an earlier answer
-declined it; optional administration starts unselected and takes its own
+access the user can be granted starts selected, administration included,
+unless an earlier answer declined it; administration takes its own
 confirmation. The server rechecks the submitted selection against current
 holdings in the approving transaction, and a changed meaning requires a fresh
 presentation. Every answer on the consent page is remembered, approvals and
@@ -453,8 +453,7 @@ substitutes for the product.
 The consent page lists required access first, without checkboxes, as what
 approving grants. Optional capabilities and groups the user can be granted
 follow with checkboxes, checked unless the user declined them before for this
-client at the current `grants` text; optional administration starts
-unchecked. Select all and Clear all are explicit actions over all optional
+client at the current `grants` text, administration included. Select all and Clear all are explicit actions over all optional
 access the user may grant, administration included. Optional access the user
 can't be granted (through their roles, grants, or sign-in provider, or
 administration for an unregistered app) is not offered at all; required access
@@ -801,7 +800,10 @@ it.
 Optional-action availability is advisory: a missing live authority snapshot is
 unknown, not proof that the action is denied. Finite requests wait for verified
 authority before signing and publishing, within their original deadline and
-cancellation signal. A current snapshot that excludes the action remains denied;
+cancellation signal. Signing can read authorization material over the network,
+and the same deadline bounds it: a request or event signed after its deadline is
+never sent, and the caller gets a timeout. A current snapshot that excludes the
+action remains denied;
 recovery never retransmits a potentially executed request. An authority carries
 a group's member capabilities, not the group, so a selected group is available
 when its actions are.

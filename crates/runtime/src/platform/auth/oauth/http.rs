@@ -1084,10 +1084,10 @@ async fn consent_data(
                 }
                 let declined = answer.as_deref() == Some("declined") && !required;
                 // Required access has no choice. Optional access starts
-                // selected unless the person declined it before; approving
-                // administration is never remembered and takes its own
-                // confirmation, so it starts unselected.
-                let selected = required || (available && !declined && !administrative);
+                // selected unless the person declined it before,
+                // administration included. Approving administration is never
+                // remembered and still takes its own confirmation.
+                let selected = required || (available && !declined);
                 capabilities.push(serde_json::json!({
                     "capabilityId":capability,
                     "apiId":api_id,
