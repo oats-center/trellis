@@ -954,3 +954,52 @@ async fn webhook_endpoints_and_their_requests_are_shown_and_managed() {
     let shown = cli.json(&["svc", deployment, "webhooks", "token"]).await;
     assert_eq!(shown["enabled"], false);
 }
+
+/// Generated key IDs and public keys are base64url, so one in 64 starts with
+/// `-`. Given as an argument, such a value is the value rather than an
+/// option, and `--help` still prints help.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn generated_values_starting_with_a_hyphen_are_arguments() {
+    use runtime_trellis::participants::runtime_trellis_provider::Participant;
+
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("hyphen keys")
+        .await
+        .unwrap();
+    let cli = Cli::login(&mut runtime, None).await;
+
+    // An issuer key ID is the runtime's to choose, so this fixed one names no
+    // key, and Auth itself refuses to revoke it: the ID reached Auth instead
+    // of being read as options. A real revocation is in
+    // ts/browser/cli_access.browser_test.ts.
+    let refused = cli
+        .script(&[
+            "issuers",
+            "revoke",
+            "-q9TkWbQ1d0pZ_3vXo8yRk2eLmA7cHnB4sUfJ6gYtVw",
+        ])
+        .await;
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "{said}");
+    assert!(said.contains("Revision conflict"), "{said}");
+    let help = cli.script(&["issuers", "revoke", "--help"]).await;
+    let usage = String::from_utf8_lossy(&help.stdout);
+    assert!(help.status.success(), "{usage}");
+    assert!(usage.contains("Usage: trellis issuers revoke"), "{usage}");
+
+    let public_key = "-EYsmSdw8ZJ7tTednbtP5iMZVtGjNslfmLz_gseNdk0";
+    let deployment = identity.deployment_id();
+    let provisioned = cli
+        .json(&["svc", deployment, "provision", "--public-key", public_key])
+        .await;
+    assert_eq!(provisioned["reused"], false);
+    assert_eq!(provisioned["instance"]["identityPublicKey"], public_key);
+    let listed = cli.json(&["svc", deployment, "instances"]).await;
+    assert!(listed["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|instance| instance["identityPublicKey"] == public_key));
+    runtime.shutdown().await.unwrap();
+}

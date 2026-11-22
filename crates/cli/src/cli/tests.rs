@@ -175,26 +175,11 @@ fn next_page_hint_repeats_the_filtered_query_from_the_new_cursor() {
     }
 }
 
-/// A base64url public key can start with `-`; it is still the key.
+/// A base64url public key can start with `-`; it is still the claim's key.
+/// `provision` is exercised against a live runtime in `prompted_commands`.
 #[test]
 fn a_public_key_starting_with_a_hyphen_is_the_option_value() {
     let key = "-EYsmSdw8ZJ7tTednbtP5iMZVtGjNslfmLz_gseNdk0";
-    let cli = Cli::try_parse_from([
-        "trellis",
-        "svc",
-        "provider",
-        "provision",
-        "--public-key",
-        key,
-    ])
-    .expect("provision parses");
-    match cli.command {
-        TopLevelCommand::Svc(SvcCommand {
-            command: SvcSubcommand::Resource(SvcResourceAction::Provision(args)),
-            ..
-        }) => assert_eq!(args.public_key.as_deref(), Some(key)),
-        other => panic!("unexpected command: {other:?}"),
-    }
     let cli = Cli::try_parse_from(["trellis", "svc", "provider", "create", "--public-key", key])
         .expect("create parses");
     match cli.command {

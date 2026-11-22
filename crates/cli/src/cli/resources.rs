@@ -23,14 +23,16 @@ pub struct ResourceListArgs {
 
 #[derive(Debug, Args)]
 pub struct ResourceInspectArgs {
+    #[arg(allow_hyphen_values = true)]
     pub resource_id: String,
 }
 
 #[derive(Debug, Args)]
 pub struct ResourceDestroyArgs {
+    #[arg(allow_hyphen_values = true)]
     pub resource_id: String,
     #[arg(long)]
     pub expected_revision: u64,
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     pub confirm_physical_id: String,
 }

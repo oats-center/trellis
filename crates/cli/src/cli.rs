@@ -215,7 +215,7 @@ pub struct RmArgs {
 #[derive(Debug, clap::Args)]
 /// Generate a Trellis keypair, optionally from a fixed seed.
 pub struct KeygenArgs {
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     /// Reuse an existing base64url-encoded 32-byte Ed25519 seed.
     pub seed: Option<String>,
 

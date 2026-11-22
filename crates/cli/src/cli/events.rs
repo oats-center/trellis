@@ -54,7 +54,7 @@ pub enum ConsumersCommand {
 pub struct ConsumerQueryArgs {
     #[command(flatten)]
     pub page: PageArgs,
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     pub resource_id: Option<String>,
 }
 
@@ -74,24 +74,29 @@ pub enum DeadLettersCommand {
 pub struct DeadLetterQueryArgs {
     #[command(flatten)]
     pub page: PageArgs,
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     pub resource_id: Option<String>,
 }
 
 #[derive(Debug, Args)]
 pub struct ResourceIdArgs {
+    #[arg(allow_hyphen_values = true)]
     pub resource_id: String,
 }
 
 #[derive(Debug, Args)]
 pub struct DeadLetterRefArgs {
+    #[arg(allow_hyphen_values = true)]
     pub resource_id: String,
+    #[arg(allow_hyphen_values = true)]
     pub dead_letter_id: String,
 }
 
 #[derive(Debug, Args)]
 pub struct DeadLetterMutationArgs {
+    #[arg(allow_hyphen_values = true)]
     pub resource_id: String,
+    #[arg(allow_hyphen_values = true)]
     pub dead_letter_id: String,
     #[arg(long)]
     pub expected_revision: u64,

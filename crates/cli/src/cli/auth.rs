@@ -454,6 +454,7 @@ pub enum IssuersSubcommand {
 /// Revoke one issuer key.
 pub struct IssuersRevokeArgs {
     /// Issuer key ID.
+    #[arg(allow_hyphen_values = true)]
     pub key_id: String,
 }
 
