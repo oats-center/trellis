@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -179,10 +180,13 @@ test(
 
 // Revoking an app's token also revokes its refresh family, which ends the
 // app's sessions. When the database refuses that part, the revocation must
-// not answer success: the app would show itself signed out while its
-// sessions stay live. The failure carries a reference to its one log line.
+// not answer success, with a reference to its one log line, and must leave the
+// token in place: once the database accepts the write again, the app's retry
+// revokes the family and its sessions end. This catches a sign-out shown as
+// done while the sessions stay live, and a retry answered 200 with nothing
+// left to revoke.
 test(
-  "an app sign-out whose session revocation fails is not reported as done",
+  "an app sign-out whose session revocation fails reports it and can be retried",
   { timeout: 300_000 },
   async () => {
     await withTrellisRuntime(async (runtime) => {
@@ -201,11 +205,11 @@ test(
         const database = new DatabaseSync(join(runtime.workdir, path), {
           timeout: 10_000,
         });
-        database.exec(
-          "CREATE TRIGGER refuse_family_revocation BEFORE UPDATE OF revoked_at ON auth_oauth_families " +
-            "BEGIN SELECT RAISE(ABORT, 'family revocation refused'); END",
-        );
         try {
+          database.exec(
+            "CREATE TRIGGER refuse_family_revocation BEFORE UPDATE OF revoked_at ON auth_oauth_families " +
+              "BEGIN SELECT RAISE(ABORT, 'family revocation refused'); END",
+          );
           const revoked = page.waitForResponse(
             (response) =>
               new URL(response.url()).pathname === "/revoke" &&
@@ -216,6 +220,7 @@ test(
             .getByRole("button", { name: "Sign out", exact: true })
             .click();
           const response = await revoked;
+          database.exec("DROP TRIGGER refuse_family_revocation");
           assert.equal(response.status(), 500);
           const reference = response.headers()["trellis-reference"];
           assert(reference);
@@ -232,8 +237,46 @@ test(
           };
           assert.equal(line.fields.route, "POST /revoke");
           assert.match(String(line.fields.cause), /family revocation refused/);
+
+          // The refresh token the app sent is still there to revoke.
+          const form = new URLSearchParams(response.request().postData() ?? "");
+          const token = form.get("token");
+          assert(token);
+          const family = database
+            .prepare(
+              "SELECT family_lookup_hash AS family, oauth_grant_id AS grant FROM auth_oauth_artifacts " +
+                "WHERE kind='refresh' AND lookup_hash=?",
+            )
+            .get(createHash("sha256").update(token).digest("base64url")) as
+            { family: string; grant: string } | undefined;
+          assert(family, "the failed sign-out kept the refresh token");
+
+          const retried = await page.request.post(
+            new URL("/revoke", runtime.trellisUrl).href,
+            { form: Object.fromEntries(form) },
+          );
+          assert.equal(retried.status(), 200);
+          const familyRevoked = database
+            .prepare(
+              "SELECT revoked_at AS revoked FROM auth_oauth_families WHERE family_lookup_hash=?",
+            )
+            .get(family.family) as { revoked: number | null } | undefined;
+          assert(
+            familyRevoked?.revoked != null,
+            "the retry revoked the family",
+          );
+          await runtime.waitFor(
+            () =>
+              (
+                database
+                  .prepare(
+                    "SELECT count(*) AS live FROM auth_authorization_sessions " +
+                      "WHERE oauth_grant_id=? AND state='active'",
+                  )
+                  .get(family.grant) as { live: number }
+              ).live === 0,
+          );
         } finally {
-          database.exec("DROP TRIGGER refuse_family_revocation");
           database.close();
         }
       } finally {

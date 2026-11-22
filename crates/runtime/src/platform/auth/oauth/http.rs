@@ -1938,14 +1938,51 @@ async fn revoke(
     };
     let (client, token) = (ClientId::new(client), token.clone());
     match tokio::spawn(crate::http_failure::carry(async move {
+        // The library takes the refresh token even when revoking its family
+        // failed, which leaves a retry nothing to revoke while the family's
+        // sessions stay live. So the family is revoked here first, and the
+        // token is left in place when that fails: the caller is told the
+        // sign-out failed, and trying again revokes the family. Only a public
+        // client revokes with no credential; anything else is left to the
+        // library, which refuses it.
+        let store = engine.server.store();
+        let public = store
+            .get_client(&client)
+            .await
+            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
+            .is_some_and(|registered| !registered.auth.is_confidential());
+        let record = if public {
+            store
+                .get_refresh_token(&token)
+                .await
+                .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
+        } else {
+            None
+        };
+        if let Some(record) = record.filter(|record| record.client_id == client) {
+            let config = engine.server.config();
+            let recorded_at = std::time::SystemTime::now();
+            // The barrier outlives every token the family could still hold,
+            // as the library's own revocation records it.
+            let window = oauth_as::store::RevocationWindow {
+                recorded_at,
+                until: recorded_at
+                    + config
+                        .access_token_ttl
+                        .max(config.refresh_token_ttl.unwrap_or_default())
+                        .max(config.refresh_reuse_window)
+                        .max(config.authorization_code_ttl)
+                        .max(config.device_code_ttl),
+            };
+            store
+                .revoke_token_family(record.family_id.as_str(), window)
+                .await
+                .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?;
+        }
         engine.server.revoke(&client, None, &token, None).await
     }))
     .await
     {
-        // The library answers success even when revoking the token's refresh
-        // family failed. That family's sessions stay live, so the caller is
-        // told the sign-out failed instead of being shown it as done.
-        Ok(Ok(())) if crate::http_failure::recorded() => error(ErrorCode::ServerError),
         Ok(Ok(())) => StatusCode::OK.into_response(),
         Ok(Err(response)) => error(response.error),
         Err(cause) => error(failed("the revocation's task failed", cause)),
