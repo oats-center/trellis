@@ -60,6 +60,11 @@ and this project adheres to
 
 ### Fixed
 
+- A failing Rust ephemeral event handler is logged and the listener goes on,
+  as in TypeScript, instead of ending the service run. A failing Live handler
+  ends the session with only a reference in both SDKs, and the text goes to
+  the log line under it. A TypeScript Live handler that returns an error
+  `Result` now fails the session.
 - A panic in a Rust application handler no longer ends the loop running it:
   Operations fail with a reference, jobs fail and the worker goes on, durable
   events are retried, Live sessions end with a reference, and webhook decide
