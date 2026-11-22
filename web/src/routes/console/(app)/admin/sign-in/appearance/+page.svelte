@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import type { apis } from "$lib/trellis-apis";
   import { isErr } from "@oatscenter/result";
   import { ulid } from "ulid";
@@ -11,6 +11,13 @@
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { traverseAll } from "$lib/console/paging.ts";
+  import {
+    draftConflicts,
+    rebaseDraft,
+    settleConflict,
+    type FormValues,
+  } from "$lib/console/draft.ts";
+  import DraftConflicts from "$lib/components/DraftConflicts.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
 
@@ -54,6 +61,23 @@
     svg: "image/svg+xml",
   };
 
+  // The form's fields, flat, so each colour is a field of its own.
+  type Fields = FormValues;
+  const LABELS: Record<string, string> = {
+    name: "Name",
+    logo: "Logo",
+    title: "Sign-in heading",
+    subtitle: "Sign-in subheading",
+    footer: "Footer",
+    stylesheet: "Custom stylesheet",
+    ...Object.fromEntries(
+      COLORS.flatMap(([key, label]) => [
+        [`colors.${key}`, label],
+        [`darkColors.${key}`, `${label} (dark mode)`],
+      ]),
+    ),
+  };
+
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
   const scope = new RequestScope("portal-theme");
@@ -70,6 +94,12 @@
   let saving = $state(false);
   let error = $state<string | null>(null);
   let notice = $state<string | null>(null);
+  // Which target the form holds, so a reread of it keeps what was typed.
+  let shownTarget = $state<string | null>(null);
+  // The saved look, and the saved value each edit was typed over; see
+  // $lib/console/draft.ts.
+  let saved = $state.raw<Fields>({});
+  let base = $state.raw<Fields>({});
   let name = $state("");
   let logo = $state.raw<Logo | null>(null);
   let colors = $state<Partial<Record<ColorName, string>>>({});
@@ -80,6 +110,9 @@
   let stylesheet = $state("");
 
   const installation = $derived(target === "");
+  const conflicts = $derived(
+    loaded ? draftConflicts({ draft: current(), base }, saved) : [],
+  );
   const editable = $derived(canPerform(authority.authority, "portalThemesPut"));
 
   function palette(values: Partial<Record<ColorName, string>>): Palette {
@@ -99,33 +132,108 @@
     return values;
   }
 
-  function show(theme: Theme | undefined): void {
+  function fieldsOf(theme: Theme | undefined): Fields {
+    const fields: Fields = {
+      name: theme?.name ?? "",
+      logo: theme?.logo ?? null,
+      title: theme?.copy.signInTitle ?? "",
+      subtitle: theme?.copy.signInSubtitle ?? "",
+      footer: theme?.copy.footer ?? "",
+      stylesheet: theme?.stylesheet ?? "",
+    };
+    const light = pick(theme?.colors);
+    const dark = pick(theme?.darkColors);
+    for (const [key] of COLORS) {
+      fields[`colors.${key}`] = light[key] ?? "";
+      fields[`darkColors.${key}`] = dark[key] ?? "";
+    }
+    return fields;
+  }
+
+  function current(): Fields {
+    const fields: Fields = { name, logo, title, subtitle, footer, stylesheet };
+    for (const [key] of COLORS) {
+      fields[`colors.${key}`] = colors[key] ?? "";
+      fields[`darkColors.${key}`] = darkColors[key] ?? "";
+    }
+    return fields;
+  }
+
+  function fill(fields: Fields): void {
+    const text = (key: string) => {
+      const value = fields[key];
+      return typeof value === "string" ? value : "";
+    };
+    name = text("name");
+    logo = (fields.logo ?? null) as Logo | null;
+    title = text("title");
+    subtitle = text("subtitle");
+    footer = text("footer");
+    stylesheet = text("stylesheet");
+    const light: Partial<Record<ColorName, string>> = {};
+    const dark: Partial<Record<ColorName, string>> = {};
+    for (const [key] of COLORS) {
+      if (text(`colors.${key}`)) light[key] = text(`colors.${key}`);
+      if (text(`darkColors.${key}`)) dark[key] = text(`darkColors.${key}`);
+    }
+    colors = light;
+    darkColors = dark;
+  }
+
+  // Shows `theme` as saved. With `keep`, what was typed stays, fields left
+  // alone show what is saved now, and a field saved meanwhile becomes a
+  // conflict; otherwise the form starts over from it.
+  function show(theme: Theme | undefined, keep = false): void {
     exists = theme !== undefined;
     revision = theme?.revision ?? 0n;
-    name = theme?.name ?? "";
-    logo = theme?.logo ?? null;
-    colors = pick(theme?.colors);
-    darkColors = pick(theme?.darkColors);
-    title = theme?.copy.signInTitle ?? "";
-    subtitle = theme?.copy.signInSubtitle ?? "";
-    footer = theme?.copy.footer ?? "";
-    stylesheet = theme?.stylesheet ?? "";
+    const next = fieldsOf(theme);
+    const merged = keep
+      ? rebaseDraft({ draft: current(), base }, next)
+      : { draft: next, base: next };
+    fill(merged.draft);
+    base = merged.base;
+    saved = next;
+  }
+
+  function settle(field: string, choice: "keep" | "take"): void {
+    const settled = settleConflict(
+      { draft: current(), base },
+      saved,
+      field,
+      choice,
+    );
+    fill(settled.draft);
+    base = settled.base;
+  }
+
+  function describe(field: string, fields: Fields): string {
+    const value = fields[field];
+    if (field === "logo") return value ? "A logo" : "No logo";
+    if (typeof value === "string" && value) return value;
+    return field.includes(".") ? "Default" : "(empty)";
   }
 
   async function load(): Promise<void> {
     const token = scope.begin();
-    loading = true;
-    loaded = false;
+    const reading = target;
+    // A reread of the shown target keeps the form and what was typed in it.
+    const reread = loaded && shownTarget === reading;
+    if (!reread) {
+      loading = true;
+      loaded = false;
+      shownTarget = null;
+      // Never leave another target's fields and revision in the form.
+      show(undefined);
+    }
     error = null;
-    // Never leave another target's fields and revision in the form.
-    show(undefined);
     const result = await trellis
-      .portalThemesGet(target ? { clientId: target } : {})
+      .portalThemesGet(reading ? { clientId: reading } : {})
       .take();
     if (!scope.isCurrent(token)) return;
     if (isErr(result)) error = projectConsoleError(result).message;
     else {
-      show(result.theme);
+      show(result.theme, reread && shownTarget === reading);
+      shownTarget = reading;
       loaded = true;
     }
     loading = false;
@@ -169,7 +277,7 @@
 
   async function save(event: SubmitEvent): Promise<void> {
     event.preventDefault();
-    if (saving || !editable || !loaded) return;
+    if (saving || !editable || !loaded || conflicts.length > 0) return;
     saving = true;
     error = null;
     notice = null;
@@ -190,8 +298,13 @@
         idempotencyKey: codecs.ulid.decode(ulid()),
       })
       .take();
-    if (isErr(result)) error = projectConsoleError(result).message;
-    else {
+    if (isErr(result)) {
+      const message = projectConsoleError(result).message;
+      // A refused save usually means someone changed the look meanwhile;
+      // reread it so the form shows what they saved beside what was typed.
+      if (classifyMutationError(result.error).kind !== "unknown") await load();
+      error = message;
+    } else {
       show(result.theme);
       notice = "Saved. The sign-in page shows it now.";
       void loadApps();
@@ -214,7 +327,7 @@
     if (isErr(result)) {
       const message = projectConsoleError(result).message;
       // A refused removal means the look changed since it was read; show it
-      // as it is now. A refused save keeps the edits instead.
+      // as it is now, keeping what was typed.
       if (classifyMutationError(result.error).kind !== "unknown") await load();
       error = message;
     } else {
@@ -234,7 +347,7 @@
 
   $effect(() => {
     void target;
-    void load();
+    untrack(() => void load());
   });
 </script>
 
@@ -364,6 +477,16 @@
             ></textarea>
           </details>{/if}
       </fieldset>
+      {#if conflicts.length > 0}<DraftConflicts
+          conflicts={conflicts.map((field) => ({
+            field,
+            label: LABELS[field] ?? field,
+            mine: describe(field, current()),
+            saved: describe(field, saved),
+          }))}
+          disabled={saving}
+          onsettle={settle}
+        />{/if}
       {#if editable}<div
           class="flex flex-wrap justify-between gap-2 border-t border-base-300 pt-4"
         >
@@ -375,7 +498,10 @@
                 onclick={() => void remove()}>Remove customization</button
               >{/if}
           </div>
-          <button class="btn btn-primary" disabled={saving}>Save</button>
+          <button
+            class="btn btn-primary"
+            disabled={saving || conflicts.length > 0}>Save</button
+          >
         </div>{/if}
     </form>
   {/if}

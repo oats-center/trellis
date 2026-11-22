@@ -148,3 +148,108 @@ test("themes saved in the Console brand the Portal at once, per installation and
     }
   }, browserRuntimeOptions());
 });
+
+// Removing a look someone changed meanwhile is refused and rereads it. This
+// catches a reread that throws away what the operator typed, or one that
+// quietly moves a typed field onto the newer look so Save overwrites what the
+// other administrator saved there.
+test("a refused removal of the sign-in look keeps unsaved edits and shows a field changed meanwhile beside the typed one", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const admin = await launchProfile(runtime);
+    try {
+      const appearance = `${runtime.consoleUrl}/console/admin/sign-in/appearance`;
+      const page = await admin.newPage();
+      await openConsole(page, runtime, BROWSER_ADMIN);
+      await page.goto(appearance);
+      const form = page.locator("form");
+      const name = form.getByLabel("Name", { exact: true });
+      const heading = form.getByLabel("Sign-in heading", { exact: true });
+      const footer = form.getByLabel("Footer", { exact: true });
+      const save = form.getByRole("button", { name: "Save", exact: true });
+      const remove = form.getByRole("button", {
+        name: "Remove customization",
+        exact: true,
+      });
+      const conflicts = form.getByRole("group", {
+        name: "Changed while you were editing",
+      });
+      await name.fill("Acme");
+      await save.click();
+      await page.getByText(/^Saved\./).waitFor();
+      await heading.fill("Mine heading");
+
+      // Another administrator, in a tab of their own, changes the footer.
+      const second = await admin.newPage();
+      await second.goto(appearance);
+      const secondForm = second.locator("form");
+      const theirs = async (text: string) => {
+        await secondForm.getByLabel("Footer", { exact: true }).fill(text);
+        await secondForm
+          .getByRole("button", { name: "Save", exact: true })
+          .click();
+        await second.getByText(/^Saved\./).waitFor();
+      };
+      await runtime.waitFor(
+        async () =>
+          (await secondForm
+            .getByLabel("Name", { exact: true })
+            .inputValue()) === "Acme" || undefined,
+      );
+      await theirs("Theirs footer");
+
+      // The footer left alone shows theirs; the typed heading stays.
+      await remove.click();
+      await runtime.waitFor(
+        async () =>
+          (await footer.inputValue()) === "Theirs footer" || undefined,
+      );
+      assert.equal(await heading.inputValue(), "Mine heading");
+      assert.equal(await conflicts.count(), 0);
+      assert.equal(await save.isEnabled(), true);
+
+      // A typed footer they changed again is shown beside theirs.
+      await footer.fill("Mine footer");
+      await theirs("Theirs again");
+      await remove.click();
+      const conflict = conflicts.getByRole("listitem", {
+        name: "Footer changed meanwhile",
+      });
+      await conflict.waitFor({ timeout: 30_000 });
+      assert.equal(
+        await conflict.locator('[data-draft="mine"]').innerText(),
+        "Mine footer",
+      );
+      assert.equal(
+        await conflict.locator('[data-draft="saved"]').innerText(),
+        "Theirs again",
+      );
+      assert.equal(await heading.inputValue(), "Mine heading");
+      assert.equal(await save.isDisabled(), true);
+      await conflict
+        .getByRole("button", { name: "Use saved for Footer" })
+        .click();
+      assert.equal(await footer.inputValue(), "Theirs again");
+      await save.click();
+      await page.getByText(/^Saved\./).waitFor();
+
+      // Nothing was removed, and the look holds both administrators' edits.
+      await second.goto(appearance);
+      await runtime.waitFor(
+        async () =>
+          (await secondForm
+            .getByLabel("Sign-in heading", { exact: true })
+            .inputValue()) === "Mine heading" || undefined,
+      );
+      assert.equal(
+        await secondForm.getByLabel("Footer", { exact: true }).inputValue(),
+        "Theirs again",
+      );
+      assert.equal(
+        await secondForm.getByLabel("Name", { exact: true }).inputValue(),
+        "Acme",
+      );
+    } finally {
+      await admin.close();
+    }
+  }, browserRuntimeOptions());
+});

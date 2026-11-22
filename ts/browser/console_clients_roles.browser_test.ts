@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ulid } from "ulid";
+import { codecs } from "@oatscenter/trellis/generated";
+import { API as authApi } from "../packages/trellis/internal_sdk/generated/apis/auth/mod.js";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
@@ -67,6 +69,110 @@ test("Console creates, reloads, disables and deletes an OAuth client and creates
       await page.getByText(title, { exact: true }).waitFor();
       await page.reload();
       await page.getByText(title, { exact: true }).waitFor();
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
+// A delete refused because someone changed the role meanwhile rereads it.
+// This catches a reread that throws away the operator's unsaved edits, or
+// one that quietly moves a typed title onto the newer role so Save overwrites
+// the title someone else saved.
+test("a refused role delete keeps unsaved edits and shows a title changed meanwhile beside the typed one", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const original = `Readers ${ulid()}`;
+    const capabilityIds = ["trellis.auth.v1:users.read"];
+    let { role } = await runtime.callAdminRpc(
+      "authRolesPut",
+      authApi.actions["rpc:Roles.Put"].input.decode({
+        expectedRevision: "0",
+        title: original,
+        description: "",
+        capabilityIds,
+        assignToNewUsers: false,
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      }),
+    );
+    // Another administrator renames the role.
+    const rename = async (title: string) => {
+      ({ role } = await runtime.callAdminRpc(
+        "authRolesPut",
+        authApi.actions["rpc:Roles.Put"].input.decode({
+          roleId: role.roleId,
+          expectedRevision: String(role.revision),
+          title,
+          description: "",
+          capabilityIds,
+          assignToNewUsers: false,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        }),
+      ));
+    };
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      await openConsole(page, runtime, BROWSER_ADMIN);
+      const edit = `${runtime.consoleUrl}/console/admin/roles/edit?roleId=${role.roleId}`;
+      await page.goto(edit);
+      const title = page.getByLabel("Title", { exact: true });
+      const description = page.getByLabel("Description", { exact: true });
+      const save = page.getByRole("button", { name: "Save role", exact: true });
+      const remove = page.getByRole("button", {
+        name: "Delete role",
+        exact: true,
+      });
+      const conflicts = page.getByRole("group", {
+        name: "Changed while you were editing",
+      });
+      page.on("dialog", (dialog) => void dialog.accept());
+      await runtime.waitFor(
+        async () => (await title.inputValue()) === original || undefined,
+      );
+      await description.fill("Mine description");
+      await rename("Theirs title");
+
+      // The title left alone shows the new name; the typed description stays.
+      await remove.click();
+      await runtime.waitFor(
+        async () => (await title.inputValue()) === "Theirs title" || undefined,
+      );
+      assert.equal(await description.inputValue(), "Mine description");
+      assert.equal(await conflicts.count(), 0);
+      assert.equal(await save.isEnabled(), true);
+
+      // A typed title someone renamed meanwhile is shown beside their name.
+      await title.fill("Mine title");
+      await rename("Theirs again");
+      await remove.click();
+      const conflict = conflicts.getByRole("listitem", {
+        name: "Title changed meanwhile",
+      });
+      await conflict.waitFor({ timeout: 30_000 });
+      assert.equal(
+        await conflict.locator('[data-draft="mine"]').innerText(),
+        "Mine title",
+      );
+      assert.equal(
+        await conflict.locator('[data-draft="saved"]').innerText(),
+        "Theirs again",
+      );
+      assert.equal(await title.inputValue(), "Mine title");
+      assert.equal(await description.inputValue(), "Mine description");
+      assert.equal(await save.isDisabled(), true);
+      await conflict
+        .getByRole("button", { name: "Keep yours for Title" })
+        .click();
+      await save.click();
+      await page.waitForURL(/\/console\/admin\/roles$/);
+
+      // The role was never deleted, and holds what the operator chose.
+      await page.goto(edit);
+      await runtime.waitFor(
+        async () => (await title.inputValue()) === "Mine title" || undefined,
+      );
+      assert.equal(await description.inputValue(), "Mine description");
     } finally {
       await context.close();
     }
