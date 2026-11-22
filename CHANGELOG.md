@@ -50,6 +50,11 @@ and this project adheres to
 
 ### Fixed
 
+- Events are judged at the time they were signed. Each event carries a signed
+  `issuedAt` beside its event time, so an outbox backlog dispatched after its
+  session renewed, or a publish that waited across a reconnect, is accepted
+  instead of being refused for good as forged. Events signed after a session's
+  revocation are still refused.
 - Saving an app in the Console shows "App saved." beside Save and reloads the
   form from what was saved.
 - Server failures on the OAuth, Portal, sign-in and enrollment HTTP endpoints
