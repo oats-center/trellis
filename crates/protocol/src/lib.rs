@@ -53,8 +53,8 @@ pub use catalog::{
     Authenticated, AuthenticatedCatalog, AuthenticatedProviderCertificate, CatalogAction,
     CatalogActionIdentity, CatalogCapability, CatalogCapabilityMembership, SignedCatalogSnapshot,
     SignedIssuerRotation, SignedProviderCertificate, SignedSessionRevocation,
-    CATALOG_SNAPSHOT_FORMAT_V1, ISSUER_ROTATION_FORMAT_V1, PROVIDER_CERTIFICATE_FORMAT_V1,
-    SESSION_REVOCATION_FORMAT_V1,
+    CATALOG_SNAPSHOT_FORMAT_V1, ISSUER_ROTATION_FORMAT_V1, MAX_ISSUER_ACTIVATION_DELAY_SECONDS,
+    PROVIDER_CERTIFICATE_FORMAT_V1, SESSION_REVOCATION_FORMAT_V1,
 };
 pub use error::{AuthorizationErrorCode, ProtocolError, SessionProofErrorCode};
 pub use identifiers::{

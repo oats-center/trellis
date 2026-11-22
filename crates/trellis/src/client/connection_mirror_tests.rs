@@ -440,10 +440,31 @@ async fn connect_caller(
     .unwrap()
 }
 
+/// The mirror consumer a client created after `before` was listed. Connecting
+/// does not wait for the mirror, so it may appear a moment later.
+async fn new_mirror_consumer(stream: &mut jetstream::stream::Stream, before: &[String]) -> String {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let names = stream
+                .consumer_names()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            if let Some(name) = names.into_iter().find(|name| !before.contains(name)) {
+                return name;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
 // Consumer deletion and a real broker capacity limit interrupt only the shared
-// retirement watch: the application socket and the production control plane stay up.
+// retirement watch. Requests keep flowing on the last known revocations, and a
+// revocation issued meanwhile takes effect once the mirror is back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn revocation_mirror_recovers_without_recreating_application_and_preserves_cutoffs() {
+async fn requests_proceed_while_the_revocation_mirror_is_down_and_cutoffs_apply_on_catch_up() {
     let mut runtime = trellis_testkit::TrellisTestRuntime::builder()
         .start()
         .await
@@ -461,24 +482,23 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
     .unwrap();
     let js = jetstream::new(admin_nats.clone());
     let mut stream = js.get_stream("KV_TRELLIS_AUTH_REVOCATIONS").await.unwrap();
+    // Each caller's mirror is running before the application's is counted.
+    let mut known = stream
+        .consumer_names()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
     let admin = connect_caller(&mut runtime, "mirror-controller").await;
+    known.push(new_mirror_consumer(&mut stream, &known).await);
     let peer = connect_caller(&mut runtime, "mirror-peer").await;
+    known.push(new_mirror_consumer(&mut stream, &known).await);
     let before = stream
         .consumer_names()
         .try_collect::<Vec<_>>()
         .await
         .unwrap();
     let client = connect_caller(&mut runtime, "mirror-application").await;
-    let after = stream
-        .consumer_names()
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap();
-    let mirror = after
-        .iter()
-        .find(|name| !before.contains(name))
-        .unwrap()
-        .clone();
+    let mirror = new_mirror_consumer(&mut stream, &before).await;
     let action = trellis_protocol::CatalogActionIdentity {
         kind: trellis_protocol::ApiSurfaceKind::Rpc,
         name: "Query".into(),
@@ -506,14 +526,23 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         request_id: ulid::Ulid::generate().to_string(),
         issued_at: peer.authorization_owner().policy().now_unix_seconds,
     };
-    let (proof, _) = peer.auth().create_request_proof(&opening, b"{}").unwrap();
+    let peer_request = |opening: &trellis_protocol::SessionRequest| {
+        let fresh = trellis_protocol::SessionRequest {
+            request_id: ulid::Ulid::generate().to_string(),
+            issued_at: peer.authorization_owner().policy().now_unix_seconds,
+            ..opening.clone()
+        };
+        let (proof, _) = peer.auth().create_request_proof(&fresh, b"{}").unwrap();
+        (fresh, proof)
+    };
+    let (fresh, proof) = peer_request(&opening);
     client
         .authorization_owner()
-        .verify_possession(&client.nats(), &opening, b"{}", &proof)
+        .verify_possession(&client.nats(), &fresh, b"{}", &proof)
         .await
         .unwrap();
     let contexts = client.authorization_contexts.as_ref().unwrap();
-    let mut availability = contexts.watch_availability();
+    let availability = contexts.watch_availability();
     let original = client
         .generations
         .acquire_published()
@@ -521,11 +550,18 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         .generation_id();
     let mut config = stream.info().await.unwrap().config.clone();
     let previous_limit = config.max_consumers;
-    config.max_consumers = after.len().try_into().unwrap();
+    config.max_consumers = stream
+        .consumer_names()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .len()
+        .try_into()
+        .unwrap();
     js.update_stream(config.clone()).await.unwrap();
     stream.delete_consumer(&mirror).await.unwrap();
     // Occupy the freed slot through the normal JetStream administration API,
-    // so retries remain unavailable until the broker permits a new consumer.
+    // so the mirror stays down until the broker permits a new consumer.
     let blocker = stream
         .create_consumer(jetstream::consumer::pull::Config {
             name: Some("mirror-outage-capacity".into()),
@@ -534,22 +570,16 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         })
         .await
         .unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        availability.wait_for(|state| !state.is_usable()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    client.nats().flush().await.unwrap();
-    assert_eq!(
-        client.nats().connection_state(),
-        async_nats::connection::State::Connected
-    );
-    assert!(client
-        .request_json_value(Query::API_ID, action.clone(), Query::SUBJECT, &json!({}))
-        .await
-        .is_err());
+    // While the mirror is down, requests keep succeeding: calls over two
+    // seconds, well past the moment the client sees its consumer deleted.
+    for _ in 0..10 {
+        client
+            .request_json_value(Query::API_ID, action.clone(), Query::SUBJECT, &json!({}))
+            .await
+            .unwrap();
+        assert!(availability.borrow().is_usable());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
     let retirement = AuthLoginRevokeRequest {
         login_session_id: peer_own
             .authority()
@@ -577,8 +607,6 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         )
         .await
         .unwrap();
-    // Restore broker capacity; the same client must re-read the authentic
-    // retirement written while its mirror was unavailable before serving again.
     let retirements = js.get_key_value("TRELLIS_AUTH_REVOCATIONS").await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -595,18 +623,41 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
     })
     .await
     .unwrap();
+    // The revocation is published but has not reached this client: its own
+    // requests still succeed and it still judges the peer on what it knew.
+    client
+        .request_json_value(Query::API_ID, action.clone(), Query::SUBJECT, &json!({}))
+        .await
+        .unwrap();
+    let (fresh, proof) = peer_request(&opening);
+    client
+        .authorization_owner()
+        .verify_possession(&client.nats(), &fresh, b"{}", &proof)
+        .await
+        .unwrap();
+    // Restore broker capacity; the same client re-reads the retirement
+    // written while its mirror was down, and refuses the peer from then on.
     stream
         .delete_consumer(&blocker.cached_info().name)
         .await
         .unwrap();
     config.max_consumers = previous_limit;
     js.update_stream(config.clone()).await.unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(15),
-        availability.wait_for(|state| state.is_usable()),
-    )
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let (fresh, proof) = peer_request(&opening);
+            if client
+                .authorization_owner()
+                .verify_possession(&client.nats(), &fresh, b"{}", &proof)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
     .await
-    .unwrap()
     .unwrap();
     assert_eq!(
         client
@@ -620,19 +671,9 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         .request_json_value(Query::API_ID, action.clone(), Query::SUBJECT, &json!({}))
         .await
         .unwrap();
-    let fresh = trellis_protocol::SessionRequest {
-        request_id: ulid::Ulid::generate().to_string(),
-        ..opening.clone()
-    };
-    let (proof, _) = peer.auth().create_request_proof(&fresh, b"{}").unwrap();
-    assert!(client
-        .authorization_owner()
-        .verify_possession(&client.nats(), &fresh, b"{}", &proof)
-        .await
-        .is_err());
 
     // A real socket close publishes a new generation. Its replacement mirror
-    // must serve the same logical client and retain the already known cutoff.
+    // serves the same logical client and the already known cutoff remains.
     let previous_mirrors = stream
         .consumer_names()
         .try_collect::<Vec<_>>()
@@ -654,36 +695,11 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
     .await
     .unwrap()
     .unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(15),
-        availability.wait_for(|state| state.is_usable()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let rebound_mirrors = stream
-        .consumer_names()
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap();
-    let replacements: Vec<_> = rebound_mirrors
-        .iter()
-        .filter(|name| !previous_mirrors.contains(name))
-        .collect();
-    assert_eq!(
-        replacements.len(),
-        1,
-        "one socket replacement must establish one owner mirror, not duplicate consumers"
-    );
     client
         .request_json_value(Query::API_ID, action.clone(), Query::SUBJECT, &json!({}))
         .await
         .unwrap();
-    let fresh = trellis_protocol::SessionRequest {
-        request_id: ulid::Ulid::generate().to_string(),
-        ..opening
-    };
-    let (proof, _) = peer.auth().create_request_proof(&fresh, b"{}").unwrap();
+    let (fresh, proof) = peer_request(&opening);
     let current = client.generations.acquire_published().unwrap();
     assert!(client
         .authorization_owner()
@@ -691,12 +707,26 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         .await
         .is_err());
     drop(current);
+    let replacement = new_mirror_consumer(&mut stream, &previous_mirrors).await;
+    let rebound_mirrors = stream
+        .consumer_names()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+    assert_eq!(
+        rebound_mirrors
+            .iter()
+            .filter(|name| !previous_mirrors.contains(name))
+            .count(),
+        1,
+        "one socket replacement must establish one owner mirror, not duplicate consumers"
+    );
 
-    // Explicit owner shutdown cancels the supervisor even if no retirement
-    // update or transport publication will ever arrive to wake its failed retry.
+    // Explicit owner shutdown cancels the supervisor even while its mirror is
+    // down and no retirement update or transport publication will wake it.
     config.max_consumers = rebound_mirrors.len().try_into().unwrap();
     js.update_stream(config.clone()).await.unwrap();
-    stream.delete_consumer(replacements[0]).await.unwrap();
+    stream.delete_consumer(&replacement).await.unwrap();
     let close_blocker = stream
         .create_consumer(jetstream::consumer::pull::Config {
             name: Some("mirror-close-capacity".into()),
@@ -705,13 +735,10 @@ async fn revocation_mirror_recovers_without_recreating_application_and_preserves
         })
         .await
         .unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        availability.wait_for(|state| !state.is_usable()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    client
+        .request_json_value(Query::API_ID, action.clone(), Query::SUBJECT, &json!({}))
+        .await
+        .unwrap();
     client.shutdown_native_runtime().await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while !client.authorization_provider_task.is_finished() {

@@ -284,7 +284,7 @@ api auth@v1 {
   rpc Sessions.Logout { input AuthEmpty; output AuthSessionsLogoutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // trellis.managePlatform.
-  /// Start signing with a new issuer key.
+  /// Announce a new issuer key; Trellis signs with it after the activation delay.
   rpc Issuers.Rotate { input AuthIssuerRotateRequest; output AuthIssuerRotateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Stop trusting an issuer key. Sessions it signed must sign in again.
   rpc Issuers.Revoke { input AuthIssuerRevokeRequest; output AuthIssuerRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -487,7 +487,7 @@ api auth@v1 {
   event Connections.Kicked { payload AuthSecurityEvent; }
   /// An app session ended.
   event AuthorizationSessions.Retired { payload AuthSecurityEvent; }
-  /// Trellis started signing with a new issuer key.
+  /// Trellis announced a new issuer key, which signs after the activation delay.
   event Issuers.Rotated { payload AuthSecurityEvent; }
   /// Trellis stopped trusting an issuer key.
   event Issuers.Revoked { payload AuthSecurityEvent; }

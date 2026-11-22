@@ -1,6 +1,5 @@
-/** A provider whose revocation mirror is briefly behind waits for it instead of dropping requests. */
+/** A provider whose revocation mirror is down answers requests on what it already knows. */
 import assert from "node:assert/strict";
-import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 import { deadline } from "@nats-io/nats-core";
 import { jetstreamManager, type ConsumerInfo } from "@nats-io/jetstream";
@@ -16,7 +15,7 @@ import { withTrellisRuntime } from "./_support/runtime.ts";
 const ECHO = apis.runtime.API.actions["rpc:Echo"].subject;
 const MIRROR_STREAM = "KV_TRELLIS_AUTH_REVOCATIONS";
 
-test("a Node provider answers a request that arrives while its revocation mirror catches up", async () => {
+test("a Node provider answers requests at once while its revocation mirror catches up", async () => {
   await withTrellisRuntime(
     async (runtime) => {
       const identity = await runtime.registerService({
@@ -64,7 +63,7 @@ test("a Node provider answers a request that arrives while its revocation mirror
         assert.equal(watches.length, 1);
         const [old] = watches;
         // Losing the provider's mirror consumer leaves its route served on the
-        // same socket while the replacement snapshot is withheld here.
+        // same socket while the replacement mirror's snapshot is withheld.
         hold = gate.armResponseHold(
           `$JS.API.CONSUMER.INFO.${MIRROR_STREAM}.`,
           provider.id,
@@ -78,28 +77,27 @@ test("a Node provider answers a request that arrives while its revocation mirror
         );
         assert(await manager.consumers.delete(MIRROR_STREAM, old.name));
         await deadline(hold.held, 30_000);
-        assert.equal(
-          service.connection.availability().resources.extras,
-          false,
-          "the provider's revocation coverage is withheld",
-        );
 
-        const delivered = gate.waitForDelivery(ECHO, provider.id);
-        const call = caller.echo(
-          { value: "during catch-up" },
-          { timeout: 15_000 },
-        );
-        await deadline(delivered, 10_000);
-        // The provider receives the request while its mirror is behind. One
-        // that rejects it then gives it no reply, so the call could only time
-        // out; leave that attempt time to happen before coverage returns.
-        await sleep(1_000);
-        assert.equal(echoes, 1);
+        // While the snapshot is withheld the provider still verifies callers
+        // against the revocations it has observed and answers at once. One
+        // that waited for its mirror would answer only after the release
+        // below, past these calls' deadlines.
+        for (let i = 0; i < 3; i++) {
+          assert.deepEqual(
+            await caller
+              .echo({ value: `down ${i}` }, { timeout: 3_000 })
+              .orThrow(),
+            { value: `down ${i}` },
+          );
+        }
+        assert.equal(echoes, 4);
         await hold.release();
         hold = undefined;
 
-        assert.deepEqual((await call).orThrow(), { value: "during catch-up" });
-        assert.equal(echoes, 2);
+        assert.deepEqual(await caller.echo({ value: "caught up" }).orThrow(), {
+          value: "caught up",
+        });
+        assert.equal(echoes, 5);
       } finally {
         await hold?.release();
         await broker.close();

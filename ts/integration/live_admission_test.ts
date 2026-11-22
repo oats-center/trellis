@@ -397,7 +397,7 @@ test("a Rust Live provider holding one caller's session bound refuses the next o
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fileURLToPath(
             new URL("../../target", import.meta.url),

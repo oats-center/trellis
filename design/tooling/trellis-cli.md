@@ -100,9 +100,11 @@ trellis issuers revoke <issuer-key-id>
 ```
 
 `issuers rotate` calls `Auth.Issuers.Rotate` with the named key as the expected
-current key, and `issuers revoke` calls `Auth.Issuers.Revoke`. Auth's refusals
-print as they come: an unknown key is "no issuer key ...", the current signing
-key is refused with the advice to rotate first, a key revoked once is "already
+current key and prints when Trellis starts signing with the new key
+(`activatesAt`), and `issuers revoke` calls `Auth.Issuers.Revoke`. Auth's
+refusals print as they come: an unknown key is "no issuer key ...", the current
+signing key is refused with the advice to rotate first, or, while a new key is
+announced, with the time Trellis switches to it, a key revoked once is "already
 revoked", and a rotation from a key that is no longer current names the one
 that is.
 

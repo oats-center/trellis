@@ -566,7 +566,13 @@ model AuthAuthorityRenewResponse {
 model AuthAdmissionRenewRequest { contextDigest: AuthDigest; }
 model AuthAdmissionRenewResponse { admissionCredential: string; expiresAt: timestamp; }
 model AuthIssuerRotateRequest { expectedCurrentKeyId: AuthKeyId; idempotencyKey: AuthIdempotencyKey; }
-model AuthIssuerRotateResponse { keyId: AuthKeyId; rotation: AuthSignedBlob; }
+model AuthIssuerRotateResponse {
+  keyId: AuthKeyId;
+  rotation: AuthSignedBlob;
+  /// When Trellis starts signing with the new key. Until then the current key
+  /// signs, while the new key's chain link reaches every participant.
+  activatesAt: timestamp;
+}
 model AuthIssuerRevokeRequest { keyId: AuthKeyId; idempotencyKey: AuthIdempotencyKey; }
 model AuthIssuerRevokeResponse { keyId: AuthKeyId; enforcement: AuthEnforcementProgress; }
 

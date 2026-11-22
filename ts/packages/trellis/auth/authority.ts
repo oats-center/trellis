@@ -341,7 +341,15 @@ export class SessionAuthorityOwner {
     });
   }
 
-  /** Attach read-only public material and one snapshot-and-update mirror for all logical sessions. */
+  /**
+   * Attach read-only public material and one snapshot-and-update mirror for all logical sessions.
+   *
+   * Resolves once material reads and issuer metadata use `nats`. The mirror
+   * then catches up in the background: `caughtUp` settles when its initial
+   * snapshot is applied, or rejects if the mirror fails first. Nothing waits
+   * for it: verification of other parties' messages uses the revocations
+   * observed so far, and own authority never depends on the mirror.
+   */
   async attach(
     nats: NatsConnection,
     binding: AuthorityRegistryBinding,
@@ -350,7 +358,7 @@ export class SessionAuthorityOwner {
       timeoutMs?: number;
       inboxPrefix?: string;
     } = {},
-  ): Promise<void> {
+  ): Promise<{ readonly caughtUp: Promise<void> }> {
     if (this.#stopped) throw new Error("authority owner stopped");
     for (const name of [binding.materialBucket, binding.revocationBucket]) {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(name))
@@ -364,7 +372,10 @@ export class SessionAuthorityOwner {
       inboxPrefix: options.inboxPrefix ?? "_INBOX",
       signal: options.signal,
     };
-    if (!this.#mirrorCovered) this.#metadataTransport = metadataTransport;
+    // A new attachment serves metadata reads at once; the mirror it starts
+    // never gates them.
+    this.#metadataTransport = metadataTransport;
+    const bound = Promise.withResolvers<void>();
     const ready = Promise.withResolvers<void>();
     void ready.promise.catch(() => undefined);
     let watch: ConsumerMessages | undefined;
@@ -384,7 +395,14 @@ export class SessionAuthorityOwner {
     const fail = (error: Error, transportLost = false) => {
       if (ended) return;
       ended = true;
-      if (promoted && epoch === this.#mirrorEpoch) {
+      // A failed candidate with no current mirror to fall back on also needs
+      // recovery, like a promoted mirror that failed.
+      if (
+        (promoted && epoch === this.#mirrorEpoch) ||
+        (!promoted &&
+          this.#mirrorPreparationStop === abort &&
+          !this.#mirrorCovered)
+      ) {
         this.#mirrorCovered = false;
         this.#mirrorFailed = !transportLost && !nats.isClosed();
         for (const listener of this.#listeners) {
@@ -473,9 +491,10 @@ export class SessionAuthorityOwner {
         bindOnly: true,
       });
       check();
-      if (!this.#mirrorCovered) this.#material = material;
+      this.#material = material;
       await this.#advanceTrust(BigInt(binding.rotationSequence));
       check();
+      bound.resolve();
       const inbox = createInbox(options.inboxPrefix);
       const prefix = `$KV.${binding.revocationBucket}.`;
       const stream = `KV_${binding.revocationBucket}`;
@@ -586,14 +605,19 @@ export class SessionAuthorityOwner {
       watch?.stop();
       throw error;
     });
-    try {
-      await Promise.race([setup, ready.promise]);
-      check();
-    } catch (error) {
-      fail(error instanceof Error ? error : new Error(String(error)));
-      watch?.stop();
-      throw error;
-    }
+    const caughtUp = (async () => {
+      try {
+        await Promise.race([setup, ready.promise]);
+        check();
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+        watch?.stop();
+        throw error;
+      }
+    })();
+    void caughtUp.catch(() => undefined);
+    await Promise.race([bound.promise, caughtUp]);
+    return { caughtUp };
   }
 
   /** Verify an issuer-signed lookup reply against the actual pending ephemeral request. */
@@ -660,8 +684,8 @@ export class SessionAuthorityOwner {
     );
   }
 
-  /** Loss of current revocation coverage requiring private snapshot recovery. */
-  get coverageLost(): boolean {
+  /** The revocation mirror failed and needs reattaching; verification carries on with the revocations already observed. */
+  get mirrorFailed(): boolean {
     return this.#mirrorFailed;
   }
 
@@ -707,7 +731,6 @@ export class SessionAuthorityOwner {
     dispose(): void;
   }> {
     const epoch = ++this.#ownPreparationEpoch;
-    const mirrorEpoch = this.#mirrorEpoch;
     const candidate = await this.#verify(bytes, "live");
     candidate.unpublished = true;
     try {
@@ -724,11 +747,7 @@ export class SessionAuthorityOwner {
       this.assertCurrent(candidate);
       let finished = false;
       const assertPreparedCurrent = () => {
-        if (
-          finished ||
-          epoch !== this.#ownPreparationEpoch ||
-          mirrorEpoch !== this.#mirrorEpoch
-        )
+        if (finished || epoch !== this.#ownPreparationEpoch)
           throw new Error("own authority candidate superseded");
         this.assertCurrent(candidate);
       };
@@ -1107,24 +1126,20 @@ export class SessionAuthorityOwner {
   }
 
   async #settleMirrorUpdates(): Promise<void> {
-    const epoch = this.#mirrorEpoch;
     let updates: Promise<void>;
     do {
       updates = this.#mirrorUpdates;
       await updates;
-      if (epoch !== this.#mirrorEpoch)
-        throw new AuthorityUnavailableError("authority mirror superseded");
     } while (updates !== this.#mirrorUpdates);
-    // This waits only for updates already received, never for lost coverage or
-    // a replacement mirror. Callers still perform their normal live checks.
+    // This waits only for updates already received and being verified, never
+    // for a lost, lagging or replacement mirror. Callers then check what is
+    // known.
   }
 
   /** Recheck observed revocation and expiry after every cold asynchronous boundary. */
   assertCurrent(entry: CachedAuthority): void {
     if (this.#stopped || this.#overloaded)
       throw new Error("authority owner unavailable");
-    if (!this.#mirrorCovered)
-      throw new AuthorityUnavailableError("revocation mirror is not current");
     const issuer = this.#liveIssuer(entry.authority.issuerKeyId);
     if (issuer?.state !== "active")
       throw new Error("issuer unavailable for live authority");
@@ -1313,21 +1328,17 @@ export class SessionAuthorityOwner {
   async readIssuerMetadata(
     query: IssuerMetadataQuery,
   ): Promise<IssuerMetadataResponse> {
-    return this.#readIssuerMetadata(query, true);
+    return this.#readIssuerMetadata(query);
   }
 
   async #readIssuerMetadata(
     query: IssuerMetadataQuery,
-    requireCoverage: boolean,
   ): Promise<IssuerMetadataResponse> {
     const transport = this.#metadataTransport;
-    const epoch = this.#mirrorEpoch;
     const assertCurrent = () => {
       if (
         !transport ||
         this.#stopped ||
-        (requireCoverage && !this.#mirrorCovered) ||
-        this.#mirrorEpoch !== epoch ||
         transport.nats.isClosed() ||
         transport.nats.isDraining()
       )
@@ -1390,10 +1401,7 @@ export class SessionAuthorityOwner {
           await this.observeRevocation(
             signedBytes(status.revocation),
             query.authorizationSessionId,
-            () =>
-              epoch === this.#mirrorEpoch &&
-              this.#mirrorCovered &&
-              !this.#stopped,
+            () => !this.#stopped,
           );
         assertCurrent();
       }
@@ -1442,7 +1450,7 @@ export class SessionAuthorityOwner {
         continue;
       }
       // A failed read leaves the key to its signed deadline.
-      await this.#readIssuerMetadata({ kind: "issuerKey", keyId }, false).catch(
+      await this.#readIssuerMetadata({ kind: "issuerKey", keyId }).catch(
         () => undefined,
       );
     }
@@ -1471,10 +1479,10 @@ export class SessionAuthorityOwner {
     if (!issuer && (await this.#forwardIssuer(keyId)))
       issuer = this.#liveIssuer(keyId);
     if (!issuer) {
-      const response = await this.#readIssuerMetadata(
-        { kind: "issuerKey", keyId },
-        false,
-      );
+      const response = await this.#readIssuerMetadata({
+        kind: "issuerKey",
+        keyId,
+      });
       if (response.result.kind !== "value")
         throw new Error("historical authority issuer unavailable");
       issuer = this.#liveIssuer(keyId);
@@ -1592,7 +1600,6 @@ export class SessionAuthorityOwner {
     purpose: "live" | "historicalEvent",
     historicalCutoff?: number,
   ): Promise<CachedAuthority> {
-    const mirrorEpoch = this.#mirrorEpoch;
     const hints = this.#hints(bytes);
     if (typeof hints.issuerKeyId !== "string")
       throw new Error("missing issuer lookup identity");
@@ -1633,8 +1640,6 @@ export class SessionAuthorityOwner {
     try {
       if (purpose === "live") {
         await this.#settleMirrorUpdates();
-        if (mirrorEpoch !== this.#mirrorEpoch)
-          throw new Error("authority verification coverage superseded");
         this.assertCurrent(entry);
       }
       return entry;

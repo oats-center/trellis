@@ -110,7 +110,9 @@ the expected deployment. The offer alone never establishes provider eligibility:
 its complete provider tuple must match its verified context, and the offered
 consumer tuple must match the opener's current local identity. The caller must
 retain the exact authenticated Subscribe or Observe authority throughout the
-observation, with current ordered revocation coverage on both sides.
+observation. Each side checks the other against the revocations it has
+observed; a revocation mirror that is down or catching up does not interrupt
+the observation.
 
 Ordinary identity-preserving authorization refresh retains and replaces covered
 authority evidence without replacing the physical transport, recreating the

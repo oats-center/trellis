@@ -6,19 +6,20 @@ Status: Revision 7 operational requirements.
 
 Every `[auth]` key, from `AuthConfig` in `crates/runtime/src/config/mod.rs`:
 
-| Key                                                 | Required | Meaning                                                                                              |
-| --------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
-| `instance_id`                                       | yes      | The installation's ULID, generated at initialization and retained across restarts and key rotations. |
-| `oauth_storage_key_file`                            | yes      | Owner-only key sealing durable OAuth material. Back it up with the database.                         |
-| `authorization.issuer_signing_seed_file`            | yes      | The bootstrap issuer's Ed25519 seed. Successor keys live in `<database>.issuer-keys/`.               |
-| `authorization.context_lifetime_seconds`            | yes      | Longest lifetime of a newly issued session authority, 1–3600.                                        |
-| `authorization.allowed_clock_skew_seconds`          | yes      | Verification and Callout clock skew, at most 300 and less than the context lifetime.                 |
-| `authorization.oauth_admission_lifetime_seconds`    | no (300) | Longest lifetime of a signed OAuth admission, 1–300.                                                 |
-| `oauth.origin`, `bind_address`, `port`, `transport` | yes      | The dedicated OAuth listener; `transport` is `tls`, `proxy`, or `loopback_development`.              |
-| `oauth.trusted_proxies`                             | no       | CIDR ranges whose `X-Forwarded-For` identifies the client in front of a TLS listener.                |
-| `avatar.external_fetch_enabled`                     | no (on)  | Fetch OIDC, override, and Gravatar profile images; off serves local initials only.                   |
-| `administration.confirm_on_consent`                 | no (on)  | Consent asks for a separate confirmation before delegating administration.                           |
-| `administration.registered_clients_only`            | no (on)  | Only administrator-registered OAuth clients may receive administrative capabilities.                 |
+| Key                                                 | Required | Meaning                                                                                                    |
+| --------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `instance_id`                                       | yes      | The installation's ULID, generated at initialization and retained across restarts and key rotations.       |
+| `oauth_storage_key_file`                            | yes      | Owner-only key sealing durable OAuth material. Back it up with the database.                               |
+| `authorization.issuer_signing_seed_file`            | yes      | The bootstrap issuer's Ed25519 seed. Successor keys live in `<database>.issuer-keys/`.                     |
+| `authorization.context_lifetime_seconds`            | yes      | Longest lifetime of a newly issued session authority, 1–3600.                                              |
+| `authorization.allowed_clock_skew_seconds`          | yes      | Verification and Callout clock skew, at most 300 and less than the context lifetime.                       |
+| `authorization.oauth_admission_lifetime_seconds`    | no (300) | Longest lifetime of a signed OAuth admission, 1–300.                                                       |
+| `authorization.issuer_activation_delay_seconds`     | no (60)  | Seconds a rotated-in issuer key is announced, its chain link published, before Auth signs with it; 1–3600. |
+| `oauth.origin`, `bind_address`, `port`, `transport` | yes      | The dedicated OAuth listener; `transport` is `tls`, `proxy`, or `loopback_development`.                    |
+| `oauth.trusted_proxies`                             | no       | CIDR ranges whose `X-Forwarded-For` identifies the client in front of a TLS listener.                      |
+| `avatar.external_fetch_enabled`                     | no (on)  | Fetch OIDC, override, and Gravatar profile images; off serves local initials only.                         |
+| `administration.confirm_on_consent`                 | no (on)  | Consent asks for a separate confirmation before delegating administration.                                 |
+| `administration.registered_clients_only`            | no (on)  | Only administrator-registered OAuth clients may receive administrative capabilities.                       |
 
 Sign-in policy is Auth state, not configuration: which methods are on, self
 sign-up, and the minimum password length (`passwordMinLength`, 8 on a fresh

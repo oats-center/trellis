@@ -41,10 +41,18 @@ service Billing {
       signature { header "Stripe-Signature"; separator ","; prefix "v1="; encoding hex; }
       timestamp { header "Stripe-Signature"; separator ","; prefix "t="; format unix_seconds; tolerance 5m; }
     }
-    dedupe "{header:Idempotency-Key}";
+    dedupe "{json:/id}";
   }
 }
 ```
+
+Stripe puts each event's ID in the `id` field of the JSON body, so
+`dedupe "{json:/id}"` drops Stripe's retries of the same event. `{json:...}`
+takes a JSON Pointer such as `/data/object/id`, `{form:name}` reads a field of
+a form-encoded body, and `{header:Name}` reads a header, for senders such as
+GitHub that send the ID as `X-GitHub-Delivery`. A request whose ID can't be
+read, such as a body that isn't JSON, is delivered without deduplication;
+it's never refused for that.
 
 Other verifiers check a fixed token in a header or the query string
 (`verify token`), HTTP Basic credentials (`verify basic`), or the client
@@ -52,10 +60,16 @@ address against a `list<string>` setting (`verify address`). An endpoint that
 checks nothing says `verify none;`, and approving it needs an explicit
 acknowledgement.
 
-An endpoint is `async` by default: Trellis stores the request, answers 2xx at
-once, and verifies afterwards. Use `mode sync;` when the sender reads the
-response, for a handshake or a reply document. Every member except `title` and
-`description` is part of the build, so changing one waits for approval.
+Trellis checks every verifier, the signature included, before it answers. A
+wrong signature or credential gets 401 and a secret that isn't set gets 503,
+so a wrong secret shows up as failed deliveries in the sender's dashboard. An
+endpoint is `async` by default: once the checks pass, Trellis stores the
+request and answers 2xx, then delivers it to the service. Use `mode sync;`
+when the sender reads the response, for a handshake or a reply document.
+Stripe reads only the status, so the example stays `async`: Stripe gets its
+2xx as soon as the request is stored, and events wait while the service is
+down. Every member except `title` and `description` is part of the build, so
+changing one waits for approval.
 
 ## Find the URL and set the secret
 
@@ -86,11 +100,12 @@ never shows up as use after it. Deleting the previous settings revision
 with `trellis svc billing config delete-revision <revision>` ends the overlap
 at once.
 
-An `async` request is checked under the policy it was accepted with. Its token
-or password, checked on arrival, keeps counting while the endpoint's verifiers
-and the settings they read (address ranges, the Basic username) are unchanged.
-A request that arrived with the old value during the overlap is still
-delivered if it is processed after the overlap ends. Deleting the settings
+A stored request is checked under the policy it was accepted with, when it is
+processed and when it is verified again. Its token or password, checked on
+arrival, keeps counting while the endpoint's verifiers and the settings they
+read (address ranges, the Basic username) are unchanged. A request that
+arrived with the old value during the overlap still passes if it is processed
+or verified again after the overlap ends. Deleting the settings
 revision that holds the old value withdraws it from waiting requests too.
 Otherwise the request is rejected, and its record says why. A signed request is
 checked again under the current secrets and address ranges when it is
@@ -99,7 +114,9 @@ processed or verified again, with the old secret accepted on the same terms.
 ## Handle requests in TypeScript
 
 Each endpoint is a handle on `service.webhooks`. The event carries the body
-byte for byte; parse it yourself.
+byte for byte in `event.body`. `event.text()`, `event.json()`, and
+`event.form()` read it as text, JSON, or form fields; each returns a `Result`
+that holds a `ValidationError` when the body isn't UTF-8 text or isn't JSON.
 
 ```ts
 const service = await TrellisService.connect({
@@ -110,8 +127,7 @@ const service = await TrellisService.connect({
 
 await service.webhooks.stripe
   .onReceived(async ({ event }) => {
-    const payload = JSON.parse(new TextDecoder().decode(event.body));
-    await recordPayment(payload);
+    await recordPayment(event.json().orThrow());
   })
   .orThrow();
 
@@ -132,9 +148,11 @@ after the standard verifiers pass. The handler returns `accept`, `ignore`, or
 ```ts
 import { webhookResponse } from "@oatscenter/trellis/service";
 
+type SlackBody = { type: string; challenge?: string; event_id?: string };
+
 await service.webhooks.slack
   .decide((request) => {
-    const body = JSON.parse(new TextDecoder().decode(request.delivery.body));
+    const body = request.delivery.json().orThrow() as SlackBody;
     if (body.type === "url_verification") {
       return {
         verdict: "ignore",
@@ -149,7 +167,8 @@ await service.webhooks.slack
   .orThrow();
 ```
 
-The handler can run more than once for the same delivery. Trellis refuses
+`request.delivery` has the same body views as the event. The handler can run
+more than once for the same delivery. Trellis refuses
 HTML and script content types, cookies, and responses over 64 KiB, and answers
 502 instead. `webhookHmac`, `verifyWebhookHmac`, and `withinWebhookWindow`
 help a handler check a signature scheme no standard verifier describes.
@@ -159,13 +178,20 @@ help a handler check a signature scheme no standard verifier describes.
 The generated provider has one method per endpoint:
 
 ```rust
+use trellis_rs::client::WebhookBody as _;
+
 let stripe = provider.stripe()?;
 let mut deliveries = stripe.subscribe().await?;
 while let Some(delivery) = deliveries.next().await {
     let delivery = delivery?;
-    record_payment(&delivery.body).await?;
+    let event: serde_json::Value = delivery.json()?;
+    record_payment(&event).await?;
 }
 ```
+
+`delivery.body.0` holds the bytes as received. The `WebhookBody` trait adds
+`text()`, `json::<T>()`, and `form()`, which return a `WebhookBodyError` when
+the body isn't UTF-8 text or isn't the JSON you asked for.
 
 `decide(handler)` on the same handle answers decide calls; it keeps answering
 until the returned handle is dropped.
@@ -183,6 +209,16 @@ request rejected because the secret was wrong can be verified again once the
 secret is fixed, while the intake stream still holds it (7 days by default).
 A request refused at intake for a wrong token or password cannot: its
 credential was never stored.
+
+Each endpoint also shows in the service's health as a check named
+`webhook:<endpoint>`, with no code in the service. It turns degraded while the
+endpoint is disabled, while a secret or setting its verifiers read isn't set,
+and while the newest verified request of the last 10 minutes was rejected; its
+summary says which, such as
+`the latest request was rejected: signature does not match`. It clears by
+itself once the secret is set, a later request is accepted, or 10 minutes pass
+without a rejection. The check appears in `trellis svc billing instances` and
+on the service's Console page.
 
 Runtime settings belong to the deployment:
 

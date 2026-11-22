@@ -21,6 +21,8 @@ pub const CATALOG_SNAPSHOT_FORMAT_V1: &str = "trellis.catalog-snapshot.v1";
 pub const PROVIDER_CERTIFICATE_FORMAT_V1: &str = "trellis.provider-certificate.v1";
 /// Authenticated issuer rotation format and signature domain.
 pub const ISSUER_ROTATION_FORMAT_V1: &str = "trellis.issuer-rotation.v1";
+/// Longest time a rotation link may announce its key before that key signs.
+pub const MAX_ISSUER_ACTIVATION_DELAY_SECONDS: i64 = 3_600;
 /// Logical authorization-session revocation format and signature domain.
 pub const SESSION_REVOCATION_FORMAT_V1: &str = "trellis.session-revocation.v1";
 
@@ -524,6 +526,9 @@ impl SignedSessionRevocation {
 
 impl SignedIssuerRotation {
     /// Install exactly the next authenticated rotation, never an older chain head.
+    ///
+    /// A link is published before its key signs, so its `activated_at` may lie
+    /// ahead of `now`, by at most [`MAX_ISSUER_ACTIVATION_DELAY_SECONDS`].
     pub fn verify_successor(
         &self,
         previous: &AuthorityIssuerKey,
@@ -545,7 +550,7 @@ impl SignedIssuerRotation {
                 != installed_sequence
                     .checked_add(1)
                     .ok_or_else(metadata_error)?
-            || self.activated_at > now
+            || self.activated_at > now.saturating_add(MAX_ISSUER_ACTIVATION_DELAY_SECONDS)
             || self.previous_retired_at < self.activated_at
         {
             return Err(metadata_error());

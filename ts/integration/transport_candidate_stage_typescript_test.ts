@@ -1,8 +1,7 @@
-/** Real TS no-carrier recovery and cancellation while registry warming is held. */
+/** Real TS no-carrier recovery and cancellation while a stage's admission read is held. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { jetstream } from "@nats-io/jetstream";
 import { Result, type SessionCaller } from "@oatscenter/trellis";
 import { ulid } from "ulid";
 import { codecs } from "@oatscenter/trellis/generated";
@@ -18,12 +17,6 @@ import {
   readRuntimeServiceAttachments as attachmentsFor,
 } from "./_support/broker_inventory.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
-
-type WatchInfo = {
-  created?: string;
-  config?: { filter_subject?: string; deliver_subject?: string };
-  push_bound?: boolean;
-};
 
 for (const closeWhileHeld of [false, true]) {
   test(
@@ -240,34 +233,16 @@ for (const closeWhileHeld of [false, true]) {
             const priorProxyIds = new Set(
               gate.connections().map((conn) => conn.id),
             );
-            let heldInfo: WatchInfo | undefined;
-            // getPushConsumer performs an earlier INFO before subscribing. Hold
-            // only the real post-subscription INFO on a newly opened connection.
+            // A stage reads its broker admission before it may serve. Hold
+            // that read's reply on the newly opened connection.
+            let heldAt: number | undefined;
             hold = gate.armResponseHold(
-              "$JS.API.CONSUMER.INFO.",
+              "$SYS.REQ.USER.INFO",
               undefined,
-              (body) => {
-                const info = JSON.parse(
-                  new TextDecoder().decode(body),
-                ) as WatchInfo;
-                if (
-                  info.push_bound !== true ||
-                  info.config?.filter_subject !==
-                    "$KV.TRELLIS_AUTH_REVOCATIONS.>"
-                )
+              (_body, connection) => {
+                if (connection.closed || priorProxyIds.has(connection.id))
                   return false;
-                const owner = gate
-                  .connections()
-                  .find(
-                    (conn) =>
-                      !conn.closed &&
-                      !priorProxyIds.has(conn.id) &&
-                      conn.subs.some(
-                        (sub) => sub.subject === info.config?.deliver_subject,
-                      ),
-                  );
-                if (!owner) return false;
-                heldInfo = info;
+                heldAt = Date.now();
                 return true;
               },
             );
@@ -335,7 +310,7 @@ for (const closeWhileHeld of [false, true]) {
             assert.deepEqual(
               stageProxy.subs.filter((sub) => appSubs.has(sub.subject)),
               [],
-              "a private stage has no application RPC/Live intake while warm INFO is withheld",
+              "a private stage has no application RPC/Live intake while its admission read is withheld",
             );
             assert.deepEqual(
               gate
@@ -371,13 +346,14 @@ for (const closeWhileHeld of [false, true]) {
               // Start the five-second bound at explicit logical close, not after
               // awaiting cleanup. A warm request timeout must not satisfy this.
               const closeStarted = Date.now();
-              const infoTimeout = jetstream(system).getOptions().timeout;
-              assert(infoTimeout !== undefined && heldInfo?.created);
-              // Creation precedes getPushConsumer, subscription and the held INFO
-              // request. This conservative deadline proves close wins before that
-              // real request could time out; the five-second close bound remains.
-              const warmDeadline =
-                Date.parse(heldInfo.created) + infoTimeout - 250;
+              // The SDK's default timeout for the admission read.
+              const infoTimeout = 30_000;
+              assert(heldAt !== undefined);
+              // The reply arrives moments after its request on this host, so
+              // this deadline, a second short of the request's own timeout,
+              // proves close wins before that real request could time out; the
+              // five-second close bound remains.
+              const warmDeadline = heldAt + infoTimeout - 1_000;
               const closing = subject.connection.close();
               void closing.catch(() => undefined);
               await runtime.waitFor(

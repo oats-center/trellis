@@ -109,8 +109,8 @@ Missing live authority is not optional-capability denial. Requests await
 verified authority before publication within their original deadline and
 cancellation; current authority that excludes the action still denies it.
 Requests are never replayed. Signed reply verification waits for
-already-received ordered revocation updates before its live checks; it does not
-retransmit the request or bypass lost coverage.
+already-received ordered revocation updates before its live checks, never for a
+lost or lagging mirror; it does not retransmit the request.
 
 When the broker is lost, an idle client retries it after 1 s, 2 s, 4 s, then
 every 8 s. A request waiting for the transport or for verified authority makes
@@ -398,13 +398,17 @@ values, secrets } })` stores initial values through `Auth.Config.Set`, and
 
 Each declared webhook endpoint is `service.webhooks.NAME`.
 `onReceived(({ event }) => ...)` handles accepted requests; `event.body` is a
-`Uint8Array`, and serving starts with `service.wait()`. `decide((request) =>
-({ verdict: "accept" | "ignore" | "reject", response?, dedupeKey? }))`
-answers an endpoint that declares `decide`. `@oatscenter/trellis/service`
+`Uint8Array` of the bytes as received, and serving starts with
+`service.wait()`. `event.text()`, `event.json()`, and `event.form()` (a
+`URLSearchParams`) return a `Result` that is a `ValidationError` when the body
+is not UTF-8 text or not JSON; verify signatures over `event.body`.
+`decide((request) => ({ verdict: "accept" | "ignore" | "reject", response?,
+dedupeKey? }))` answers an endpoint that declares `decide`;
+`request.delivery` has the same views. `@oatscenter/trellis/service`
 exports `webhookHmac`, `verifyWebhookHmac`, `webhookEqual`,
 `withinWebhookWindow`, and `webhookResponse({ status, contentType, body })`,
-and the `WebhookDelivery`, `WebhookDecideRequest`, and `WebhookDecision`
-types. In the testkit, `runtime.callAdminRpc("webhooksEndpointsList", {
+and the `WebhookDelivery`, `WebhookRequestDelivery`, `WebhookDecideCall`,
+`WebhookDecideRequest`, and `WebhookDecision` types. In the testkit, `runtime.callAdminRpc("webhooksEndpointsList", {
 service: deploymentId })` returns each endpoint's URL.
 
 ### SQL outbox
@@ -537,13 +541,15 @@ children before sandbox removal. Startup requires `/readyz` metadata's
 `processId` to match the spawned native host. `firstAdmin: "browser-flow"` opts
 into browser setup.
 
-The kit adds each runtime's CA (`runtime.caCertificate`) to the test process's
-Node trust, so SDK clients need no TLS options. Launch Playwright browsers with
-`env: browserTrustEnvironment()`, which builds a private NSS trust store holding
-those CAs (requires NSS `certutil`); never use `ignoreHTTPSErrors`. Pass
-`NODE_EXTRA_CA_CERTS=runtime.caCertificate` to spawned Node processes and
-`--ca-certificate runtime.caCertificate` (or `--ca-fingerprint` with its
-SHA-256 fingerprint) to `trellis login`.
+The kit adds each runtime's CA to the test process's Node trust, so SDK clients
+need no TLS options. `runtime.caCertificate` is that CA's PEM text, for a TLS
+client's `ca` option (a plain `https.request` to a webhook URL that trusts only
+it succeeds); `runtime.caCertificatePath` is its file. Launch Playwright
+browsers with `env: browserTrustEnvironment()`, which builds a private NSS
+trust store holding those CAs (requires NSS `certutil`); never use
+`ignoreHTTPSErrors`. Pass `NODE_EXTRA_CA_CERTS=runtime.caCertificatePath` to
+spawned Node processes and `--ca-certificate runtime.caCertificatePath` (or
+`--ca-fingerprint` with its SHA-256 fingerprint) to `trellis login`.
 
 Live testkit users are ordinary accounts: `runtime.createUser({ name })`, then
 `runtime.grantUserCapabilities({ user, capabilityIds })`, then

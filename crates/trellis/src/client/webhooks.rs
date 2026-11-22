@@ -18,6 +18,71 @@ pub use crate::__types::trellis::{
 
 use super::{ConsumerDescriptor, ConsumerHandle, TrellisClientError};
 
+/// Why a webhook body could not be read as text, JSON, or form fields.
+#[derive(Debug, thiserror::Error)]
+pub enum WebhookBodyError {
+    /// The body is not UTF-8 text.
+    #[error("the webhook body is not UTF-8 text")]
+    NotText(#[source] std::str::Utf8Error),
+    /// The body is not JSON of the requested shape.
+    #[error("the webhook body is not the expected JSON: {0}")]
+    NotJson(#[source] serde_json::Error),
+}
+
+/// Text, JSON, and form views of a received webhook body, for
+/// [`WebhookDelivery`]. `body` stays the bytes as received, so a handler that
+/// checks a signature still checks those bytes.
+///
+/// # Examples
+///
+/// ```
+/// use trellis_rs::client::{WebhookBody as _, WebhookDelivery};
+///
+/// fn event_id(delivery: &WebhookDelivery) -> Option<String> {
+///     let payload: serde_json::Value = delivery.json().ok()?;
+///     payload["id"].as_str().map(str::to_owned)
+/// }
+/// ```
+pub trait WebhookBody {
+    /// The body as UTF-8 text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookBodyError::NotText`] when the body is not UTF-8.
+    fn text(&self) -> Result<&str, WebhookBodyError>;
+
+    /// The body parsed as JSON into `T`, such as [`serde_json::Value`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookBodyError::NotJson`] when the body is not JSON that
+    /// `T` accepts.
+    fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, WebhookBodyError>;
+
+    /// The fields of an `application/x-www-form-urlencoded` body, in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WebhookBodyError::NotText`] when the body is not UTF-8.
+    fn form(&self) -> Result<Vec<(String, String)>, WebhookBodyError>;
+}
+
+impl WebhookBody for WebhookDelivery {
+    fn text(&self) -> Result<&str, WebhookBodyError> {
+        std::str::from_utf8(&self.body.0).map_err(WebhookBodyError::NotText)
+    }
+
+    fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, WebhookBodyError> {
+        serde_json::from_slice(&self.body.0).map_err(WebhookBodyError::NotJson)
+    }
+
+    fn form(&self) -> Result<Vec<(String, String)>, WebhookBodyError> {
+        Ok(url::form_urlencoded::parse(self.text()?.as_bytes())
+            .into_owned()
+            .collect())
+    }
+}
+
 /// Generated metadata for one declared webhook endpoint.
 pub trait WebhookDescriptor: ConsumerDescriptor {
     /// Whether the endpoint declares a decide handler.
@@ -166,6 +231,63 @@ impl<D: WebhookDescriptor> WebhookHandle<D> {
         Ok(WebhookDecideHandle {
             _task: tokio_util::task::AbortOnDropHandle::new(task),
         })
+    }
+}
+
+/// Add the health check Trellis keeps for each of the service's webhook
+/// endpoints, named `webhook:<endpoint>`. Trellis reports an endpoint
+/// degraded while it is disabled, while a setting its verifiers read is
+/// unset, or while its latest verified request was rejected; a check Trellis
+/// does not answer reads as degraded.
+pub(crate) fn add_health_checks(client: &super::TrellisClient) {
+    let Ok(received) = trellis_protocol::derive_event_subject("trellis.webhooks@v1", "Received")
+    else {
+        return;
+    };
+    let received = format!("{received}.");
+    for (name, binding) in client.availability().consumer_bindings() {
+        // The filter ends in the endpoint's deployment and name tokens.
+        let Some(tokens) = binding
+            .filter_subjects
+            .first()
+            .and_then(|filter| filter.strip_prefix(&received))
+        else {
+            continue;
+        };
+        let subject = format!("webhooks.v1.health.{tokens}");
+        let generations = client.transport_generations();
+        client.health().add(format!("webhook:{name}"), move || {
+            let (generations, subject) = (generations.clone(), subject.clone());
+            async move {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let report = async {
+                    let lease = generations
+                        .acquire_for(std::slice::from_ref(&subject), &[], deadline)
+                        .await
+                        .ok()?;
+                    let reply = tokio::time::timeout_at(
+                        deadline.into(),
+                        lease.nats().request(subject, bytes::Bytes::new()),
+                    )
+                    .await
+                    .ok()?
+                    .ok()?;
+                    serde_json::from_slice::<serde_json::Value>(&reply.payload).ok()
+                }
+                .await;
+                match report {
+                    Some(report) if report["status"] == "ok" => super::ServiceHealthCheck::ok(),
+                    Some(report) => super::ServiceHealthCheck::degraded(
+                        report["summary"]
+                            .as_str()
+                            .unwrap_or("Trellis reported this endpoint degraded"),
+                    ),
+                    None => super::ServiceHealthCheck::degraded(
+                        "Trellis did not report this endpoint's state",
+                    ),
+                }
+            }
+        });
     }
 }
 

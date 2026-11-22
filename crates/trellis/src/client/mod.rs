@@ -104,6 +104,7 @@ pub(crate) use transport_generations::{
 };
 pub use webhooks::{
     verify_webhook_hmac, webhook_equal, webhook_hmac, webhook_response, within_webhook_window,
-    WebhookDecideHandle, WebhookDecideRequest, WebhookDecision, WebhookDelivery, WebhookDescriptor,
-    WebhookField, WebhookHandle, WebhookHmacAlgorithm, WebhookResponse, WebhookVerdict,
+    WebhookBody, WebhookBodyError, WebhookDecideHandle, WebhookDecideRequest, WebhookDecision,
+    WebhookDelivery, WebhookDescriptor, WebhookField, WebhookHandle, WebhookHmacAlgorithm,
+    WebhookResponse, WebhookVerdict,
 };

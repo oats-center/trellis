@@ -14,11 +14,15 @@ import { ulid } from "ulid";
 import {
   TrellisService,
   type WebhookDelivery,
+  type WebhookRequestDelivery,
   webhookResponse,
 } from "@oatscenter/trellis/service";
 import { codecs } from "@oatscenter/trellis/generated";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as laterParticipants } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
 import { apis as adminApis } from "../packages/trellis-testkit/trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
@@ -48,6 +52,7 @@ async function install(runtime: Runtime) {
         signing: SIGNING,
         hookToken: TOKEN,
         partnerPassword: PASSWORD,
+        relaySigning: RELAY,
       },
     },
   });
@@ -138,7 +143,7 @@ function relay(url: string, body: string, headers: Record<string, string>) {
   });
 }
 
-test("a signed async endpoint answers at once, verifies afterwards, drops duplicates, and delivers the exact bytes", async () => {
+test("a signed async endpoint checks the signature before it answers, drops duplicates by the body's ID, and delivers the exact bytes", async () => {
   await withTrellisRuntime(async (runtime) => {
     const { key, service, url, attempts } = await install(runtime);
     const received: WebhookDelivery[] = [];
@@ -155,54 +160,63 @@ test("a signed async endpoint answers at once, verifies afterwards, drops duplic
     const post = (body: string, headers: Record<string, string>) =>
       fetch(endpoint, { method: "POST", body, headers });
     const now = () => Math.floor(Date.now() / 1000);
-    const signed = (body: string, timestamp = now()) =>
-      `t=${timestamp},v1=${sign(`${timestamp}.${body}`)}`;
+    const signed = (body: string, timestamp = now(), key = SIGNING) =>
+      `t=${timestamp},v1=${sign(`${timestamp}.${body}`, key)}`;
 
-    // A genuine request becomes an event carrying the body byte for byte.
-    const body = '{"id":"evt_1","amount":12.50,  "note":"spaces kept"}';
+    // A genuine request becomes an event carrying the body byte for byte,
+    // deduplicated by the delivery ID in its body, as Stripe sends it.
+    const body =
+      '{"id":"evt_1","object":"event","amount":12.50,  "note":"spaces kept"}';
     const accepted = await post(body, {
       "content-type": "application/json",
       "test-signature": signed(body),
-      "x-delivery-id": "delivery-1",
     });
     assert.equal(accepted.status, 200);
     await runtime.waitFor(() => (received.length === 1 ? true : undefined));
     assert.equal(new TextDecoder().decode(received[0]!.body), body);
     assert.equal(received[0]!.endpoint, "signed");
-    assert.equal(received[0]!.dedupeKey, "delivery-1");
+    assert.equal(received[0]!.dedupeKey, "evt_1");
     assert.deepEqual(
       received[0]!.checks.map((check) => [check.kind, check.key]),
       [["hmac", "current"]],
     );
 
-    // A bad signature still gets 2xx at once: the sender cannot tell, and the
-    // record says what failed.
-    const forged = await post(body, {
-      "test-signature": `t=${now()},v1=${sign(`${now()}.${body}`, "wrong-key")}`,
+    // A wrong signature gets 401 before Trellis answers, as in sync mode, so
+    // a wrong secret shows at the sender. So does a replay outside the
+    // tolerance. Both are kept to verify again.
+    const forgedBody = '{"id":"evt_3","object":"event"}';
+    const forged = await post(forgedBody, {
+      "test-signature": signed(forgedBody, now(), "wrong-key"),
     });
-    assert.equal(forged.status, 200);
-    // A replay outside the tolerance fails the same way.
-    const stale = await post(body, {
-      "test-signature": signed(body, now() - 600),
+    assert.equal(forged.status, 401);
+    assert.equal(await forged.text(), "");
+    const staleBody = '{"id":"evt_stale","object":"event"}';
+    const stale = await post(staleBody, {
+      "test-signature": signed(staleBody, now() - 600),
     });
-    assert.equal(stale.status, 200);
-    const rejected = await runtime.waitFor(async () => {
-      const records = (await attempts("signed")).filter(
-        (attempt) => attempt.outcome === "rejected",
-      );
-      return records.length === 2 ? records : undefined;
-    });
+    assert.equal(stale.status, 401);
+    const rejected = (await attempts("signed")).filter(
+      (attempt) => attempt.outcome === "rejected",
+    );
     assert.deepEqual(
       rejected
-        .map((attempt) => attempt.reason?.replace(/\d+ s/u, "N s"))
+        .map((attempt) => [
+          attempt.reason?.replace(/\d+ s/u, "N s"),
+          attempt.status,
+          attempt.stored,
+        ])
         .sort(),
-      ["signature does not match", "timestamp N s outside tolerance"],
+      [
+        ["signature does not match", 401, true],
+        ["timestamp N s outside tolerance", 401, true],
+      ],
     );
 
-    // A verified repeat of the same delivery ID is recorded and publishes nothing.
-    const repeat = await post(body, {
-      "test-signature": signed(body),
-      "x-delivery-id": "delivery-1",
+    // A verified repeat of the same delivery ID is recorded and publishes
+    // nothing, even when its bytes differ.
+    const repeatBody = '{"id":"evt_1","object":"event","attempt":2}';
+    const repeat = await post(repeatBody, {
+      "test-signature": signed(repeatBody),
     });
     assert.equal(repeat.status, 200);
     await runtime.waitFor(async () =>
@@ -257,8 +271,12 @@ test("a signed async endpoint answers at once, verifies afterwards, drops duplic
     });
     assert.equal(reverified.matchedKey, "current");
     await runtime.waitFor(() => (received.length === 2 ? true : undefined));
+    assert.equal(new TextDecoder().decode(received[1]!.body), forgedBody);
     // The previous secret is still accepted during the change overlap.
-    const overlap = await post(body, { "test-signature": signed(body) });
+    const overlapBody = '{"id":"evt_4","object":"event"}';
+    const overlap = await post(overlapBody, {
+      "test-signature": signed(overlapBody),
+    });
     assert.equal(overlap.status, 200);
     await runtime.waitFor(() => (received.length === 3 ? true : undefined));
     assert.deepEqual(
@@ -276,28 +294,148 @@ test("a signed async endpoint answers at once, verifies afterwards, drops duplic
       idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await runtime.waitFor(async () => {
-      const response = await post(body, { "test-signature": signed(body) });
+      const response = await post(overlapBody, {
+        "test-signature": signed(overlapBody),
+      });
       return response.status === 503 ? true : undefined;
     });
     const before = (await attempts("signed")).length;
-    const disabled = await post(body, { "test-signature": signed(body) });
+    const disabled = await post(overlapBody, {
+      "test-signature": signed(overlapBody),
+    });
     assert.equal(disabled.status, 503);
     assert.equal(await disabled.text(), "");
     assert.equal((await attempts("signed")).length, before);
+    // The refused requests reached the service only once recovered.
+    assert.equal(received.length, 3);
+    await service.stop();
+  });
+});
+
+test("a body placeholder dedupes JSON by its ID and form bodies by a field, delivers bodies without one, and the event offers body views", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const { service, url, attempts } = await install(runtime);
+    const signedEvents: WebhookRequestDelivery[] = [];
+    const formEvents: WebhookRequestDelivery[] = [];
+    await service.webhooks.signed
+      .onReceived(({ event }) => {
+        signedEvents.push(event);
+      })
+      .orThrow();
+    await service.webhooks.formed
+      .onReceived(({ event }) => {
+        formEvents.push(event);
+      })
+      .orThrow();
+    void service.wait();
+    const stripe = async (body: string | Uint8Array<ArrayBuffer>) => {
+      const timestamp = Math.floor(Date.now() / 1000);
+      const payload =
+        typeof body === "string" ? new TextEncoder().encode(body) : body;
+      const signature = createHmac("sha256", SIGNING)
+        .update(`${timestamp}.`)
+        .update(payload)
+        .digest("hex");
+      const response = await fetch(url("signed"), {
+        method: "POST",
+        body: payload,
+        headers: { "test-signature": `t=${timestamp},v1=${signature}` },
+      });
+      assert.equal(response.status, 200);
+    };
+    const form = async (body: string) => {
+      const response = await fetch(url("formed"), {
+        method: "POST",
+        body,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-hook-token": TOKEN,
+        },
+      });
+      assert.equal(response.status, 200);
+    };
+    const settled = (endpoint: string, count: number) =>
+      runtime.waitFor(async () => {
+        const records = await attempts(endpoint);
+        return records.length === count &&
+          records.every((attempt) => attempt.outcome !== "pending")
+          ? records.map((attempt) => attempt.outcome).sort()
+          : undefined;
+      });
+    const keyed = (events: WebhookRequestDelivery[]) =>
+      events.map((event) => event.dedupeKey ?? "none").sort();
+
+    // The same Stripe event ID is one event, whatever else the bytes say; a
+    // new ID is another. A body that is not JSON, or JSON without the ID,
+    // has no dedupe key and is delivered every time, never refused.
+    await stripe('{"id":"evt_A","type":"charge.succeeded","created":1}');
+    await stripe('{"id":"evt_A","type":"charge.succeeded","created":2}');
+    await stripe('{"id":"evt_B","type":"charge.succeeded","created":3}');
+    await stripe("not json");
+    await stripe("not json");
+    await stripe('{"object":"event"}');
+    await stripe(new Uint8Array([0xff, 0xfe, 0x7b]));
+    assert.deepEqual(await settled("signed", 7), [
+      ...Array(6).fill("accepted"),
+      "duplicate",
+    ]);
+    await runtime.waitFor(() => signedEvents.length === 6 || undefined);
+    assert.deepEqual(keyed(signedEvents), [
+      "evt_A",
+      "evt_B",
+      "none",
+      "none",
+      "none",
+      "none",
+    ]);
+
+    // The views read the bytes; the bytes stay the source of truth.
+    const first = signedEvents.find((event) => event.dedupeKey === "evt_A")!;
+    assert.deepEqual(first.json().orThrow(), {
+      id: "evt_A",
+      type: "charge.succeeded",
+      created: 1,
+    });
+    assert.equal(first.text().orThrow(), new TextDecoder().decode(first.body));
+    const plain = signedEvents.find(
+      (event) => new TextDecoder().decode(event.body) === "not json",
+    )!;
+    assert.equal(plain.text().orThrow(), "not json");
+    assert.ok(plain.json().isErr());
+    const binary = signedEvents.find((event) => event.body[0] === 0xff)!;
+    assert.deepEqual([...binary.body], [0xff, 0xfe, 0x7b]);
+    assert.ok(binary.text().isErr());
+    assert.ok(binary.form().isErr());
+
+    // A form field works the same way for form-encoded senders.
+    await form("MessageSid=SM1&Body=hello+there");
+    await form("MessageSid=SM1&Body=again");
+    await form("MessageSid=SM2&Body=other");
+    await form("Body=no+id");
+    assert.deepEqual(await settled("formed", 4), [
+      ...Array(3).fill("accepted"),
+      "duplicate",
+    ]);
+    await runtime.waitFor(() => formEvents.length === 3 || undefined);
+    assert.deepEqual(keyed(formEvents), ["SM1", "SM2", "none"]);
+    const sm1 = formEvents.find((event) => event.dedupeKey === "SM1")!;
+    assert.equal(sm1.form().orThrow().get("Body"), "hello there");
     await service.stop();
   });
 });
 
 test("an acknowledged async request still reaches the service after an approved change to sync mode", async () => {
   await withTrellisRuntime(async (runtime) => {
-    // The signing secret is not set yet, so the worker keeps the request
-    // pending, as it does in production until an administrator sets it.
+    // No instance runs yet, so no decide handler answers and the worker
+    // keeps the request, retrying as it does in production.
     const key = await runtime.services.createInstance({
       name: "billing",
       deployment: "billing",
       contract: participant,
     });
-    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    await configure(runtime, key.deploymentId, {
+      secrets: { signing: SIGNING },
+    });
     const endpoints = async () =>
       (
         await runtime.callAdminRpc("webhooksEndpointsList", {
@@ -305,30 +443,32 @@ test("an acknowledged async request still reaches the service after an approved 
         })
       ).endpoints;
     // Intake serves the endpoint once its directory sees the new deployment.
-    const signed = await runtime.waitFor(async () =>
-      (await endpoints()).find((endpoint) => endpoint.endpoint === "signed"),
+    const queued = await runtime.waitFor(async () =>
+      (await endpoints()).find((endpoint) => endpoint.endpoint === "queued"),
     );
-    assert.equal(signed.mode, "async");
+    assert.equal(queued.mode, "async");
     const body = '{"id":"evt_queued"}';
-    const timestamp = Math.floor(Date.now() / 1000);
-    const response = await fetch(signed.url, {
-      method: "POST",
-      body,
-      headers: {
-        "test-signature": `t=${timestamp},v1=${sign(`${timestamp}.${body}`)}`,
-      },
+    const response = await runtime.waitFor(async () => {
+      const answer = await fetch(queued.url, {
+        method: "POST",
+        body,
+        headers: { "x-body-signature": `sha256=${sign(body)}` },
+      });
+      return answer.status === 200 ? answer : undefined;
     });
     assert.equal(response.status, 200);
     const attempts = async () =>
       (
         await runtime.callAdminRpc("webhooksAttemptsQuery", {
           service: key.deploymentId,
-          endpoint: "signed",
+          endpoint: "queued",
         })
       ).attempts;
     const held = await runtime.waitFor(async () => {
       const [attempt] = await attempts();
-      return attempt?.reason === "secret signing not set" ? attempt : undefined;
+      return attempt?.reason === "no decide handler is running"
+        ? attempt
+        : undefined;
     });
     assert.equal(held.outcome, "pending");
 
@@ -357,39 +497,42 @@ test("an acknowledged async request still reaches the service after an approved 
     await runtime.waitFor(async () =>
       (await endpoints()).some(
         (endpoint) =>
-          endpoint.endpoint === "signed" && endpoint.mode === "sync",
+          endpoint.endpoint === "queued" && endpoint.mode === "sync",
       )
         ? true
         : undefined,
     );
 
-    // Once the secret is set the queued request is verified and delivered.
-    const { revision } = await runtime.callAdminRpc("authConfigGet", {
-      target,
-    });
-    await runtime.callAdminRpc("authConfigSet", {
-      target,
-      secrets: { signing: SIGNING },
-      ...(revision === undefined ? {} : { expectedRevision: revision }),
-      idempotencyKey: codecs.ulid.decode(ulid()),
-    });
+    // The new build's decide handler gets the queued request as async, and
+    // it is delivered.
     const service = await connecting;
+    const modes: string[] = [];
     const received: WebhookDelivery[] = [];
-    await service.webhooks.signed
+    await service.webhooks.queued
       .onReceived(({ event }) => {
         received.push(event);
       })
       .orThrow();
+    await service.webhooks.queued
+      .decide((request) => {
+        modes.push(request.mode);
+        return { verdict: "accept" };
+      })
+      .orThrow();
     void service.wait();
-    // The worker checks a request waiting for its secret every 10 seconds.
+    // Decide calls are retried after 5 s and then 30 s.
     await runtime.waitFor(() => (received.length === 1 ? true : undefined), {
-      timeoutMs: 20_000,
+      timeoutMs: 45_000,
     });
+    assert.deepEqual(modes, ["async"]);
     assert.equal(new TextDecoder().decode(received[0]!.body), body);
     assert.equal(received[0]!.deliveryId, held.attemptId);
     assert.deepEqual(
       received[0]!.checks.map((check) => [check.kind, check.key]),
-      [["hmac", "current"]],
+      [
+        ["hmac", "current"],
+        ["decide", null],
+      ],
     );
     const [attempt] = await attempts();
     assert.equal(attempt?.outcome, "accepted");
@@ -551,19 +694,23 @@ test("a sync endpoint's decide handler answers a handshake with its exact body",
       .orThrow();
     await service.webhooks.handshake
       .decide((request) => {
-        const body = JSON.parse(
-          new TextDecoder().decode(request.delivery.body),
+        // The decide request carries the same body views as the event.
+        const parsed = request.delivery.json().orThrow();
+        const body = new Map(
+          typeof parsed === "object" && parsed !== null
+            ? Object.entries(parsed)
+            : [],
         );
-        if (body.type === "url_verification") {
+        if (body.get("type") === "url_verification") {
           return {
             verdict: "ignore",
             response: webhookResponse({
               contentType: "text/plain",
-              body: body.challenge,
+              body: String(body.get("challenge")),
             }),
           };
         }
-        return { verdict: "accept", dedupeKey: body.event_id };
+        return { verdict: "accept", dedupeKey: String(body.get("event_id")) };
       })
       .orThrow();
     void service.wait();
@@ -651,10 +798,10 @@ test("a changed secret's overlap accepts only the secret it replaced, for every 
           headers: { authorization: `Basic ${btoa(`partner:${secret}`)}` },
         }),
     };
-    // The outcome of a signed request, once verified after the 2xx.
+    // What the sender gets for a signed request, and its recorded outcome.
     const signedOutcome = async (secret: string) => {
       const id = ulid();
-      assert.equal((await send.signed(secret, id)).status, 200);
+      const { status } = await send.signed(secret, id);
       const sha = createHash("sha256")
         .update(JSON.stringify({ id }))
         .digest("hex");
@@ -663,7 +810,7 @@ test("a changed secret's overlap accepts only the secret it replaced, for every 
           (attempt) => attempt.bodySha256 === sha,
         );
         return record && record.outcome !== "pending"
-          ? [record.outcome, record.matchedKey]
+          ? [status, record.outcome, record.matchedKey]
           : undefined;
       });
     };
@@ -694,11 +841,13 @@ test("a changed secret's overlap accepts only the secret it replaced, for every 
     // Every endpoint that reports an overlap honours it, with the secret the
     // newest change replaced and never an older one.
     assert.deepEqual(await overlap(), {
+      "formed:hookToken": true,
       "handshake:signing": true,
       "layered:hookToken": true,
       "layered:signing": true,
       "partner:partnerPassword": true,
       "query:hookToken": true,
+      "queued:signing": true,
       "receipt:signing": true,
       "relayed:relaySigning": false,
       "relayed:signing": true,
@@ -714,10 +863,11 @@ test("a changed secret's overlap accepts only the secret it replaced, for every 
     assert.equal((await send.partner("second-password")).status, 200);
     assert.equal((await send.partner(PASSWORD)).status, 401);
     assert.deepEqual(await signedOutcome("second-signing"), [
+      200,
       "accepted",
       "previous",
     ]);
-    assert.deepEqual(await signedOutcome(SIGNING), ["rejected", null]);
+    assert.deepEqual(await signedOutcome(SIGNING), [401, "rejected", null]);
 
     // Deleting the revision that holds the replaced secret ends the overlap
     // at once; the first secrets, in an older revision, stay refused.
@@ -735,12 +885,17 @@ test("a changed secret's overlap accepts only the secret it replaced, for every 
     );
     assert.equal((await send.token(TOKEN)).status, 401);
     assert.equal((await send.partner(PASSWORD)).status, 401);
-    assert.deepEqual(await signedOutcome(SIGNING), ["rejected", null]);
+    assert.deepEqual(await signedOutcome(SIGNING), [401, "rejected", null]);
     assert.equal((await send.partner("second-password")).status, 401);
-    assert.deepEqual(await signedOutcome("second-signing"), ["rejected", null]);
+    assert.deepEqual(await signedOutcome("second-signing"), [
+      401,
+      "rejected",
+      null,
+    ]);
     assert.ok(Object.values(await overlap()).every((reported) => !reported));
     assert.equal((await send.partner("third-password")).status, 200);
     assert.deepEqual(await signedOutcome("third-signing"), [
+      200,
       "accepted",
       "current",
     ]);
@@ -865,15 +1020,24 @@ test("each secret reports when its own current and previous values last matched,
   });
 });
 
-test("a held request that arrived before its secret changed is no use of the value the change replaced, even within the same second", async () => {
+/** Verify a stored request again, as an administrator does. */
+async function reverify(
+  runtime: Runtime,
+  deploymentId: string,
+  endpoint: string,
+  attemptId: string,
+) {
+  const { attempt } = await runtime.callAdminRpc("webhooksAttemptsReverify", {
+    service: deploymentId,
+    endpoint,
+    attemptId: codecs.ulid.decode(attemptId),
+  });
+  return attempt;
+}
+
+test("a request verified again after its secret changed is no use of the value the change replaced, even within the same second", async () => {
   await withTrellisRuntime(async (runtime) => {
     const { key, service, url, attempts } = await install(runtime);
-    const received: WebhookDelivery[] = [];
-    await service.webhooks.relayed
-      .onReceived(({ event }) => {
-        received.push(event);
-      })
-      .orThrow();
     void service.wait();
     const reported = async () => {
       const { endpoints } = await runtime.callAdminRpc(
@@ -891,47 +1055,43 @@ test("a held request that arrived before its secret changed is no use of the val
     };
     const verified = (body: string) => {
       const sha = createHash("sha256").update(body).digest("hex");
-      return runtime.waitFor(
-        async () => {
-          const record = (await attempts("relayed")).find(
-            (attempt) => attempt.bodySha256 === sha,
-          );
-          return record && record.outcome !== "pending" ? record : undefined;
-        },
-        // The worker checks a request waiting for its secret every 10 seconds.
-        { timeoutMs: 20_000 },
-      );
+      return runtime.waitFor(async () => {
+        const record = (await attempts("relayed")).find(
+          (attempt) => attempt.bodySha256 === sha,
+        );
+        return record && record.outcome !== "pending" ? record : undefined;
+      });
     };
     const signed = (body: string) => ({
       "x-body-signature": `sha256=${sign(body)}`,
     });
 
-    // The relay's secret is not set, so the worker holds the request. It
-    // arrives at the start of a second and the signing secret changes in
-    // that same second, so receive and change times cannot order them.
+    // The request arrives at the start of a second and the signing secret
+    // changes in that same second, so receive and change times cannot order
+    // them.
     await new Promise((resolve) =>
       setTimeout(resolve, 1000 - (Date.now() % 1000)),
     );
-    const held = JSON.stringify({ id: ulid() });
-    assert.equal((await relay(url("relayed"), held, signed(held))).status, 200);
+    const early = JSON.stringify({ id: ulid() });
+    assert.equal(
+      (await relay(url("relayed"), early, signed(early))).status,
+      200,
+    );
     await configure(runtime, key.deploymentId, {
       secrets: { signing: "second-signing" },
     });
     await runtime.waitFor(async () => (await reported()).overlap || undefined);
-    await configure(runtime, key.deploymentId, {
-      secrets: { relaySigning: RELAY },
-    });
-    assert.equal((await verified(held)).outcome, "accepted");
-    // It matched the replaced secret, which it used while that was current.
-    await runtime.waitFor(() => received.length === 1);
-    assert.deepEqual(
-      received[0]!.checks.map((check) => [check.kind, check.key]),
-      [
-        ["address", null],
-        ["hmac", "current"],
-        ["hmac", "previous"],
-      ],
+    const first = await verified(early);
+    assert.equal(first.outcome, "accepted");
+    // Verified again under the new secret, it matches the replaced one,
+    // which it used while that was current: no use since the change.
+    const again = await reverify(
+      runtime,
+      key.deploymentId,
+      "relayed",
+      first.attemptId,
     );
+    assert.equal(again.outcome, "accepted");
     assert.deepEqual(await reported(), {
       current: null,
       previous: null,
@@ -1044,55 +1204,32 @@ test("each change of a secret is a generation of its own, and deleting revisions
   });
 });
 
-test("a queued request keeps its token check under the policy it was accepted with, past the overlap's end, until the matched value's revision is deleted", async () => {
+test("a stored request verified again keeps its token check under the policy it was accepted with, past the overlap's end, until the matched value's revision is deleted", async () => {
   await withTrellisRuntime(async (runtime) => {
     const { key, service, url, attempts } = await install(runtime);
     void service.wait();
     const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
-    const record = async (body: string) => {
-      const sha = createHash("sha256").update(body).digest("hex");
-      return (await attempts("relayedToken")).find(
-        (attempt) => attempt.bodySha256 === sha,
-      );
-    };
-    const verified = (body: string) =>
-      runtime.waitFor(
-        async () => {
-          const found = await record(body);
-          return found && found.outcome !== "pending" ? found : undefined;
-        },
-        { timeoutMs: 20_000 },
-      );
     const send = async (token: string) => {
       const body = JSON.stringify({ id: ulid() });
       const response = await relay(url("relayedToken"), body, {
         "x-hook-token": token,
       });
       assert.equal(response.status, 200);
-      return body;
+      const sha = createHash("sha256").update(body).digest("hex");
+      return await runtime.waitFor(async () => {
+        const found = (await attempts("relayedToken")).find(
+          (attempt) => attempt.bodySha256 === sha,
+        );
+        return found && found.outcome !== "pending" ? found : undefined;
+      });
     };
+    const again = (attemptId: string) =>
+      reverify(runtime, key.deploymentId, "relayedToken", attemptId);
     const report = await shortOverlap(
       runtime,
       key.deploymentId,
       "relayedToken",
     );
-    const held = (body: string) =>
-      runtime.waitFor(
-        async () =>
-          (await record(body))?.reason === "secret relaySigning not set",
-      );
-    const relaySet = async (isSet: boolean) => {
-      await configure(
-        runtime,
-        key.deploymentId,
-        isSet
-          ? { secrets: { relaySigning: RELAY } }
-          : { unset: ["relaySigning"] },
-      );
-      await runtime.waitFor(
-        async () => (await report("relaySigning")).isSet === isSet,
-      );
-    };
     const changeToken = async (hookToken: string) => {
       await configure(runtime, key.deploymentId, { secrets: { hookToken } });
       await runtime.waitFor(async () => (await report("hookToken")).overlap);
@@ -1100,21 +1237,19 @@ test("a queued request keeps its token check under the policy it was accepted wi
     const overlapOver = () =>
       runtime.waitFor(async () => !(await report("hookToken")).overlap);
 
-    // Received with the replaced token during the overlap and held until
+    // Received with the replaced token during the overlap and verified again
     // after it ends: the match stands.
     await changeToken("next-token");
     const late = await send(TOKEN);
-    await held(late);
+    assert.equal(late.outcome, "accepted");
     await overlapOver();
-    await relaySet(true);
-    assert.equal((await verified(late)).outcome, "accepted");
+    assert.equal((await again(late.attemptId)).outcome, "accepted");
 
     // The same, but the revision holding the replaced token is deleted
-    // before the request is processed: it is refused.
-    await relaySet(false);
+    // first: it is refused.
     await changeToken("third-token");
     const revoked = await send("next-token");
-    await held(revoked);
+    assert.equal(revoked.outcome, "accepted");
     const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {
       target,
     });
@@ -1126,8 +1261,7 @@ test("a queued request keeps its token check under the policy it was accepted wi
       idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await overlapOver();
-    await relaySet(true);
-    const refused = await verified(revoked);
+    const refused = await again(revoked.attemptId);
     assert.deepEqual(
       [refused.outcome, refused.reason],
       [
@@ -1136,28 +1270,25 @@ test("a queued request keeps its token check under the policy it was accepted wi
       ],
     );
 
-    // Held until the relay's secret is set, which comes with new relay
-    // addresses: its token was checked under the old ones.
-    await relaySet(false);
-    const queued = await send("third-token");
-    await held(queued);
+    // New relay addresses change the policy its token was checked under.
+    const current = await send("third-token");
+    assert.equal(current.outcome, "accepted");
     await configure(runtime, key.deploymentId, {
       values: { relayRanges: [...RELAY_RANGES, "192.0.2.0/24"] },
-      secrets: { relaySigning: RELAY },
     });
-    const changed = await verified(queued);
-    assert.deepEqual(
-      [changed.outcome, changed.reason],
-      [
-        "rejected",
-        "verifier policy changed after intake; credential checks can't be rerun",
-      ],
+    const changed = await runtime.waitFor(async () => {
+      const attempt = await again(current.attemptId);
+      return attempt.outcome === "rejected" ? attempt : undefined;
+    });
+    assert.equal(
+      changed.reason,
+      "verifier policy changed after intake; credential checks can't be rerun",
     );
     await service.stop();
   });
 });
 
-test("a queued request whose two checks of one secret matched different values is refused once either value's revision is deleted", async () => {
+test("a stored request whose two checks of one secret matched different values is refused once either value's revision is deleted", async () => {
   await withTrellisRuntime(async (runtime) => {
     const { key, service, url, attempts } = await install(runtime);
     const received: WebhookDelivery[] = [];
@@ -1168,20 +1299,6 @@ test("a queued request whose two checks of one secret matched different values i
       .orThrow();
     void service.wait();
     const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
-    const record = async (body: string) => {
-      const sha = createHash("sha256").update(body).digest("hex");
-      return (await attempts("relayedTokens")).find(
-        (attempt) => attempt.bodySha256 === sha,
-      );
-    };
-    const verified = (body: string) =>
-      runtime.waitFor(
-        async () => {
-          const found = await record(body);
-          return found && found.outcome !== "pending" ? found : undefined;
-        },
-        { timeoutMs: 20_000 },
-      );
     // The header check runs first, the query check second.
     const send = async (header: string, query: string) => {
       const body = JSON.stringify({ id: ulid() });
@@ -1191,30 +1308,21 @@ test("a queued request whose two checks of one secret matched different values i
         { "x-hook-token": header },
       );
       assert.equal(response.status, 200);
-      return body;
+      const sha = createHash("sha256").update(body).digest("hex");
+      return await runtime.waitFor(async () => {
+        const found = (await attempts("relayedTokens")).find(
+          (attempt) => attempt.bodySha256 === sha,
+        );
+        return found && found.outcome !== "pending" ? found : undefined;
+      });
     };
+    const again = (attemptId: string) =>
+      reverify(runtime, key.deploymentId, "relayedTokens", attemptId);
     const report = await shortOverlap(
       runtime,
       key.deploymentId,
       "relayedTokens",
     );
-    const held = (body: string) =>
-      runtime.waitFor(
-        async () =>
-          (await record(body))?.reason === "secret relaySigning not set",
-      );
-    const relaySet = async (isSet: boolean) => {
-      await configure(
-        runtime,
-        key.deploymentId,
-        isSet
-          ? { secrets: { relaySigning: RELAY } }
-          : { unset: ["relaySigning"] },
-      );
-      await runtime.waitFor(
-        async () => (await report("relaySigning")).isSet === isSet,
-      );
-    };
     const changeToken = async (hookToken: string) => {
       await configure(runtime, key.deploymentId, { secrets: { hookToken } });
       await runtime.waitFor(async () => (await report("hookToken")).overlap);
@@ -1222,17 +1330,13 @@ test("a queued request whose two checks of one secret matched different values i
     const overlapOver = () =>
       runtime.waitFor(async () => !(await report("hookToken")).overlap);
 
-    // The header carries the replaced token and the query the new one;
-    // both values are still held when the request is processed, so it is
-    // delivered.
+    // The header carries the replaced token and the query the new one; both
+    // values are still held when the request is verified again, so it
+    // stands.
     await changeToken("next-token");
     const kept = await send(TOKEN, "next-token");
-    await held(kept);
-    await overlapOver();
-    await relaySet(true);
-    assert.equal((await verified(kept)).outcome, "accepted");
+    assert.equal(kept.outcome, "accepted");
     await runtime.waitFor(() => (received.length === 1 ? true : undefined));
-    assert.equal(new TextDecoder().decode(received[0]!.body), kept);
     assert.deepEqual(
       received[0]!.checks.map((check) => [check.kind, check.key]),
       [
@@ -1241,15 +1345,16 @@ test("a queued request whose two checks of one secret matched different values i
         ["hmac", "current"],
       ],
     );
+    await overlapOver();
+    assert.equal((await again(kept.attemptId)).outcome, "accepted");
 
     // The same, but the revision holding the token the header matched is
-    // deleted before processing. The query's later match of the current
-    // token does not stand in for it: the request is refused, naming the
-    // header check.
-    await relaySet(false);
+    // deleted first. The query's match of the current token does not stand
+    // in for it: the request is refused, naming the header check.
     await changeToken("third-token");
     const revoked = await send("next-token", "third-token");
-    await held(revoked);
+    assert.equal(revoked.outcome, "accepted");
+    await runtime.waitFor(() => (received.length === 2 ? true : undefined));
     const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {
       target,
     });
@@ -1261,8 +1366,7 @@ test("a queued request whose two checks of one secret matched different values i
       idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await overlapOver();
-    await relaySet(true);
-    const refused = await verified(revoked);
+    const refused = await again(revoked.attemptId);
     assert.deepEqual(
       [refused.outcome, refused.reason],
       [
@@ -1270,57 +1374,44 @@ test("a queued request whose two checks of one secret matched different values i
         "check 1 (Token in the x-hook-token header) matched the previous value of secret hookToken, which changed after intake and no longer accepts it; the credential check can't be rerun",
       ],
     );
-    assert.equal(received.length, 1);
+    assert.equal(received.length, 2);
     await service.stop();
   });
 });
 
-test("a queued signed request keeps a replaced secret matched during its overlap until that revision is deleted, and is verified under the policy in force", async () => {
+test("a stored signed request keeps a replaced secret matched during its overlap until that revision is deleted, and is verified again under the policy in force", async () => {
   await withTrellisRuntime(async (runtime) => {
     const { key, service, url, attempts } = await install(runtime);
     void service.wait();
     const record = async (body: string) => {
       const sha = createHash("sha256").update(body).digest("hex");
-      return (await attempts("relayed")).find(
-        (attempt) => attempt.bodySha256 === sha,
-      );
+      return await runtime.waitFor(async () => {
+        const found = (await attempts("relayed")).find(
+          (attempt) => attempt.bodySha256 === sha,
+        );
+        return found && found.outcome !== "pending" ? found : undefined;
+      });
     };
+    // What the sender gets, and the request's record once it is verified.
     const send = async (signing: string) => {
       const body = JSON.stringify({ id: ulid() });
       const response = await relay(url("relayed"), body, {
         "x-body-signature": `sha256=${sign(body, signing)}`,
       });
-      assert.equal(response.status, 200);
-      return body;
+      return { status: response.status, record: await record(body) };
+    };
+    const again = async (attemptId: string) => {
+      const attempt = await reverify(
+        runtime,
+        key.deploymentId,
+        "relayed",
+        attemptId,
+      );
+      return [attempt.outcome, attempt.reason];
     };
 
     const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
     const report = await shortOverlap(runtime, key.deploymentId, "relayed");
-    const verified = (body: string) =>
-      runtime.waitFor(
-        async () => {
-          const found = await record(body);
-          return found && found.outcome !== "pending" ? found : undefined;
-        },
-        { timeoutMs: 20_000 },
-      );
-    const held = (body: string) =>
-      runtime.waitFor(
-        async () =>
-          (await record(body))?.reason === "secret relaySigning not set",
-      );
-    const relaySet = async (isSet: boolean) => {
-      await configure(
-        runtime,
-        key.deploymentId,
-        isSet
-          ? { secrets: { relaySigning: RELAY } }
-          : { unset: ["relaySigning"] },
-      );
-      await runtime.waitFor(
-        async () => (await report("relaySigning")).isSet === isSet,
-      );
-    };
     const changeSigning = async (signing: string) => {
       await configure(runtime, key.deploymentId, { secrets: { signing } });
       await runtime.waitFor(async () => (await report("signing")).overlap);
@@ -1329,21 +1420,18 @@ test("a queued signed request keeps a replaced secret matched during its overlap
       runtime.waitFor(async () => !(await report("signing")).overlap);
 
     // Signed with the replaced secret, received during the overlap, and
-    // held until after it ends: it is accepted.
+    // verified again after it ends: it is accepted.
     await changeSigning("second-signing");
     const late = await send(SIGNING);
-    await held(late);
+    assert.equal(late.status, 200);
     await overlapOver();
-    await relaySet(true);
-    const honoured = await verified(late);
-    assert.deepEqual([honoured.outcome, honoured.reason], ["accepted", null]);
+    assert.deepEqual(await again(late.record.attemptId), ["accepted", null]);
 
     // The same, but the revision holding the replaced secret is deleted
-    // before the request is processed: it is refused.
-    await relaySet(false);
+    // first: it is refused.
     await changeSigning("third-signing");
     const revoked = await send("second-signing");
-    await held(revoked);
+    assert.equal(revoked.status, 200);
     const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {
       target,
     });
@@ -1355,40 +1443,37 @@ test("a queued signed request keeps a replaced secret matched during its overlap
       idempotencyKey: codecs.ulid.decode(ulid()),
     });
     await overlapOver();
-    await relaySet(true);
-    const refused = await verified(revoked);
-    assert.deepEqual(
-      [refused.outcome, refused.reason],
-      ["rejected", "signature does not match"],
-    );
+    assert.deepEqual(await again(revoked.record.attemptId), [
+      "rejected",
+      "signature does not match",
+    ]);
 
-    // Both are held until the relay's secret is set, which comes with new
-    // relay addresses and a new signing secret.
-    await relaySet(false);
+    // Requests refused at intake are verified again under the policy in
+    // force, here new relay addresses and a new signing secret.
     const renewed = await send("next-signing");
     const forged = await send("forged-signing");
-    await runtime.waitFor(async () => {
-      const held = [await record(renewed), await record(forged)];
-      return held.every(
-        (found) => found?.reason === "secret relaySigning not set",
-      );
-    });
+    assert.deepEqual(
+      [renewed, forged].map(({ status, record }) => [
+        status,
+        record.outcome,
+        record.stored,
+      ]),
+      [
+        [401, "rejected", true],
+        [401, "rejected", true],
+      ],
+    );
     await configure(runtime, key.deploymentId, {
       values: { relayRanges: [...RELAY_RANGES, "192.0.2.0/24"] },
-      secrets: { signing: "next-signing", relaySigning: RELAY },
+      secrets: { signing: "next-signing" },
     });
-    const outcomes = await runtime.waitFor(
-      async () => {
-        const found = [await record(renewed), await record(forged)];
-        return found.every((entry) => entry && entry.outcome !== "pending")
-          ? found.map((entry) => [entry!.outcome, entry!.reason])
-          : undefined;
-      },
-      { timeoutMs: 20_000 },
+    await runtime.waitFor(
+      async () =>
+        (await again(renewed.record.attemptId))[0] === "accepted" || undefined,
     );
-    assert.deepEqual(outcomes, [
-      ["accepted", null],
-      ["rejected", "signature does not match"],
+    assert.deepEqual(await again(forged.record.attemptId), [
+      "rejected",
+      "signature does not match",
     ]);
 
     // Once the relay addresses no longer include the sender, verifying the
@@ -1396,23 +1481,113 @@ test("a queued signed request keeps a replaced secret matched during its overlap
     await configure(runtime, key.deploymentId, {
       values: { relayRanges: ["192.0.2.0/24"] },
     });
-    const accepted = (await record(renewed))!;
     const excluded = await runtime.waitFor(async () => {
-      const { attempt } = await runtime.callAdminRpc(
-        "webhooksAttemptsReverify",
-        {
-          service: key.deploymentId,
-          endpoint: "relayed",
-          attemptId: codecs.ulid.decode(accepted.attemptId),
-        },
-      );
-      return attempt.outcome === "rejected" ? attempt : undefined;
+      const verdict = await again(renewed.record.attemptId);
+      return verdict[0] === "rejected" ? verdict : undefined;
     });
-    assert.equal(excluded.reason, "client address outside the allowed ranges");
+    assert.deepEqual(excluded, [
+      "rejected",
+      "client address outside the allowed ranges",
+    ]);
     await service.stop();
   });
 });
 
+test("each webhook endpoint feeds its service's health: degraded while a secret is unset or after a rejection, and recovering on its own", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    // The relay's secret is optional and not set yet.
+    const key = await runtime.services.createInstance({
+      name: "billing",
+      deployment: "billing",
+      contract: participant,
+      config: {
+        values: { partnerUser: "partner", relayRanges: RELAY_RANGES },
+        secrets: {
+          signing: SIGNING,
+          hookToken: TOKEN,
+          partnerPassword: PASSWORD,
+        },
+      },
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant,
+      seed: key.seed,
+      runtime: { health: { publishIntervalMs: 1000 } },
+    }).orThrow();
+    void service.wait();
+    const { endpoints } = await runtime.callAdminRpc("webhooksEndpointsList", {
+      service: key.deploymentId,
+    });
+    const url = (name: string) =>
+      endpoints.find((entry) => entry.endpoint === name)!.url;
+    const observer = await runtime.connectClient({
+      name: "webhook-health-observer",
+      contract: apps.Observer.request,
+    });
+    // The endpoint's check in the service's latest heartbeat, once `matches`.
+    const check = (
+      endpoint: string,
+      matches: (check: { status: string; summary?: string }) => boolean,
+    ) =>
+      runtime.waitFor(async () => {
+        const { instances } = await observer
+          .healthInspect({
+            contractId: participant.identity,
+            participantKind: "service",
+          })
+          .orThrow();
+        const found = instances
+          .find((instance) => instance.instanceId === key.instanceId)
+          ?.latestSample.checks.find(
+            (entry) => entry.name === `webhook:${endpoint}`,
+          );
+        return found && matches(found) ? found : undefined;
+      });
+    const signed = (body: string, secret = SIGNING) => {
+      const timestamp = Math.floor(Date.now() / 1000);
+      return fetch(url("signed"), {
+        method: "POST",
+        body,
+        headers: {
+          "test-signature": `t=${timestamp},v1=${sign(`${timestamp}.${body}`, secret)}`,
+        },
+      });
+    };
+
+    // An endpoint whose secret is unset refuses requests with 503, and its
+    // check says why; the other endpoints are fine.
+    const unset = await check("relayed", (entry) => entry.status !== "ok");
+    assert.equal(unset.status, "degraded");
+    assert.equal(
+      unset.summary,
+      "relaySigning not set, so requests are refused",
+    );
+    await check("signed", (entry) => entry.status === "ok");
+    const body = JSON.stringify({ id: ulid() });
+    const refused = await relay(url("relayed"), body, {
+      "x-body-signature": `sha256=${sign(body)}`,
+    });
+    assert.equal(refused.status, 503);
+    // Setting it clears the check.
+    await configure(runtime, key.deploymentId, {
+      secrets: { relaySigning: RELAY },
+    });
+    await check("relayed", (entry) => entry.status === "ok");
+
+    // A rejected request degrades the endpoint until a later one is accepted.
+    assert.equal((await signed('{"id":"evt_x"}', "wrong-key")).status, 401);
+    const rejected = await check("signed", (entry) => entry.status !== "ok");
+    assert.equal(rejected.status, "degraded");
+    assert.equal(
+      rejected.summary,
+      "the latest request was rejected: signature does not match",
+    );
+    assert.equal((await signed('{"id":"evt_y"}')).status, 200);
+    await check("signed", (entry) => entry.status === "ok");
+    await service.stop();
+  });
+});
 test("requests with the same delivery ID that arrive together publish one event", async () => {
   await withTrellisRuntime(async (runtime) => {
     const { service, url, attempts } = await install(runtime);

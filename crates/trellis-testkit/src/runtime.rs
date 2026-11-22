@@ -60,6 +60,7 @@ pub struct TrellisTestRuntimeBuilder {
     nats_websocket_only: bool,
     admin_username: Option<String>,
     admin_password: Option<String>,
+    issuer_activation_delay: Option<Duration>,
 }
 
 impl Default for TrellisTestRuntimeBuilder {
@@ -74,6 +75,7 @@ impl Default for TrellisTestRuntimeBuilder {
             nats_websocket_only: false,
             admin_username: None,
             admin_password: None,
+            issuer_activation_delay: None,
         }
     }
 }
@@ -129,6 +131,14 @@ impl TrellisTestRuntimeBuilder {
         self.admin_password = Some(password.into());
         self
     }
+    /// Sets `auth.authorization.issuer_activation_delay_seconds`, how long a
+    /// rotated-in issuer key is announced before Trellis signs with it. Whole
+    /// seconds, at least one; defaults to the server's own default.
+    #[must_use]
+    pub fn issuer_activation_delay(mut self, delay: Duration) -> Self {
+        self.issuer_activation_delay = Some(delay);
+        self
+    }
 
     /// Starts isolated production executables, acquiring pinned releases when needed.
     ///
@@ -175,7 +185,10 @@ impl TrellisTestRuntimeBuilder {
                 timeouts,
                 username,
                 &password,
-                self.nats_websocket_only,
+                ServerSettings {
+                    websocket_only: self.nats_websocket_only,
+                    issuer_activation_delay: self.issuer_activation_delay,
+                },
             )),
         )
         .await
@@ -319,6 +332,12 @@ async fn start_broker(
     }
 }
 
+/// What the generated server configuration varies on.
+struct ServerSettings {
+    websocket_only: bool,
+    issuer_activation_delay: Option<Duration>,
+}
+
 async fn start_once(
     sandbox: Sandbox,
     source: NatsSource,
@@ -326,7 +345,7 @@ async fn start_once(
     timeouts: TestTimeouts,
     username: &str,
     password: &str,
-    websocket_only: bool,
+    settings: ServerSettings,
 ) -> Result<TrellisTestRuntime, TrellisTestError> {
     let mut infrastructure = Infrastructure {
         sandbox: Some(sandbox),
@@ -389,7 +408,7 @@ async fn start_once(
         let quoted = |value: &std::path::Path| {
             serde_json::to_string(&value.display().to_string()).unwrap_or_default()
         };
-        let native = if websocket_only {
+        let native = if settings.websocket_only {
             "[]".to_owned()
         } else {
             format!("[\"{nats_url}\"]")
@@ -403,11 +422,19 @@ async fn start_once(
                 [nats]\nservers = \"{nats_url}\"\nca_certificate = {ca}\n\
                 system_credentials = \"nats/system.creds\"\n\
                 operator_signing_key = \"nats/trellis-operator.nk\"\n\n\
-                [client]\nnats_servers = {native}\nws_nats_servers = [\"{websocket_url}\"]\n",
+                [client]\nnats_servers = {native}\nws_nats_servers = [\"{websocket_url}\"]\n{authorization}",
                 port = ports.trellis,
                 chain = quoted(&certificates.join("server.crt")),
                 key = quoted(&certificates.join("server.key")),
                 ca = quoted(&certificates.join("ca.crt")),
+                authorization = settings.issuer_activation_delay.map_or_else(String::new, |delay| {
+                    format!(
+                        "\n[auth.authorization]\ncontext_lifetime_seconds = 300\n\
+                        allowed_clock_skew_seconds = 30\n\
+                        issuer_activation_delay_seconds = {}\n",
+                        delay.as_secs().max(1)
+                    )
+                }),
             ),
         )?;
         infrastructure.port_ownership = Some(lease.release_for_spawn());

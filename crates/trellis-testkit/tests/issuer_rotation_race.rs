@@ -1,6 +1,7 @@
 //! Issuer key rotations and revocations in quick succession, over the
 //! production runtime.
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use trellis_rs::auth::{
@@ -12,12 +13,16 @@ use trellis_rs::client::{
 use trellis_runtime_apis::apis::trellis_auth_v1::rpc::{
     AuthorizationSessionsList, ConnectionsList, IssuersRevoke, IssuersRotate,
 };
-use trellis_testkit::TrellisTestRuntime;
+use trellis_testkit::{TestNatsUser, TrellisTestRuntime};
 
 /// Before chain links were published ahead of what their keys sign, every
 /// run failed by the eighth round; 25 stays inside Auth's per-address
 /// sign-in budget, which each round's fresh session draws on.
 const ROUNDS: usize = 25;
+
+/// A short activation delay, an ordinary configuration setting, keeps these
+/// tests quick; production installations default to 60 seconds.
+const ACTIVATION_DELAY: Duration = Duration::from_secs(1);
 
 fn action(name: &str) -> trellis_protocol::CatalogActionIdentity {
     trellis_protocol::CatalogActionIdentity {
@@ -103,6 +108,29 @@ impl Admin {
     }
 }
 
+/// The issuer key that signed the client's current own authority.
+fn own_issuer(client: &TrellisClient) -> String {
+    client
+        .authorization_context()
+        .unwrap()
+        .unwrap()
+        .context
+        .unsigned
+        .issuer_key_id
+}
+
+/// Wait, bounded, until Auth's issuer notice has renewed the client onto
+/// authority `key` signed, which follows the activation of `key`.
+async fn wait_for_own_issuer(client: &TrellisClient, key: &str, when: &str) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while own_issuer(client) != key {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{when}: the session never moved onto issuer key {key}"));
+}
+
 async fn call(
     client: &TrellisClient,
     name: &str,
@@ -163,14 +191,16 @@ async fn assert_active_services_connected(client: &TrellisClient, when: &str) ->
 /// together, round after round. Auth keeps answering, a client works as soon
 /// as it connects, and every service session Trellis holds stays connected.
 ///
-/// A rotation's key signs from the moment it commits. Were anything it
-/// signed to reach a participant before the chain link that introduces it,
-/// the participant could not authenticate it: Auth's answers would go
-/// unverified until requests time out, and a revocation mirror holding such
-/// a cutoff would lose coverage, failing requests.
+/// Were anything a new key signed to reach a participant before the chain
+/// link that introduces it, the participant could not authenticate it, and
+/// Auth's answers would go unverified until requests time out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rotating_and_revoking_in_quick_succession_keeps_trellis_answering() {
-    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let mut runtime = TrellisTestRuntime::builder()
+        .issuer_activation_delay(ACTIVATION_DELAY)
+        .start()
+        .await
+        .unwrap();
     let (admin, session) = Admin::sign_in(&mut runtime).await;
     let mut session = Some(session);
     let mut retired: Option<String> = None;
@@ -223,10 +253,124 @@ async fn rotating_and_revoking_in_quick_succession_keeps_trellis_answering() {
                 "round {round}"
             );
         }
+        // The next round rotates and revokes once the new key signs.
+        wait_for_own_issuer(&client, &next, &format!("round {round}")).await;
         retired = Some(current);
     }
     let (_, client) = admin.connect(None).await;
     assert!(assert_active_services_connected(&client, "after the rounds").await > 0);
+    drop(client);
+    runtime.shutdown().await.unwrap();
+}
+
+/// A rotation announces its key before Auth signs with it: the chain link is
+/// in the registry at once, the current key keeps signing, and only after the
+/// activation delay does Auth sign with the new key. Requests run throughout,
+/// and none of Auth's replies is rejected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rotation_announces_its_key_before_auth_signs_with_it() {
+    let delay = Duration::from_secs(4);
+    let mut runtime = TrellisTestRuntime::builder()
+        .issuer_activation_delay(delay)
+        .start()
+        .await
+        .unwrap();
+    let (admin, session) = Admin::sign_in(&mut runtime).await;
+    let (current, client) = admin.connect(Some(session)).await;
+    assert_eq!(own_issuer(&client), current);
+    let client = std::sync::Arc::new(client);
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let traffic = tokio::spawn({
+        let (client, stop) = (client.clone(), stop.clone());
+        async move {
+            let mut calls = 0usize;
+            while !stop.load(std::sync::atomic::Ordering::Acquire) {
+                call(
+                    &client,
+                    "AuthorizationSessions.List",
+                    AuthorizationSessionsList::API_ID,
+                    AuthorizationSessionsList::SUBJECT,
+                    json!({"state": "active", "page": {"limit": 1}}),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("call {calls} failed: {error:?}"));
+                calls += 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            calls
+        }
+    });
+    let rotated = call(
+        &client,
+        "Issuers.Rotate",
+        IssuersRotate::API_ID,
+        IssuersRotate::SUBJECT,
+        json!({
+            "expectedCurrentKeyId": current,
+            "idempotencyKey": ulid::Ulid::generate().to_string(),
+        }),
+    )
+    .await
+    .unwrap();
+    let next = rotated["keyId"].as_str().unwrap().to_owned();
+    let activates_at = time::OffsetDateTime::parse(
+        rotated["activatesAt"].as_str().unwrap(),
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap();
+
+    // The chain link is in the registry well before the new key signs.
+    let nats = async_nats::ConnectOptions::with_credentials(
+        &runtime.nats_creds(TestNatsUser::Trellis).await.unwrap(),
+    )
+    .unwrap()
+    .add_root_certificates(runtime.trust_roots()[0].clone())
+    .connect(runtime.nats_url())
+    .await
+    .unwrap();
+    let material = async_nats::jetstream::new(nats)
+        .get_key_value("TRELLIS_AUTH_MATERIAL")
+        .await
+        .unwrap();
+    // The installation's first rotation.
+    let key = "rotation.1";
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while material.get(key).await.unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the chain link is published at once");
+    // Auth still signs with the current key: a renewal now returns authority
+    // it signed, and the key cannot be revoked while it signs.
+    let renewed = client.refresh_authorization_context().await.unwrap();
+    assert!(time::OffsetDateTime::now_utc() < activates_at);
+    assert_eq!(renewed.context.unsigned.issuer_key_id, current);
+    let refused = call(
+        &client,
+        "Issuers.Revoke",
+        IssuersRevoke::API_ID,
+        IssuersRevoke::SUBJECT,
+        json!({
+            "keyId": current,
+            "idempotencyKey": ulid::Ulid::generate().to_string(),
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        format!("{refused:?}").contains(&next),
+        "the refusal names the key that takes over: {refused:?}"
+    );
+
+    // After the delay Auth switches, and its notice renews the session onto
+    // the new key.
+    wait_for_own_issuer(&client, &next, "after activation").await;
+    assert!(time::OffsetDateTime::now_utc() >= activates_at);
+    let renewed = client.refresh_authorization_context().await.unwrap();
+    assert_eq!(renewed.context.unsigned.issuer_key_id, next);
+    stop.store(true, std::sync::atomic::Ordering::Release);
+    assert!(traffic.await.unwrap() > 0);
     drop(client);
     runtime.shutdown().await.unwrap();
 }

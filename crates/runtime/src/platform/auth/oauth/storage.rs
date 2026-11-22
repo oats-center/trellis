@@ -1586,6 +1586,7 @@ mod tests {
                     authority_lifetime_seconds: 300,
                     clock_skew_seconds: 30,
                     oauth_admission_lifetime_seconds: 300,
+                    issuer_activation_delay_seconds: 60,
                     login_lifetime_seconds: 86400,
                     enforcement_page_size: 128,
                 },

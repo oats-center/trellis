@@ -961,18 +961,41 @@ impl SqliteAuthorizationStore {
                             // Rotation moves signing to a new key and leaves
                             // this one retired, and so revocable.
                             Some((true, _)) => {
-                                return Err(AuthError::Invalid(format!(
-                                    "issuer key {issuer} is the current signing key and cannot \
-                                    be revoked; rotate to a new key first with `trellis issuers \
-                                    rotate {issuer}`, then revoke it"
-                                )));
+                                let pending =
+                                    super::authorization_sessions::pending_successor(connection)?;
+                                return Err(AuthError::Invalid(match pending {
+                                    Some((next, activates_at)) => format!(
+                                        "issuer key {issuer} is still the current signing key: \
+                                        Trellis switches to issuer key {next} at {}; revoke \
+                                        {issuer} after then",
+                                        super::authorization_sessions::rfc3339(activates_at)
+                                    ),
+                                    None => format!(
+                                        "issuer key {issuer} is the current signing key and \
+                                        cannot be revoked; rotate to a new key first with \
+                                        `trellis issuers rotate {issuer}`, then revoke it"
+                                    ),
+                                }));
                             }
                             Some((false, Some(_))) => {
                                 return Err(AuthError::Invalid(format!(
                                     "issuer key {issuer} is already revoked"
                                 )));
                             }
-                            Some((false, None)) => {}
+                            Some((false, None)) => {
+                                if let Some((pending, activates_at)) =
+                                    super::authorization_sessions::pending_successor(connection)?
+                                {
+                                    if &pending == issuer {
+                                        return Err(AuthError::Invalid(format!(
+                                            "issuer key {issuer} is announced and becomes the \
+                                            signing key at {}; it can be revoked once Trellis \
+                                            has rotated off it",
+                                            super::authorization_sessions::rfc3339(activates_at)
+                                        )));
+                                    }
+                                }
+                            }
                         }
                         let changed = connection.execute(
                             "UPDATE auth_authorization_issuers \

@@ -1283,7 +1283,13 @@ impl SqliteAuthorizationStore {
         })
     }
 
-    /// Persist successor custody before atomically advancing issuer trust.
+    /// Persist successor custody and announce the successor.
+    ///
+    /// The successor's chain link, material and re-signed catalogs are
+    /// published at once, but Auth keeps signing with the current key until
+    /// the activation delay has passed; the `issuer_activate` effect then
+    /// switches signers. Participants, including those reading from a lagging
+    /// NATS node, have the link well before anything the successor signs.
     pub(crate) fn rotate_issuer(
         &self,
         identity: &Mutation,
@@ -1306,6 +1312,13 @@ impl SqliteAuthorizationStore {
                 |connection| {
                     let signer = self.current_signer(connection)?;
                     let previous_key_id = self.current_issuer(connection)?.key_id;
+                    if let Some((pending, activates_at)) = pending_successor(connection)? {
+                        return Err(AuthError::Invalid(format!(
+                            "issuer key {pending} is already announced and becomes the signing \
+                            key at {}; rotate again after then",
+                            rfc3339(activates_at)
+                        )));
+                    }
                     if previous_key_id != input.expected_current_key_id.as_ref() {
                         return Err(AuthError::Invalid(format!(
                             "issuer key {} is not the current signing key; the current key is \
@@ -1325,6 +1338,8 @@ impl SqliteAuthorizationStore {
                         [],
                         |row| row.get(0),
                     )?;
+                    let activated_at = now
+                        .saturating_add(i64::from(self.settings.issuer_activation_delay_seconds));
                     let rotation = SignedIssuerRotation {
                         format: ISSUER_ROTATION_FORMAT_V1.into(),
                         trellis_instance_id: self.settings.instance_id.clone(),
@@ -1333,74 +1348,33 @@ impl SqliteAuthorizationStore {
                         previous_key_id,
                         next_key_id: next_key_id.clone(),
                         next_public_key: next_public_key.clone(),
-                        activated_at: now,
+                        activated_at,
                         // Authority the predecessor signed stays live until it
                         // expires, so a routine rotation interrupts nobody.
                         // Revocation, not rotation, ends a compromised key at once.
-                        previous_retired_at: now
+                        previous_retired_at: activated_at
                             .saturating_add(i64::from(self.settings.authority_lifetime_seconds)),
                         extensions: Default::default(),
                         critical: vec![],
                         signature: String::new(),
                     }
                     .sign(&signer)?;
-                    // retired_at is the end of live use, the signed deadline.
-                    connection.execute(
-                        "UPDATE auth_authorization_issuers \
-                        SET is_current=0,state='retired',retired_at=?1 \
-                        WHERE is_current=1",
-                        [rotation.previous_retired_at],
-                    )?;
+                    // The successor is announced, not current: the predecessor
+                    // keeps signing until the activation effect switches them.
                     connection.execute(
                         "INSERT INTO auth_authorization_issuers(key_id,public_key,is_current,\
                         state,activated_at,maximum_acceptance_deadline,created_at) \
-                        VALUES(?1,?2,1,'active',?3,?3,?3)",
-                        params![next_key_id, next_public_key, now],
+                        VALUES(?1,?2,0,'active',?3,?3,?4)",
+                        params![next_key_id, next_public_key, activated_at, now],
                     )?;
-                    // Accepted catalogs outlive the key that signed them. The
-                    // successor signs each current one so that later sessions
-                    // reference its copy, and revoking the retired key strands
-                    // no API.
-                    let current = {
-                        let mut statement = connection.prepare(
-                            "SELECT s.signed_bytes FROM auth_accepted_apis a \
-                            JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id \
-                            AND s.generation=a.generation \
-                            AND s.accepted_revision=a.accepted_revision \
-                            WHERE s.issuer_key_id=?1",
-                        )?;
-                        let rows = statement
-                            .query_map([&rotation.previous_key_id], |row| row.get::<_, Vec<u8>>(0))?
-                            .collect::<rusqlite::Result<Vec<_>>>()?;
-                        rows
-                    };
-                    for bytes in current {
-                        let mut snapshot: trellis_protocol::SignedCatalogSnapshot =
-                            serde_json::from_slice(&bytes)?;
-                        snapshot.issuer_key_id = next_key_id.clone();
-                        snapshot.issued_at = now;
-                        let snapshot = snapshot.sign(&next)?;
-                        connection.execute(
-                            "INSERT INTO auth_api_verification_snapshots \
-                            VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                            params![
-                                snapshot.digest()?,
-                                snapshot.api_id,
-                                snapshot.generation.get(),
-                                snapshot.accepted_revision.get(),
-                                next_key_id,
-                                json(&snapshot)?.as_bytes(),
-                                now
-                            ],
-                        )?;
-                        enqueue_effect(
-                            connection,
-                            "authority_publish",
-                            &serde_json::json!({"kind":"catalog","digest":snapshot.digest()?}),
-                            None,
-                            now,
-                        )?;
-                    }
+                    // Its copies of the current catalogs are distributed now too.
+                    resign_current_catalogs(
+                        connection,
+                        &rotation.previous_key_id,
+                        &next_key_id,
+                        &next,
+                        now,
+                    )?;
                     connection.execute(
                         "INSERT INTO auth_issuer_rotations VALUES(?1,?2,?3,?4,?5,?6,?7)",
                         params![
@@ -1420,19 +1394,84 @@ impl SqliteAuthorizationStore {
                         None,
                         now,
                     )?;
+                    let activation = enqueue_effect(
+                        connection,
+                        "issuer_activate",
+                        &serde_json::json!({"sequence": sequence}),
+                        Some(&link),
+                        now,
+                    )?;
+                    connection.execute(
+                        "UPDATE auth_post_commit_actions SET next_attempt_at=?1 \
+                        WHERE action_id=?2",
+                        params![activated_at, activation],
+                    )?;
                     // Sessions renew on this notice, so revoking the retired
-                    // key later spares the services among them. Renewal reads
-                    // the chain link, so the notice waits for its publication.
+                    // key later spares the services among them. It follows the
+                    // switch, so renewal is answered with the successor's
+                    // authority.
                     enqueue_effect(
                         connection,
                         "issuer_notice",
                         &serde_json::json!({"sequence": sequence}),
-                        Some(&link),
+                        Some(&activation),
                         now,
                     )?;
                     Ok(rotation)
                 },
             )
+        })
+    }
+
+    /// Switch signing to an announced successor once its activation time came.
+    ///
+    /// The predecessor retires with the link's signed `previousRetiredAt` as
+    /// its live deadline. Catalogs accepted during the announcement get the
+    /// successor's copy now. Repeating a completed activation changes nothing.
+    pub(crate) fn activate_issuer(&self, sequence: u64, now: i64) -> Result<(), AuthError> {
+        self.transaction(|connection| {
+            let bytes: Vec<u8> = connection
+                .query_row(
+                    "SELECT signed_bytes FROM auth_issuer_rotations WHERE sequence=?1",
+                    [sequence],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| AuthError::NotFound(format!("no issuer rotation {sequence}")))?;
+            let rotation: SignedIssuerRotation = serde_json::from_slice(&bytes)?;
+            if rotation.activated_at > now {
+                return Err(AuthError::Unavailable);
+            }
+            let current = self.current_issuer(connection)?.key_id;
+            if current == rotation.next_key_id {
+                return Ok(());
+            }
+            if current != rotation.previous_key_id {
+                return Err(AuthError::Conflict(format!(
+                    "issuer rotation {sequence} does not follow the current key {current}"
+                )));
+            }
+            // retired_at is the end of live use, the signed deadline.
+            connection.execute(
+                "UPDATE auth_authorization_issuers \
+                SET is_current=0,state='retired',retired_at=?1 \
+                WHERE key_id=?2 AND is_current=1",
+                params![rotation.previous_retired_at, rotation.previous_key_id],
+            )?;
+            connection.execute(
+                "UPDATE auth_authorization_issuers SET is_current=1 \
+                WHERE key_id=?1 AND state='active' AND revoked_at IS NULL",
+                [&rotation.next_key_id],
+            )?;
+            let next = self.current_signer(connection)?;
+            resign_current_catalogs(
+                connection,
+                &rotation.previous_key_id,
+                &rotation.next_key_id,
+                &next,
+                now,
+            )?;
+            Ok(())
         })
     }
 
@@ -1458,4 +1497,86 @@ impl SqliteAuthorizationStore {
             },
         })
     }
+}
+
+/// The announced successor not yet signing, with its activation time.
+pub(super) fn pending_successor(
+    connection: &crate::platform::auth::sqlite::Connection,
+) -> Result<Option<(String, i64)>, AuthError> {
+    Ok(connection
+        .query_row(
+            "SELECT key_id,activated_at FROM auth_authorization_issuers \
+            WHERE is_current=0 AND state='active' AND revoked_at IS NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
+/// RFC 3339 text for an issuer time in a refusal message.
+pub(super) fn rfc3339(seconds: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(seconds)
+        .ok()
+        .and_then(|time| {
+            time.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .unwrap_or_else(|| seconds.to_string())
+}
+
+/// Accepted API catalogs outlive the key that signed them. The successor signs
+/// a copy of each current one that lacks it, so later sessions reference its
+/// copy and revoking the retired key strands no API.
+fn resign_current_catalogs(
+    connection: &crate::platform::auth::sqlite::Connection,
+    previous_key_id: &str,
+    next_key_id: &str,
+    next: &SigningKey,
+    now: i64,
+) -> Result<(), AuthError> {
+    let current = {
+        let mut statement = connection.prepare(
+            "SELECT s.signed_bytes FROM auth_accepted_apis a \
+            JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id \
+            AND s.generation=a.generation \
+            AND s.accepted_revision=a.accepted_revision \
+            WHERE s.issuer_key_id=?1 AND NOT EXISTS(SELECT 1 \
+            FROM auth_api_verification_snapshots n \
+            WHERE n.api_id=s.api_id AND n.generation=s.generation \
+            AND n.accepted_revision=s.accepted_revision AND n.issuer_key_id=?2)",
+        )?;
+        let rows = statement
+            .query_map([previous_key_id, next_key_id], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for bytes in current {
+        let mut snapshot: trellis_protocol::SignedCatalogSnapshot = serde_json::from_slice(&bytes)?;
+        snapshot.issuer_key_id = next_key_id.to_owned();
+        snapshot.issued_at = now;
+        let snapshot = snapshot.sign(next)?;
+        connection.execute(
+            "INSERT INTO auth_api_verification_snapshots \
+            VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                snapshot.digest()?,
+                snapshot.api_id,
+                snapshot.generation.get(),
+                snapshot.accepted_revision.get(),
+                next_key_id,
+                json(&snapshot)?.as_bytes(),
+                now
+            ],
+        )?;
+        enqueue_effect(
+            connection,
+            "authority_publish",
+            &serde_json::json!({"kind":"catalog","digest":snapshot.digest()?}),
+            None,
+            now,
+        )?;
+    }
+    Ok(())
 }

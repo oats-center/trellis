@@ -7,6 +7,7 @@ import { ulid } from "ulid";
 import { Result } from "@oatscenter/trellis";
 import {
   connectNativeClient,
+  discoverNativeOAuth,
   NativeOAuthClient,
   MemoryNativeOAuthCustody,
 } from "@oatscenter/trellis/native";
@@ -19,6 +20,21 @@ import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.
 import { SessionAuthorityOwner } from "../packages/trellis/auth/authority.ts";
 import { authenticateIssuerChain } from "../packages/trellis/auth/issuer_trust.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
+
+type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
+
+/** A short activation delay, an ordinary setting, keeps rotations quick. */
+const quickActivation = { authorization: { issuerActivationDelaySeconds: 1 } };
+
+/** Wait, bounded, until Trellis signs with `keyId`: discovery names its signer. */
+async function signingWith(runtime: Runtime, keyId: string): Promise<void> {
+  await runtime.waitFor(
+    async () =>
+      (await discoverNativeOAuth(runtime.trellisUrl)).orThrow().trust.issuer
+        .keyId === keyId,
+    { timeoutMs: 15_000, intervalMs: 250 },
+  );
+}
 
 test("administrator issuer rotation is idempotent and retained native custody follows the chain across server restart", async () => {
   await withTrellisRuntime(async (runtime) => {
@@ -79,11 +95,13 @@ test("administrator issuer rotation is idempotent and retained native custody fo
         await client.echo({ value: "existing authority" }).orThrow(),
         { value: "existing authority" },
       );
+      await signingWith(runtime, rotated.keyId);
       const second = await runtime.callAdminRpc("authIssuersRotate", {
         expectedCurrentKeyId: rotated.keyId,
         idempotencyKey: codecs.ulid.decode(ulid()),
       });
       assert.notEqual(second.keyId, rotated.keyId);
+      await signingWith(runtime, second.keyId);
       const freshCredentials = await loginNativeTestClient({
         issuer: runtime.trellisUrl,
         clientId: "trellis.cli",
@@ -218,7 +236,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
       await service.stop();
       await serviceExit;
     }
-  });
+  }, quickActivation);
 });
 
 test("startup refuses replaced OAuth custody and restored custody retains client access", async () => {
@@ -310,7 +328,7 @@ test("authenticating the issuer chain accepts links its shared owner already hol
     } finally {
       owner.stop();
     }
-  });
+  }, quickActivation);
 });
 
 test("a renewal holding authority from the previous key survives the next rotation", async () => {
@@ -423,6 +441,6 @@ test("a renewal holding authority from the previous key survives the next rotati
         await serviceExit;
       }
     },
-    { interruptibleNativeProxy: true },
+    { interruptibleNativeProxy: true, ...quickActivation },
   );
 });

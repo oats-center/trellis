@@ -1050,12 +1050,10 @@ impl ManagerInner {
         state.current = next.cloned();
         let previous = *self.published.borrow();
         if previous != next_id {
-            // Publication makes this admitted carrier available to private
-            // maintenance, not to fresh application work. A healthy predecessor
-            // mirror may still cover retained work, but this exact generation
-            // remains fenced until its authenticated snapshot is checked.
-            self.contexts.owner.fence_revocation_coverage();
-            self.contexts.set_transport_ready(false);
+            // A published admitted carrier serves application work at once. Its
+            // revocation mirror catches up in the background and only informs
+            // verification of other parties' messages.
+            self.contexts.set_transport_ready(next.is_some());
             self.published.send_replace(next_id);
         }
     }
@@ -1263,7 +1261,6 @@ impl ManagerInner {
             {
                 built = state.current.clone();
                 lost_current = true;
-                self.contexts.owner.fence_revocation_coverage();
                 self.contexts.set_transport_ready(false);
             } else if let Some(generation) =
                 state.draining.iter().find(|generation| generation.id == id)
@@ -1281,10 +1278,9 @@ impl ManagerInner {
             close_generation(&generation, GenerationIntakeRetireReason::PhysicalFailure);
         }
         if lost_current && !self.is_terminated() {
-            // Losing the published socket can also suspend its own revocation
-            // coverage. Coverage-only retries cannot reopen that closed carrier;
-            // the existing refresh transaction can warm a private replacement
-            // before restoring application authority and publishing intake.
+            // Nothing can reopen that closed carrier; the existing refresh
+            // transaction can warm a private replacement before restoring
+            // application authority and publishing intake.
             self.contexts.request_refresh();
         }
         self.request_work();
@@ -1816,67 +1812,6 @@ impl TransportGenerationManager {
         commit()
     }
 
-    /// Run `commit` with the exact published current generation pinned.
-    ///
-    /// This is the guarded final commit for a make-before-break coverage
-    /// replacement: `commit` runs only while `expected` is still the published
-    /// current generation, physically `Current`, not terminated or closed,
-    /// identity-consistent with the retained publication, and safe under the
-    /// latest valid signed application authority and hard authority deadline,
-    /// even while coverage is suspended.
-    /// The manager's state guard is held for the whole call, so the current
-    /// generation and its publication identity cannot change between the final
-    /// comparison and the caller's synchronous swap. The promoted policy and
-    /// corrected clock are validated under that same state guard and the caller's
-    /// own-installation transition, so they cannot be replaced between the
-    /// safety comparison and the swap. `commit` must not await.
-    pub(crate) fn commit_published_if_current(
-        &self,
-        transition: &OwnTransitionGuard<'_>,
-        expected: u64,
-        commit: impl FnOnce() -> bool,
-    ) -> Result<bool, TrellisClientError> {
-        if let Some(error) = self.inner.terminated_error() {
-            return Err(error);
-        }
-        let state = self.inner.lock_state()?;
-        // Read the promoted policy and corrected clock only once the manager's
-        // state guard is held, so the safety comparison and the caller's swap use
-        // one coherent snapshot rather than one that predates a concurrent
-        // promotion.
-        let (policy, now) = self
-            .inner
-            .contexts
-            .maintenance_transport_locked(transition)?;
-        // The terminal/closed latch can move between the entry check and this
-        // guard; re-read it so a commit never runs on a finished connection.
-        if let Some(error) = self.inner.terminated_error() {
-            return Err(error);
-        }
-        let published = *self.inner.published.borrow();
-        let Some(current) = state.current.as_ref() else {
-            return Err(TrellisClientError::TransportUnavailable(
-                "no published current transport generation".into(),
-            ));
-        };
-        if current.id != expected || published != Some(expected) {
-            return Err(TrellisClientError::TransportUnavailable(
-                "expected transport generation is no longer the published current".into(),
-            ));
-        }
-        if current.state() != GenerationState::Current {
-            return Err(TrellisClientError::TransportUnavailable(
-                "expected transport generation is not the exact current attachment".into(),
-            ));
-        }
-        if !generation_is_safe(current, &policy, now)? {
-            return Err(TrellisClientError::TransportUnavailable(
-                "expected transport generation is not safe under current authority".into(),
-            ));
-        }
-        Ok(commit())
-    }
-
     /// Wait until the logical connection latches a terminal cause.
     pub(crate) async fn wait_terminal(&self) -> LogicalTerminalCause {
         let mut receiver = self.inner.terminal.subscribe();
@@ -1961,9 +1896,7 @@ impl TransportGenerationManager {
         if self.inner.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        // Fencing on a generation change keeps coverage while the carrier still
-        // reads Connected, which it can during shutdown; closing ends it outright.
-        self.inner.contexts.owner.retire_revocation_coverage();
+        self.inner.contexts.owner.close();
         self.publish_terminal(LogicalTerminalCause::Closed);
         self.inner.request_work();
         self.inner.signal_state();

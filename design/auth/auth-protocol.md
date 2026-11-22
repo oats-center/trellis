@@ -25,13 +25,16 @@ discovery's cross-origin policy.
 Initial issuer trust comes from that authenticated selected origin or provisioned
 installation trust. Broker-delivered public key bytes cannot create a trust root.
 Subsequent keys require authenticated rotation links and monotonic sequence
-checks. Retain installation identity and pinned trust across reconnects. A
-rotated-out key authorizes live use until the link's signed `previousRetiredAt`,
-one authority lifetime after the rotation, and only history after that. A
+checks. Retain installation identity and pinned trust across reconnects. Auth
+publishes a rotation link an activation delay (60 seconds by default) before
+the new key signs anything, and a participant that meets a key it has no link
+for looks the link up then, within the message's deadline. A rotated-out key
+authorizes live use until the link's signed `previousRetiredAt`, one authority
+lifetime after the activation, and only history after that. A
 participant pinned at a later key learns that deadline from the signed
 `issuerKey` answer's `liveUntil`. Auth
-publishes an empty notice on `trellis.auth.issuers` after each rotation link and
-each issuer revocation. On it a participant renews its own authority and
+publishes an empty notice on `trellis.auth.issuers` after each rotation's
+activation and each issuer revocation. On it a participant renews its own authority and
 re-reads the signed `issuerKey` state of every rotated-out key still inside its
 overlap; a revoked key ends its overlap at once. Accepting a rotation link
 re-reads the key it retires too, since the link can arrive after the
@@ -90,7 +93,7 @@ Unknown request members remain signature-bound. Enrollment does not itself grant
 runtime authority; provisioning/review and independently consented companion
 assignment determine eligibility.
 
-## Own authority, coverage, and renewal
+## Own authority, revocation mirror, and renewal
 
 Private signed admission binds the exact runtime key and broker attachment.
 Replies use key-bound inboxes and bind the request nonce and subjects. Verify
@@ -98,11 +101,14 @@ installation/account, issuer trust, identity, lifetime, catalog/resource evidenc
 and transport policy before promotion.
 
 One logical owner retains verified authority and an ordered revocation mirror
-across physical generations. Keep a healthy predecessor until replacement
-snapshot verification completes. Actual coverage loss fences application use;
-private maintenance may restore authenticated coverage and request fresh
-authority using retained identity. Expired authority cannot authorize application
-work. Cancelled renewal must settle before its replacement starts, and logical
+across physical generations. The mirror only informs verification of other
+parties' messages, and revocation is eventually consistent: a participant
+whose mirror is down or catching up sends on its own session and checks peers
+against the revocations it has observed, while the mirror recovers in the
+background. Auth and the broker enforce revocation of a participant's own
+session. A revoked session cannot renew, so its authority stops verifying
+anywhere within one authority lifetime. Expired authority cannot authorize
+application work. Cancelled renewal must settle before its replacement starts, and logical
 shutdown cancels both maintenance and renewal. Signed revocations remain sticky.
 Auth answers an admission request only with signed authority; when it is
 overloaded or the request fails verification it sends nothing. A renewal that
@@ -118,7 +124,11 @@ requests to it. A reattached socket would resume subscriptions before authority
 was checked again and flush publishes buffered during the outage, some of them
 after their deadline. A request started during the gap, or one whose
 connection is lost while it is being signed, waits for the new generation
-within its deadline and is never sent after it.
+within its deadline and is never sent after it. An event is checked against the
+authority that signs it: a verifier refuses one whose event time precedes that
+authority. So when the wait renewed or replaced the session, the SDKs fail
+the publish (prepare the event again) rather than send an event every consumer
+would reject.
 
 ## Requests, replies, and events
 
@@ -148,12 +158,12 @@ behind slower work is checked against its original issue time, so the window
 covers that wait as well as skew between hosts.
 
 A provider gives an unverified request no reply. When it cannot verify one only
-because its authorization evidence is briefly unavailable, as while its
-revocation mirror catches up on a replacement transport generation or after
-losing its mirror consumer on a socket that still serves the route, the
-provider waits up to five seconds for that evidence and verifies again instead
-of dropping the request, which would leave the caller waiting out its whole
-deadline. A durable event whose evidence is still unavailable after that wait
+because its authorization evidence is briefly unavailable, as while material it
+needs is not yet readable or its own authority is being renewed, the provider
+waits up to five seconds for that evidence and verifies again instead of
+dropping the request, which would leave the caller waiting out its whole
+deadline. A revocation mirror that is down or catching up is not missing
+evidence: the provider verifies against the revocations it has observed. A durable event whose evidence is still unavailable after that wait
 is redelivered later, not discarded as forged.
 
 Events retain signed authority by digest. Historical verification uses original

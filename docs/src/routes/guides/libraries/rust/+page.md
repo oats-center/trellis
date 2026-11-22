@@ -349,12 +349,11 @@ attempt outcomes use the delivery's receiving connection. Raw NATS access is a
 physical connection, not a substitute for these logical, lifecycle-aware
 handles.
 
-Fresh application work cannot proceed when own revocation coverage is
-unavailable. Bounded acquisitions wait within their budget; immediate
-acquisitions report unavailability. Guarded registry maintenance can restore
-that coverage on an already admitted safe socket and wake waiting calls. Watch
-migration is make-before-break and preserves cached authority and existing
-leases; confirmed revocation remains fail-closed.
+The client's revocation mirror never holds up work. Requests on its own session
+are sent whether or not the mirror is current, and peers are checked against
+the revocations observed so far while the mirror catches up in the background.
+Auth and the broker enforce revocation of the client's own session; an
+observed revocation of a peer stays in force across reconnects.
 
 ## Test against a real runtime
 

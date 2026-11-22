@@ -16,6 +16,7 @@ use trellis_idl::{WebhookMode, WebhookVerifier};
 use super::process::{Answer, Verdict};
 use super::records::{NewAttempt, Outcome};
 use super::request::{dropped, Check, Disposition, Matched, StoredRequest};
+use super::verify::{self, Failure};
 use super::{Endpoint, Webhooks};
 
 /// Most request headers, and most header bytes, Trellis accepts.
@@ -346,7 +347,7 @@ async fn intake(
     let path = parts.uri.path().to_owned();
     let mut stored = StoredRequest {
         attempt_id: attempt_id.to_owned(),
-        // Only a rejected `sync` request is stored, and only to keep it.
+        // A refused request is stored only to keep it.
         disposition: match definition.mode {
             WebhookMode::Async => Disposition::Queued,
             WebhookMode::Sync => Disposition::Archived,
@@ -542,6 +543,49 @@ async fn intake(
     };
     match definition.mode {
         WebhookMode::Async => {
+            // `hmac` needs only the bytes in hand, so it runs before the
+            // answer too: a wrong secret gets 401 rather than a 2xx that
+            // hides it. Only delivery and the decide handler wait.
+            for verifier in &definition.verifiers {
+                let WebhookVerifier::Hmac(hmac) = verifier else {
+                    continue;
+                };
+                match verify::hmac(&stored, hmac, &endpoint.secrets(&hmac.key, received_at_ms)) {
+                    Ok(_) => {}
+                    Err(Failure::Unset(name)) => {
+                        return Err(fail(refuse(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "unavailable",
+                            format!("secret {name} not set"),
+                        )));
+                    }
+                    Err(Failure::Rejected(reason)) => {
+                        let _ = records
+                            .insert(
+                                new(),
+                                Outcome {
+                                    outcome: "rejected",
+                                    reason: Some(reason),
+                                    status: Some(401),
+                                    ..Outcome::default()
+                                },
+                            )
+                            .await;
+                        webhooks
+                            .inner
+                            .limits
+                            .failed(&endpoint.record.deployment_id, client);
+                        // Kept, as a refused `sync` request is, so an
+                        // administrator can see what failed and verify it
+                        // again once the secret is fixed.
+                        stored.disposition = Disposition::Archived;
+                        if let Ok(sequence) = webhooks.store(&stored).await {
+                            let _ = records.set_stream_sequence(attempt_id, sequence).await;
+                        }
+                        return Ok(("rejected", 401, empty(StatusCode::UNAUTHORIZED), size));
+                    }
+                }
+            }
             let _ = records
                 .insert(
                     new(),

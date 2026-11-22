@@ -866,6 +866,7 @@ impl RuntimeConfig {
             context_lifetime_seconds: 300,
             allowed_clock_skew_seconds: 30,
             oauth_admission_lifetime_seconds: 300,
+            issuer_activation_delay_seconds: default_issuer_activation_delay_seconds(),
         });
     }
 
@@ -1447,10 +1448,20 @@ pub struct AuthorizationConfig {
     /// Maximum signed OAuth admission lifetime in seconds.
     #[serde(default = "default_oauth_admission_lifetime_seconds")]
     pub oauth_admission_lifetime_seconds: u64,
+    /// Seconds between announcing a rotated-in issuer key, with its chain link
+    /// published, and signing with it.
+    #[serde(default = "default_issuer_activation_delay_seconds")]
+    pub issuer_activation_delay_seconds: u64,
 }
 
 fn default_oauth_admission_lifetime_seconds() -> u64 {
     300
+}
+
+/// Long enough for the chain link to reach every NATS node, including a
+/// lagging replica, before anything the new key signs does.
+fn default_issuer_activation_delay_seconds() -> u64 {
+    60
 }
 
 impl AuthorizationConfig {
@@ -1473,6 +1484,16 @@ impl AuthorizationConfig {
             return Err(invalid_authorization(
                 "oauth_admission_lifetime_seconds",
                 "must be between 1 and 300",
+            ));
+        }
+        // Participants refuse a chain link announcing its key further ahead.
+        if self.issuer_activation_delay_seconds == 0
+            || self.issuer_activation_delay_seconds
+                > trellis_protocol::MAX_ISSUER_ACTIVATION_DELAY_SECONDS.unsigned_abs()
+        {
+            return Err(invalid_authorization(
+                "issuer_activation_delay_seconds",
+                "must be between 1 and 3600",
             ));
         }
         Ok(())

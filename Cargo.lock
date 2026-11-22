@@ -6530,11 +6530,13 @@ dependencies = [
 name = "trellis-testkit"
 version = "0.100.0-rc.53"
 dependencies = [
+ "async-nats",
  "base64 0.23.1",
  "flate2",
  "futures-util",
  "getrandom 0.4.3",
  "libc",
+ "rcgen",
  "reqwest",
  "runtime-trellis",
  "rustls",

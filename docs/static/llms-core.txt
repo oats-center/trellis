@@ -369,17 +369,23 @@ Installation identity and the independently provisioned OAuth storage key
 survive restarts and issuer rotation. `Issuers.Rotate` requires
 `trellis.auth.v1:platform.manage`, the expected current key ID, and an
 idempotency key. Auth generates and durably flushes a private successor key on
-its own host, then atomically commits the old-key-signed chain link, activation,
-publication intent, and replay result; replays do not rotate again, and private
-keys never cross the RPC. SDKs verify the successor chain from pinned trust.
+its own host, then atomically commits the old-key-signed chain link, the
+announced successor, publication intent, and replay result; replays do not
+rotate again, and private keys never cross the RPC. The link is published at
+once, but Auth keeps signing with the old key until the activation delay
+(`auth.authorization.issuer_activation_delay_seconds`, 60 by default) has
+passed; the reply's `activatesAt` says when it switches. SDKs verify the
+successor chain from pinned trust, looking up a missing link when they first
+meet the new key.
 Back up the issuer seed and the Auth database's sibling
 `<database-stem>.issuer-keys` directory (`platform.issuer-keys` by default) with
 the database and the OAuth storage key. Restart loads the database-current key
 and fails closed on missing custody.
 
 A rotation interrupts no session: SDKs accept the old key for live use for one
-authority lifetime, and every session renews onto the new key when Auth
-announces the rotation. `Issuers.Revoke` is for a compromised key. It ends
+authority lifetime after the switch, and every session renews onto the new key
+when Auth announces the switch. Until then another rotation, or revoking either
+key, is refused with the switch time. `Issuers.Revoke` is for a compromised key. It ends
 that overlap at once and retires every user session holding authority the key
 signed. A service or device session that already renewed onto the new key
 keeps running, because it signs in with its own identity key. Revoke an old key
@@ -816,18 +822,20 @@ recreates subscriptions on it, and then routes requests. A request made during
 the gap, or one whose connection is lost while it is being signed, waits for
 it within its deadline and is never sent after the deadline.
 
-Live authority requires a verified initial revocation snapshot and continuing
-coverage; epoch fencing prevents old watchers from changing successor coverage.
-Fresh application IO cannot proceed while own revocation coverage is
-unavailable: bounded acquisitions wait within their budget, immediate ones report
-unavailability. Mirror rollover stages the replacement without withdrawing
-healthy predecessor coverage, and replacement IO stays fenced until authenticated
-replay and checked handover. On mirror failure, one cancellable private
-supervisor restores coverage on the surviving attachment while application IO
-remains fenced; it neither clears known revocations nor retransmits application
-requests. If authority expires during coverage loss, private admission obtains
-and verifies fresh authority before application use resumes; snapshot recovery
-alone never extends expired authority. Jobs and durable event intake keep
+Revocation is eventually consistent. Each participant's revocation mirror is
+used only to check other parties (a service checking a caller, a client checking
+a responder) and never holds up work: while it is down or catching up after a
+reconnect, own requests are sent and peers are checked against the revocations
+observed so far. A revocation takes effect at a participant when its mirror
+receives it, normally well under a second after Auth publishes it; Auth and the
+broker enforce it at once (refused admission and renewal, kicked connections).
+A revoked session cannot renew, so its authority stops verifying everywhere
+within one authority lifetime (300 seconds by default). Observed revocations
+stay in force across reconnects. Fresh application IO needs current, unexpired
+own authority. A publish that waited for transport while the session was
+renewed or replaced fails instead of sending the event, since verifiers refuse
+an event whose time precedes the authority that signs it; prepare the event
+again. Jobs and durable event intake keep
 bounded capacity across generations, with each delivery retaining its receiving
 connection through disposition.
 
@@ -1450,18 +1458,30 @@ tolerance 5m; } }`, `verify token`, `verify basic`, `verify address`, or an
 explicit `verify none;`), and delivers accepted requests as `Received` events
 (`WebhookDelivery`, body byte for byte) through the endpoint's own durable
 consumer. Keys, tokens, and passwords name `secret` settings of the same
-service; set them with `trellis svc <name> config set-secret`. `mode async`
-(the default) stores, answers 2xx at once, and verifies afterwards; `mode
-sync` verifies first and can return the service's decide-handler response,
+service; set them with `trellis svc <name> config set-secret`. Every verifier,
+`hmac` included, runs before Trellis answers in both modes: a wrong
+credential or signature gets 401 and an unset secret 503, so a wrong secret
+shows at the sender. `mode async` (the default) then stores the request,
+answers 2xx, and runs the decide handler and delivery afterwards; `mode sync`
+also waits for those and can return the service's decide-handler response,
 for handshakes. `decide { deadline 2s; }` lets the service accept, ignore, or
-reject after the standard verifiers. `dedupe "{header:...}"` drops the
-sender's retries, including simultaneous ones, on a best-effort basis;
-handlers must still be idempotent. After a secret, token, or password changes,
+reject after the standard verifiers. `dedupe "<template>"` names the sender's
+delivery ID with `{header:Name}`, `{json:/pointer}` (an RFC 6901 JSON Pointer
+into the body, such as `{json:/id}` for Stripe), or `{form:field}`; a request
+whose template has no value, such as a body that is not JSON, is delivered
+without deduplication, never refused. Dedupe drops the sender's retries,
+including simultaneous ones, on a best-effort basis; handlers must still be
+idempotent. Each endpoint adds a Trellis-provided `webhook:<endpoint>` check
+to the service's health: degraded while the endpoint is disabled, while a
+setting its verifiers read is unset, or while its newest verified request in
+the last 10 minutes was rejected, with the reason in the summary; it clears on
+its own. After a secret, token, or password changes,
 `hmac`, `token`, and `basic` also accept the value it replaced for the
 endpoint's rotation overlap (24 h by default); deleting the settings revision
 that holds it ends the overlap, and no older value is ever accepted.
-Each change of a secret is its own generation, even to an equal value. A queued
-request keeps its intake `token`/`basic` verdict while the verifiers and the
+Each change of a secret is its own generation, even to an equal value. A stored
+request, when queued or verified again, keeps its intake `token`/`basic`
+verdict while the verifiers and the
 settings they read are unchanged and the value it matched is current, or was
 the replaced value within the overlap at receipt; an overlap ending while it
 waits does not refuse it, but deleting the revision holding that value does,

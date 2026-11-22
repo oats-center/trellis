@@ -354,9 +354,18 @@ verify the chain without trusting an unrelated key. A repeated request returns
 the original result. A stale expected key is refused with a validation error
 that names the current key.
 
+The new key is announced first. Its chain link goes out at once, so every
+client can verify the key before it is used, and Trellis keeps signing with the
+current key until the activation delay has passed:
+`auth.authorization.issuer_activation_delay_seconds`, 60 seconds by default.
+The command prints the time the new key takes over. Until then another
+rotation is refused, and sessions keep running throughout; they move onto the
+new key when Trellis switches.
+
 `Issuers.Revoke` (`trellis issuers revoke <key-id>`) revokes a retired key. It
 can't revoke the current signing key, since Trellis would have nothing left to
-sign with; the refusal says to rotate first. An unknown key ID is `not_found`
+sign with; the refusal says to rotate first, or, while a new key is announced,
+when the switch happens. An unknown key ID is `not_found`
 ("no issuer key ..."), and a key revoked once is refused as already revoked.
 
 Successor keys are private files in a sibling directory obtained by replacing

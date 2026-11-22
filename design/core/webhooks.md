@@ -40,8 +40,9 @@ an endpoint goes through four steps:
    request rate, and source address.
 2. **Verification.** Trellis checks that the request is genuine, usually by
    checking a signature made with a secret the sender and the service share.
-   An endpoint can also hand the request to the service and let the service
-   decide.
+   These standard verifiers need nothing but the request and the secret, so
+   they run before Trellis answers. An endpoint can also hand the request to
+   the service and let the service decide.
 3. **Recording.** Trellis records every request and its outcome. A request
    that passes verification becomes a `Received` event.
 4. **Delivery.** The event reaches the service like any other event, with the
@@ -50,14 +51,16 @@ an endpoint goes through four steps:
 
 Each endpoint has a **mode** that decides when Trellis answers the sender:
 
-- **`async`** stores the request, answers 2xx at once, and verifies afterwards.
-  The sender gets 2xx even for a request that later fails verification. In
-  return, nothing is lost while the service is down, and a request whose
-  signature failed because of a wrong secret can be verified again once the
-  secret is fixed.
-- **`sync`** verifies first and answers only after the request is recorded. A
-  request that fails verification gets 401. Handshakes, and senders that read
-  the response body, need this mode.
+- **`async`** runs the standard verifiers, stores the request, and answers 2xx.
+  The decide handler and delivery happen afterwards, so nothing is lost while
+  the service is down.
+- **`sync`** also waits for the decide handler and for the event to be stored
+  before it answers. Handshakes, and senders that read the response body, need
+  this mode.
+
+In both modes a request that fails a standard verifier gets 401, so a wrong
+secret shows at the sender instead of hiding behind a 2xx. The refused request
+is kept, and once the secret is fixed an administrator can verify it again.
 
 Trellis never parses the body. The service reads the bytes, decides what they
 mean, and publishes its own domain events if other services need them.
@@ -87,9 +90,13 @@ service Billing {
       signature { header "Stripe-Signature"; separator ","; prefix "v1="; encoding hex; }
       timestamp { header "Stripe-Signature"; separator ","; prefix "t="; format unix_seconds; tolerance 5m; }
     }
+    dedupe "{json:/id}";
   }
 }
 ```
+
+Stripe puts the event's ID in the `id` field of the JSON body, so `dedupe`
+reads it from there.
 
 | Member                                          | Meaning                                                                       | Default                  |
 | ----------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------ |
@@ -110,7 +117,9 @@ The compiler enforces four rules:
   nothing must say `verify none;`, which cannot be combined with other
   verifiers.
 - A template with an unknown placeholder is an error, and so is `{timestamp}`
-  without a `timestamp` block.
+  without a `timestamp` block. `{json:...}` must hold a JSON Pointer, and
+  `{json:...}` and `{form:...}` belong only in a `dedupe` template, since a
+  signature covers the bytes as sent.
 - A `decide` deadline is at most 10 s in `sync` mode and 60 s in `async` mode.
 
 Every member except `title` and `description` is part of the participant
@@ -161,7 +170,8 @@ A verifier is a check that a request is genuine. Trellis first runs the cheap
 checks, the ones that need no secret: method, body size, content encoding, rate
 limits, and `verify address`.
 A request that fails one of them is answered at once in both modes, and its
-body is not stored. The other verifiers then run in declared order. Every
+body is not stored. The other verifiers then run in declared order, also
+before Trellis answers in both modes. Every
 comparison of a secret or signature takes constant time, so an attacker cannot
 learn part of a secret by timing the comparison.
 
@@ -237,9 +247,12 @@ way, Trellis stores only the request record, without the credential.
 
 A request refused this way cannot be verified again after the configuration is
 fixed, because its credential is gone. Only the sender's retry can get it in.
-`hmac` is different: in `async` mode it runs after the 2xx, from the stored
-request. A signature proves only that one message and cannot be reused for
-another, so storing the signature header is safe.
+`hmac` is different. It too runs before Trellis answers, in both modes, but the
+request is stored with its signature header: a signature proves only that one
+message and cannot be reused for another, so storing it is safe. A request
+that fails `hmac` gets 401 and is kept, so it can be verified again once the
+secret is fixed. An `async` request that passes is checked again from the
+stored bytes when the worker processes it.
 
 Queued requests are checked under the policy they were accepted with. With
 the intake verdicts, a stored request keeps the endpoint's verifier policy (a
@@ -314,10 +327,10 @@ is down. The security review should list webhook intake as a new reader of
 service secrets.
 
 Verifiers use the service's own settings. Per-instance overrides do not apply,
-because the endpoint belongs to the whole service. While a required secret is
-not set, an `async` request for an `hmac` endpoint is stored as `pending` and
-verified once the secret is set. A `sync` request, and any request for a
-`token` or `basic` endpoint, gets 503.
+because the endpoint belongs to the whole service. While a secret a verifier
+needs is not set, every request to the endpoint gets 503 in both modes, so
+the sender retries later, and only the request record is stored. The
+endpoint's [health check](#health) says which secret is missing.
 
 ### Changing a secret
 
@@ -363,13 +376,16 @@ previous matched before the change.
 
 1. Trellis runs the cheap checks and the intake verifiers (`token`, `basic`,
    `address`), then removes the credential.
-2. Trellis writes the request to the intake stream and waits until NATS
+2. Trellis runs `hmac`. A failure gets 401, and the request is kept as a
+   refused `sync` request is.
+3. Trellis writes the request to the intake stream and waits until NATS
    JetStream confirms the write. The intake stream is a JetStream stream, one per
    deployment, that holds each request's method, URL, headers without the
    credential, body, client address, receive time, and intake verdicts.
-3. Trellis answers the declared status, or 503 if the write failed.
-4. A worker reads the request back, runs `hmac` and the decide handler, and
-   checks for duplicates. A request that passes becomes a `Received` event.
+4. Trellis answers the declared status, or 503 if the write failed.
+5. A worker reads the request back, checks `hmac` again under the secrets in
+   force, runs the decide handler, and checks for duplicates. A request that
+   passes becomes a `Received` event.
 
 **`sync`:**
 
@@ -380,10 +396,10 @@ previous matched before the change.
    fails, it answers 503 even when the service accepted, so the sender retries
    and Trellis never confirms a request it has not stored.
 
-A `sync` request rejected by `hmac` or the decide handler is written to the
-intake stream too, so an administrator can see what failed and verify it
-again. A request refused at intake is recorded without its credential and
-cannot be verified again.
+A request rejected by `hmac`, in either mode, or by a `sync` decide handler is
+written to the intake stream too, so an administrator can see what failed and
+verify it again. A request refused by `token` or `basic` is recorded without
+its credential and cannot be verified again.
 
 | Situation                                               | Status                                                          |
 | ------------------------------------------------------- | --------------------------------------------------------------- |
@@ -395,12 +411,13 @@ cannot be verified again.
 | Rate limit reached                                      | 429 with `Retry-After`                                          |
 | `verify address` fails                                  | 403                                                             |
 | `token` or `basic` credential wrong                     | 401, and only the request record is stored                      |
-| `token` or `basic` secret not set                       | 503, and only the request record is stored                      |
-| `sync`: `hmac` fails, or the service rejects            | 401                                                             |
+| A secret a verifier needs is not set                    | 503, and only the request record is stored                      |
+| `hmac` fails                                            | 401, and the request is kept to verify again                    |
+| `sync`: the service rejects                             | 401                                                             |
 | `sync`: the decide handler fails or misses its deadline | 503                                                             |
 | Storage unavailable or full                             | 503                                                             |
 | Accepted, ignored, or duplicate                         | The service's response if it gave one, else the declared status |
-| `async`, once stored                                    | The declared status, whatever verification finds later          |
+| `async`, once stored                                    | The declared status, whatever the decide handler says later     |
 
 Error responses have an empty body, so they tell a prober nothing.
 
@@ -537,7 +554,8 @@ webhook slack {
 For a `url_verification` body, the handler returns `ignore` with a
 `200 text/plain` response that holds the challenge. For any other body it
 returns `accept` and sets `dedupeKey` to the body's `event_id`, because Slack
-puts that ID in the body.
+puts that ID in the body. A `dedupe "{json:/event_id}"` member would read the
+same ID without the handler.
 
 **PayPal** notifications are confirmed by sending their headers to PayPal's
 verification API, which no standard verifier can do. The endpoint declares only
@@ -587,7 +605,9 @@ A `Received` event is an ordinary Trellis event. It is stored, retained,
 replayed, and dead-lettered by the same rules as every other event.
 
 - **Body.** `body` holds the bytes exactly as received, or after decoding
-  `content_encoding`. The SDK offers text, JSON, and form views of them.
+  `content_encoding`. The SDK offers text, JSON, and form views of them; the
+  bytes stay the source of truth, so a handler that checks a signature checks
+  those.
 - **Headers.** The event carries all request headers in order, with lowercase
   names. Trellis removes hop-by-hop headers, `Cookie`, `Proxy-Authorization`,
   any header that carried a `token` or `basic` credential (a query parameter
@@ -615,8 +635,14 @@ For senders that sign a timestamp, the `hmac` tolerance rejects a request whose
 timestamp is too old. Trellis provides no replay protection for senders that
 sign neither a timestamp nor the delivery ID.
 
-`dedupe` names where the sender's delivery ID is, usually a header. After a
-request passes verification, Trellis claims its ID in the dedupe bucket before
+`dedupe` names where the sender's delivery ID is: a header with
+`{header:Name}`, a string or number in a JSON body with `{json:/pointer}` (a
+JSON Pointer, RFC 6901), or a field of a form body with `{form:name}`. Trellis
+reads the body after its size and encoding checks, and after decoding
+`content_encoding`. A request whose template has no value, such as a body
+that is not JSON, a pointer that names nothing or names an object, or a
+missing header, has no dedupe key: it is delivered, never refused, and never
+dropped as a duplicate. After a request passes verification, Trellis claims its ID in the dedupe bucket before
 publishing, and keeps it for the dedupe window, 72 hours by default. A later
 verified request with the same ID within the window is recorded as
 `duplicate`, gets the original's answer, and publishes nothing. The claim is
@@ -750,6 +776,31 @@ along with the attempt ID, and a record of another service or endpoint is not
 found, so an ID pasted under the wrong endpoint never acts on someone else's
 request.
 
+### Health
+
+Each endpoint feeds its service's health through an ordinary health check,
+`webhook:<endpoint>`, which Trellis provides; the service writes no code for
+it. The check is degraded, with a summary that says why, while any of these
+holds:
+
+- the endpoint or its deployment is disabled;
+- a setting one of its verifiers reads has no value, such as
+  `stripeSigningSecret not set, so requests are refused`;
+- the newest request in the last 10 minutes that reached a verdict (accepted,
+  ignored, duplicate, or rejected) was rejected, such as
+  `the latest request was rejected: signature does not match`.
+
+It recovers on its own: setting the secret clears the first, and a later
+accepted request, or 10 minutes without a rejection, clears the last. A
+degraded check makes the instance degraded, and the check's name and summary
+appear in `trellis svc <name> instances` and the Console's health views, like
+any other check. The rule looks at the latest verdict rather than at the
+failed-request budget, because a wrong secret at a sender that sends a few
+requests an hour never reaches 20 failures a minute, yet every one of its
+requests is refused.
+
+### Capabilities
+
 The `trellis.webhooks@v1` API has three capabilities, shaped like the Events
 API's:
 
@@ -819,17 +870,17 @@ These senders shaped the design. Facts marked _unverified_ come from memory and
 were not checked against the vendor's current documentation; nothing in the
 implementation relies on them.
 
-| Sender            | How it signs                                                                              | What it expects back                                         |
-| ----------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Stripe            | `Stripe-Signature: t=<unix>,v1=<hex>`, HMAC-SHA256 over `<t>.<body>`                      | Any 2xx. Retries for up to 3 days (_unverified_).            |
-| GitHub            | `X-Hub-Signature-256: sha256=<hex>`, HMAC-SHA256 over the body                            | Any 2xx within 10 s. No automatic redelivery (_unverified_). |
-| Slack             | `X-Slack-Signature: v0=<hex>` over `v0:<timestamp>:<body>`                                | 2xx within 3 s (_unverified_), and the `challenge` on setup  |
-| Twilio            | `X-Twilio-Signature`, base64 HMAC-SHA1 over the URL and sorted form fields (_unverified_) | A TwiML document                                             |
-| Meta (WhatsApp)   | `X-Hub-Signature-256` on POST, and a GET handshake with `hub.challenge`                   | The `hub.challenge` value as the GET response                |
-| Microsoft Graph   | A `clientState` value in the body, and a setup POST with `validationToken`                | The `validationToken` as `text/plain`                        |
-| PayPal            | Headers confirmed by calling PayPal's verification API (_unverified_)                     | Any 2xx                                                      |
-| GitLab and others | A fixed token in a header or the query string                                             | Any 2xx                                                      |
-| Partner systems   | Basic authentication or a source address range                                            | Sometimes a SOAP acknowledgement                             |
+| Sender            | How it signs                                                                                                                                                              | What it expects back                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Stripe            | `Stripe-Signature: t=<unix>,v1=<hex>`, HMAC-SHA256 over `<t>.<body>`. The delivery ID is the event's `id` in the JSON body; no delivery-ID header is known (_unverified_) | Any 2xx. Retries for up to 3 days (_unverified_).            |
+| GitHub            | `X-Hub-Signature-256: sha256=<hex>`, HMAC-SHA256 over the body                                                                                                            | Any 2xx within 10 s. No automatic redelivery (_unverified_). |
+| Slack             | `X-Slack-Signature: v0=<hex>` over `v0:<timestamp>:<body>`                                                                                                                | 2xx within 3 s (_unverified_), and the `challenge` on setup  |
+| Twilio            | `X-Twilio-Signature`, base64 HMAC-SHA1 over the URL and sorted form fields (_unverified_)                                                                                 | A TwiML document                                             |
+| Meta (WhatsApp)   | `X-Hub-Signature-256` on POST, and a GET handshake with `hub.challenge`                                                                                                   | The `hub.challenge` value as the GET response                |
+| Microsoft Graph   | A `clientState` value in the body, and a setup POST with `validationToken`                                                                                                | The `validationToken` as `text/plain`                        |
+| PayPal            | Headers confirmed by calling PayPal's verification API (_unverified_)                                                                                                     | Any 2xx                                                      |
+| GitLab and others | A fixed token in a header or the query string                                                                                                                             | Any 2xx                                                      |
+| Partner systems   | Basic authentication or a source address range                                                                                                                            | Sometimes a SOAP acknowledgement                             |
 
 ## Not in this version
 
@@ -866,8 +917,10 @@ The implementation settles these points the proposal left open:
 - **Members the compiler accepts.** `methods` takes `GET`, `POST`, `PUT`,
   `PATCH`, and `DELETE`; `status` is a 2xx status; `content_encoding` takes
   `gzip` and `deflate`; `decide;` or `decide { deadline 2s; }`. A `dedupe`
-  template may use `{header:Name}`, `{method}`, `{url}`, `{path}`, and
-  `{query}`. A `basic` username may be a plain or secret string setting. An
+  template may use `{header:Name}`, `{json:/pointer}`, `{form:name}`,
+  `{method}`, `{url}`, `{path}`, and `{query}`. A JSON value is used when it
+  is a string (its text) or a number (its JSON text); any other value counts
+  as missing. A `basic` username may be a plain or secret string setting. An
   endpoint cannot be `optional`.
 - **Limits.** A request with more than 100 headers or 32 KiB of header data
   gets 431. A body that does not decode under its declared encoding gets 400.
@@ -879,14 +932,21 @@ The implementation settles these points the proposal left open:
 webhooks <endpoint> set` stores them for the deployment whichever endpoint
   names them. The Console's Webhooks section shows each setting with a Change
   action.
-- **A missing secret.** An `async` `hmac` request whose secret is not set is
+- **A missing secret.** A request whose secret is not set gets 503 in both
+  modes and is not stored. A stored request whose secret was later unset is
   recorded `pending` and checked again every 10 seconds until the secret is
   set or the request leaves the intake stream.
+- **The health check.** A service instance asks for its endpoint's check on
+  `webhooks.v1.health.<b64(deployment)>.<b64(endpoint)>` when it builds a
+  heartbeat; Auth lets an instance publish there only for the endpoints its
+  build declares, and Trellis answers from the endpoint directory and the
+  request records. A check Trellis does not answer within 5 seconds reads as
+  degraded.
 - **Disabled endpoints.** A disabled endpoint, like a disabled deployment,
   answers 503 and stores nothing.
 - **Mode changes and stored requests.** Each request in the intake stream
   records why it is there: `queued` for an `async` request answered 2xx,
-  `archived` for a `sync` request refused at once. The worker goes by that
+  `archived` for a request refused before Trellis answered, in either mode. The worker goes by that
   record, not by the endpoint's current mode. A queued request is still
   verified and published after an approved update switches the endpoint to
   `sync`, so a request the sender was told succeeded is never dropped. An
@@ -905,6 +965,12 @@ webhooks <endpoint> set` stores them for the deployment whichever endpoint
 - **Metrics.** Each metric carries `trellis.webhook.endpoint` (the endpoint
   name) and `trellis.outcome`; requests to unknown URLs count under the
   endpoint `_unknown`.
+- **Body views.** In TypeScript a delivery, the event's and the decide
+  request's, has `text()`, `json()`, and `form()` (a `URLSearchParams`), each
+  returning a `Result` whose error is a `ValidationError` when the body is not
+  UTF-8 text or not JSON. In Rust the `WebhookBody` trait gives
+  `WebhookDelivery` `text()`, `json::<T>()`, and `form()`, returning
+  `WebhookBodyError`.
 - **SDK helpers.** The TypeScript helpers compute HMAC-SHA1, SHA-256, and
   SHA-512 with WebCrypto. The Rust helpers cover SHA-256 and SHA-512; a Rust
   decide handler that needs SHA-1 brings its own implementation. Trellis's

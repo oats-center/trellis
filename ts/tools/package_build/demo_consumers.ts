@@ -119,7 +119,7 @@ try {
     });
     assert(provisioned.provisioningSecret);
     // Spawned demos trust exactly this runtime's installation CA.
-    const childEnv = { ...env, NODE_EXTRA_CA_CERTS: runtime.caCertificate };
+    const childEnv = { ...env, NODE_EXTRA_CA_CERTS: runtime.caCertificatePath };
     const rootSecret = Buffer.from(
       crypto.getRandomValues(new Uint8Array(32)),
     ).toString("base64url");

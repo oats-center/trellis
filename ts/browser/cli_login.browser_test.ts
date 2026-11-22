@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { types } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { X509Certificate } from "node:crypto";
 import { statSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { connect } from "node:tls";
 import { tmpdir } from "node:os";
@@ -72,8 +72,7 @@ test("CLI login keeps one durable login that later commands connect with", async
     async (runtime) => {
       await runtime.ensureAdmin();
       const configHome = await mkdtemp(join(tmpdir(), "trellis-cli-login-"));
-      const ca = new X509Certificate(await readFile(runtime.caCertificate))
-        .fingerprint256;
+      const ca = new X509Certificate(runtime.caCertificate).fingerprint256;
 
       // No system root vouches for the generated CA, so a first login stops and
       // names the CA it was offered rather than trusting it.

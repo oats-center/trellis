@@ -1581,7 +1581,7 @@ const STRIPE: &str = r#"webhook stripe {
       timestamp { header "Stripe-Signature"; separator ","; prefix "t="; format unix_seconds; tolerance 5m; }
     }
     verify address { ranges config ranges; }
-    dedupe "{header:Idempotency-Key}";
+    dedupe "{json:/id}";
   }"#;
 
 fn billing_digest(graph: &trellis_idl::PackageGraph) -> String {
@@ -1672,6 +1672,26 @@ fn webhook_compile_rules_refuse_unsafe_declarations() {
             r#"verify hmac { key config signing; algorithm sha256; signed "{timestamp}.{body}"; signature { header "S"; } }"#,
         ),
         "needs a timestamp block",
+    );
+    // A dedupe template may read the body's JSON or form fields; a signed
+    // template covers bytes as sent and may not.
+    compile_webhook_service(&endpoint(
+        r#"verify none; dedupe "{json:/data/object/id}-{form:MessageSid}";"#,
+    ))
+    .unwrap();
+    refused(
+        &endpoint(r#"verify none; dedupe "{json:id}";"#),
+        "needs a JSON Pointer",
+    );
+    refused(
+        &endpoint(r#"verify none; dedupe "{body}";"#),
+        "{json:/pointer}",
+    );
+    refused(
+        &endpoint(
+            r#"verify hmac { key config signing; algorithm sha256; signed "{json:/id}"; signature { header "S"; } }"#,
+        ),
+        "are for dedupe templates",
     );
     // Decide deadlines are bounded by mode.
     refused(

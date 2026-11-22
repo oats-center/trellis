@@ -580,9 +580,6 @@ impl AuthorizationContextCache {
             *installed = crate::generated::AvailabilitySnapshot::with_usability(installed, usable);
         });
     }
-    pub(crate) fn request_coverage_reconciliation(&self) {
-        self.request_refresh();
-    }
     pub(crate) async fn wait_refresh_request(&self) {
         self.refresh_requested.notified().await;
     }

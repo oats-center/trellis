@@ -567,6 +567,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
             Ok(AuthIssuerRotateResponse {
                 key_id: rotation.next_key_id.clone().into(),
                 rotation: AuthSignedBlob(canonical_json(&rotation)?.into_bytes().into()),
+                activates_at: super::sqlite::timestamp(rotation.activated_at)?,
                 extra: Default::default(),
             })
         }

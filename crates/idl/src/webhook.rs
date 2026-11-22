@@ -24,6 +24,12 @@ pub enum TemplatePart {
     Query,
     /// The form-encoded body sorted by field name, each name then its value.
     FormSorted,
+    /// The string or number a JSON Pointer (RFC 6901) names in the body.
+    /// Only dedupe templates may use it.
+    Json(String),
+    /// The first value of a field of the form-encoded body. Only dedupe
+    /// templates may use it.
+    Form(String),
 }
 
 /// Parse a webhook template into its parts.
@@ -31,7 +37,8 @@ pub enum TemplatePart {
 /// # Errors
 ///
 /// Returns a message naming the problem for an unknown placeholder, an
-/// unclosed `{`, a lone `}`, or an empty header name.
+/// unclosed `{`, a lone `}`, an empty header or form field name, or a JSON
+/// Pointer that is not one.
 pub fn parse_template(template: &str) -> Result<Vec<TemplatePart>, String> {
     let mut parts = Vec::new();
     let mut literal = String::new();
@@ -67,17 +74,39 @@ pub fn parse_template(template: &str) -> Result<Vec<TemplatePart>, String> {
                     "path" => TemplatePart::Path,
                     "query" => TemplatePart::Query,
                     "form_sorted" => TemplatePart::FormSorted,
-                    _ => match name.strip_prefix("header:") {
-                        Some(header)
-                            if !header.is_empty()
-                                && header.bytes().all(|byte| {
+                    _ => {
+                        if let Some(header) = name.strip_prefix("header:") {
+                            if header.is_empty()
+                                || !header.bytes().all(|byte| {
                                     byte.is_ascii_alphanumeric() || b"-_".contains(&byte)
-                                }) =>
-                        {
+                                })
+                            {
+                                return Err(format!("unknown placeholder '{{{name}}}'"));
+                            }
                             TemplatePart::Header(header.to_ascii_lowercase())
+                        } else if let Some(pointer) = name.strip_prefix("json:") {
+                            // RFC 6901: each reference token follows a '/',
+                            // and '~' is only ever '~0' or '~1'.
+                            if !pointer.starts_with('/')
+                                || pointer
+                                    .split('~')
+                                    .skip(1)
+                                    .any(|rest| !rest.starts_with('0') && !rest.starts_with('1'))
+                            {
+                                return Err(format!(
+                                    "'{{{name}}}' needs a JSON Pointer such as {{json:/id}}"
+                                ));
+                            }
+                            TemplatePart::Json(pointer.to_owned())
+                        } else if let Some(field) = name.strip_prefix("form:") {
+                            if field.is_empty() {
+                                return Err(format!("'{{{name}}}' needs a form field name"));
+                            }
+                            TemplatePart::Form(field.to_owned())
+                        } else {
+                            return Err(format!("unknown placeholder '{{{name}}}'"));
                         }
-                        _ => return Err(format!("unknown placeholder '{{{name}}}'")),
-                    },
+                    }
                 });
             }
             character => literal.push(character),
@@ -115,6 +144,8 @@ pub fn describe_verifier(verifier: &crate::WebhookVerifier) -> String {
                     TemplatePart::Path => "path".to_owned(),
                     TemplatePart::Query => "query".to_owned(),
                     TemplatePart::FormSorted => "sorted form fields".to_owned(),
+                    TemplatePart::Json(pointer) => format!("{pointer} JSON value"),
+                    TemplatePart::Form(field) => format!("{field} form field"),
                 };
                 if !covered.contains(&words) {
                     covered.push(words);
@@ -189,6 +220,23 @@ mod tests {
                 TemplatePart::Header("x-hub".into()),
             ]
         );
+        assert_eq!(
+            parse_template("{json:/data/object/a~1b~0c}-{form:MessageSid}").unwrap(),
+            vec![
+                TemplatePart::Json("/data/object/a~1b~0c".into()),
+                TemplatePart::Literal("-".into()),
+                TemplatePart::Form("MessageSid".into()),
+            ]
+        );
+        for refused in [
+            "{json:id}",
+            "{json:}",
+            "{json:/a~2}",
+            "{json:/a~}",
+            "{form:}",
+        ] {
+            assert!(parse_template(refused).is_err(), "{refused} is refused");
+        }
         assert!(parse_template("{bogus}").is_err());
         assert!(parse_template("{body").is_err());
         assert!(parse_template("a}b").is_err());

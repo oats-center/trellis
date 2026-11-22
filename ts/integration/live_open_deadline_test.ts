@@ -169,7 +169,7 @@ test("a Rust Live session whose data subscription is refused during activation e
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_CALLER_MODE: "live-activation",
           XDG_CONFIG_HOME: join(runtime.workdir, "rust-caller-config"),
         },
@@ -260,7 +260,7 @@ test("every Rust Live session in a burst of data subscription refusals ends at o
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_CALLER_MODE: "live-activation",
           TRELLIS_CALLER_SESSIONS: String(sessions),
           XDG_CONFIG_HOME: join(runtime.workdir, "rust-caller-config"),

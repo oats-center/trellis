@@ -194,7 +194,7 @@ test("TypeScript RPC, Operation, job and event failures are each logged once und
         runtime.trellisUrl,
         identity.seed,
       ],
-      { env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificate } },
+      { env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificatePath } },
     );
     child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
@@ -338,7 +338,7 @@ test("Rust RPC, Operation, job and event failures are each logged once under the
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: identity.seed,
           RUST_LOG: "info",
           NO_COLOR: "1",

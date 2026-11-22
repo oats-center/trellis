@@ -78,8 +78,8 @@ intake to a ready successor while safe accepted work finishes on its receiving
 connection. Retain the service and its resource handles across these changes; no
 manual transport refresh is required. `wait()` supervises the logical service,
 not an individual socket. Reduced or revoked authority can interrupt affected
-work. While own coverage is unavailable, fresh application traffic either waits
-within its acquisition budget or reports unavailability.
+work. The service's revocation mirror never holds up traffic: while it catches
+up, callers are checked against the revocations already observed.
 
 The shared `/service` entrypoint runs on Node 24 or 26. For Rust, use the generated facade described in
 [the Rust guide](/guides/libraries/rust), not this TypeScript options object.
