@@ -127,7 +127,10 @@ test("the consent page offers only what the person can have, names them and each
         await page.goto(origin);
 
         /** Starts a sign-in to `clientId` asking for `optional`. */
-        const signIn = async (clientId: string, optional: string[]) => {
+        const signIn = async (
+          clientId: string,
+          optional: readonly string[],
+        ) => {
           const url = await page.evaluate(
             async ({ issuer, origin, clientId, required, optional }) => {
               const module: Module = await import(`${origin}/app.js`);

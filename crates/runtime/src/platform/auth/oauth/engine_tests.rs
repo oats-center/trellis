@@ -2157,13 +2157,10 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
             .unwrap()["available"],
         true
     );
-    assert_eq!(
-        capabilities
-            .iter()
-            .find(|capability| capability["capabilityId"] == f.write)
-            .unwrap()["available"],
-        false
-    );
+    // Optional access the user can't be granted is not offered at all.
+    assert!(!capabilities
+        .iter()
+        .any(|capability| capability["capabilityId"] == f.write));
     let presentation = view["presentationId"].as_str().unwrap().to_owned();
     let consent = [
         ("csrf", &csrf),
