@@ -684,14 +684,10 @@ async fn authorize(
     let client_id = validated.client_id.as_str().to_owned();
     let transaction = super::super::sqlite::id();
     let flow_transaction = transaction.clone();
-    // OpenID prompts: `login` signs in afresh, `select_account` asks the
-    // person signed in whether to continue as themselves.
-    let prompted = |wanted: &str| {
-        pairs
-            .iter()
-            .any(|(key, value)| key == "prompt" && value.split(' ').any(|prompt| prompt == wanted))
-    };
-    let (fresh, choose) = (prompted("login"), prompted("select_account"));
+    // OpenID's `prompt=login` signs in afresh.
+    let fresh = pairs
+        .iter()
+        .any(|(key, value)| key == "prompt" && value.split(' ').any(|prompt| prompt == "login"));
     let started = blocking(move || {
         let authority = &store.authority;
         // A fresh sign-in starts this browser on a new Portal session; the
@@ -735,12 +731,12 @@ async fn authorize(
         Ok(started) => started,
         Err(code) => return error(code),
     };
-    // A consent page always names who is signed in; an app that would sign
-    // in without one shows them only when it asks to (`select_account`).
-    let (page, ask) = match (authenticated.is_some(), choose) {
-        (true, true) => ("consent", "&account=confirm"),
-        (true, false) => ("consent", ""),
-        (false, _) => ("login", ""),
+    // Someone already signed in may be asked whether to continue as
+    // themselves (see `approve_without_asking`).
+    let (page, ask) = if authenticated.is_some() {
+        ("consent", "&account=confirm")
+    } else {
+        ("login", "")
     };
     let mut response =
         Redirect::to(&format!("/{page}?transaction={transaction}{ask}")).into_response();
@@ -969,7 +965,10 @@ async fn lapsed(engine: &OAuthEngine, transaction: &str, code: ErrorCode) -> Res
 /// without asking already confirmed it. When the person lacks something the
 /// app requires, the page explains. Native and Device Code sign-ins always ask.
 /// With `confirm_account`, set when the sign-in found someone already signed in
-/// to the Portal, it answers with a page asking whether to continue as them.
+/// to the Portal, it answers with a page asking whether to continue as them,
+/// unless the app is the operator's own registered one and didn't ask to choose
+/// (`prompt=select_account`): a third-party app never learns who is signed in
+/// without the person seeing which account it gets.
 async fn approve_without_asking(
     engine: &OAuthEngine,
     headers: &HeaderMap,
@@ -1032,7 +1031,13 @@ async fn approve_without_asking(
             }
         }
     }
-    if confirm_account {
+    let choose = match &flow.request {
+        super::portal::ConsentRequest::Authorization(pairs) => pairs.iter().any(|(key, value)| {
+            key == "prompt" && value.split(' ').any(|prompt| prompt == "select_account")
+        }),
+        super::portal::ConsentRequest::Device { .. } => false,
+    };
+    if confirm_account && (choose || !registered) {
         return Some(consent_view_page(engine, transaction, view.clone(), true).await);
     }
     let presentation = flow.presentation.clone()?;

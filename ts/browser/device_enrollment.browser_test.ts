@@ -64,6 +64,22 @@ test("an administrator approves a device from its activation link", async () => 
         .fill(activation.confirmationCode);
       await page.getByRole("button", { name: "Continue", exact: true }).click();
       await page.getByText("Loading dock sensor", { exact: true }).waitFor();
+      // The review names who would approve, and can be signed in again as
+      // someone else; the typed code carries over.
+      await page
+        .getByText(new RegExp(`^Signed in as .*\\b${runtime.adminUsername}\\b`))
+        .waitFor();
+      await page
+        .getByRole("button", { name: "Use a different account" })
+        .click();
+      await page
+        .getByLabel("Username", { exact: true })
+        .fill(runtime.adminUsername);
+      await page
+        .getByLabel("Password", { exact: true })
+        .fill(runtime.adminPassword);
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await page.getByText("Loading dock sensor", { exact: true }).waitFor();
       await page.getByRole("button", { name: "Approve", exact: true }).click();
       await page
         .getByRole("heading", { name: "Device approved", exact: true })

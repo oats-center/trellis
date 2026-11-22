@@ -453,18 +453,23 @@ their username or email, and offer "Use a different account". An identity link
 opened while signed in as someone other than its target says so and offers only
 the switch.
 
-A browser sign-in with nothing left to decide (see the consent page rules
-below) still finishes without a page, so a registered web app such as the
-Console signs the person straight in, and its reconnects never stop on a page.
-An app that wants the choice asks for it with OpenID's `prompt`:
+When `/authorize` finds a Portal login it sends the browser to
+`/consent?...&account=confirm`. If something is left to decide there, that is
+the ordinary consent page. If nothing is (see the consent page rules below), it
+depends on the app:
 
-- `prompt=select_account`, with a Portal login present, sends `/authorize` to
-  `/consent?...&account=confirm`. When nothing is left to decide, that page
-  shows only "Continue to {app}" with "Continue as {name}" (the same consent
-  page without `account=confirm`, which then finishes) and "Use a different
-  account"; otherwise it is the ordinary consent page.
-- `prompt=login` starts the browser on a fresh Portal session and the sign-in
-  page, as "Use a different account" does, so the person signs in again.
+- The operator's own registered web apps, such as the Console, sign the person
+  straight in, so their reconnects never stop on a page.
+- A third-party browser app (unregistered, or known by its client metadata
+  document) with remembered consent shows "Continue to {app}" with "Continue as
+  {name}" and "Use a different account", so the person sees which account it
+  gets. "Continue as" is the same consent page without `account=confirm`,
+  which then finishes.
+- A registered app gets that page too when it asks with
+  `prompt=select_account`.
+
+`prompt=login` starts the browser on a fresh Portal session and the sign-in
+page, as "Use a different account" does, so the person signs in again.
 
 "Use a different account" posts `/portal/switch-account` with the CSRF token and
 the flow: a `transaction`, a device `review`, or a `link` token. It rotates the
