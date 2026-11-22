@@ -227,6 +227,7 @@
     const key = scope.key;
     saving = true;
     refusal = null;
+    saved = false;
     try {
       await trellis
         .usersDelete({
