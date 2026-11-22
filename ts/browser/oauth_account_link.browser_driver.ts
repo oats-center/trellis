@@ -38,7 +38,7 @@ test("account linking crosses Dex through a reviewed navigation under CSP", asyn
     const loggedIn = await loginResponse;
     strictEqual(loggedIn.status(), 303, failures.join("\n"));
     await page.getByRole("heading", { name: "Link OIDC sign-in" }).waitFor();
-    const csrf = await page.locator('input[name="csrf"]').inputValue();
+    const csrf = await page.locator('input[name="csrf"]').first().inputValue();
     const token = await page.locator('input[name="token"]').inputValue();
     const origin = new URL(link).origin;
     for (const [requestOrigin, requestCsrf] of [

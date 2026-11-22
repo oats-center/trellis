@@ -193,9 +193,12 @@ let device = login
         "optional": Request::OPTIONAL_CAPABILITIES,
     }]))
     .await?;
-// The complete URI already carries the code; the page shows it to compare.
-let link = device.verification_uri_complete().unwrap_or(device.verification_uri());
-println!("Open {link} and check the code is {}", device.user_code());
+// The person opens the page and types the code; no link carries it.
+println!(
+    "Open {} and enter the code {}",
+    device.verification_uri(),
+    device.user_code()
+);
 let session = device.complete().await?;
 
 let client = Client::from_generated(

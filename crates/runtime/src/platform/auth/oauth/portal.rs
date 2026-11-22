@@ -94,6 +94,9 @@ pub(super) struct ConsentIntent {
     pub(super) client_id: oauth_as::client::ClientId,
     pub(super) redirect_uri: Option<String>,
     pub(super) device_user_code: Option<String>,
+    /// When a device sign-in was requested (epoch milliseconds) and from what
+    /// network address, shown beside its code.
+    pub(super) device_requested: Option<(u128, Option<String>)>,
     pub(super) dpop_jkt: String,
     pub(super) authorization_details: String,
 }
@@ -127,6 +130,7 @@ impl super::OAuthEngine {
                     client_id: validated.client_id,
                     redirect_uri: Some(validated.redirect_uri),
                     device_user_code: None,
+                    device_requested: None,
                     dpop_jkt: validated.dpop_jkt.ok_or_else(invalid)?.into_string(),
                     authorization_details: request
                         .authorization_details
@@ -156,6 +160,13 @@ impl super::OAuthEngine {
                     client_id: device.client_id,
                     redirect_uri: None,
                     device_user_code: Some(device.user_code),
+                    device_requested: Some((
+                        device
+                            .created_at
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |at| at.as_millis()),
+                        selection.requested_from,
+                    )),
                     dpop_jkt: selection.persistent_dpop_jkt,
                     authorization_details: selection.authorization_details,
                 })
@@ -261,6 +272,50 @@ impl SqliteAuthorizationStore {
             session_id,
             cookie,
             csrf,
+        })
+    }
+
+    /// Takes this browser's Portal session off its login, so someone else can
+    /// sign in for the pending flows the session holds. Both secrets rotate and
+    /// the session ID stays, so those flows remain this browser's. The login
+    /// itself is not ended: apps and devices signed in through it keep working.
+    pub(crate) fn portal_switch_account(
+        &self,
+        cookie: &str,
+        csrf: &str,
+        now: i64,
+    ) -> Result<PortalCookie, AuthError> {
+        if cookie.len() > 128 || csrf.len() > 128 {
+            return Err(AuthError::Denied);
+        }
+        let mut secrets = [0u8; 64];
+        getrandom::fill(&mut secrets).map_err(|_| AuthError::Unavailable)?;
+        let replacement = URL_SAFE_NO_PAD.encode(&secrets[..32]);
+        let replacement_csrf = URL_SAFE_NO_PAD.encode(&secrets[32..]);
+        let session_id = self.transaction(|connection| {
+            connection
+                .query_row(
+                    "UPDATE auth_portal_sessions \
+                    SET cookie_hash=?1,csrf_hash=?2,login_session_id=NULL,expires_at=?3 \
+                    WHERE cookie_hash=?4 AND csrf_hash=?5 AND expires_at>?6 \
+                    RETURNING portal_session_id",
+                    params![
+                        URL_SAFE_NO_PAD.encode(Sha256::digest(replacement.as_bytes())),
+                        URL_SAFE_NO_PAD.encode(Sha256::digest(replacement_csrf.as_bytes())),
+                        now + 600,
+                        URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes())),
+                        URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes())),
+                        now
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or(AuthError::Denied)
+        })?;
+        Ok(PortalCookie {
+            session_id,
+            cookie: replacement,
+            csrf: replacement_csrf,
         })
     }
 

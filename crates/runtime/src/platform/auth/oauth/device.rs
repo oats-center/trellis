@@ -27,10 +27,14 @@ pub(super) struct DeviceSelection {
     pub(super) authorization_details: String,
     pub(super) persistent_dpop_jkt: String,
     pub(super) public_jwk: serde_json::Value,
+    /// The network address the device asked from, shown beside its code so
+    /// the person can tell their own device's request from someone else's.
+    pub(super) requested_from: Option<String>,
 }
 
 pub(super) async fn start(
     State(engine): State<Arc<OAuthEngine>>,
+    peer: Option<axum::Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
     headers: HeaderMap,
     Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
@@ -56,7 +60,14 @@ pub(super) async fn start(
         return super::http::error(ErrorCode::InvalidRequest);
     };
     match engine
-        .device_authorization(&ClientId::new(client), details, proof, runtime, key)
+        .device_authorization(
+            &ClientId::new(client),
+            details,
+            proof,
+            runtime,
+            key,
+            peer.map(|axum::Extension(peer)| peer.0.ip()),
+        )
         .await
     {
         Ok(response) => Json(response).into_response(),
@@ -199,6 +210,7 @@ impl OAuthEngine {
         proof: &str,
         runtime_id: &str,
         ephemeral_nkey: &str,
+        requested_from: Option<std::net::IpAddr>,
     ) -> Result<DeviceAuthorizationResponse, ErrorResponse> {
         let requested = RequestedAuthority::parse(details)?;
         self.prepare_client(client_id).await?;
@@ -300,6 +312,7 @@ impl OAuthEngine {
             authorization_details: details.into(),
             persistent_dpop_jkt: binding.persistent_dpop_jkt,
             public_jwk: binding.public_jwk,
+            requested_from: requested_from.map(|address| address.to_string()),
         };
         blocking(move || store.store_device_selection(&grant, &selection))
             .await

@@ -18,8 +18,8 @@ pub(crate) fn render_agent_login_instructions(
     let qr = QrCode::new(login_url.as_bytes()).into_diagnostic()?;
     let qr = qr.render::<unicode::Dense1x2>().quiet_zone(false).build();
     Ok(format!(
-        "Open this page to sign in, or scan the code with your phone:\n\n  {}\n\n{qr}\n\n\
-        Check that the page shows the code {}.",
+        "Open this page to sign in, or scan it with your phone:\n\n  {}\n\n{qr}\n\n\
+        Then enter this code: {}",
         login_url.cyan().underline(),
         user_code.bold()
     ))
@@ -2878,10 +2878,9 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
         }]))
         .await
         .into_diagnostic()?;
-    let login_url = challenge
-        .verification_uri_complete()
-        .unwrap_or(challenge.verification_uri())
-        .to_owned();
+    // The link opens the code entry page only; the person types the code, so
+    // a link someone else sent can't carry theirs.
+    let login_url = challenge.verification_uri().to_owned();
 
     if let Some(path) = &args.login_url_file {
         write_login_url_file(path, &login_url)?;

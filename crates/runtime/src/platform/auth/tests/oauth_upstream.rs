@@ -583,14 +583,19 @@ staticPasswords:
                 current,
             )
             .unwrap();
-            assert_eq!(
-                http.get(wrong.authorization_url)
-                    .send()
-                    .await
-                    .unwrap()
-                    .status(),
-                reqwest::StatusCode::BAD_REQUEST
-            );
+            // Another person's link can't be continued; the page says so and
+            // offers only signing in as someone else.
+            let page = http
+                .get(wrong.authorization_url)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            assert!(page.contains("this link is for another account"), "{page}");
+            assert!(page.contains(r#"action="/portal/switch-account""#));
+            assert!(!page.contains(r#"action="/portal/account/link""#));
         }
         let denied = http
             .post(format!("{origin}/portal/account/link"))

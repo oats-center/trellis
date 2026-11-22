@@ -40,6 +40,7 @@ All routes are served only by the Trellis listener (`[http]`), beside
 | `POST` | `/portal/session`                         | Create a portal session cookie and CSRF token                                                                                    |
 | `POST` | `/portal/login`                           | Local username/password sign-in                                                                                                  |
 | `POST` | `/portal/logout`                          | End the portal login                                                                                                             |
+| `POST` | `/portal/switch-account`                  | "Use a different account": take the browser's portal session off its login and sign in again for the same flow                   |
 | `GET`  | `/portal/providers`                       | List enabled upstream OIDC providers, and this browser's last provider refusal for a sign-in                                     |
 | `GET`  | `/portal/oidc/{provider}/begin`           | Start upstream OIDC with server-owned state, nonce, and PKCE                                                                     |
 | `GET`  | `/portal/oidc/callback`                   | Verify the upstream OIDC callback                                                                                                |
@@ -55,6 +56,12 @@ Device Code, enrollment, and revocation endpoints allow CORS only from validated
 client callback origins. Cookie-authenticated portal routes never enable CORS.
 Request admission budgets are described in `trellis-auth.md`. All HTTP
 timestamps and expiries are epoch milliseconds.
+
+Every route answers a refusal with an OAuth JSON error, except to a browser: a
+request that accepts `text/html`, or a `GET` of a page route (`/authorize`,
+`/login`, `/consent`, `/logout`, `/account/*`, `/portal/oidc/*`), gets a Portal
+page with the same status that says what happened in that flow (see
+`trellis-auth.md`, Portal pages for flows that can't continue).
 
 ## Native Admission
 

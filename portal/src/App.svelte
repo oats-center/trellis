@@ -33,6 +33,10 @@
     registered: boolean;
     redirectUri: string | null;
     deviceUserCode: string | null;
+    /** When the device asked, in epoch milliseconds. */
+    deviceRequestedAt: number | null;
+    /** The network address the device asked from. */
+    deviceRequestedFrom: string | null;
     capabilities: Capability[];
     /** Administration needs a separate confirmation step. */
     confirmAdministration: boolean;
@@ -109,6 +113,8 @@
     signIn?: SignIn | null;
     consent?: Consent;
     theme?: Theme | null;
+    /** Someone was already signed in: ask before continuing as them. */
+    confirmAccount?: boolean;
   } => {
     try {
       return JSON.parse(
@@ -127,7 +133,9 @@
       .slice(0, 8);
     return code.length > 4 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
   }
-  let deviceCode = $state(formatDeviceCode(query.get("user_code") ?? ""));
+  // Always typed from the device itself, never taken from the link: a link
+  // someone else sent would otherwise carry the code of their device.
+  let deviceCode = $state("");
   const transaction = query.get("transaction") ?? "";
   const login = path === "/login";
   const device = path === "/device";
@@ -152,6 +160,21 @@
     deviceName: string;
     instanceId: string;
     canDecide: boolean;
+    signedInAs: SignedInAs;
+  }
+
+  /** Who is signed in, as they know themselves. */
+  interface SignedInAs {
+    name: string | null;
+    username: string | null;
+    email: string | null;
+  }
+
+  /** A name, a username, an email: the distinct ones, most familiar first. */
+  function knownAs(person: SignedInAs): string[] {
+    return [...new Set([person.name, person.username, person.email])].filter(
+      (part): part is string => !!part,
+    );
   }
 
   // The code survives the sign-in round trip so people type it once.
@@ -445,13 +468,8 @@
     ),
   );
   // Who is signed in, as they know themselves: a name, a username, an email.
-  let signedInAs = $derived(
-    view
-      ? [...new Set([view.name, view.username, view.email])].filter(
-          (part): part is string => !!part,
-        )
-      : [],
-  );
+  let signedInAs = $derived(view ? knownAs(view) : []);
+  const confirmAccount = served.confirmAccount === true;
 
   function setGroup(group: Group, on: boolean): void {
     const ids = group.choices
@@ -567,6 +585,24 @@
   </p>
 {/snippet}
 
+{#snippet signedIn(parts: string[])}
+  {#if parts.length}<p class="muted">
+      Signed in as <strong>{parts[0]}</strong
+      >{#if parts[1]}{" "}({parts[1]}){/if}
+    </p>{/if}
+{/snippet}
+
+<!-- Signs this browser in again for the same flow, which keeps its request. -->
+{#snippet switchAccount(field: string, value: string, block = false)}
+  <form class="switch" method="post" action="/portal/switch-account">
+    <input type="hidden" name="csrf" value={csrf} />
+    <input type="hidden" name={field} {value} />
+    <button class={block ? "block" : "link"} type="submit"
+      >Use a different account</button
+    >
+  </form>
+{/snippet}
+
 {#snippet upstreamRefusal()}
   <p class="alert error" role="alert">
     {#if refusal}
@@ -594,7 +630,9 @@
         ? "Sign out"
         : login
           ? "Sign in"
-          : "Allow access"} · {brand}</title
+          : confirmAccount
+            ? "Continue"
+            : "Allow access"} · {brand}</title
   ></svelte:head
 >
 
@@ -665,6 +703,8 @@
     {/if}
     {#if enrollmentStep === "review" && enrollmentReview}
       {@const pending = enrollmentReview.state === "pending"}
+      {@render signedIn(knownAs(enrollmentReview.signedInAs))}
+      {@render switchAccount("review", reviewId)}
       <p class="muted">Check that this is the device in front of you.</p>
       <dl class="device-details">
         <dt>Device</dt>
@@ -990,6 +1030,24 @@
       </p>
     {/if}
   </main>
+{:else if view && confirmAccount}
+  <main class="card narrow">
+    <div class="app">
+      <span class="app-icon" aria-hidden="true"
+        >{appName.charAt(0).toUpperCase()}</span
+      >
+      <div>
+        <h1>Continue to {appName}</h1>
+        {@render signedIn(signedInAs)}
+      </div>
+    </div>
+    <a
+      class="button primary block"
+      href={`/consent?transaction=${encodeURIComponent(transaction)}`}
+      >{signedInAs.length ? `Continue as ${signedInAs[0]}` : "Continue"}</a
+    >
+    {@render switchAccount("transaction", transaction, true)}
+  </main>
 {:else if view}
   <main class="card consent">
     <div class="app">
@@ -998,10 +1056,8 @@
       >
       <div>
         <h1>{appName} wants to use your account</h1>
-        {#if signedInAs.length}<p class="muted">
-            Signed in as <strong>{signedInAs[0]}</strong
-            >{#if signedInAs[1]}{" "}({signedInAs[1]}){/if}
-          </p>{/if}
+        {@render signedIn(signedInAs)}
+        {@render switchAccount("transaction", transaction)}
       </div>
     </div>
 
@@ -1042,6 +1098,20 @@
           <span class="muted">Code</span>
           <code>{view.deviceUserCode}</code>
         </div>
+        {#if view.deviceRequestedAt}
+          {@const minutes = Math.max(
+            0,
+            Math.round((Date.now() - view.deviceRequestedAt) / 60_000),
+          )}
+          <p class="muted device-request">
+            Requested {minutes === 0
+              ? "just now"
+              : minutes === 1
+                ? "1 minute ago"
+                : `${minutes} minutes ago`}{#if view.deviceRequestedFrom}{" "}from
+              <code>{view.deviceRequestedFrom}</code>{/if}
+          </p>
+        {/if}
         <p class="alert warn">
           Make sure this code matches the one on your device. If someone sent
           you this code or link, stop here: approving gives them access as you.

@@ -1138,7 +1138,8 @@ pub(super) async fn portal_inspect(
                 "deviceType":device_type,
                 "deviceName":device_name,
                 "instanceId":current.instance_id,
-                "canDecide":can_decide
+                "canDecide":can_decide,
+                "signedInAs":super::http::signed_in_as(connection, review.2)?
             }))
         })
     })

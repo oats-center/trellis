@@ -195,12 +195,14 @@ button:hover,
 .button:hover {
   background: var(--soft);
 }
-button.primary {
+button.primary,
+.button.primary {
   background: var(--primary);
   border-color: var(--primary);
   color: var(--on-primary);
 }
-button.primary:hover {
+button.primary:hover,
+.button.primary:hover {
   background: var(--primary-hover);
 }
 button:disabled,
@@ -229,6 +231,12 @@ button.link:hover {
 :focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
+}
+.switch {
+  margin-top: 0.25rem;
+}
+.switch .block {
+  margin-top: 0.6rem;
 }
 .providers .block {
   margin-top: 0.6rem;

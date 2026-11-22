@@ -365,6 +365,19 @@ portal per installation or per client from the Appearance tab of the Console's
 headings and a footer, plus an installation-only stylesheet); changes apply at
 once, and apps cannot replace the portal or change what consent shows.
 
+A consent page shown to someone already signed in to the portal names them and
+offers "Use a different account", which signs in again for the same request
+(client, capabilities, PKCE, `state`), so the app receives whoever finishes it.
+A web app the operator registered, with consent settled, signs the person
+straight in; it can ask for the choice with `prompt=select_account` ("Continue
+as" or "Use a different account") or for a fresh sign-in with `prompt=login`.
+A third-party app always gets that choice while someone is signed in. Device Code sign-ins
+never carry the code in a link: show the plain verification URL and the code,
+which the person types. The portal answers
+browsers with pages, never raw JSON, when a sign-in, device code or account link
+has expired or was used; unknown, expired and used device codes all get the
+same answer. API callers still get OAuth JSON errors.
+
 Installation identity and the independently provisioned OAuth storage key
 survive restarts and issuer rotation. `Issuers.Rotate` requires
 `trellis.auth.v1:platform.manage`, the expected current key ID, and an

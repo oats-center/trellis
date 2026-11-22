@@ -571,6 +571,23 @@ impl OAuthStorage {
         Ok(flow)
     }
 
+    /// The request of an authorization this browser can no longer continue,
+    /// because it expired or belongs to another browser's Portal session,
+    /// while its record is still kept. A used authorization has none.
+    pub(super) fn lapsed_authorization(
+        &self,
+        id: &str,
+    ) -> Result<Option<super::portal::ConsentRequest>, StorageError> {
+        let connection = self.authority.writer().map_err(failure)?;
+        Ok(self
+            .read::<super::portal::PortalAuthorization>(
+                Connection::new(&connection),
+                "authorization",
+                id,
+            )?
+            .map(|flow| flow.request))
+    }
+
     /// The client of a pending, unexpired authorization, for Portal theming.
     pub(super) fn authorization_client(
         &self,
