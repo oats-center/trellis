@@ -8,6 +8,75 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.53] - 2026-11-22
+
+### Added
+
+- Workspaces. A package's identity is its workspace plus its name: the registry
+  location it is published from (such as `ghcr.io/acme/orders`), or
+  `localhost/<name>` for a package with no `[package] workspace`. The built-in
+  `trellis` package keeps its plain IDs. Publishing and pulling always use the
+  workspace's own registry, `--registry` is gone, and `trellis.lock` is
+  format 3. RPC and Operation subjects carry the full API identity. Generated
+  names stay short and get a hash suffix only when they collide. The CLI and
+  Console show short IDs while they are unique. `trellis add --alias` keeps two
+  same-named dependencies from different workspaces, and `trellis rm` refuses an
+  ambiguous name.
+- Receiving webhooks. Services declare webhook endpoints in IDL, and Trellis
+  serves them at `/webhooks/<service>/<random id>` on its own origin. Checks
+  cover tokens, Basic, address ranges and HMAC, with a rotation overlap that
+  accepts only the secret each change replaced. Deliveries are ordinary
+  `Received` events, deduplicated by the sender's delivery ID, and sync
+  endpoints can answer through a decide handler. `trellis svc <name> webhooks`
+  and the Console's Webhooks section manage endpoints and inspect, reverify,
+  enable, disable and rotate them. Unauthenticated endpoints need an explicit
+  acknowledgement at install. See the receiving-webhooks guide.
+- Instance enrollment. A deployment's enrollment secret lets a service process
+  register its own instance key at startup, with an instance cap, rate limits,
+  expiry and revocation, and a key file so a restarted process keeps its
+  identity. Managed from `trellis svc <name> enrollment` and the Console.
+- Settings: holders of `config.manageSecrets` can reveal a secret's value on
+  request in the Console or with `trellis svc <id> config reveal FIELD`. Every
+  reveal is audited, and reveals are rate-limited. The settings form uses inputs
+  that fit each type (list editors, switches, selects, nested models, number
+  bounds, date pickers) with inline errors, and fields the running build doesn't
+  use have their own section with Remove.
+- Health checks can report degraded. Any failed check makes a participant
+  unhealthy; otherwise any degraded check makes it degraded.
+  `trellis svc <ID> instances` shows each instance's health and names its
+  failing checks.
+- Each OIDC provider can carry custom authorization parameters added to every
+  sign-in and linking request (such as Auth0's `organization=<id>`), and sets
+  which prompt follows an app sign-out.
+- A Live provider at its session bound refuses the next opening with
+  `resource_exhausted`, so callers can retry another replica.
+
+### Changed
+
+- Generated Rust SDKs depend only on `trellis-rs`. They name shared models
+  through `trellis_rs::models` and wire types through `trellis_rs::protocol`, so
+  they always use the exact crates `trellis-rs` links. Generation reads the
+  models from the exact source `Cargo.lock` names (path, Git commit or registry
+  checksum), never downloads, and emits the models inline when that source can't
+  be verified. An SDK is regenerated when `trellis-rs` moves to models with a
+  different digest. `trellis_protocol::CRATE_VERSION` is gone.
+- `config.manageSecrets` is titled "Manage secrets" and says it can read
+  secrets, so apps holding it ask for consent again.
+
+### Fixed
+
+- A Rust service could stay unable to publish, pull or report health after a
+  broker restart, because a delayed authority check undid the reconnected
+  transport.
+- Enrollment and device enrollment requests don't follow redirects.
+- A lowered enrollment cap refuses enrollment until the instance count is back
+  under it, editing an enrollment secret keeps its exact expiry, and the Console
+  lists every page of enrollment secrets.
+- `TERM=dumb` turns color off even when `CI` is set.
+- Docker Hub workspaces (`docker.io/<org>`) can use registered credentials.
+- CLI arguments that take a generated ID, digest, seed or OIDC subject accept a
+  value starting with `-`, such as `trellis issuers revoke -q9Tk...`.
+
 ## [0.100.0-rc.52] - 2026-11-20
 
 ### Fixed
