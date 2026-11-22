@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- An issuer revoke that overlapped a rotation could revoke the key Auth was
+  still signing its replies with, so the operator got a timeout though the
+  revoke took effect. Auth now decides and commits a revoke in one
+  transaction, refuses the current key at once, and commits only after its
+  own authority has moved off the key.
+- Every refused Auth change says why: an unknown target names what is
+  missing, a target in the wrong state says which state, and a real conflict
+  says what changed, instead of a bare "Revision conflict" or "Not found".
+
 ## [0.100.0-rc.53] - 2026-11-22
 
 ### Added
