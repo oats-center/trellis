@@ -1589,10 +1589,23 @@ staticPasswords:
     .expect("removing a pin the issuer still needs is saved");
     assert_eq!(unpinned.provider.certificate_fingerprint, None);
     let (_, refused, _) = begin_company_sign_in().await;
+    // Without the pin Trellis cannot reach the issuer, so the sign-in goes
+    // back to the sign-in page, which shows the failure's reference, instead
+    // of to the issuer.
+    let back = refused
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
     assert_eq!(
         refused.status(),
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        reqwest::StatusCode::SEE_OTHER,
         "sign-in must not reach the issuer through the removed pin"
+    );
+    assert!(
+        back.starts_with("/login?") && !back.contains(issuer.as_str()),
+        "the refused sign-in returns to the sign-in page: {back}"
     );
     // Pinning it again restores sign-in, so the refusal above was the trust
     // store and nothing else.
