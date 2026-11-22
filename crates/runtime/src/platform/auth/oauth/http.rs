@@ -42,6 +42,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
     // Image fan-out cannot spend the login, consent or token request budget.
     let image_requests = Arc::new(Mutex::new(BTreeMap::new()));
     let maintenance_engine = engine.clone();
+    let page_engine = engine.clone();
     let metadata_engine = engine.clone();
     // Discovery must work before a previously unknown client is prepared.
     // These read-only documents contain no cookie-authenticated private state.
@@ -349,7 +350,77 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                 next.run(request).await
             }
         }))
+        // Outermost, so a browser gets a page for every refusal, the request
+        // budget's and the host check's included. API callers keep the JSON.
+        .layer(middleware::from_fn(move |request: Request, next: Next| {
+            let engine = page_engine.clone();
+            async move {
+                let path = request.uri().path().to_owned();
+                let browser = request
+                    .headers()
+                    .get_all(header::ACCEPT)
+                    .iter()
+                    .filter_map(|value| value.to_str().ok())
+                    .flat_map(|value| value.split(','))
+                    .any(|part| part.split(';').next().map(str::trim) == Some("text/html"))
+                    || (request.method() == axum::http::Method::GET
+                        && (["/authorize", "/login", "/consent", "/logout"]
+                            .contains(&path.as_str())
+                            || path.starts_with("/account/")
+                            || path.starts_with("/portal/oidc/")));
+                let response = next.run(request).await;
+                let json = response
+                    .headers()
+                    .get(header::CONTENT_TYPE)
+                    .is_some_and(|value| value.as_bytes().starts_with(b"application/json"));
+                if !browser
+                    || !json
+                    || !(response.status().is_client_error() || response.status().is_server_error())
+                {
+                    return response;
+                }
+                browser_failure(&engine, &path, response).await
+            }
+        }))
         .with_state(engine)
+}
+
+/// One answer for every device code that can't be used, unknown, expired or
+/// already used alike, so the page never tells valid codes from invalid ones.
+pub(super) fn device_code_invalid(engine: &OAuthEngine) -> Response {
+    failure_page(
+        engine,
+        StatusCode::BAD_REQUEST,
+        "Check the code",
+        "This code isn't valid. Check the code on your device, or start again on the device.",
+        Some(("Enter a code", "/device")),
+    )
+}
+
+/// A Portal page that tells a browser in plain words what went wrong and, when
+/// there is one, offers the step that gets them going again.
+pub(super) fn failure_page(
+    engine: &OAuthEngine,
+    status: StatusCode,
+    title: &str,
+    message: &str,
+    action: Option<(&str, &str)>,
+) -> Response {
+    let action = action
+        .map(|(label, href)| {
+            format!(
+                r#"<a class="button primary block" href="{}">{label}</a>"#,
+                escape(href)
+            )
+        })
+        .unwrap_or_default();
+    let mut response = super::account::html(
+        engine,
+        title,
+        &format!(r#"<p class="muted" role="alert">{message}</p>{action}"#),
+    );
+    *response.status_mut() = status;
+    response
 }
 
 /// `text` made safe to place in a server-rendered page's text or attribute.
@@ -358,6 +429,82 @@ pub(super) fn escape(text: &str) -> String {
         .replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Turns an OAuth error a browser would otherwise see as raw JSON into a Portal
+/// page that says what happened on that step of the flow.
+async fn browser_failure(engine: &OAuthEngine, path: &str, response: Response) -> Response {
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .ok()
+        .and_then(|body| serde_json::from_slice::<Value>(&body).ok())
+        .unwrap_or_default();
+    let code = body
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if code == "server_error" || status.is_server_error() {
+        let reference = body
+            .get("error_description")
+            .and_then(Value::as_str)
+            .and_then(|description| description.split_once("Reference: "))
+            .map(|(_, reference)| format!(" Reference: {reference}"))
+            .unwrap_or_default();
+        return failure_page(
+            engine,
+            status,
+            "Something went wrong",
+            &format!("Something went wrong on the server. Try again.{reference}"),
+            None,
+        );
+    }
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return failure_page(
+            engine,
+            status,
+            "Too many requests",
+            "Too many requests came from your network. Wait a minute, then try again.",
+            None,
+        );
+    }
+    let (title, message) = match path {
+        "/portal/device" => match code {
+            "slow_down" => (
+                "Too many tries",
+                "Too many codes were entered. Wait a minute, then try again.",
+            ),
+            "access_denied" => (
+                "This page expired",
+                "This page was open too long. Enter the code again.",
+            ),
+            _ => return device_code_invalid(engine),
+        },
+        "/account/reset" | "/portal/account/reset" => (
+            "This link has expired",
+            "This password link has expired or was already used. Ask your administrator for a \
+            new one.",
+        ),
+        _ if path.starts_with("/account/") || path.starts_with("/portal/account/") => (
+            "This link has expired",
+            "This link has expired or was already used. Start linking again from your account.",
+        ),
+        "/authorize" => (
+            "This sign-in link isn't valid",
+            "This sign-in link isn't valid. Start the sign-in again from the app.",
+        ),
+        "/logout" => (
+            "This sign-out link isn't valid",
+            "Go back to the app and sign out there.",
+        ),
+        _ => (
+            "This sign-in link has expired",
+            "This sign-in link has expired or was already used. Start the sign-in again from \
+            the app.",
+        ),
+    };
+    let action = (path == "/portal/device").then_some(("Enter the code again", "/device"));
+    failure_page(engine, status, title, message, action)
 }
 
 async fn avatar(State(engine): State<Arc<OAuthEngine>>, Path(token): Path<String>) -> Response {
@@ -626,7 +773,7 @@ async fn login_page(
         portal_cookie(&headers, "__Host-trellis-portal"),
         portal_cookie(&headers, "__Host-trellis-portal-csrf"),
     ) else {
-        return error(ErrorCode::AccessDenied);
+        return lapsed(&engine, transaction, ErrorCode::AccessDenied).await;
     };
     let now = crate::clock::unix_now();
     let transaction = transaction.clone();
@@ -651,7 +798,7 @@ async fn login_page(
     .await;
     let callback = match pending {
         Ok(callback) => callback,
-        Err(code) => return error(code),
+        Err(code) => return lapsed(&engine, &transaction, code).await,
     };
     // The page arrives with its sign-in methods and theme, so its form never
     // shifts when they load. Without them it still offers what it can.
@@ -737,7 +884,7 @@ async fn consent_page(
     };
     let view = match consent_data(&engine, &headers, transaction).await {
         Ok(view) => view,
-        Err(code) => return error(code),
+        Err(code) => return lapsed(&engine, transaction, code).await,
     };
     let confirm_account = form.get("account").is_some_and(|ask| ask == "confirm");
     if let Some(response) =
@@ -770,6 +917,34 @@ async fn consent_view_page(
             "confirmAccount": confirm_account
         })),
     )
+}
+
+/// Answers a browser whose sign-in page can no longer continue `transaction`.
+/// An authorization whose request is still kept can start again in this
+/// browser; a device sign-in starts again on the device; anything else gets
+/// the failure page for `code`.
+async fn lapsed(engine: &OAuthEngine, transaction: &str, code: ErrorCode) -> Response {
+    if code == ErrorCode::ServerError {
+        return error(code);
+    }
+    let store = engine.server.store().clone();
+    let id = transaction.to_owned();
+    match blocking(move || store.lapsed_authorization(&id)).await {
+        Ok(Some(super::portal::ConsentRequest::Authorization(pairs))) => {
+            let restart = url::form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(&pairs)
+                .finish();
+            failure_page(
+                engine,
+                StatusCode::BAD_REQUEST,
+                "Start the sign-in again",
+                "This sign-in link has expired or was opened in another browser.",
+                Some(("Start again", &format!("/authorize?{restart}"))),
+            )
+        }
+        Ok(Some(super::portal::ConsentRequest::Device { .. })) => device_code_invalid(engine),
+        _ => error(code),
+    }
 }
 
 /// A web app signs in without a consent page when everything it asks for that

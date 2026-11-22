@@ -472,6 +472,34 @@ through it keep working, and only this browser stops using it. The switch sets
 the provider again instead of its session signing the same person straight
 back in.
 
+#### Portal pages for flows that can't continue
+
+A browser never sees a raw JSON error from the Portal. The router's outermost
+layer turns an OAuth JSON error into a server-rendered Portal page, keeping its
+status, for any request that accepts `text/html` and for any `GET` of a page
+route (`/authorize`, `/login`, `/consent`, `/logout`, `/account/*`,
+`/portal/oidc/*`). API and `fetch` callers keep the JSON. The page says what
+happened in that flow: an invalid sign-in link, an expired or used sign-in, an
+expired or used password or identity link, a full request budget, or a server
+failure with its reference.
+
+When `/login` or `/consent` can't continue a transaction (expired, or bound to
+another browser's portal session) and its record is still kept, an
+authorization offers "Start again", which repeats its original `/authorize`
+request in this browser; the client still decides whether it accepts the
+result, as for any authorization response. A used transaction has no record,
+so its page says to start again from the app. Expiry cleanup removes lapsed
+records within about a minute, and records are not kept longer for this, so
+"Start again" is mostly the case of a link opened in another browser or one
+that has just lapsed.
+
+Device codes have one answer. Entering an unknown, expired or already used
+code, or reaching a device transaction whose code expired or was used, gets the
+same page with the same status: "This code isn't valid. Check the code on your
+device, or start again on the device." The page can't tell valid codes from
+invalid ones, and user-code entry keeps its rate limit; JSON callers get the
+same `invalid_request` for all three.
+
 Console and OAuth portal are separate required frontend apps. Their build tools
 use Node 24 or 26 (CI runs 26), npm workspaces, and Vite; embedded builds compile into staging
 before replacing only owner-marked output. Production builds require real
@@ -610,15 +638,16 @@ freshness or upstream role removal.
 When an OIDC sign-in fails after the callback has matched its flow, Trellis
 returns the browser to the sign-in or device-approval page it came from, with
 `error=upstream_login_failed`. Failures before that point have no page to go
-back to and return a plain OAuth error. The reason is kept in memory for ten
+back to: a browser gets the Portal's page for an expired or used sign-in, and
+other callers the OAuth error. The reason is kept in memory for ten
 minutes, keyed by the portal session and the transaction or device review, and
 `/portal/providers` returns it to that browser only. A link alone cannot make
 the page show text. A reason is either the provider's own `error` and
 `error_description`, from its redirect or its token response, or the step
 Trellis could not complete: no linked account where the app allows no sign-up,
 a provider changed or turned off mid-flow, discovery, or ID-token
-verification. Account linking keeps the bare error, because it has no page to
-return to.
+verification. Account linking keeps the bare error, shown to a browser as the
+Portal's page for an expired or used link, because it has no page to return to.
 
 ### The capability compiler (`policy.rs`)
 

@@ -19,6 +19,8 @@ mod upstream_http;
 
 #[cfg(test)]
 pub(super) mod engine_tests;
+#[cfg(test)]
+mod lapsed_tests;
 
 #[cfg(test)]
 pub(super) use crate::config::ListenerTransport as OAuthTransport;

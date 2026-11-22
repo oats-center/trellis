@@ -369,7 +369,10 @@ A sign-in that finds someone already signed in to the portal shows who it is
 and offers "Use a different account", which signs in again for the same
 request (client, capabilities, PKCE, `state`), so the app receives whoever
 finishes it. A registered web app that needs no new consent costs that person
-one "Continue as" click instead of signing them in unseen.
+one "Continue as" click instead of signing them in unseen. The portal answers
+browsers with pages, never raw JSON, when a sign-in, device code or account link
+has expired or was used; unknown, expired and used device codes all get the
+same answer. API callers still get OAuth JSON errors.
 
 Installation identity and the independently provisioned OAuth storage key
 survive restarts and issuer rotation. `Issuers.Rotate` requires

@@ -57,6 +57,12 @@ client callback origins. Cookie-authenticated portal routes never enable CORS.
 Request admission budgets are described in `trellis-auth.md`. All HTTP
 timestamps and expiries are epoch milliseconds.
 
+Every route answers a refusal with an OAuth JSON error, except to a browser: a
+request that accepts `text/html`, or a `GET` of a page route (`/authorize`,
+`/login`, `/consent`, `/logout`, `/account/*`, `/portal/oidc/*`), gets a Portal
+page with the same status that says what happened in that flow (see
+`trellis-auth.md`, Portal pages for flows that can't continue).
+
 ## Native Admission
 
 There is no HTTP bootstrap. Services and devices present a signed
