@@ -8,6 +8,19 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `trellis roles assign ROLE USER --revision N` renews an existing assignment,
+  and the Console shows expired roles and permissions with a Renew button.
+
+### Fixed
+
+- An expired role or grant is reported as expired, with the revision to renew,
+  instead of "already has".
+- After the server refuses a change because the state moved on, the Console
+  rereads the list and keeps the error visible, instead of leaving stale rows
+  and actions in place.
+
 ## [0.100.0-rc.53] - 2026-11-22
 
 ### Added
