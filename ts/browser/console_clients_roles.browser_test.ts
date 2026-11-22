@@ -75,6 +75,59 @@ test("Console creates, reloads, disables and deletes an OAuth client and creates
   }, browserRuntimeOptions());
 });
 
+// Saving an app's changes says so beside Save and shows the saved app. This
+// catches a save that leaves the form looking as it did, so nobody can tell
+// whether it was saved.
+test("saving an app shows that it was saved", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      await openConsole(page, runtime, BROWSER_ADMIN);
+      const clientId = `console-saved-${ulid()}`;
+      await page.goto(`${runtime.consoleUrl}/console/admin/clients`);
+      await page.getByRole("button", { name: "New app", exact: true }).click();
+      await page.getByLabel("App ID").fill(clientId);
+      await page.getByLabel("Name", { exact: true }).fill(clientId);
+      await page
+        .getByRole("textbox", { name: "Return address 1", exact: true })
+        .fill("https://app.example.test/callback");
+      const form = page.locator("form").filter({
+        has: page.getByRole("button", { name: "Save app", exact: true }),
+      });
+      const status = form.getByRole("status");
+      await form.getByRole("button", { name: "Save app", exact: true }).click();
+      await status.getByText("App saved.", { exact: true }).waitFor();
+
+      // An edit is unsaved until Save, and then shows as Trellis saved it.
+      const renamed = `Renamed ${clientId}`;
+      await page.getByLabel("Name", { exact: true }).fill(renamed);
+      await status.getByText("Unsaved changes", { exact: true }).waitFor();
+      await form.getByRole("button", { name: "Save app", exact: true }).click();
+      await status.getByText("App saved.", { exact: true }).waitFor();
+      await form.getByRole("heading", { name: renamed, exact: true }).waitFor();
+      await page
+        .getByRole("row")
+        .filter({ hasText: renamed })
+        .first()
+        .waitFor();
+      // Trellis kept the new name.
+      await page.reload();
+      await page
+        .getByRole("row")
+        .filter({ hasText: renamed })
+        .getByRole("button", { name: "Edit", exact: true })
+        .click();
+      assert.equal(
+        await page.getByLabel("Name", { exact: true }).inputValue(),
+        renamed,
+      );
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
 // A delete refused because someone changed the role meanwhile rereads it.
 // This catches a reread that throws away the operator's unsaved edits, or
 // one that quietly moves a typed title onto the newer role so Save overwrites

@@ -53,6 +53,23 @@
   // Whether any OIDC provider is on; unknown when the viewer can't list them.
   let oidcOn = $state<boolean | undefined>(undefined);
   const web = $derived(kind === "browser");
+  // The form as it would be saved, compared with what was last loaded or
+  // saved, so the page can say whether its changes are saved.
+  const draft = $derived(
+    JSON.stringify([
+      title.trim(),
+      description,
+      kind,
+      development,
+      redirects.map((uri) => uri.trim()).filter(Boolean),
+      [...implied].sort(),
+      passwordSignUp,
+      providerSignUp,
+    ]),
+  );
+  let baseline = $state("");
+  let justSaved = $state(false);
+  const unsaved = $derived(selected === null || draft !== baseline);
 
   async function loadSignIn(): Promise<void> {
     if (canPerform(authority.authority, "oidcProvidersList"))
@@ -102,6 +119,8 @@
     implied = [...(client?.impliedConsent ?? [])];
     passwordSignUp = client?.signUp.password ?? false;
     providerSignUp = client?.signUp.providers ?? false;
+    baseline = draft;
+    justSaved = false;
     editing = true;
     error = null;
     notice = null;
@@ -152,7 +171,9 @@
             })
             .orThrow());
         if (!scope.isCurrent(token)) return;
-        selected = client;
+        // The form now shows what Trellis saved, and says so beside Save.
+        edit(client);
+        justSaved = true;
       } else if (operation === "enable") {
         if (!selected) return;
         await trellis.oAuthClientsEnable(identity).orThrow();
@@ -174,7 +195,7 @@
       }
       notice =
         operation === "put"
-          ? "App saved."
+          ? null
           : operation === "disable"
             ? "App turned off."
             : operation === "enable"
@@ -517,10 +538,20 @@
                 onclick={() => void mutate("delete")}>Delete app</button
               >{/if}
           </div>
-          {#if canPerform(authority.authority, "oAuthClientsPut")}<button
-              class="btn btn-primary"
-              disabled={saving}>Save app</button
-            >{/if}
+          {#if canPerform(authority.authority, "oAuthClientsPut")}<div
+              class="flex items-center gap-3"
+            >
+              <span class="text-sm" role="status"
+                >{#if saving}Saving…{:else if justSaved && !unsaved}<span
+                    class="inline-flex items-center gap-1 text-success"
+                    ><Icon name="check" size={16} />App saved.</span
+                  >{:else if selected && unsaved}<span
+                    class="text-base-content/60">Unsaved changes</span
+                  >{/if}</span
+              >
+              <button class="btn btn-primary" disabled={saving}>Save app</button
+              >
+            </div>{/if}
         </div>
       </form>
       {#if selected && canPerform(authority.authority, "configGet")}<ParticipantSettings
