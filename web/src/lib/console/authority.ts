@@ -11,6 +11,13 @@
  * validation re-enters `checking`, and a stale completion can never restore a
  * previous snapshot. The snapshot is advisory: Trellis authorizes every
  * request, so no route mount or dispatch depends on this state.
+ *
+ * Authority is renewed every few minutes, on an issuer rotation and after a
+ * reconnect. While that is checked, and after a check that failed for a
+ * recoverable reason, the snapshot keeps the authority and profile last
+ * verified for the same session. Pages and forms that show on it stay
+ * mounted, with what was typed in them; only a missing or ended session and
+ * an authorization denial clear it.
  */
 
 import type { apis } from "../trellis-apis.ts";
@@ -160,7 +167,7 @@ export class ConsoleAuthorityCore {
     const operation = ++this.#operations;
     this.#snapshot = {
       state: "checking",
-      authority: null,
+      authority: this.#snapshot.authority,
       profile: this.#snapshot.profile,
       failure: null,
       generation: this.#snapshot.generation + 1,
@@ -185,28 +192,31 @@ export class ConsoleAuthorityCore {
       return this.#snapshot;
     }
     const classified = this.#classify(result.error);
+    // A recoverable failure is a status with Retry: the session it checked
+    // goes on, and so does what the shell shows for it.
+    const kept = classified.state === "error";
     this.#snapshot = {
       state: classified.state,
-      authority: null,
-      profile: null,
+      authority: kept ? this.#snapshot.authority : null,
+      profile: kept ? this.#snapshot.profile : null,
       failure: classified.failure,
       generation: this.#snapshot.generation,
-      identity: result.identity,
+      identity: kept ? this.#snapshot.identity : result.identity,
     };
     return this.#snapshot;
   }
 
   /**
    * Ends the current generation immediately without clearing the last known
-   * profile. Unsent intents and in-flight reads compare captured generations
-   * against the new value. The next `reload()` revalidates.
+   * authority and profile. Unsent intents and in-flight reads compare captured
+   * generations against the new value. The next `reload()` revalidates.
    */
   invalidate(): void {
     if (this.#disposed) return;
     this.#operations += 1;
     this.#snapshot = {
       state: "checking",
-      authority: null,
+      authority: this.#snapshot.authority,
       profile: this.#snapshot.profile,
       failure: null,
       generation: this.#snapshot.generation + 1,

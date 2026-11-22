@@ -263,15 +263,24 @@ export async function wireNatsGate(page: Page): Promise<{
   gate: NatsResponseGate;
   releaseToPage: () => Uint8Array[];
   resumeLiveToPage: () => void;
+  /** Drops the page's broker socket the way a lost network does; the page reconnects through the gate. */
+  dropConnection: () => Promise<void>;
 }> {
   const gate = new NatsResponseGate();
-  let pageSocket: { send: (message: string | Buffer) => void } | undefined;
+  let pageSocket:
+    | {
+        send: (message: string | Buffer) => void;
+        close: (options?: { code?: number; reason?: string }) => Promise<void>;
+      }
+    | undefined;
+  let serverSocket: { close: () => Promise<void> } | undefined;
   await page.routeWebSocket(
     (url) => url.protocol === "ws:" || url.protocol === "wss:",
     (ws) => {
       const server = ws.connectToServer();
       const connection = gate.connect();
       pageSocket = ws;
+      serverSocket = server;
       ws.onMessage((message) => {
         sendWs(server, connection.ingestClient(toWsBytes(message)));
       });
@@ -291,6 +300,16 @@ export async function wireNatsGate(page: Page): Promise<{
     resumeLiveToPage() {
       const chunks = gate.resumeLive();
       if (pageSocket) sendWs(pageSocket, chunks);
+    },
+    async dropConnection() {
+      const page = pageSocket;
+      const server = serverSocket;
+      if (!page || !server) throw new Error("the page has no broker socket");
+      pageSocket = undefined;
+      serverSocket = undefined;
+      await page.close({ code: 1001, reason: "network lost" });
+      // Closing the page side may already have ended the broker side.
+      await server.close().catch(() => {});
     },
   };
 }

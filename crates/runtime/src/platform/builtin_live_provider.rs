@@ -333,33 +333,31 @@ pub async fn connect_builtin_live_provider(
     identity_seed_base64url: &str,
     options: BuiltinLiveProviderConnectOptions,
 ) -> Result<TrellisClient, RuntimeError> {
+    // Each connection is a large state machine; on the heap it keeps this
+    // dispatch's debug stack frame small.
     match role {
         LiveProviderRole::Platform => {
-            connect::<trellis_runtime_apis::participants::trellis_platform::Participant>(
-                identity_seed_base64url,
-                options,
-            )
+            Box::pin(connect::<
+                trellis_runtime_apis::participants::trellis_platform::Participant,
+            >(identity_seed_base64url, options))
             .await
         }
         LiveProviderRole::Health => {
-            connect::<trellis_runtime_apis::participants::trellis_health_runtime::Participant>(
-                identity_seed_base64url,
-                options,
-            )
+            Box::pin(connect::<
+                trellis_runtime_apis::participants::trellis_health_runtime::Participant,
+            >(identity_seed_base64url, options))
             .await
         }
         LiveProviderRole::Jobs => {
-            connect::<trellis_runtime_apis::participants::trellis_jobs_runtime::Participant>(
-                identity_seed_base64url,
-                options,
-            )
+            Box::pin(connect::<
+                trellis_runtime_apis::participants::trellis_jobs_runtime::Participant,
+            >(identity_seed_base64url, options))
             .await
         }
         LiveProviderRole::Events => {
-            connect::<trellis_runtime_apis::participants::trellis_events_runtime::Participant>(
-                identity_seed_base64url,
-                options,
-            )
+            Box::pin(connect::<
+                trellis_runtime_apis::participants::trellis_events_runtime::Participant,
+            >(identity_seed_base64url, options))
             .await
         }
     }

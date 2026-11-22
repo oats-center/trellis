@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
@@ -16,6 +17,7 @@ import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
   browserRuntimeOptions,
   launchProfile,
+  loginCliAsAdministrator,
 } from "./browser_test_support.ts";
 import {
   assertNoBrowserErrors,
@@ -772,7 +774,11 @@ test("a password reset receipt clears its token when closed", async () => {
   }, browserRuntimeOptions());
 });
 
-test("N09 a stale user edit cannot overwrite a concurrent update and can be resubmitted after reload", async () => {
+// A refused save rereads the user. The draft stays as typed, the display
+// name someone else saved meanwhile shows beside it, and nothing is saved
+// until the operator chooses. This catches a second Save that overwrites the
+// other change because the reread moved the draft onto its revision.
+test("N09 a stale user edit shows the concurrent update beside it and saves only what the operator chose", async () => {
   await withTrellisRuntime(async (runtime) => {
     const username = `ct-n09-${ulid()}`.toLowerCase();
     const created = await runtime.callAdminRpc("authUsersCreate", {
@@ -780,24 +786,24 @@ test("N09 a stale user edit cannot overwrite a concurrent update and can be resu
       displayName: "Original name",
       username,
     });
+    const userId = created.user.principalId;
+    const savedName = async () =>
+      (await runtime.callAdminRpc("authUsersGet", { userId })).user.displayName;
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
       await page.goto(
-        `${runtime.consoleUrl}/console/admin/users/edit?userId=${created.user.principalId}`,
-        {
-          waitUntil: "domcontentloaded",
-        },
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${userId}`,
+        { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(page);
-      await page
-        .getByLabel("Display name", { exact: true })
-        .fill("Operator draft");
+      const name = page.getByLabel("Display name", { exact: true });
+      await name.fill("Operator draft");
 
       const secondPage = await context.newPage();
       await secondPage.goto(
-        `${runtime.consoleUrl}/console/admin/users/edit?userId=${created.user.principalId}`,
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${userId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(secondPage);
@@ -805,89 +811,194 @@ test("N09 a stale user edit cannot overwrite a concurrent update and can be resu
         .getByLabel("Display name", { exact: true })
         .fill("Concurrent edit");
       await secondPage
-        .getByRole("button", {
-          name: "Save profile",
-          exact: true,
-        })
+        .getByRole("button", { name: "Save profile", exact: true })
         .click();
       await secondPage
-        .getByText("Profile updated.", {
-          exact: true,
-        })
-        .waitFor({
-          state: "visible",
-          timeout: 30_000,
-        });
-      await secondPage.reload({ waitUntil: "domcontentloaded" });
-      await waitForConsoleShell(secondPage);
-      await secondPage
-        .getByRole("heading", {
-          name: username,
-          exact: true,
-          level: 1,
-        })
-        .waitFor({ state: "visible" });
-      assert.deepEqual(
-        await secondPage
-          .getByLabel("Display name", { exact: true })
-          .inputValue(),
+        .getByText("Profile updated.", { exact: true })
+        .waitFor({ state: "visible", timeout: 30_000 });
+
+      const save = page.getByRole("button", {
+        name: "Save profile",
+        exact: true,
+      });
+      await save.click();
+      const conflicts = page.getByRole("group", {
+        name: "Changed while you were editing",
+      });
+      const conflict = conflicts.getByRole("listitem", {
+        name: "Display name changed meanwhile",
+      });
+      await conflict.waitFor({ state: "visible", timeout: 30_000 });
+      assert.equal(
+        await conflict.locator('[data-draft="mine"]').innerText(),
+        "Operator draft",
+      );
+      assert.equal(
+        await conflict.locator('[data-draft="saved"]').innerText(),
         "Concurrent edit",
       );
-      await page
-        .getByRole("button", { name: "Save profile", exact: true })
+      assert.equal(await name.inputValue(), "Operator draft");
+      assert.equal(await save.isDisabled(), true);
+      assert.equal(await savedName(), "Concurrent edit");
+
+      // Taking the saved name leaves nothing to save.
+      await conflict
+        .getByRole("button", { name: "Use saved for Display name" })
         .click();
+      await conflicts.waitFor({ state: "hidden" });
+      assert.equal(await name.inputValue(), "Concurrent edit");
+      assert.equal(await save.isDisabled(), true);
+      await name.fill("Operator draft");
+      await save.click();
       await page
-        .getByRole("button", { name: "Reload user", exact: true })
-        .waitFor({
-          state: "visible",
-          timeout: 30_000,
-        });
-      assert.deepEqual(
-        await page.getByLabel("Display name", { exact: true }).inputValue(),
-        "Operator draft",
-      );
-      await page
-        .getByRole("button", { name: "Reload user", exact: true })
-        .click();
-      await page
-        .getByRole("button", { name: "Save profile", exact: true })
-        .waitFor({
-          state: "visible",
-        });
-      await runtime.waitFor(
-        async () =>
-          (await page
-            .getByLabel("Display name", { exact: true })
-            .inputValue()) === "Concurrent edit",
-      );
-      await page
-        .getByLabel("Display name", { exact: true })
-        .fill("Operator draft");
-      await page
-        .getByRole("button", { name: "Save profile", exact: true })
-        .click();
-      await page.getByText("Profile updated.", { exact: true }).waitFor({
-        state: "visible",
-        timeout: 30_000,
+        .getByText("Profile updated.", { exact: true })
+        .waitFor({ state: "visible", timeout: 30_000 });
+      assert.equal(await savedName(), "Operator draft");
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
+// The sign-ins panel rereads the account after a link and after a refused
+// change, and a refused delete rereads it too. Each reread happened while the
+// operator had unsaved profile edits that someone else's change raced. This
+// catches a reread that moves the typed display name onto the newer revision,
+// so Save silently overwrites the other administrator's name, and a refused
+// delete that throws the typed edits away.
+test("rereads of a user keep unsaved profile edits and never save over a name changed meanwhile", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const username = `ct-reread-${ulid()}`.toLowerCase();
+    const created = await runtime.callAdminRpc("authUsersCreate", {
+      idempotencyKey: codecs.ulid.decode(ulid()),
+      displayName: "Original name",
+      username,
+    });
+    const userId = created.user.principalId;
+    const read = async () =>
+      (await runtime.callAdminRpc("authUsersGet", { userId })).user;
+    // What another administrator does meanwhile, from their own session.
+    const otherAdmin = async (change: {
+      displayName?: string;
+      enabled: boolean;
+    }) => {
+      const user = await read();
+      assert(user.account);
+      await runtime.callAdminRpc("authUsersUpdate", {
+        userId,
+        ...(change.displayName === undefined
+          ? {}
+          : {
+              displayName: change.displayName,
+              expectedProfileRevision: user.account.profileRevision,
+            }),
+        enabled: change.enabled,
+        expectedRevision: user.account.principal.revision,
+        idempotencyKey: codecs.ulid.decode(ulid()),
       });
-      await page.reload({ waitUntil: "domcontentloaded" });
+    };
+
+    const context = await launchProfile(runtime);
+    try {
+      // An issuer nobody answers on: the panel only needs a provider to link.
+      const cli = await loginCliAsAdministrator(
+        runtime,
+        await context.newPage(),
+      );
+      const secretFile = join(runtime.workdir, `oidc-secret-${ulid()}`);
+      await writeFile(secretFile, "unused");
+      await cli.run(
+        "sign-in",
+        "providers",
+        "add",
+        "--name",
+        "Company",
+        "--issuer",
+        "https://127.0.0.1:9/",
+        "--client-id",
+        "console-reread",
+        "--client-secret-file",
+        secretFile,
+      );
+      const page = await context.newPage();
+      const errors = await captureBrowserErrors(page);
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${userId}`,
+        { waitUntil: "domcontentloaded" },
+      );
       await waitForConsoleShell(page);
-      await page.getByLabel("Display name", { exact: true }).waitFor({
-        state: "visible",
-        timeout: 30_000,
+      const main = page.locator("main");
+      const name = main.getByLabel("Display name", { exact: true });
+      const enabled = main.getByLabel("Enabled");
+      const save = main.getByRole("button", {
+        name: "Save profile",
+        exact: true,
       });
-      assert.deepEqual(
-        await page.getByLabel("Display name", { exact: true }).inputValue(),
-        "Operator draft",
+      const conflicts = main.getByRole("group", {
+        name: "Changed while you were editing",
+      });
+      await name.fill("Mine");
+      await enabled.uncheck();
+      await otherAdmin({ displayName: "Theirs", enabled: true });
+
+      // Linking a sign-in rereads the account.
+      const subject = main.getByLabel("Subject", { exact: true });
+      await subject.fill(`subject-${ulid()}`);
+      await main
+        .getByRole("button", { name: "Link sign-in", exact: true })
+        .click();
+      const conflict = conflicts.getByRole("listitem", {
+        name: "Display name changed meanwhile",
+      });
+      await conflict.waitFor({ state: "visible", timeout: 30_000 });
+      assert.equal(
+        await conflict.locator('[data-draft="mine"]').innerText(),
+        "Mine",
       );
-      await secondPage.reload({ waitUntil: "domcontentloaded" });
-      await waitForConsoleShell(secondPage);
-      assert.deepEqual(
-        await secondPage
-          .getByLabel("Display name", { exact: true })
-          .inputValue(),
-        "Operator draft",
+      assert.equal(
+        await conflict.locator('[data-draft="saved"]').innerText(),
+        "Theirs",
       );
+      // The switch nobody else touched stays as typed.
+      assert.equal(await enabled.isChecked(), false);
+      assert.equal(await name.inputValue(), "Mine");
+      assert.equal(await save.isDisabled(), true);
+      assert.equal((await read()).displayName, "Theirs");
+
+      // Keeping theirs over the name saved meanwhile is the operator's call.
+      await conflict
+        .getByRole("button", { name: "Keep yours for Display name" })
+        .click();
+      await conflicts.waitFor({ state: "hidden" });
+      await save.click();
+      await main
+        .getByText("Profile updated.", { exact: true })
+        .waitFor({ state: "visible", timeout: 30_000 });
+      const kept = await read();
+      assert.equal(kept.displayName, "Mine");
+      assert.equal(kept.account?.principal.enabled, false);
+
+      // A refused delete rereads the account and keeps what was typed.
+      await name.fill("Draft again");
+      await otherAdmin({ enabled: true });
+      await main
+        .getByRole("button", { name: "Delete account", exact: true })
+        .click();
+      const dialog = page.getByRole("dialog", { name: "Delete this account?" });
+      await dialog.getByRole("textbox").fill(username);
+      await dialog
+        .getByRole("button", { name: "Delete account", exact: true })
+        .click();
+      await runtime.waitFor(
+        async () => (await enabled.isChecked()) || undefined,
+      );
+      assert.equal(await name.inputValue(), "Draft again");
+      assert.equal(await conflicts.count(), 0);
+      assert.equal(await save.isDisabled(), false);
+      assert.equal((await read()).principalId, userId);
+      await assertNoBrowserErrors(errors);
     } finally {
       await context.close();
     }

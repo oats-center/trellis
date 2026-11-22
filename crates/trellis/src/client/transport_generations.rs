@@ -1332,7 +1332,7 @@ impl TransportGenerationManager {
         });
         let id = inner.alloc_id();
         inner.baseline_id.store(id, Ordering::Release);
-        let generation = open_generation(&inner, id, None, "initial").await?;
+        let generation = Box::pin(open_generation(&inner, id, None, "initial")).await?;
         let promoted = generation.promote_to_current();
         let lost = {
             let mut state = inner.lock_state()?;
@@ -2796,7 +2796,9 @@ async fn open_generation(
         &native.root_certificates,
         native.server_name.as_deref(),
     )?;
-    let nats = match options.connect(native.nats_servers.clone()).await {
+    // Each step below is a large state machine; on the heap they keep this
+    // attachment's future and debug stack frames small.
+    let nats = match Box::pin(options.connect(native.nats_servers.clone())).await {
         Ok(nats) => nats,
         Err(error) => {
             inner.clear_opening(id);
@@ -2817,13 +2819,15 @@ async fn open_generation(
     // CONNECT carries admission, not application authority. Obtain the issuer-
     // signed, request-correlated logical authority and exact compiled ACL before
     // exposing the attachment. A new context digest alone is not an ACL change.
-    let response = inner
-        .contexts
-        .fetch_own_context(&inner.auth, &nats, ADMISSION_READ_TIMEOUT)
-        .await?;
+    let response = Box::pin(inner.contexts.fetch_own_context(
+        &inner.auth,
+        &nats,
+        ADMISSION_READ_TIMEOUT,
+    ))
+    .await?;
     let signed = response.signed;
     let policy = response.admitted;
-    let authority = inner.contexts.owner.prepare_own(&nats, &signed).await?;
+    let authority = Box::pin(inner.contexts.owner.prepare_own(&nats, &signed)).await?;
     let marker = authority.digest().to_owned();
     if let Some(snapshot) = snapshot {
         if authority.authority().authorization_session_id != snapshot.authorization_session_id
@@ -2923,15 +2927,13 @@ async fn open_generation(
         ));
     }
     if snapshot.is_none() {
-        let prepared = inner
-            .contexts
-            .prepare_authority(
-                &generation.nats,
-                &signed,
-                generation.admitted_policy.clone(),
-                response.authorization,
-            )
-            .await?;
+        let prepared = Box::pin(inner.contexts.prepare_authority(
+            &generation.nats,
+            &signed,
+            generation.admitted_policy.clone(),
+            response.authorization,
+        ))
+        .await?;
         let transition = inner.contexts.lock_own_transition()?;
         if failed.load(Ordering::Acquire) || inner.is_terminated() {
             return Err(TrellisClientError::TransportUnavailable(

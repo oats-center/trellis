@@ -4,7 +4,10 @@
   import { codecs } from "@oatscenter/trellis/generated";
   import type { apis } from "$lib/trellis-apis";
   import { getTrellis } from "$lib/trellis";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
+  import {
+    authorityIdentityChanged,
+    getConsoleAuthority,
+  } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
@@ -128,7 +131,7 @@
       name: resource.localName,
       owner: `${resource.ownerKind} ${resource.ownerId}`,
       route: scope.key,
-      authority: authority.authority?.authorityDigest,
+      identity: authority.identity,
     });
     busy = true;
     actionMessage = null;
@@ -147,7 +150,7 @@
         !confirmed ||
         scope.disposed ||
         scope.key !== intent.route ||
-        authority.authority?.authorityDigest !== intent.authority ||
+        authorityIdentityChanged(intent.identity, authority.identity) ||
         !canPerform(authority.authority, "resourcesRemove")
       )
         return;

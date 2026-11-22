@@ -107,7 +107,11 @@ test("U22 revalidation stops readiness immediately", async () => {
     "checking",
     "readiness must end as soon as a new validation starts",
   );
-  equal(core.snapshot.authority, null);
+  equal(
+    core.snapshot.authority,
+    READY_AUTHORITY,
+    "what the shell shows stays while the same session is checked again",
+  );
   second.resolve(ready("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
   await secondReload;
   equal(core.snapshot.state, "ready");
@@ -150,13 +154,30 @@ test("U24 invalidation advances the generation and clears readiness", async () =
   const before = core.snapshot.generation;
   core.invalidate();
   equal(core.snapshot.state, "checking");
-  equal(core.snapshot.authority, null);
+  equal(core.snapshot.authority, READY_AUTHORITY);
   equal(core.snapshot.generation, before + 1);
-  equal(
-    core.snapshot.profile?.account?.username,
-    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-    "last-known profile may remain for non-actionable display",
+  equal(core.snapshot.profile?.account?.username, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+});
+
+test("U24b a recoverable failed recheck keeps the session's authority; an ended session clears it", async () => {
+  const results = [
+    ready("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+    failed("internal_error"),
+    failed("session_not_found"),
+  ];
+  const core = new ConsoleAuthorityCore(
+    () => Promise.resolve(results.shift()!),
+    classify,
   );
+  await core.reload();
+  await core.reload();
+  equal(core.snapshot.state, "error");
+  equal(core.snapshot.authority, READY_AUTHORITY);
+  equal(core.snapshot.identity.principalId, "01ARZ3NDEKTSV4RRFFQ69G5FAV");
+  await core.reload();
+  equal(core.snapshot.state, "auth-required");
+  equal(core.snapshot.authority, null);
+  equal(core.snapshot.profile, null);
 });
 
 test("U25 a transport failure is an error state with Retry, not forbidden", async () => {

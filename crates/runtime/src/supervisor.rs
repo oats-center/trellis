@@ -1117,7 +1117,9 @@ async fn run_group(
             return Ok(());
         };
         context.groups.set(group, GroupState::Starting);
-        let result = run_owned_group(&context, group, &mut ownership, &stop).await;
+        // The owned group is a large state machine; on the heap it leaves this
+        // task's future and debug stack frames small.
+        let result = Box::pin(run_owned_group(&context, group, &mut ownership, &stop)).await;
         tracing::info!(%subsystem, "runtime subsystem stopped; releasing its ownership");
         let release = ownership.shutdown().await;
         match result {
@@ -1157,12 +1159,20 @@ async fn run_owned_group(
     if let Ok(mut owners) = context.owners.lock() {
         owners.extend(ownership.contexts());
     }
-    let started = match subsystem {
-        SubsystemName::Platform => platform::start(context).await,
-        SubsystemName::Jobs => jobs::start(context).await,
-        SubsystemName::Health => health::start(context).await,
-        SubsystemName::Events => events::start(context).await,
+    // Each subsystem's startup is a large state machine. Built on the heap in
+    // this closure's own frame, it adds nothing to the debug stack frame of
+    // this body, which all of the group's startup work runs on top of.
+    type Starting<'a> =
+        Pin<Box<dyn Future<Output = Result<SubsystemHandle, RuntimeError>> + Send + 'a>>;
+    let start = || -> Starting<'_> {
+        match subsystem {
+            SubsystemName::Platform => Box::pin(platform::start(context)),
+            SubsystemName::Jobs => Box::pin(jobs::start(context)),
+            SubsystemName::Health => Box::pin(health::start(context)),
+            SubsystemName::Events => Box::pin(events::start(context)),
+        }
     };
+    let started = start().await;
     let handle = match started {
         Ok(handle) => handle,
         Err(error) => {

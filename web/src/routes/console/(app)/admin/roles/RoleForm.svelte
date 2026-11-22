@@ -16,10 +16,38 @@
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { traverseAll } from "$lib/console/paging.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
+  import {
+    draftConflicts,
+    rebaseDraft,
+    settleConflict,
+  } from "$lib/console/draft.ts";
+  import DraftConflicts from "$lib/components/DraftConflicts.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import PermissionGroups from "$lib/components/PermissionGroups.svelte";
+
+  type Role = apis.auth.RolesGetOutput["role"];
+  type Fields = {
+    title: string;
+    description: string;
+    forNewUsers: boolean;
+    selected: string[];
+  };
+  const fieldsOf = (role: Role | null): Fields => ({
+    title: role?.title ?? "",
+    description: role?.description ?? "",
+    forNewUsers: role?.assignToNewUsers ?? false,
+    selected: (role?.capabilities ?? [])
+      .map((capability) => capability.capabilityId)
+      .sort(),
+  });
+  const LABELS: Record<keyof Fields, string> = {
+    title: "Title",
+    description: "Description",
+    forNewUsers: "Give to new users",
+    selected: "Permissions",
+  };
 
   let { roleId = null }: { roleId?: string | null } = $props();
   const trellis = getTrellis();
@@ -30,16 +58,30 @@
     apis.auth.RolesPutInput,
     apis.auth.RolesPutOutput
   >();
-  let role = $state.raw<apis.auth.RolesGetOutput["role"] | null>(null);
+  let role = $state.raw<Role | null>(null);
   let capabilities = $state.raw<apis.auth.CapabilitiesListOutput["items"]>([]);
   let title = $state("");
   let description = $state("");
   let forNewUsers = $state(false);
   let selected = $state<string[]>([]);
+  // The saved role each edit was typed over; see $lib/console/draft.ts.
+  let base = $state.raw<Fields>(fieldsOf(null));
   let loading = $state(true);
   let saving = $state(false);
+  // A failed read, or a change whose outcome is unknown; both block saving.
   let error = $state<string | null>(null);
+  // Why Auth refused the last change. The form rereads and stays usable.
+  let refusal = $state<string | null>(null);
   let catalogError = $state<string | null>(null);
+  const draft = (): Fields => ({
+    title,
+    description,
+    forNewUsers,
+    selected: [...selected].sort(),
+  });
+  const conflicts = $derived(
+    role ? draftConflicts({ draft: draft(), base }, fieldsOf(role)) : [],
+  );
   const unknown = $derived(
     selected.filter(
       (id) =>
@@ -49,15 +91,49 @@
     ),
   );
 
+  function show(fields: Fields): void {
+    ({ title, description, forNewUsers, selected } = fields);
+  }
+
+  function settle(field: string, choice: "keep" | "take"): void {
+    if (!role || !(field in LABELS)) return;
+    const settled = settleConflict(
+      { draft: draft(), base },
+      fieldsOf(role),
+      field as keyof Fields,
+      choice,
+    );
+    show(settled.draft);
+    base = settled.base;
+  }
+
+  function describe(field: keyof Fields, fields: Fields): string {
+    if (field === "forNewUsers") return fields.forNewUsers ? "Yes" : "No";
+    if (field === "selected")
+      return fields.selected.length === 0
+        ? "None"
+        : fields.selected
+            .map(
+              (id) =>
+                capabilities.find(
+                  (capability) => capability.identity.capabilityId === id,
+                )?.title ?? id,
+            )
+            .join(", ");
+    return fields[field] || "(empty)";
+  }
+
   async function load(): Promise<void> {
     const token = scope.begin();
-    loading = true;
+    // A reread of the shown role keeps the form and what was typed in it.
+    const reread = role !== null && role.roleId === roleId;
+    if (!reread) {
+      loading = true;
+      role = null;
+      show(fieldsOf(null));
+      base = fieldsOf(null);
+    }
     error = null;
-    role = null;
-    title = "";
-    description = "";
-    forNewUsers = false;
-    selected = [];
     try {
       if (roleId) {
         const input = apis.auth.API.actions["rpc:Roles.Get"].input.decode({
@@ -65,13 +141,16 @@
         });
         const response = await trellis.rolesGet(input).orThrow();
         if (!scope.isCurrent(token)) return;
+        const saved = fieldsOf(response.role);
+        if (reread && role?.roleId === response.role.roleId) {
+          const merged = rebaseDraft({ draft: draft(), base }, saved);
+          show(merged.draft);
+          base = merged.base;
+        } else {
+          show(saved);
+          base = saved;
+        }
         role = response.role;
-        title = role.title;
-        description = role.description;
-        forNewUsers = role.assignToNewUsers;
-        selected = role.capabilities.map(
-          (capability) => capability.capabilityId,
-        );
       }
     } catch (cause) {
       if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
@@ -104,6 +183,7 @@
       loading ||
       saving ||
       error ||
+      conflicts.length > 0 ||
       (roleId && !role) ||
       !canPerform(authority.authority, "rolesPut")
     )
@@ -128,6 +208,7 @@
     });
     if (!mutation.begin(intent)) return;
     saving = true;
+    refusal = null;
     const outcome = await mutation.send({
       isStillValid: () =>
         scope.key === intent.scope.routeKey &&
@@ -137,11 +218,15 @@
     saving = false;
     if (!outcome || scope.key !== intent.scope.routeKey) return;
     if (outcome.kind === "succeeded") await goto(resolve("/admin/roles"));
-    else
-      error =
-        outcome.kind === "unknown"
-          ? "Outcome unknown; reload the role before another change."
-          : projectConsoleError(outcome.error).message;
+    else if (outcome.kind === "unknown")
+      error = "Outcome unknown; reload the role before another change.";
+    else {
+      const message = projectConsoleError(outcome.error).message;
+      // A refused save of a role usually means someone changed it meanwhile;
+      // reread it so the form shows what they saved beside what was typed.
+      if (role) await load();
+      if (scope.key === intent.scope.routeKey) refusal = message;
+    }
   }
 
   async function remove(): Promise<void> {
@@ -154,6 +239,7 @@
       return;
     const key = scope.key;
     saving = true;
+    refusal = null;
     try {
       await trellis
         .rolesDelete({
@@ -167,9 +253,12 @@
       if (scope.key !== key) return;
       const message = projectConsoleError(cause).message;
       // A refused delete means the role changed since it was read; show it as
-      // it is now. A refused save keeps the edits instead.
-      if (classifyMutationError(cause).kind !== "unknown") await load();
-      if (scope.key === key) error = message;
+      // it is now, keeping what was typed.
+      if (classifyMutationError(cause).kind === "unknown") error = message;
+      else {
+        await load();
+        if (scope.key === key) refusal = message;
+      }
     } finally {
       saving = false;
     }
@@ -207,6 +296,7 @@
       onclick={() => void load()}>Reload role</button
     ></Notice
   >{/if}
+{#if refusal}<Notice variant="error">{refusal}</Notice>{/if}
 {#if loading}<LoadingState label="Loading role" />{:else if !roleId || role}
   <form
     class="max-w-3xl space-y-5"
@@ -276,6 +366,16 @@
         </div>
       {/if}
     </div>
+    {#if role && conflicts.length > 0}<DraftConflicts
+        conflicts={conflicts.map((field) => ({
+          field,
+          label: LABELS[field],
+          mine: describe(field, draft()),
+          saved: describe(field, fieldsOf(role)),
+        }))}
+        disabled={saving}
+        onsettle={settle}
+      />{/if}
     <div class="flex justify-between gap-2">
       <div>
         {#if role}<button
@@ -292,6 +392,7 @@
           type="submit"
           disabled={saving ||
             !!error ||
+            conflicts.length > 0 ||
             !canPerform(authority.authority, "rolesPut")}
           >{saving ? "Saving…" : "Save role"}</button
         >

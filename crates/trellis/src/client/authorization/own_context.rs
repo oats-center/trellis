@@ -195,7 +195,9 @@ impl AuthorizationContextCache {
         transport_policy: trellis_protocol::TransportAuthorizationV1,
         authorization: Option<serde_json::Value>,
     ) -> Result<PreparedOwnCandidate, TrellisClientError> {
-        let authority = self.owner.prepare_own(transport, signed).await?;
+        // Registry reads are large state machines; on the heap they keep each
+        // attachment's debug stack frames small.
+        let authority = Box::pin(self.owner.prepare_own(transport, signed)).await?;
         transport_policy.validate()?;
         if transport_policy.account != self.trust.account {
             return Err(unavailable());
@@ -229,18 +231,16 @@ impl AuthorizationContextCache {
         let mut actions = Vec::new();
         let mut capabilities = Vec::new();
         for reference in &authority.authority().apis {
-            let material = self
-                .owner
-                .material(
-                    transport,
-                    super::registry::MaterialKind::Catalog,
-                    &reference.catalog_snapshot_digest,
-                )
-                .await?;
+            let material = Box::pin(self.owner.material(
+                transport,
+                super::registry::MaterialKind::Catalog,
+                &reference.catalog_snapshot_digest,
+            ))
+            .await?;
             let super::registry::RegistryMaterial::Catalog(catalog) = material.as_ref() else {
                 return Err(unavailable());
             };
-            let issuer = self.owner.issuer(transport, &catalog.issuer_key_id).await?;
+            let issuer = Box::pin(self.owner.issuer(transport, &catalog.issuer_key_id)).await?;
             catalog.check(
                 &issuer,
                 &authority.authority().trellis_instance_id,
