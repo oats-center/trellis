@@ -8,6 +8,17 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `trellis issuers rotate <current-key-id>` rotates Auth's signing key.
+
+### Fixed
+
+- `trellis issuers revoke` says what's wrong: an unknown key is "no issuer
+  key <id>", the current signing key is refused at once with a pointer to
+  `trellis issuers rotate` (it used to time out), and an already revoked key
+  says so.
+
 ## [0.100.0-rc.53] - 2026-11-22
 
 ### Added
