@@ -801,7 +801,10 @@ it.
 Optional-action availability is advisory: a missing live authority snapshot is
 unknown, not proof that the action is denied. Finite requests wait for verified
 authority before signing and publishing, within their original deadline and
-cancellation signal. A current snapshot that excludes the action remains denied;
+cancellation signal. Signing can read authorization material over the network,
+and the same deadline bounds it: a request or event signed after its deadline is
+never sent, and the caller gets a timeout. A current snapshot that excludes the
+action remains denied;
 recovery never retransmits a potentially executed request. An authority carries
 a group's member capabilities, not the group, so a selected group is available
 when its actions are.
