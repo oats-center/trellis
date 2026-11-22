@@ -521,8 +521,13 @@ pub(crate) async fn materialize_native_kv(
     let jetstream = async_nats::jetstream::new(operational.clone());
     // Empty projections are valid only after inspecting the installed declaration set.
     let mut bindings = ServiceResourceBindings::default();
-    let allocation_result: Result<(),AuthError> = async {
-    super::framework_storage::materialize_operations(store, operational, deployment, now).await?;
+    // Each broker call below builds its own large configuration; on the heap
+    // these steps leave every caller, built-in provider preparation and service
+    // provisioning included, a small future and small debug stack frames.
+    let allocation_result: Result<(),AuthError> = Box::pin(async {
+    let operations =
+        super::framework_storage::materialize_operations(store, operational, deployment, now);
+    Box::pin(operations).await?;
     for (name, allocation) in &plan.kv {
         if allocation.state.is_some() {
             bindings
@@ -538,7 +543,10 @@ pub(crate) async fn materialize_native_kv(
             "trellis.resource.v1:{}:{}",
             allocation.resource_id, allocation.allocation_id
         );
+        // Each kind's broker calls run in their own heap state machine, so
+        // only the kind being materialized occupies the debug stack.
         if let Some(binding) = &allocation.job {
+            Box::pin(async {
             let namespace = digest(&("jobs", deployment))?;
             let stream = jetstream
                 .get_stream(crate::resources::JOBS_WORK_STREAM)
@@ -649,9 +657,12 @@ pub(crate) async fn materialize_native_kv(
                 })
                 .queues
                 .insert(name.clone(), binding.clone());
+            Ok::<(), AuthError>(())
+            }).await?;
             continue;
         }
         if let Some(binding) = &allocation.consumer {
+            Box::pin(async {
             for (stream_name, consumer_name, filters, replay) in [
                 (
                     &binding.stream,
@@ -722,9 +733,12 @@ pub(crate) async fn materialize_native_kv(
             bindings
                 .event_consumers
                 .insert(name.clone(), binding.clone());
+            Ok::<(), AuthError>(())
+            }).await?;
             continue;
         }
         if allocation.kind == "store" {
+            Box::pin(async {
             let stream_name = format!("OBJ_{bucket}");
             match jetstream.get_stream(&stream_name).await {
                 Ok(_) => (),
@@ -799,8 +813,11 @@ pub(crate) async fn materialize_native_kv(
                     max_object_bytes: None,
                 },
             );
+            Ok::<(), AuthError>(())
+            }).await?;
             continue;
         }
+        Box::pin(async {
         let resource = match jetstream.get_stream(format!("KV_{bucket}")).await {
             Ok(_) => jetstream
                 .get_key_value(&bucket)
@@ -873,9 +890,11 @@ pub(crate) async fn materialize_native_kv(
                     .then_some(status.info.config.max_message_size as i64),
             },
         );
+        Ok::<(), AuthError>(())
+        }).await?;
     }
     Ok(())
-    }.await;
+    }).await;
     if let Err(error) = allocation_result {
         store
             .transaction_blocking(move |connection| {
