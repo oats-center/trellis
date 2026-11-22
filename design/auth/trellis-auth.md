@@ -1042,6 +1042,19 @@ is still live, not against the newest pin: a further rotation during the
 renewal moves the pin on, the answer stays valid through its overlap, and the
 notice renews again under the newest key.
 
+The successor signs from the moment the rotation commits, but a participant
+pinned to an earlier key can authenticate it only through the chain link in the
+material registry, which the outbox would otherwise publish some time later.
+Until then the participant must discard whatever the successor signed: an
+own-context or metadata answer then goes unverified until the request times
+out, and a revocation mirror that receives a cutoff the successor signed loses
+its coverage. So nothing the successor signed leaves Auth before its link is in
+the registry. The own-context and metadata responders, and the outbox before
+each batch, publish every link the registry may still lack, up to the newest
+rotation, and only then send their answer or material. Auth remembers which
+links it has published, so each link is written once per Auth process and an
+answer otherwise costs only a database read of the newest rotation.
+
 Explicit key compromise (`Issuers.Revoke`) makes the key unusable; restart must
 not reinstall it as an active signer. It retires every user session holding any
 authority the key signed, since such a session may have been admitted with an
@@ -1278,7 +1291,10 @@ generates through ordinary API acceptance and deployment approval, using
 independently keyed initialization mutations per installation and participant:
 its own platform provider when it starts, and a Jobs, Health or Events provider
 when that role starts, whether in the same process or apart from it (see split
-roles below).
+roles below). Jobs, Health and Events each connect that provider as their live
+provider. The platform connects only its service runtime, which serves the
+platform's APIs; a second platform connection would have no owner, and its
+session would linger in Auth without ever renewing.
 Replay retains the actual ULID deployment and instance; disabled, expired,
 retired, or mismatched identities are rejected rather than re-enabled.
 Declaration-derived resources are materialized before native admission; an

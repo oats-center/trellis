@@ -162,6 +162,7 @@ impl OwnContextService {
                         // reply; the durable
                         // outbox remains the crash-recovery owner and may idempotently repeat this
                         // put.
+                        publication_store.publish_issuer_chain(&material).await?;
                         for (kind, key) in dependencies {
                             publication_store
                                 .publish_verification_material(&material, kind, &key)
@@ -199,8 +200,10 @@ impl OwnContextService {
                     }
                     let store = self.store.clone();
                     let client = self.client.clone();
+                    let material = self.material.clone();
                     requests.spawn(async move {
                         let destination = reply.clone();
+                        let publication_store = store.clone();
                         let result = blocking(move || {
                             store.issuer_metadata(
                                 &message.payload,
@@ -211,6 +214,8 @@ impl OwnContextService {
                         })
                         .await;
                         let Ok(bytes) = result else { return Ok(()) };
+                        // The reply is signed by the current issuer key.
+                        publication_store.publish_issuer_chain(&material).await?;
                         client
                             .publish(reply, bytes.into())
                             .await
