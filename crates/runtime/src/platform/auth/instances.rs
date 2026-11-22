@@ -499,8 +499,9 @@ pub(super) fn tombstone(
     now: i64,
 ) -> Result<(), AuthError> {
     connection.execute(
-        "INSERT OR IGNORE INTO auth_identity_tombstones(identity_key_id,outcome,recorded_at) \
-        SELECT identity_key_id,?2,?3 FROM auth_provisioned_identities WHERE instance_id=?1",
+        "INSERT OR IGNORE INTO auth_identity_tombstones(identity_key_id,kind,outcome,\
+        recorded_at) SELECT identity_key_id,kind,?2,?3 FROM auth_provisioned_identities \
+        WHERE instance_id=?1",
         params![instance, outcome, now],
     )?;
     Ok(())
@@ -1242,7 +1243,8 @@ fn identity_status(
         }
         let outcome: Option<String> = connection
             .query_row(
-                "SELECT outcome FROM auth_identity_tombstones WHERE identity_key_id=?1",
+                "SELECT outcome FROM auth_identity_tombstones \
+                WHERE identity_key_id=?1 AND kind='service'",
                 [&key],
                 |row| row.get(0),
             )

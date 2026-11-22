@@ -78,16 +78,26 @@ pub(crate) fn register_service_update_rpc<P: ParticipantDescriptor>(
                         Some((claim, deployment)) => [Some(claim), deployment],
                         None => [Some(submitting_instance(connection, &actor)?.1), None],
                     };
-                    let update = read_update(connection, &store, &input.update_id.to_string())?;
-                    let owner = update.deployment_id.to_string();
-                    if !deployments.contains(&Some(owner)) {
-                        return Err(AuthError::NotFound(format!(
-                            "no service update {} for this service",
-                            input.update_id
-                        )));
+                    // An update of another deployment is answered as one
+                    // that doesn't exist, after the same lookup.
+                    let update = input.update_id.to_string();
+                    let owner: Option<String> = connection
+                        .query_row(
+                            "SELECT deployment_id FROM auth_service_updates WHERE update_id=?1",
+                            [&update],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    let missing = format!("no service update {update}");
+                    match owner {
+                        None => return Err(AuthError::NotFound(missing)),
+                        owner if !deployments.contains(&owner) => {
+                            return Err(AuthError::Hidden(missing, "another deployment's update"));
+                        }
+                        _ => {}
                     }
                     Ok(AuthServiceUpdateResponse {
-                        update,
+                        update: read_update(connection, &store, &update)?,
                         extra: Default::default(),
                     })
                 })

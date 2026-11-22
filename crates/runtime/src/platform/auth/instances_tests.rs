@@ -561,3 +561,93 @@ fn cleaned_up_instances_keep_tombstones_that_tell_removal_from_retirement() {
         .unwrap_err()
         .contains("KeyInUse"));
 }
+
+#[test]
+fn a_devices_key_is_unregistered_to_service_status_even_once_its_deployment_is_removed() {
+    use super::super::rpc_deployments::{change_deployment, create_deployment, provision_instance};
+    use trellis_runtime_apis::__types::trellis::{
+        AuthDeploymentCreateRequest, AuthDeploymentKind, AuthDeploymentMutationRequest,
+        AuthInstanceProvisionRequest, AuthPackageEvidence,
+    };
+    let f = fixture();
+    let source = crate::platform::auth::tests::SOURCE.replace("service Reader", "device Reader");
+    crate::platform::auth::tests::accept(&f.store, &f.admin, &source, false, NOW);
+    let evidence: AuthPackageEvidence = f
+        .store
+        .read(|connection| {
+            let value: String = connection.query_row(
+                "SELECT definition_json FROM auth_accepted_apis WHERE api_id=(SELECT api_id \
+                FROM auth_capability_identities WHERE capability_id=?1)",
+                [&f.read],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str(&value)?)
+        })
+        .unwrap();
+    let graph = trellis_idl::compile_evidence(
+        serde_json::from_value(serde_json::to_value(&evidence).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let create = AuthDeploymentCreateRequest {
+        acknowledge_shared_apis: None,
+        acknowledge_unauthenticated_webhooks: None,
+        package_evidence: evidence,
+        participant_id: graph
+            .root_package()
+            .participants()
+            .keys()
+            .next()
+            .unwrap()
+            .to_string(),
+        kind: AuthDeploymentKind::Device,
+        title: "Reader device".to_string().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
+        extra: Default::default(),
+    };
+    let created = create_deployment(&f.store, &mutation(&f.admin, &create), &create, NOW).unwrap();
+    let device = key(40);
+    let provision = AuthInstanceProvisionRequest {
+        deployment_id: created.deployment.deployment_id,
+        identity_public_key: Some(public(&device).into()),
+        title: "Reader".to_string().into(),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
+        extra: Default::default(),
+    };
+    provision_instance(
+        &f.store,
+        &mutation(&f.admin, &provision),
+        &provision,
+        "device",
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(
+        status(&f, &device, NOW),
+        AuthServiceIdentityState::Unregistered
+    );
+
+    // Removing the deployment records the device's key as removed. Service
+    // status still answers for it exactly as for a key Auth never saw.
+    let remove = AuthDeploymentMutationRequest {
+        deployment_id: created.deployment.deployment_id,
+        expected_revision: created.deployment.revision,
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
+        extra: Default::default(),
+    };
+    change_deployment(
+        &f.store,
+        &mutation(&f.admin, &remove),
+        &remove,
+        "revoked",
+        NOW + 1,
+    )
+    .unwrap();
+    assert_eq!(
+        status(&f, &device, NOW + 1),
+        AuthServiceIdentityState::Unregistered
+    );
+    assert_eq!(
+        status(&f, &key(41), NOW + 1),
+        AuthServiceIdentityState::Unregistered
+    );
+}

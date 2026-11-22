@@ -661,8 +661,8 @@ pub(super) fn change_deployment(
                     [&deployment],
                 )?;
                 connection.execute(
-                    "INSERT OR IGNORE INTO auth_identity_tombstones(identity_key_id,outcome,\
-                    recorded_at) SELECT identity_key_id,'removed',?2 \
+                    "INSERT OR IGNORE INTO auth_identity_tombstones(identity_key_id,kind,\
+                    outcome,recorded_at) SELECT identity_key_id,kind,'removed',?2 \
                     FROM auth_provisioned_identities WHERE deployment_id=?1 AND state='active'",
                     params![deployment, now],
                 )?;
