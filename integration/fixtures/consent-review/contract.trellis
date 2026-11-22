@@ -1,0 +1,26 @@
+model Value { value: string; }
+api fields@v1 {
+  title "Fields";
+  description "Field records.";
+  rpc Read { input Value; output Value; }
+  rpc Edit { input Value; output Value; }
+  capabilities {
+    capability records.read { title "See field records"; description "Look up the fields you farm."; grants "The app can see your field records."; allows { rpc Read; } }
+    capability records.edit { title "Change field records"; description "Rename fields and redraw their boundaries."; grants "The app can change your field records."; allows { rpc Edit; } }
+  }
+}
+api crops@v1 {
+  title "Crops";
+  description "Crop records.";
+  rpc Read { input Value; output Value; }
+  rpc Plan { input Value; output Value; }
+  capabilities {
+    capability records.read { title "See crop records"; description "Look up what was planted and harvested."; grants "The app can see your crop records."; allows { rpc Read; } }
+    capability plans.edit { title "Change crop plans"; description "Plan next season's planting."; grants "The app can change your crop plans."; allows { rpc Plan; } }
+  }
+}
+service Provider { implements fields; implements crops; }
+app Reviewer {
+  use fields { required capability records.read; capability records.edit; }
+  use crops { capability records.read; capability plans.edit; }
+}

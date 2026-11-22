@@ -1305,7 +1305,10 @@ fn defined_api<'a>(
         .ok_or_else(|| AuthError::NotFound(format!("no API {api_id} in the package")))
 }
 
-fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi, AuthError> {
+pub(super) fn accepted_api(
+    connection: &Connection,
+    api_id: &str,
+) -> Result<AuthAcceptedApi, AuthError> {
     let (generation, revision, digest, accepted_at, evidence): (u64, u64, String, i64, String) =
         connection
             .query_row(

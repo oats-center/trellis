@@ -927,8 +927,11 @@ consent after authentication without a second password prompt. Stale consent
 decisions are rejected and refreshed; policy denial is an authorization error,
 while unavailable runtime/resource evidence remains bounded pending.
 
-Explicit one-off consent overrides older remembered choices without changing
-them. Reused choices retain their expiry; later shared withdrawals still retire
+A browser sign-in skips the consent page when everything requested that the
+user can have is allowed without asking or already approved and remembered at
+an unchanged `grants` text. Optional capabilities the user can't be granted are
+never offered and never force the page. Explicit one-off consent overrides
+older remembered choices without changing them. Reused choices retain their expiry; later shared withdrawals still retire
 affected sessions. A shortened effective authorization deadline is a reduction
 unless another entitlement path preserves the outstanding authority. Deadlines
 on newly gained rights bound new contexts, not older narrower contexts or the

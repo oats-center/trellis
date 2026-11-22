@@ -253,6 +253,7 @@ jobs:
             integration/fixtures/client-upgrade-narrow/packages/client-upgrade
             integration/fixtures/client-upgrade-consent/packages/client-upgrade
             integration/fixtures/client-upgrade-breaking/packages/client-upgrade
+            integration/fixtures/consent-review/packages/consent-review
             integration/fixtures/testkit/crates/trellis-test-fixture
             integration/fixtures/testkit/packages/trellis-test-fixture
             benchmarks/runtime/crates/performance-trellis

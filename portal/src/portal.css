@@ -330,6 +330,16 @@ ul {
   border-radius: 0.6rem;
   overflow: hidden;
 }
+.groups + .groups,
+.groups + .api-name {
+  margin-top: 1rem;
+}
+.api-name {
+  margin: 0 0 0.4rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
 .group + .group {
   border-top: 1px solid var(--line);
 }

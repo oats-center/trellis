@@ -95,6 +95,7 @@ xtask/Cargo.lock
 /integration/fixtures/client-upgrade-narrow/packages/client-upgrade/
 /integration/fixtures/client-upgrade-consent/packages/client-upgrade/
 /integration/fixtures/client-upgrade-breaking/packages/client-upgrade/
+/integration/fixtures/consent-review/packages/consent-review/
 /benchmarks/runtime/crates/performance-trellis/
 /benchmarks/runtime/packages/performance-trellis/
 /docs/examples/orders/trellis/

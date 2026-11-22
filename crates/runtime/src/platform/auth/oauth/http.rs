@@ -744,19 +744,25 @@ async fn consent_page(
     )
 }
 
-/// A registered web app whose "allowed without asking" covers everything it
-/// asks for that the person holds signs in without a consent page. An
-/// administrator who allowed administration that way already confirmed it.
-/// When the person lacks something the app requires, the page explains.
+/// A web app signs in without a consent page when everything it asks for that
+/// the person can have is already settled: allowed without asking for a
+/// registered app, or approved before and remembered at the same `grants`
+/// wording. Optional access the person can't have is not offered, so it never
+/// asks. An administrator who allowed administration without asking already
+/// confirmed it. When the person lacks something the app requires, the page
+/// explains. Native and Device Code sign-ins always ask.
 async fn approve_without_asking(
     engine: &OAuthEngine,
     headers: &HeaderMap,
     transaction: &str,
     view: &Value,
 ) -> Option<Response> {
+    if view.get("browser") != Some(&Value::Bool(true)) || !view.get("deviceUserCode")?.is_null() {
+        return None;
+    }
     let client = view.get("clientId")?.as_str()?.to_owned();
     let store = engine.server.store().clone();
-    let implied: Vec<String> = blocking(move || {
+    let implied: Option<Vec<String>> = blocking(move || {
         store.authority.read(|connection| {
             let implied: Option<(String, String)> = connection
                 .query_row(
@@ -789,18 +795,31 @@ async fn approve_without_asking(
         })
     })
     .await
-    .ok()??;
-    let mut approved = Vec::new();
+    .ok()?;
+    // An app that asks for nothing still learns who signed in, so only a
+    // registered web app may do that without asking.
+    let registered = implied.is_some();
+    let implied = implied.unwrap_or_default();
+    let (mut approved, mut reused) = (Vec::new(), Vec::new());
     for capability in view.get("capabilities")?.as_array()? {
         let id = capability.get("capabilityId")?.as_str()?;
-        let available = capability.get("available").and_then(Value::as_bool) == Some(true);
-        let required = capability.get("required").and_then(Value::as_bool) == Some(true);
-        if (required && !available) || (available && !implied.iter().any(|held| held == id)) {
+        let flag = |name: &str| capability.get(name).and_then(Value::as_bool) == Some(true);
+        if !flag("available") {
+            // Unavailable optional access is left out of the view, so this
+            // is required access the person lacks.
             return None;
         }
-        if available {
+        if implied.iter().any(|held| held == id) {
             approved.push(id.to_owned());
+        } else if flag("remembered") {
+            approved.push(id.to_owned());
+            reused.push(id.to_owned());
+        } else {
+            return None;
         }
+    }
+    if approved.is_empty() && !registered {
+        return None;
     }
     let cookie = portal_cookie(headers, "__Host-trellis-portal")?;
     let csrf = portal_cookie(headers, "__Host-trellis-portal-csrf")?;
@@ -819,6 +838,7 @@ async fn approve_without_asking(
             validated,
             presentation,
             approved,
+            reused,
             false,
             true,
         )
@@ -925,6 +945,7 @@ async fn consent_data(
                 [validated.client_id.as_str()],
                 |row| row.get(0),
             )?;
+            let browser = kind == "browser";
             let binding = if kind == "native" {
                 validated.dpop_jkt.clone()
             } else {
@@ -947,6 +968,12 @@ async fn consent_data(
                     |row| row.get(0),
                 )
                 .optional()?;
+            // People recognise their name, username and email, never their
+            // principal ID, which is only the last fallback for a name.
+            let profile = super::super::profiles::read(connection, &login.principal_id)?;
+            let name = Some(profile.display_name)
+                .filter(|name| *name != login.principal_id && Some(name) != username.as_ref());
+            let mut api_titles = std::collections::BTreeMap::new();
             let mut capabilities = Vec::new();
             let mut meanings = std::collections::BTreeMap::new();
             let mut api_generations = std::collections::BTreeMap::new();
@@ -976,22 +1003,38 @@ async fn consent_data(
                 if let Some((api, generation)) = api {
                     api_generations.insert(api, generation);
                 }
-                let metadata: Option<(String, String, String)> = connection
+                let metadata: Option<(String, String, String, String)> = connection
                     .query_row(
-                        "SELECT title,description,grants \
+                        "SELECT title,description,grants,api_id \
                         FROM auth_capability_identities \
                         WHERE capability_id=?1 AND state='active'",
                         [capability],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .optional()?;
-                let (title, description, grants) = metadata.unwrap_or_else(|| {
+                let (title, description, grants, api_id) = metadata.unwrap_or_else(|| {
                     (
                         capability.clone(),
                         "This capability is not installed.".into(),
                         String::new(),
+                        String::new(),
                     )
                 });
+                // The page heads each API's choices with the API's own title.
+                let api_title = match api_titles.get(&api_id) {
+                    Some(title) => Option::clone(title),
+                    None => {
+                        let title = match super::super::rpc_deployments::accepted_api(
+                            connection, &api_id,
+                        ) {
+                            Ok(api) => Some(api.title),
+                            Err(super::super::AuthError::NotFound(_)) => None,
+                            Err(error) => return Err(error),
+                        };
+                        api_titles.insert(api_id.clone(), title.clone());
+                        title
+                    }
+                };
                 // A group is shown with the capabilities it stands for.
                 let members = super::super::policy::current_members(connection, capability)?
                     .map(|members| {
@@ -1042,8 +1085,15 @@ async fn consent_data(
                         && (!administrative
                             || registered
                             || !administration.registered_clients_only);
+                // Optional access this person can't be granted is simply not
+                // offered. Missing required access stays, so the page explains.
+                if !required && !available {
+                    continue;
+                }
                 capabilities.push(serde_json::json!({
                     "capabilityId":capability,
+                    "apiId":api_id,
+                    "apiTitle":api_title,
                     "title":title,
                     "description":description,
                     "grants":grants,
@@ -1052,6 +1102,7 @@ async fn consent_data(
                     "administrative":administrative,
                     "required":required,
                     "available":available,
+                    "remembered":remembered && available,
                     "selected": requested.capabilities.required.contains(capability)
                             || (remembered && available)
                 }));
@@ -1079,10 +1130,12 @@ async fn consent_data(
                 "clientId":validated.client_id.as_str(),
                 "clientName":client.name,
                 "registered":registered,
+                "name":name,
                 "username":username,
-                "principalId":login.principal_id,
+                "email":profile.email,
                 "redirectUri":validated.redirect_uri,
                 "deviceUserCode":validated.device_user_code,
+                "browser":browser,
                 "capabilities":capabilities,
                 "confirmAdministration":administration.confirm_on_consent
             }))
@@ -1203,6 +1256,7 @@ async fn approve(
         validated,
         presentation,
         approved,
+        Vec::new(),
         remember,
         administration_confirmed,
     )
@@ -1220,6 +1274,7 @@ async fn complete_approval(
     validated: super::portal::ConsentIntent,
     presentation: super::portal::ConsentPresentation,
     approved: Vec<String>,
+    reused_remembered: Vec<String>,
     remember: bool,
     administration_confirmed: bool,
 ) -> Response {
@@ -1282,7 +1337,7 @@ async fn complete_approval(
         public_jwk: flow.public_jwk,
         selection: requested.capabilities,
         approved,
-        reused_remembered: Vec::new(),
+        reused_remembered,
         declined,
         administration_confirmed,
         remember,
