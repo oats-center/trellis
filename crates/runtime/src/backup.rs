@@ -299,7 +299,9 @@ fn instance_id(config: &RuntimeConfig) -> Option<String> {
 }
 
 /// Each subsystem's SQLite database, by name.
-fn databases(config: &RuntimeConfig) -> Result<Vec<(&'static str, PathBuf)>, BackupError> {
+fn databases(
+    config: &RuntimeConfig,
+) -> Result<Vec<(&'static str, PathBuf, Duration)>, BackupError> {
     let mut databases = Vec::new();
     for (name, backend) in [
         ("platform", config.platform_storage_backend()),
@@ -308,15 +310,17 @@ fn databases(config: &RuntimeConfig) -> Result<Vec<(&'static str, PathBuf)>, Bac
         ("events", config.events_storage_backend()),
     ] {
         let StorageBackend::Sqlite(storage) = backend?;
+        let busy_timeout = storage.busy_timeout();
         if name == "platform" {
             databases.push((
                 "webhooks",
                 storage
                     .path
                     .with_file_name(crate::storage::WEBHOOKS_DATABASE),
+                busy_timeout,
             ));
         }
-        databases.push((name, storage.path));
+        databases.push((name, storage.path, busy_timeout));
     }
     Ok(databases)
 }
@@ -505,7 +509,7 @@ async fn restore_stream(
 
 /// Copies a SQLite database with SQLite's online backup, so a database a
 /// running server writes is copied as one consistent state.
-fn copy_database(from: &Path, to: &Path) -> Result<(), BackupError> {
+fn copy_database(from: &Path, to: &Path, busy_timeout: Duration) -> Result<(), BackupError> {
     let sqlite = |source| BackupError::Sqlite {
         path: from.to_path_buf(),
         source,
@@ -513,9 +517,7 @@ fn copy_database(from: &Path, to: &Path) -> Result<(), BackupError> {
     let source =
         rusqlite::Connection::open_with_flags(from, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(sqlite)?;
-    source
-        .busy_timeout(Duration::from_secs(5))
-        .map_err(sqlite)?;
+    source.busy_timeout(busy_timeout).map_err(sqlite)?;
     let mut target = rusqlite::Connection::open(to).map_err(sqlite)?;
     {
         let backup = rusqlite::backup::Backup::new(&source, &mut target).map_err(sqlite)?;
@@ -668,12 +670,12 @@ pub async fn backup(
     let databases = databases(config)?;
     private_directory(&destination.join("databases"))?;
     let mut jetstream_identity = None;
-    for (subsystem, path) in &databases {
+    for (subsystem, path, busy_timeout) in &databases {
         if !path.is_file() {
             continue;
         }
         let relative = PathBuf::from(format!("databases/{subsystem}.sqlite"));
-        copy_database(path, &destination.join(&relative))?;
+        copy_database(path, &destination.join(&relative), *busy_timeout)?;
         if *subsystem == "platform" {
             let copy = destination.join(&relative);
             jetstream_identity = Some(
@@ -696,7 +698,7 @@ pub async fn backup(
             None,
         )?;
     }
-    if let Some((_, platform)) = databases.iter().find(|(name, _)| *name == "platform") {
+    if let Some((_, platform, _)) = databases.iter().find(|(name, ..)| *name == "platform") {
         let keys = issuer_keys(platform);
         for name in files_in(&keys)? {
             add(
@@ -943,7 +945,7 @@ pub fn restore(
         let EntryKind::Database { subsystem } = &entry.kind else {
             continue;
         };
-        let Some((_, target)) = databases.iter().find(|(name, _)| name == subsystem) else {
+        let Some((_, target, _)) = databases.iter().find(|(name, ..)| name == subsystem) else {
             return Err(BackupError::Damaged(format!(
                 "unknown database {subsystem}"
             )));
@@ -960,7 +962,7 @@ pub fn restore(
         }
         place(&source.join(&entry.path), target, Some(0o600))?;
     }
-    if let Some((_, platform)) = databases.iter().find(|(name, _)| *name == "platform") {
+    if let Some((_, platform, _)) = databases.iter().find(|(name, ..)| *name == "platform") {
         let keys = issuer_keys(platform);
         if keys.exists() {
             fs::remove_dir_all(&keys).map_err(file_error("remove", &keys))?;

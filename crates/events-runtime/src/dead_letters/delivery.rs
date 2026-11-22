@@ -670,6 +670,14 @@ pub async fn start_exhaustion_advisory_loop(
                                     "the Events database is unusable: {error}"
                                 )));
                             }
+                            if !error.transient() {
+                                tracing::error!(
+                                    %error,
+                                    stream_sequence = advisory.stream_sequence,
+                                    "Events coverage gap dropped: trying again cannot record it"
+                                );
+                                break;
+                            }
                             let delay = crate::storage::retry_delay(failures);
                             failures += 1;
                             tracing::warn!(

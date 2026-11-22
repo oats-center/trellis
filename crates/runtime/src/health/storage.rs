@@ -135,6 +135,7 @@ fn databases(config: &RuntimeConfig) -> Vec<StorageClass> {
         let Ok(StorageBackend::Sqlite(sqlite)) = backend else {
             continue;
         };
+        let busy_timeout = sqlite.busy_timeout();
         let path = sqlite.path;
         let Some(bytes) = file_bytes(&path) else {
             continue;
@@ -143,6 +144,9 @@ fn databases(config: &RuntimeConfig) -> Vec<StorageClass> {
         else {
             continue;
         };
+        if connection.busy_timeout(busy_timeout).is_err() {
+            continue;
+        }
         let location = path.display().to_string();
         let count_and_oldest = |sql: &str| {
             connection

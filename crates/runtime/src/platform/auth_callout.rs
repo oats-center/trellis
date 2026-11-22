@@ -275,16 +275,24 @@ impl AuthCallout {
                         disconnecting.spawn(async move {
                             let mut backoff = crate::storage::Backoff::default();
                             loop {
-                                let (store, server, key) =
+                                let (closing, on, nkey) =
                                     (store.clone(), server.clone(), key.clone());
                                 match blocking(move || {
-                                    store.disconnect_attachment(&server, cid, &key, now)
+                                    closing.disconnect_attachment(&on, cid, &nkey, now)
                                 })
                                 .await
                                 {
                                     Ok(()) => return,
-                                    Err(error) if error.unusable() => {
-                                        tracing::error!(%error, "disconnect not recorded");
+                                    Err(error)
+                                        if error.storage_failure()
+                                            != crate::storage::StorageFailure::Transient =>
+                                    {
+                                        tracing::error!(
+                                            %error,
+                                            server_id = %server,
+                                            client_id = cid,
+                                            "disconnect not recorded: trying again cannot succeed"
+                                        );
                                         return;
                                     }
                                     Err(error) => {

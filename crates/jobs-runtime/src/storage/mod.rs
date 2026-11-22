@@ -380,6 +380,31 @@ impl SqliteJobsStoreError {
             )
         )
     }
+
+    /// Whether the failure can pass, so the same work is tried again: a lock
+    /// another connection holds, a busy database, an interrupted or failed
+    /// I/O, a full disk. Anything else fails the same way again.
+    pub(crate) fn transient(&self) -> bool {
+        use rusqlite::ErrorCode;
+        matches!(
+            self,
+            Self::Sqlite(error) if matches!(
+                error.sqlite_error_code(),
+                Some(
+                    ErrorCode::DatabaseBusy
+                        | ErrorCode::DatabaseLocked
+                        | ErrorCode::OperationInterrupted
+                        | ErrorCode::SystemIoFailure
+                        | ErrorCode::DiskFull
+                        | ErrorCode::OutOfMemory
+                        | ErrorCode::CannotOpen
+                        | ErrorCode::FileLockingProtocolFailed
+                        | ErrorCode::SchemaChanged
+                        | ErrorCode::ReadOnly
+                )
+            )
+        )
+    }
 }
 
 /// The wait before a projector stores what failed again: 250 milliseconds
@@ -392,11 +417,14 @@ pub(crate) fn retry_delay(failures: u32) -> std::time::Duration {
 
 impl SqliteJobsStore {
     /// Open a store at `path` and initialize the schema if needed. The
-    /// connection waits up to five seconds for a lock another connection
-    /// holds.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, SqliteJobsStoreError> {
+    /// connection waits up to `busy_timeout` for a lock another connection
+    /// holds before failing with "database is locked".
+    pub fn open(
+        path: impl AsRef<Path>,
+        busy_timeout: std::time::Duration,
+    ) -> Result<Self, SqliteJobsStoreError> {
         let connection = Connection::open(path)?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.busy_timeout(busy_timeout)?;
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
         };
@@ -3216,11 +3244,13 @@ mod tests {
     fn projection_id_is_stable_for_one_database() {
         let path = temp_db_path("projection-id");
         let _ = std::fs::remove_file(&path);
-        let first = SqliteJobsStore::open(&path).expect("store should open");
+        let first = SqliteJobsStore::open(&path, std::time::Duration::from_secs(5))
+            .expect("store should open");
         let first_id = first.projection_id().expect("projection id should exist");
         drop(first);
 
-        let second = SqliteJobsStore::open(&path).expect("store should reopen");
+        let second = SqliteJobsStore::open(&path, std::time::Duration::from_secs(5))
+            .expect("store should reopen");
         let second_id = second
             .projection_id()
             .expect("projection id should persist");

@@ -209,11 +209,19 @@ async fn retry(error: EventsStoreError, failures: &mut u32) -> Result<(), Server
     }
     let delay = crate::storage::retry_delay(*failures);
     *failures += 1;
-    tracing::warn!(
-        %error,
-        retry_in_ms = delay.as_millis(),
-        "Events projector storage failed; it will try again"
-    );
+    if error.transient() {
+        tracing::warn!(
+            %error,
+            retry_in_ms = delay.as_millis(),
+            "Events projector storage failed; it will try again"
+        );
+    } else {
+        tracing::error!(
+            %error,
+            retry_in_ms = delay.as_millis(),
+            "Events projector storage failed; it will try again"
+        );
+    }
     tokio::time::sleep(delay).await;
     Ok(())
 }

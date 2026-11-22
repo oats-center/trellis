@@ -1622,6 +1622,14 @@ pub struct SqliteStorageConfig {
     pub single_writer: Option<bool>,
 }
 
+impl SqliteStorageConfig {
+    /// How long a connection waits for a lock another connection holds before
+    /// failing with "database is locked": `busy_timeout_ms`, or five seconds.
+    pub fn busy_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.busy_timeout_ms.unwrap_or(5_000))
+    }
+}
+
 /// Error returned while loading or validating runtime configuration.
 #[derive(Debug, Error)]
 pub enum ConfigError {

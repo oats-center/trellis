@@ -194,14 +194,24 @@ pub async fn start_jobs_projector(
                             "the Jobs database is unusable: {error}"
                         )));
                     }
+                    // An event that cannot be projected is rejected alone
+                    // inside the batch; what fails here is the batch itself.
                     Err(error) => {
                         let delay = crate::storage::retry_delay(failures);
                         failures += 1;
-                        tracing::warn!(
-                            %error,
-                            retry_in_ms = delay.as_millis(),
-                            "jobs projector could not store a batch; it will try again"
-                        );
+                        if error.transient() {
+                            tracing::warn!(
+                                %error,
+                                retry_in_ms = delay.as_millis(),
+                                "jobs projector could not store a batch; it will try again"
+                            );
+                        } else {
+                            tracing::error!(
+                                %error,
+                                retry_in_ms = delay.as_millis(),
+                                "jobs projector could not store a batch; it will try again"
+                            );
+                        }
                         tokio::time::sleep(delay).await;
                     }
                 }

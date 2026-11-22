@@ -536,7 +536,10 @@ CREATE TABLE auth_post_commit_actions (
     predecessor_action_id TEXT,
     enforcement_work_id TEXT REFERENCES auth_enforcement_work(work_id),
     cursor TEXT,
-    event_delivery_json TEXT CHECK (event_delivery_json IS NULL OR json_valid(event_delivery_json))
+    event_delivery_json TEXT CHECK (event_delivery_json IS NULL OR json_valid(event_delivery_json)),
+    -- Set when the effect failed in a way trying again cannot fix; it is kept
+    -- for inspection, never claimed again, and no longer holds back successors.
+    failed_at INTEGER CHECK (failed_at BETWEEN 0 AND 9007199254740991)
 );
 CREATE INDEX auth_post_commit_actions_ready_idx
     ON auth_post_commit_actions(next_attempt_at, action_id);

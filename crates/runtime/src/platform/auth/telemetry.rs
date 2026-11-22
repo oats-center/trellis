@@ -23,7 +23,8 @@ impl SqliteAuthorizationStore {
         }
         let (post_commit_pending, oldest, resources) = self.read(|transaction| {
             let (post_commit_pending, oldest): (u64, Option<i64>) = transaction.query_row(
-                "SELECT count(*), min(created_at) FROM auth_post_commit_actions",
+                "SELECT count(*), min(created_at) FROM auth_post_commit_actions \
+                WHERE failed_at IS NULL",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;

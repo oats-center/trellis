@@ -95,7 +95,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .config
         .jobs_storage_backend()
         .map_err(RuntimeError::Config)?;
-    let store = SqliteJobsStore::open(&storage.path)
+    let store = SqliteJobsStore::open(&storage.path, storage.busy_timeout())
         .map_err(|error| RuntimeError::Nats(format!("failed to open Jobs SQLite: {error}")))?;
     let jobs_runtime = trellis_rs::jobs::JobsRuntime::from_nats(context.trellis_nats.clone());
     let resources = jobs_admin_resources();

@@ -66,10 +66,14 @@ pub(crate) enum HealthStoreError {
 }
 
 impl HealthStoreError {
-    /// Whether the Health database itself is unusable, so trying again cannot
-    /// help (see [`crate::storage::sqlite_unusable`]).
-    pub(crate) fn unusable(&self) -> bool {
-        matches!(self, Self::Sqlite(error) if crate::storage::sqlite_unusable(error))
+    /// What this failure calls for in background work (see
+    /// [`crate::storage::StorageFailure`]); anything but SQLite fails the same
+    /// way again.
+    pub(crate) fn storage_failure(&self) -> crate::storage::StorageFailure {
+        match self {
+            Self::Sqlite(error) => crate::storage::sqlite_failure(error),
+            _ => crate::storage::StorageFailure::Permanent,
+        }
     }
 }
 
@@ -496,7 +500,8 @@ impl HealthStore {
             .map_err(|_| HealthStoreError::Poisoned)?;
         let mut statement = connection.prepare(
             "SELECT event_id, payload_json, created_at_ns FROM health_transition_outbox
-             WHERE published_at_ns IS NULL ORDER BY created_at_ns LIMIT ?1",
+             WHERE published_at_ns IS NULL AND set_aside_at_ns IS NULL
+             ORDER BY created_at_ns LIMIT ?1",
         )?;
         let transitions = statement
             .query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
@@ -524,6 +529,26 @@ impl HealthStore {
             "UPDATE health_transition_outbox SET published_at_ns = ?2, attempts = attempts + 1,
                     last_error = NULL WHERE event_id = ?1",
             params![event_id, published_at_ns],
+        )?;
+        Ok(())
+    }
+
+    /// Sets aside a status event that trying again cannot publish: it is kept,
+    /// with `error`, until retention removes it, and never published.
+    pub(crate) fn set_aside_transition(
+        &self,
+        event_id: &str,
+        error: &str,
+        now_ns: i64,
+    ) -> Result<(), HealthStoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| HealthStoreError::Poisoned)?;
+        connection.execute(
+            "UPDATE health_transition_outbox SET set_aside_at_ns = ?2, last_error = ?3
+             WHERE event_id = ?1",
+            params![event_id, now_ns, error],
         )?;
         Ok(())
     }
@@ -626,7 +651,7 @@ impl HealthStore {
             [cutoff_ns],
         )? + transaction.execute(
             "DELETE FROM health_transition_outbox
-             WHERE published_at_ns IS NOT NULL AND published_at_ns < ?1",
+             WHERE coalesce(published_at_ns, set_aside_at_ns) < ?1",
             [cutoff_ns],
         )?;
         if stale.is_empty() && historical_changes == 0 {

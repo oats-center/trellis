@@ -52,6 +52,14 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         auth::blocking(move || SqliteAuthorizationStore::open(&platform_store, &config, &account))
             .await?,
     );
+    // Another process can hold the database's write lock while the server
+    // starts, such as a backup or an operator's query. Startup waits for it.
+    let probe = store.clone();
+    until_stored(context, "Auth startup", move || {
+        let probe = probe.clone();
+        auth::blocking(move || probe.writable())
+    })
+    .await?;
     let custody = auth::oauth_storage_key(&context.config)?;
     let console_origin = context
         .config
@@ -167,8 +175,11 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         builtins.push((participant, evidence, seed));
     }
     let checking = store.clone();
-    auth::blocking(move || checking.check_builtin_upgrades(builtins, crate::clock::unix_now()))
-        .await?;
+    until_stored(context, "Auth startup", move || {
+        let (checking, builtins) = (checking.clone(), builtins.clone());
+        auth::blocking(move || checking.check_builtin_upgrades(builtins, crate::clock::unix_now()))
+    })
+    .await?;
     let provider_seed = live_provider::load_live_provider_seed(
         &context.config,
         live_provider::LiveProviderRole::Platform,
@@ -177,17 +188,39 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         trellis_runtime_apis::participants::trellis_platform::Participant,
     >(&store, &context.trellis_nats, &provider_seed)
     .await?;
-    while Box::pin(store.process_effects(
-        &material,
-        &revocations,
-        &system,
-        &notices,
-        crate::clock::unix_now(),
-    ))
-    .await
-    .map_err(|error| RuntimeError::Platform(error.to_string()))?
-        != 0
-    {}
+    // Startup drains committed effects before serving. A database another
+    // process holds locked, or a broker that is not answering yet, delays it;
+    // only an unusable database stops startup.
+    let mut backoff = crate::storage::Backoff::default();
+    loop {
+        match Box::pin(store.process_effects(
+            &material,
+            &revocations,
+            &system,
+            &notices,
+            crate::clock::unix_now(),
+        ))
+        .await
+        {
+            Ok(0) => break,
+            Ok(_) => backoff.succeeded(),
+            Err(error) if error.storage_failure() == crate::storage::StorageFailure::Unusable => {
+                return Err(RuntimeError::Platform(format!(
+                    "the Auth database is unusable: {error}"
+                )));
+            }
+            Err(error) => {
+                let delay = backoff.failed();
+                retrying("Auth startup effects", &error, delay);
+                tokio::time::sleep(delay).await;
+                if context.is_stopping() {
+                    return Err(RuntimeError::Platform(format!(
+                        "stopped while Auth startup effects were failing: {error}"
+                    )));
+                }
+            }
+        }
+    }
     let own_context = Box::pin(auth::OwnContextService::start(
         context.trellis_nats.clone(),
         material.clone(),
@@ -224,6 +257,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let webhooks = Box::pin(webhooks::Webhooks::open(
         engine.server.store().clone(),
         &records_path,
+        context.stores.platform()?.busy_timeout(),
         context.trellis_nats.clone(),
         published,
         &context.config.public_origin(),
@@ -354,18 +388,16 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 .await;
                 match pass {
                     Ok(()) => backoff.succeeded(),
-                    Err(error) if error.unusable() => {
+                    Err(error)
+                        if error.storage_failure() == crate::storage::StorageFailure::Unusable =>
+                    {
                         return Err(RuntimeError::Platform(format!(
                             "the Auth database is unusable: {error}"
                         )));
                     }
                     Err(error) => {
                         let delay = backoff.failed();
-                        tracing::warn!(
-                            %error,
-                            retry_in_ms = delay.as_millis(),
-                            "Auth background work failed; it will run again"
-                        );
+                        retrying("Auth background work", &error, delay);
                         tokio::select! {
                             () = worker_stop.stopped() => return Ok(()),
                             () = tokio::time::sleep(delay) => {}
@@ -419,22 +451,20 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                                 break;
                             };
                             let result = async {
-                                let text = |key: &str| {
-                                    effect.payload[key]
-                                        .as_str()
-                                        .ok_or(auth::AuthError::Unavailable)
+                                let text = |value: &serde_json::Value, key: &str| {
+                                    value[key].as_str().map(str::to_owned).ok_or_else(|| {
+                                        auth::AuthError::Invalid(format!(
+                                            "event publication has no {key}"
+                                        ))
+                                    })
                                 };
                                 let body = &effect.payload["event"];
                                 let event = trellis_rs::client::PreparedTrellisEvent::restore(
-                                    text("subject")?,
+                                    text(&effect.payload, "subject")?,
                                     serde_json::to_vec(body)?.into(),
-                                    text("descriptor")?,
-                                    body["eventId"]
-                                        .as_str()
-                                        .ok_or(auth::AuthError::Unavailable)?,
-                                    body["occurredAt"]
-                                        .as_str()
-                                        .ok_or(auth::AuthError::Unavailable)?,
+                                    text(&effect.payload, "descriptor")?,
+                                    text(body, "eventId")?,
+                                    text(body, "occurredAt")?,
                                 )
                                 .map_err(|error| auth::AuthError::Invalid(error.to_string()))?;
                                 publisher
@@ -444,11 +474,17 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                             }
                             .await;
                             let now = crate::clock::unix_now();
-                            let settler = event_store.clone();
-                            match result {
+                            let (settler, claimed) = (event_store.clone(), effect.clone());
+                            let settled = match result {
                                 Ok(()) => {
-                                    auth::blocking(move || settler.complete_effect(&effect, now))
+                                    auth::blocking(move || settler.complete_effect(&claimed, now))
                                         .await
+                                }
+                                Err(error)
+                                    if error.storage_failure()
+                                        == crate::storage::StorageFailure::Permanent =>
+                                {
+                                    Err(error)
                                 }
                                 Err(error) => {
                                     tracing::warn!(
@@ -457,9 +493,34 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                                         %error,
                                         "Auth event publication remains pending"
                                     );
-                                    auth::blocking(move || settler.retry_effect(&effect, now)).await
+                                    auth::blocking(move || settler.retry_effect(&claimed, now))
+                                        .await
                                 }
-                            }?;
+                            };
+                            // One publication that fails the same way every
+                            // time is set aside, so the ones after it go out.
+                            match settled {
+                                Err(error)
+                                    if error.storage_failure()
+                                        == crate::storage::StorageFailure::Permanent =>
+                                {
+                                    tracing::error!(
+                                        action_id=%effect.action_id,
+                                        attempt=effect.attempts,
+                                        %error,
+                                        "Auth event publication set aside: it cannot succeed"
+                                    );
+                                    let settler = event_store.clone();
+                                    let reason = error.to_string();
+                                    auth::blocking(move || {
+                                        settler.set_aside_effect(&effect, &reason, now)
+                                    })
+                                    .await?;
+                                }
+                                settled => {
+                                    settled?;
+                                }
+                            }
                         }
                         Ok::<(), auth::AuthError>(())
                     }
@@ -469,18 +530,17 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     // again.
                     match pass {
                         Ok(()) => backoff.succeeded(),
-                        Err(error) if error.unusable() => {
+                        Err(error)
+                            if error.storage_failure()
+                                == crate::storage::StorageFailure::Unusable =>
+                        {
                             break Err(RuntimeError::Platform(format!(
                                 "the Auth database is unusable: {error}"
                             )));
                         }
                         Err(error) => {
                             let delay = backoff.failed();
-                            tracing::warn!(
-                                %error,
-                                retry_in_ms = delay.as_millis(),
-                                "Auth event publication failed; it will run again"
-                            );
+                            retrying("Auth event publication", &error, delay);
                             tokio::select! {
                                 () = provider_stop.stopped() => break Ok(()),
                                 () = tokio::time::sleep(delay) => {}
@@ -530,6 +590,48 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         stop,
         join,
     })
+}
+
+/// Runs a startup `step` that writes the Auth database until it succeeds. A
+/// failure that can pass, such as a lock another process holds, is logged and
+/// the step runs again after a growing wait; any other failure ends startup.
+async fn until_stored<T, F>(
+    context: &RuntimeContext,
+    work: &str,
+    mut step: impl FnMut() -> F,
+) -> Result<T, RuntimeError>
+where
+    F: std::future::Future<Output = Result<T, auth::AuthError>>,
+{
+    let mut backoff = crate::storage::Backoff::default();
+    loop {
+        match step().await {
+            Ok(value) => return Ok(value),
+            Err(error) if error.storage_failure() == crate::storage::StorageFailure::Transient => {
+                let delay = backoff.failed();
+                retrying(work, &error, delay);
+                tokio::time::sleep(delay).await;
+                if context.is_stopping() {
+                    return Err(RuntimeError::Platform(format!(
+                        "stopped while {work} was failing: {error}"
+                    )));
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Logs a failed pass of Auth background `work` that runs again after `delay`:
+/// a warning for a failure that can pass, an error for one that recurs until
+/// someone fixes its cause.
+fn retrying(work: &str, error: &auth::AuthError, delay: Duration) {
+    let retry_in_ms = delay.as_millis();
+    if error.storage_failure() == crate::storage::StorageFailure::Transient {
+        tracing::warn!(work, %error, retry_in_ms, "Auth work failed; it will run again");
+    } else {
+        tracing::error!(work, %error, retry_in_ms, "Auth work failed; it will run again");
+    }
 }
 
 pub(crate) fn callout_keys(config: &RuntimeConfig) -> Result<CalloutKeys, RuntimeError> {

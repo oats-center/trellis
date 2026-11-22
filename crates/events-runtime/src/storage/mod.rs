@@ -172,6 +172,31 @@ impl EventsStoreError {
             )
         )
     }
+
+    /// Whether the failure can pass, so the same work is tried again: a lock
+    /// another connection holds, a busy database, an interrupted or failed
+    /// I/O, a full disk. Anything else fails the same way again.
+    pub(crate) fn transient(&self) -> bool {
+        use rusqlite::ErrorCode;
+        matches!(
+            self,
+            Self::Sqlite(error) if matches!(
+                error.sqlite_error_code(),
+                Some(
+                    ErrorCode::DatabaseBusy
+                        | ErrorCode::DatabaseLocked
+                        | ErrorCode::OperationInterrupted
+                        | ErrorCode::SystemIoFailure
+                        | ErrorCode::DiskFull
+                        | ErrorCode::OutOfMemory
+                        | ErrorCode::CannotOpen
+                        | ErrorCode::FileLockingProtocolFailed
+                        | ErrorCode::SchemaChanged
+                        | ErrorCode::ReadOnly
+                )
+            )
+        )
+    }
 }
 
 /// The wait before a background loop stores what failed again: 250
@@ -184,11 +209,14 @@ pub(crate) fn retry_delay(failures: u32) -> std::time::Duration {
 
 impl EventsStore {
     /// Open a store at `path` and initialize the schema if needed. The
-    /// connection waits up to five seconds for a lock another connection
-    /// holds.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self, EventsStoreError> {
+    /// connection waits up to `busy_timeout` for a lock another connection
+    /// holds before failing with "database is locked".
+    pub fn open(
+        path: impl AsRef<Path>,
+        busy_timeout: std::time::Duration,
+    ) -> Result<Self, EventsStoreError> {
         let connection = Connection::open(path)?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.busy_timeout(busy_timeout)?;
         let store = Self {
             connection: Arc::new(Mutex::new(connection)),
         };
@@ -1968,7 +1996,8 @@ mod tests {
     fn retention_gap_evidence_survives_projection_restart() {
         let directory = tempfile::tempdir().expect("temporary projection");
         let path = directory.path().join("events.sqlite");
-        let store = EventsStore::open(&path).expect("open store");
+        let store =
+            EventsStore::open(&path, std::time::Duration::from_secs(5)).expect("open store");
         store
             .record_stream_bounds(10)
             .expect("record truncated stream");
@@ -1979,7 +2008,8 @@ mod tests {
             .expect("project retained event");
         drop(store);
 
-        let reopened = EventsStore::open(&path).expect("reopen store");
+        let reopened =
+            EventsStore::open(&path, std::time::Duration::from_secs(5)).expect("reopen store");
         let diagnostics = reopened.diagnostics().expect("read diagnostics");
         assert_eq!(diagnostics["gapDetected"], true);
         assert_eq!(diagnostics["retainedFrom"], "2026-01-02T00:00:00Z");

@@ -122,6 +122,12 @@ impl SqliteStore {
         &self.config.path
     }
 
+    /// How long its connections wait for a lock (see
+    /// [`SqliteStorageConfig::busy_timeout`]).
+    pub(crate) fn busy_timeout(&self) -> Duration {
+        self.config.busy_timeout()
+    }
+
     /// Runs schema migrations for this subsystem.
     pub fn migrate(&self) -> Result<(), StoreError> {
         migrate_sqlite(self.subsystem, &self.config)
@@ -201,7 +207,7 @@ impl SqliteStore {
             source,
         })?;
         connection
-            .busy_timeout(busy_timeout(&self.config))
+            .busy_timeout(self.config.busy_timeout())
             .map_err(|source| StoreError::ConfigureSqlite {
                 path: self.config.path.clone(),
                 source,
@@ -349,20 +355,63 @@ fn create_parent_dir(path: &Path) -> Result<(), StoreError> {
     })
 }
 
-/// How long a connection waits for another connection's lock before failing
-/// with "database is locked": the configured time, or five seconds.
-fn busy_timeout(config: &SqliteStorageConfig) -> Duration {
-    Duration::from_millis(config.busy_timeout_ms.unwrap_or(5_000))
+/// What a storage failure in background work calls for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StorageFailure {
+    /// It can pass: a lock another connection holds, a busy database, an
+    /// interrupted or failed I/O, a full disk. The same work is tried again.
+    Transient,
+    /// Trying the same work again fails the same way, such as a constraint
+    /// violation or a value of the wrong type. The work is set aside.
+    Permanent,
+    /// The database file is corrupt or is not a database. Its subsystem stops.
+    Unusable,
 }
 
-/// Whether a SQLite failure means the database itself is unusable, so trying
-/// again cannot help: the file is corrupt or is not a database. A lock held
-/// by another connection, a busy database or an I/O error can pass.
-pub(crate) fn sqlite_unusable(error: &rusqlite::Error) -> bool {
-    matches!(
-        error.sqlite_error_code(),
-        Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase)
-    )
+/// Classifies a SQLite failure (see [`StorageFailure`]).
+pub(crate) fn sqlite_failure(error: &rusqlite::Error) -> StorageFailure {
+    use rusqlite::ErrorCode;
+    match error.sqlite_error_code() {
+        Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase) => StorageFailure::Unusable,
+        Some(
+            ErrorCode::DatabaseBusy
+            | ErrorCode::DatabaseLocked
+            | ErrorCode::OperationInterrupted
+            | ErrorCode::SystemIoFailure
+            | ErrorCode::DiskFull
+            | ErrorCode::OutOfMemory
+            | ErrorCode::CannotOpen
+            | ErrorCode::FileLockingProtocolFailed
+            | ErrorCode::SchemaChanged
+            | ErrorCode::ReadOnly,
+        ) => StorageFailure::Transient,
+        _ => StorageFailure::Permanent,
+    }
+}
+
+/// Lets a log line that repeats through at most once a minute, so a failure a
+/// loop retries several times a second does not flood the log.
+#[derive(Debug, Default)]
+pub(crate) struct LogThrottle {
+    last: Option<std::time::Instant>,
+    held: u64,
+}
+
+impl LogThrottle {
+    /// Whether to log now: `Some` with how many repeats were held back since
+    /// the last line, or `None` to hold this one back.
+    pub(crate) fn admit(&mut self) -> Option<u64> {
+        let now = std::time::Instant::now();
+        if self
+            .last
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(60))
+        {
+            self.held += 1;
+            return None;
+        }
+        self.last = Some(now);
+        Some(std::mem::take(&mut self.held))
+    }
 }
 
 /// The wait between attempts of a background loop's storage work after it
@@ -400,7 +449,7 @@ fn apply_sqlite_pragmas(
             source,
         })?;
     connection
-        .busy_timeout(busy_timeout(config))
+        .busy_timeout(config.busy_timeout())
         .map_err(|source| StoreError::ConfigureSqlite {
             path: config.path.clone(),
             source,

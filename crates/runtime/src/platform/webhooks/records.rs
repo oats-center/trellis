@@ -93,7 +93,10 @@ fn now_ms() -> i64 {
 
 impl Records {
     /// Open and migrate the records database.
-    pub(crate) fn open(path: &Path) -> std::result::Result<Self, String> {
+    pub(crate) fn open(
+        path: &Path,
+        busy_timeout: std::time::Duration,
+    ) -> std::result::Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
@@ -102,7 +105,7 @@ impl Records {
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| error.to_string())?;
         connection
-            .busy_timeout(std::time::Duration::from_secs(5))
+            .busy_timeout(busy_timeout)
             .map_err(|error| error.to_string())?;
         migrations::migrations::runner()
             .run(&mut connection)
@@ -478,7 +481,11 @@ mod tests {
     #[tokio::test]
     async fn records_expire_for_deployments_without_endpoints() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let records = Records::open(&directory.path().join("webhooks.sqlite")).expect("opened");
+        let records = Records::open(
+            &directory.path().join("webhooks.sqlite"),
+            std::time::Duration::from_secs(5),
+        )
+        .expect("opened");
         // A deployment whose last endpoint is gone keeps the Trellis defaults.
         record(
             &records,

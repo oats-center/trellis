@@ -75,7 +75,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     let context = async_nats::jetstream::new(observer.clone());
     let mut stream = context.get_stream("trellis").await.unwrap();
     let projection_path = runtime.workdir().join("projector.sqlite");
-    let store = EventsStore::open(&projection_path).unwrap();
+    let store = EventsStore::open(&projection_path, std::time::Duration::from_secs(5)).unwrap();
     let owner = receiver.runtime_authorization_owner();
     let transport = receiver.runtime_nats();
     let verify: EventVerifier = Arc::new(move |input| {
@@ -302,7 +302,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     .unwrap();
     stream.purge().sequence(retained_sequence).await.unwrap();
 
-    let reopened = EventsStore::open(&projection_path).unwrap();
+    let reopened = EventsStore::open(&projection_path, std::time::Duration::from_secs(5)).unwrap();
     let projector = start_events_projector(event_runtime.clone(), reopened.clone(), verify.clone())
         .await
         .unwrap();
@@ -320,7 +320,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     projector.stop().await;
     drop(reopened);
     assert_eq!(
-        EventsStore::open(&projection_path)
+        EventsStore::open(&projection_path, std::time::Duration::from_secs(5))
             .unwrap()
             .diagnostics()
             .unwrap()["gapDetected"],
@@ -328,7 +328,11 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     );
 
     // The same truncation must also be detected by a completely new projection.
-    let rebuilt = EventsStore::open(runtime.workdir().join("rebuilt-projector.sqlite")).unwrap();
+    let rebuilt = EventsStore::open(
+        runtime.workdir().join("rebuilt-projector.sqlite"),
+        std::time::Duration::from_secs(5),
+    )
+    .unwrap();
     let projector = start_events_projector(event_runtime, rebuilt.clone(), verify.clone())
         .await
         .unwrap();

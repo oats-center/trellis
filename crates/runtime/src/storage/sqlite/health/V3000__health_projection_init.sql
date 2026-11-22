@@ -108,7 +108,9 @@ CREATE TABLE health_transition_outbox (
   created_at_ns INTEGER NOT NULL,
   published_at_ns INTEGER,
   attempts INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT
+  last_error TEXT,
+  -- Set when trying again cannot publish the event; retention removes it.
+  set_aside_at_ns INTEGER
 );
 
 CREATE INDEX health_transition_outbox_pending_idx

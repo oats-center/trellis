@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 
 use super::sqlite::{blocking, json, AuthError, SqliteAuthorizationStore};
+use crate::storage::StorageFailure;
 
 pub(crate) const ATTACHMENT_MARKER_PREFIX: &str = "trellis.auth.v1:";
 pub(crate) const MATERIAL_BUCKET: &str = "TRELLIS_AUTH_MATERIAL";
@@ -357,13 +358,12 @@ impl SqliteAuthorizationStore {
             // Broker waits consume this batch's claim lifetime, too.
             let settled_at =
                 now.saturating_add(i64::try_from(started.elapsed().as_secs()).unwrap_or(i64::MAX));
-            match result {
-                Ok(()) => {
-                    let store = Arc::clone(self);
-                    completed += usize::from(
-                        blocking(move || store.complete_effect(&effect, settled_at)).await?,
-                    );
-                }
+            let (store, claimed) = (Arc::clone(self), effect.clone());
+            let settled = match result {
+                Ok(()) => blocking(move || store.complete_effect(&claimed, settled_at))
+                    .await
+                    .map(|done| completed += usize::from(done)),
+                Err(error) if error.storage_failure() == StorageFailure::Permanent => Err(error),
                 Err(error) => {
                     tracing::warn!(
                         action_id=%effect.action_id,
@@ -372,9 +372,39 @@ impl SqliteAuthorizationStore {
                         error=%error,
                         "Auth effect remains pending"
                     );
-                    let store = Arc::clone(self);
-                    blocking(move || store.retry_effect(&effect, settled_at)).await?;
                     failure = Some(error);
+                    blocking(move || store.retry_effect(&claimed, settled_at))
+                        .await
+                        .map(|_| ())
+                }
+            };
+            let Err(error) = settled else {
+                continue;
+            };
+            match error.storage_failure() {
+                StorageFailure::Unusable => return Err(error),
+                // Its claim lapses, and the effect runs again.
+                StorageFailure::Transient => failure = Some(error),
+                StorageFailure::Permanent => {
+                    tracing::error!(
+                        action_id=%effect.action_id,
+                        kind=%effect.kind,
+                        attempt=effect.attempts,
+                        error=%error,
+                        "Auth effect set aside: trying it again cannot succeed"
+                    );
+                    let store = Arc::clone(self);
+                    let reason = error.to_string();
+                    if let Err(error) =
+                        blocking(move || store.set_aside_effect(&effect, &reason, settled_at)).await
+                    {
+                        if error.storage_failure() == StorageFailure::Unusable {
+                            return Err(error);
+                        }
+                        // Its claim lapses, and the effect runs, and is set
+                        // aside, again.
+                        failure = Some(error);
+                    }
                 }
             }
         }

@@ -516,6 +516,36 @@ impl SqliteAuthorizationStore {
     /// One bounded page commits retirements, effects and its cursor atomically.
     /// A crashed transaction replays its page; a committed page resumes by ID.
     pub(crate) fn enforce_next_page(&self, now: i64) -> Result<Option<String>, AuthError> {
+        match self.enforce_page(now) {
+            Err(error) if error.storage_failure() == crate::storage::StorageFailure::Permanent => {
+                // A page that fails the same way every time must not hold back
+                // the enforcement work queued after it. It is tried again in a
+                // minute, since its sessions still need enforcing.
+                let work = self.transaction(|connection| {
+                    Ok(connection
+                        .query_row(
+                            "UPDATE auth_enforcement_work SET next_attempt_at=?1+60 \
+                            WHERE work_id=(SELECT work_id FROM auth_enforcement_work \
+                            WHERE state IN ('queued','running') AND next_attempt_at<=?1 \
+                            ORDER BY lane,created_at,work_id LIMIT 1) \
+                            RETURNING work_id",
+                            [now],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()?)
+                })?;
+                tracing::error!(
+                    work_id = work.as_deref(),
+                    %error,
+                    "Auth enforcement page failed; its work runs again in a minute"
+                );
+                Ok(work)
+            }
+            result => result,
+        }
+    }
+
+    fn enforce_page(&self, now: i64) -> Result<Option<String>, AuthError> {
         self.transaction(|connection| {
             let next: Option<(String, String, Option<String>)> = connection
                 .query_row(
@@ -632,13 +662,15 @@ impl SqliteAuthorizationStore {
                 "SELECT action_id,kind,payload_json,attempts \
                 FROM auth_post_commit_actions a \
                 WHERE next_attempt_at<=?1 \
+                AND failed_at IS NULL \
                 AND ((kind='event')=?3) \
                 AND (claimed_until IS NULL \
                 OR claimed_until<=?1) \
                 AND (predecessor_action_id IS NULL \
                 OR NOT EXISTS(SELECT 1 \
                 FROM auth_post_commit_actions p \
-                WHERE p.action_id=a.predecessor_action_id)) \
+                WHERE p.action_id=a.predecessor_action_id \
+                AND p.failed_at IS NULL)) \
                 ORDER BY created_at,action_id \
                 LIMIT ?2",
             )?;
@@ -740,6 +772,44 @@ impl SqliteAuthorizationStore {
                 WHERE action_id=?1 AND claim_token=?2",
                 params![effect.action_id, effect.claim_token],
             )?;
+            Ok(true)
+        })
+    }
+
+    /// Sets aside a claimed effect that failed in a way trying again cannot
+    /// fix: it stays, with `error`, for inspection, is never claimed again, and
+    /// no longer holds back the effects that follow it. A kick set aside counts
+    /// as a failed kick of its enforcement work. False leaves an expired or
+    /// superseded claim untouched.
+    pub(crate) fn set_aside_effect(
+        &self,
+        effect: &PendingEffect,
+        error: &str,
+        now: i64,
+    ) -> Result<bool, AuthError> {
+        self.transaction(|connection| {
+            let work: Option<Option<String>> = connection
+                .query_row(
+                    "UPDATE auth_post_commit_actions \
+                    SET failed_at=?1,last_error=?2,claimed_until=NULL,claim_token=NULL \
+                    WHERE action_id=?3 AND claim_token=?4 AND claimed_until>?1 \
+                    RETURNING enforcement_work_id",
+                    params![now, error, effect.action_id, effect.claim_token],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(work) = work else {
+                return Ok(false);
+            };
+            if let (Some(work), "kick") = (work, effect.kind.as_str()) {
+                connection.execute(
+                    "UPDATE auth_enforcement_work \
+                    SET pending_kicks=max(0,pending_kicks-1),\
+                    failed_kicks=failed_kicks+?2 \
+                    WHERE work_id=?1",
+                    params![work, i64::from(effect.attempts == 0)],
+                )?;
+            }
             Ok(true)
         })
     }

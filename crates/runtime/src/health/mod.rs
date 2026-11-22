@@ -373,6 +373,9 @@ async fn run_owner(
     let mut deadlines = tokio::time::interval(Duration::from_secs(1));
     let mut outbox = tokio::time::interval(Duration::from_millis(250));
     let mut retention = tokio::time::interval(Duration::from_secs(60 * 60));
+    // The outbox and deadlines tick several times a second; a failure that
+    // repeats is logged at most once a minute.
+    let mut failures = crate::storage::LogThrottle::default();
 
     loop {
         tokio::select! {
@@ -397,11 +400,12 @@ async fn run_owner(
                     publish_invalidation(&nats, &config.invalidation_subject, commit).await?;
                 }
                 Ok(None) => {}
-                Err(error) => retained(error, "Health deadlines")?,
+                Err(error) => retained(error, "Health deadlines", &mut failures)?,
             },
             _ = outbox.tick() => publish_outbox(
                 &store,
                 &event_owner,
+                &mut failures,
             )
             .await?,
             _ = retention.tick() => {
@@ -413,7 +417,7 @@ async fn run_owner(
                         publish_invalidation(&nats, &config.invalidation_subject, commit).await?;
                     }
                     Ok(None) => {}
-                    Err(error) => retained(error, "Health retention")?,
+                    Err(error) => retained(error, "Health retention", &mut failures)?,
                 }
             }
             () = stop.stopped() => {
@@ -521,7 +525,7 @@ async fn project_message(
                 observed_at_ns,
                 &reason,
             ) {
-                return redeliver(message, error).await;
+                return redeliver(message, stream_sequence, error).await;
             }
             message
                 .ack_with(AckKind::Term)
@@ -538,7 +542,7 @@ async fn project_message(
         stream_sequence,
     ) {
         Ok(commit) => commit,
-        Err(error) => return redeliver(message, error).await,
+        Err(error) => return redeliver(message, stream_sequence, error).await,
     };
     message
         .ack()
@@ -654,30 +658,70 @@ fn validate_sample(
 async fn publish_outbox(
     store: &HealthStore,
     owner: &trellis_rs::__internal::LiveProviderOwner,
+    failures: &mut crate::storage::LogThrottle,
 ) -> Result<(), RuntimeError> {
+    const WORK: &str = "Health status events";
     let transitions = match store.pending_transitions(100) {
         Ok(transitions) => transitions,
-        Err(error) => return retained(error, "Health status events"),
+        Err(error) => return retained(error, WORK, failures),
     };
-    for transition in transitions {
-        let event = PreparedTrellisEvent::restore(
-            HealthStatusChangedEvent::SUBJECT.to_string(),
-            Bytes::from(transition.payload),
-            HealthStatusChangedEvent::descriptor_identity()
-                .map_err(|error| RuntimeError::Health(error.to_string()))?,
-            transition.event_id.clone(),
-            store::rfc3339(transition.created_at_ns).map_err(map_runtime_store_error)?,
-        )
+    let descriptor = HealthStatusChangedEvent::descriptor_identity()
         .map_err(|error| RuntimeError::Health(error.to_string()))?;
-        let settled = match owner.publish_prepared(&event).await {
-            Ok(()) => store.mark_transition_published(&transition.event_id, now_ns()),
-            Err(error) => store.mark_transition_failed(&transition.event_id, &error.to_string()),
+    for transition in transitions {
+        // A transition that can never become an event, or whose outcome the
+        // store refuses for good, is set aside so the ones after it go out.
+        let event = store::rfc3339(transition.created_at_ns)
+            .map_err(|error| error.to_string())
+            .and_then(|occurred| {
+                PreparedTrellisEvent::restore(
+                    HealthStatusChangedEvent::SUBJECT.to_string(),
+                    Bytes::from(transition.payload),
+                    descriptor.clone(),
+                    transition.event_id.clone(),
+                    occurred,
+                )
+                .map_err(|error| error.to_string())
+            });
+        let settled = match event {
+            Ok(event) => match owner.publish_prepared(&event).await {
+                Ok(()) => store.mark_transition_published(&transition.event_id, now_ns()),
+                Err(error) => {
+                    store.mark_transition_failed(&transition.event_id, &error.to_string())
+                }
+            },
+            Err(reason) => {
+                set_aside(store, &transition.event_id, &reason, failures)?;
+                continue;
+            }
         };
-        if let Err(error) = settled {
-            return retained(error, "Health status events");
+        match settled {
+            Ok(()) => {}
+            Err(error) if error.storage_failure() == crate::storage::StorageFailure::Permanent => {
+                set_aside(store, &transition.event_id, &error.to_string(), failures)?;
+            }
+            Err(error) => return retained(error, WORK, failures),
         }
     }
     Ok(())
+}
+
+/// Sets aside the status event `event_id`, which trying again cannot publish,
+/// and logs it once at error.
+fn set_aside(
+    store: &HealthStore,
+    event_id: &str,
+    reason: &str,
+    failures: &mut crate::storage::LogThrottle,
+) -> Result<(), RuntimeError> {
+    tracing::error!(
+        event_id,
+        error = reason,
+        "Health status event set aside: trying it again cannot publish it"
+    );
+    match store.set_aside_transition(event_id, reason, now_ns()) {
+        Ok(()) => Ok(()),
+        Err(error) => retained(error, "Health status events", failures),
+    }
 }
 
 async fn publish_invalidation(
@@ -754,33 +798,66 @@ fn map_store_error(error: store::HealthStoreError) -> ServerError {
     }
 }
 
-/// A store failure in the Health owner's periodic `work`: logged, and the work
-/// runs again on its next tick. Only a database that is unusable stops Health.
-fn retained(error: store::HealthStoreError, work: &str) -> Result<(), RuntimeError> {
-    if error.unusable() {
+/// A store failure in the Health owner's periodic `work`: logged, at most once
+/// a minute while it repeats, and the work runs again on its next tick. Only a
+/// database that is unusable stops Health.
+fn retained(
+    error: store::HealthStoreError,
+    work: &str,
+    failures: &mut crate::storage::LogThrottle,
+) -> Result<(), RuntimeError> {
+    use crate::storage::StorageFailure;
+    let failure = error.storage_failure();
+    if failure == StorageFailure::Unusable {
         return Err(RuntimeError::Health(format!(
             "the Health database is unusable: {error}"
         )));
     }
-    tracing::warn!(%error, work, "Health storage failed; it will run again");
+    if let Some(repeats) = failures.admit() {
+        if failure == StorageFailure::Transient {
+            tracing::warn!(%error, work, repeats, "Health storage failed; it will run again");
+        } else {
+            tracing::error!(%error, work, repeats, "Health storage failed; it will run again");
+        }
+    }
     Ok(())
 }
 
 /// A heartbeat the store could not record goes back to the stream, to be
-/// delivered again in five seconds. Only a database that is unusable stops
-/// Health.
+/// delivered again in five seconds. One the store refuses for good is logged
+/// once at error and dropped, so the heartbeats after it are recorded. Only a
+/// database that is unusable stops Health.
 async fn redeliver(
     message: jetstream::Message,
+    stream_sequence: u64,
     error: store::HealthStoreError,
 ) -> Result<(), RuntimeError> {
-    if error.unusable() {
-        return Err(RuntimeError::Health(format!(
-            "the Health database is unusable: {error}"
-        )));
-    }
-    tracing::warn!(%error, "Health heartbeat not recorded; it will be delivered again");
+    use crate::storage::StorageFailure;
+    let ack = match error.storage_failure() {
+        StorageFailure::Unusable => {
+            return Err(RuntimeError::Health(format!(
+                "the Health database is unusable: {error}"
+            )));
+        }
+        StorageFailure::Transient => {
+            tracing::warn!(
+                %error,
+                stream_sequence,
+                "Health heartbeat not recorded; it will be delivered again"
+            );
+            AckKind::Nak(Some(Duration::from_secs(5)))
+        }
+        StorageFailure::Permanent => {
+            tracing::error!(
+                %error,
+                stream_sequence,
+                "Health heartbeat dropped: trying it again cannot record it"
+            );
+            AckKind::Term
+        }
+    };
     message
-        .ack_with(AckKind::Nak(Some(Duration::from_secs(5))))
+        .ack_with(ack)
         .await
         .map_err(|error| RuntimeError::Health(error.to_string()))
 }

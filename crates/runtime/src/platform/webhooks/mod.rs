@@ -413,9 +413,12 @@ const WORKER: &str = "TRELLIS_WEBHOOKS_WORKER";
 
 impl Webhooks {
     /// Open the records database and the dedupe bucket and load the endpoints.
+    /// The records database waits up to `busy_timeout` for a lock, as the
+    /// Auth database beside it does.
     pub(crate) async fn open(
         storage: OAuthStorage,
         records_path: &Path,
+        busy_timeout: Duration,
         nats: async_nats::Client,
         publisher: watch::Receiver<Option<trellis_rs::service::EventPublisher>>,
         origin: &str,
@@ -423,10 +426,11 @@ impl Webhooks {
     ) -> Result<Self, RuntimeError> {
         let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
         let path = records_path.to_owned();
-        let records = tokio::task::spawn_blocking(move || records::Records::open(&path))
-            .await
-            .map_err(|error| platform(&error))?
-            .map_err(|error| platform(&error))?;
+        let records =
+            tokio::task::spawn_blocking(move || records::Records::open(&path, busy_timeout))
+                .await
+                .map_err(|error| platform(&error))?
+                .map_err(|error| platform(&error))?;
         let jetstream = async_nats::jetstream::new(nats.clone());
         let dedupe = match jetstream.get_key_value(DEDUPE_BUCKET).await {
             Ok(bucket) => bucket,

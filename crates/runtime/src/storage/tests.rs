@@ -212,7 +212,7 @@ fn migrated_events_store_orders_events_and_dead_letters_by_timestamp(
     let runtime_store = SqliteStore::new(SubsystemName::Events, sqlite_config(path.clone()));
     runtime_store.migrate()?;
     runtime_store.check_migrations()?;
-    let events = EventsStore::open(&path)?;
+    let events = EventsStore::open(&path, std::time::Duration::from_secs(5))?;
 
     for (sequence, event_time) in [(1, "2026-01-01T00:00:00.1Z"), (2, "2026-01-01T00:00:00Z")] {
         events.insert_event(&ProjectedEvent {

@@ -148,13 +148,25 @@ pub async fn start_worker_presence_projector(
             };
 
             // A database another process holds locked, or a passing I/O
-            // error, fails the heartbeat; recording it again is harmless.
+            // error, fails the heartbeat; recording it again is harmless. One
+            // the store refuses for good is dropped, so the ones after it are
+            // recorded.
             let mut failures = 0;
             while let Err(error) = project_worker_heartbeat(&store, &heartbeat) {
                 if error.database_unusable() {
                     return Err(ServerError::Internal(format!(
                         "the Jobs database is unusable: {error}"
                     )));
+                }
+                if !error.transient() {
+                    tracing::error!(
+                        %error,
+                        service = %subject_service,
+                        job_type = %job_type,
+                        instance_id = %instance_id,
+                        "worker heartbeat dropped: trying it again cannot record it"
+                    );
+                    break;
                 }
                 let delay = crate::storage::retry_delay(failures);
                 failures += 1;

@@ -33,16 +33,36 @@ in transactions of at most 1,000 rows, so a backlog never holds the writer for
 long. A failed pass is retried at the next tick and never stops projection.
 
 The same holds for every background loop that writes a runtime database: the
-Auth enforcement, effect, event-publication, cleanup and disconnect work, the
-Jobs and worker-presence projectors, the Events projector and exhaustion
-advisories, and the Health projector, deadlines and outbox. Each connection
-waits up to five seconds for a lock another connection holds. Work that still
-fails, because a lock is held longer, the database is busy, or an I/O error
-passes, is logged and tried again: 250 milliseconds after the first failure,
-doubling up to 30 seconds, or for Health at its next tick and a heartbeat
-redelivered after five seconds. Durable work stays queued and a projector
-retries the same batch. Only a database file that is corrupt or not a database stops its
-subsystem, and with it trellis-server, with a message naming that database.
+Auth startup drain, enforcement, effect, event-publication, cleanup and
+disconnect work, the Jobs and worker-presence projectors, the Events projector
+and exhaustion advisories, and the Health projector, deadlines and outbox.
+
+Every connection to a runtime database, the webhook records beside the Auth
+database and the migration and backup connections included, waits for a lock
+another connection holds for its subsystem's `[<subsystem>.storage]
+busy_timeout_ms`, five seconds when unset. A failure is then one of three kinds:
+
+- It can pass: the lock is held longer, the database is busy, an I/O was
+  interrupted or failed, or the disk is full. The same work is tried again,
+  indefinitely, with a warning each time: 250 milliseconds after the first
+  failure, doubling up to 30 seconds, or for Health at its next tick (logged at
+  most once a minute while it repeats) and a heartbeat redelivered after five
+  seconds. Durable work stays queued and a projector retries the same batch.
+  Startup waits the same way, so a server started while its database is locked
+  starts once the lock is released.
+- It fails the same way on every attempt, such as a constraint violation or a
+  value that cannot be decoded, for one item. That item is logged once at
+  error with its ID and set aside, and the loop goes on with the next one. An
+  Auth effect keeps its row with `failed_at` and the error, is never claimed
+  again, and no longer holds back the effects queued after it; a Health status
+  event is kept with `set_aside_at_ns` until retention removes it; a heartbeat
+  or coverage gap is dropped. An Auth enforcement page that fails this way is
+  deferred a minute rather than dropped, since its sessions still need
+  enforcing, so the work queued after it proceeds. A failure that is not tied
+  to one item, such as a projector's batch bookkeeping, is retried and logged
+  at error.
+- The database file is corrupt or not a database. Its subsystem stops, and
+  with it trellis-server, with a message naming that database.
 
 `Health.Storage` and the `trellis.storage.bytes`, `trellis.storage.records`, and
 `trellis.storage.oldest.age` gauges (attribute `trellis.data_class`) report each

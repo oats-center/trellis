@@ -109,10 +109,17 @@ pub(crate) enum AuthError {
 }
 
 impl AuthError {
-    /// Whether the Auth database itself is unusable, so background work
-    /// stops instead of trying again (see [`crate::storage::sqlite_unusable`]).
-    pub(crate) fn unusable(&self) -> bool {
-        matches!(self, Self::Storage(error) if crate::storage::sqlite_unusable(error))
+    /// What this failure calls for in background work: a broker or writer that
+    /// is unavailable can pass, as can a transient SQLite failure; a database
+    /// that is unusable stops Auth; anything else fails the same way again
+    /// (see [`crate::storage::StorageFailure`]).
+    pub(crate) fn storage_failure(&self) -> crate::storage::StorageFailure {
+        use crate::storage::StorageFailure;
+        match self {
+            Self::Storage(error) => crate::storage::sqlite_failure(error),
+            Self::Broker(_) | Self::Unavailable => StorageFailure::Transient,
+            _ => StorageFailure::Permanent,
+        }
     }
 }
 
@@ -324,7 +331,9 @@ fn open_reader(
         path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
-    reader.busy_timeout(std::time::Duration::from_secs(5))?;
+    // The reader waits for a lock as long as the configured writer does.
+    let busy_timeout: u64 = connection.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+    reader.busy_timeout(std::time::Duration::from_millis(busy_timeout))?;
     reader.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
     Ok(Some(reader))
 }
@@ -596,7 +605,6 @@ impl SqliteAuthorizationStore {
             ));
         }
         connection.pragma_update(None, "foreign_keys", true)?;
-        connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         let clients_changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let work_queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -710,6 +718,15 @@ impl SqliteAuthorizationStore {
         transaction.commit()?;
         self.after_commit(&connection);
         Ok(result)
+    }
+
+    /// Takes the database's write lock and gives it back, to learn whether
+    /// another connection holds it.
+    ///
+    /// # Errors
+    /// Fails as a write would, such as with "database is locked".
+    pub(crate) fn writable(&self) -> Result<(), AuthError> {
+        self.rehearse(|_| Ok(()))
     }
 
     /// Runs `operation` in a write transaction that's always rolled back,

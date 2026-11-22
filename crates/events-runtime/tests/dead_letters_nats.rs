@@ -80,11 +80,11 @@ async fn truncated_stream_bounds_leave_durable_gap_evidence() {
 
     let projection_directory = tempfile::tempdir().expect("temporary projection");
     let path = projection_directory.path().join("events.sqlite");
-    EventsStore::open(&path)
+    EventsStore::open(&path, std::time::Duration::from_secs(5))
         .expect("open projection")
         .record_stream_bounds(first_sequence)
         .expect("record stream bounds");
-    let diagnostics = EventsStore::open(&path)
+    let diagnostics = EventsStore::open(&path, std::time::Duration::from_secs(5))
         .expect("reopen projection")
         .diagnostics()
         .expect("read diagnostics");

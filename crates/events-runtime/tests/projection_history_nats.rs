@@ -145,8 +145,11 @@ async fn redelivered_event_fills_its_place_in_history() {
     let context = jetstream::new(client.clone());
     create_event_stream(&context, -1).await;
     let projection_directory = tempfile::tempdir().expect("temporary projection");
-    let store = EventsStore::open(projection_directory.path().join("events.sqlite"))
-        .expect("open projection");
+    let store = EventsStore::open(
+        projection_directory.path().join("events.sqlite"),
+        std::time::Duration::from_secs(5),
+    )
+    .expect("open projection");
     let runtime = EventsRuntime::from_nats(client);
     let query = EventsQuery::new(store.clone(), runtime.clone(), Arc::new(NoBindings));
     let (verifier, verification) = verifier();
@@ -197,7 +200,8 @@ async fn event_discarded_before_projection_is_reported_missing() {
     let mut stream = create_event_stream(&context, 2).await;
     let projection_directory = tempfile::tempdir().expect("temporary projection");
     let path = projection_directory.path().join("events.sqlite");
-    let store = EventsStore::open(&path).expect("open projection");
+    let store =
+        EventsStore::open(&path, std::time::Duration::from_secs(5)).expect("open projection");
     let runtime = EventsRuntime::from_nats(client);
     let query = EventsQuery::new(store.clone(), runtime.clone(), Arc::new(NoBindings));
     let (verifier, verification) = verifier();
@@ -242,7 +246,8 @@ async fn event_discarded_before_projection_is_reported_missing() {
     projector.stop().await;
     drop(store);
 
-    let reopened = EventsStore::open(&path).expect("reopen projection");
+    let reopened =
+        EventsStore::open(&path, std::time::Duration::from_secs(5)).expect("reopen projection");
     assert_eq!(
         reopened.diagnostics().expect("diagnostics")["gapDetected"],
         true

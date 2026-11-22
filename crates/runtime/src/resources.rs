@@ -461,8 +461,16 @@ mod tests {
         ))
         .unwrap();
         std::fs::create_dir_all(&data).unwrap();
-        let events = trellis_events_runtime::EventsStore::open(data.join("events.sqlite")).unwrap();
-        trellis_jobs_runtime::SqliteJobsStore::open(data.join("jobs.sqlite")).unwrap();
+        let events = trellis_events_runtime::EventsStore::open(
+            data.join("events.sqlite"),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        trellis_jobs_runtime::SqliteJobsStore::open(
+            data.join("jobs.sqlite"),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
         let class = |classes: &[crate::health::storage::StorageClass], name: &str| {
             classes
                 .iter()
