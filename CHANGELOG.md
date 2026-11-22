@@ -21,6 +21,16 @@ and this project adheres to
 
 ### Changed
 
+- Consent answers are always kept; the "Remember my choices" option is gone. A
+  stored decline doesn't bring the consent page back at sign-in; the page asks
+  again only when an app asks for that item at the moment it's used
+  (`askAgain` on `BrowserOAuthClient.authorize`). Required items have no
+  checkbox, and optional items start checked unless declined before.
+- A role assigned to a user reaches apps registered with that access allowed
+  without asking, like the Console, at the session's next renewal, with no new
+  sign-in.
+- Password setup and reset links an administrator creates last 24 hours and
+  work once, even after the administrator signs out.
 - `trellis roles assign|revoke <ROLE> --user <USER>`, `roles show|edit|delete
 <ROLE>` and `users show|edit|delete|link|unlink <USER>` take a role by name
   or ID and a user by username, email or ID, and refuse an ambiguous name with
