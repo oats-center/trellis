@@ -62,7 +62,10 @@ test("a service imported by package subpaths answers a real call", async () => {
         ["service.js", runtime.trellisUrl, identity.seed],
         {
           cwd: directory,
-          env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificate },
+          env: {
+            ...process.env,
+            NODE_EXTRA_CA_CERTS: runtime.caCertificatePath,
+          },
           stdio: ["ignore", "pipe", "pipe"],
         },
       );

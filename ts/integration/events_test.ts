@@ -310,7 +310,8 @@ test("Events projector retains rejected unsafe times and advances", async () => 
       ),
     });
     try {
-      const subject = "events.v1.bG9jYWxob3N0L3J1bnRpbWUtdHJlbGxpcy5ldmVudHNAdjE.Alpha";
+      const subject =
+        "events.v1.bG9jYWxob3N0L3J1bnRpbWUtdHJlbGxpcy5ldmVudHNAdjE.Alpha";
       await alpha.publishAlpha({ site: "time", value: "source" }).orThrow();
       const manager = await jetstreamManager(nats);
       const stream = (await manager.streams.list().next()).find((entry) =>
@@ -383,7 +384,7 @@ test("Rust durable events match registrations and retain unhandled messages", as
           env: {
             ...env,
             TRELLIS_URL: runtime.trellisUrl,
-            TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+            TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
             TRELLIS_IDENTITY_SEED: identity.seed,
             REVERSE: String(reverse),
           },
@@ -473,7 +474,8 @@ test("Rust durable events match registrations and retain unhandled messages", as
         const revokedEvent = await manager.streams.getMessage(
           eventStream.config.name,
           {
-            last_by_subj: "events.v1.bG9jYWxob3N0L3J1bnRpbWUtdHJlbGxpcy5ldmVudHNAdjE.Alpha",
+            last_by_subj:
+              "events.v1.bG9jYWxob3N0L3J1bnRpbWUtdHJlbGxpcy5ldmVudHNAdjE.Alpha",
           },
         );
         const revokedDigest = revokedEvent?.header?.get(
@@ -620,7 +622,7 @@ for (const sdk of ["rust", "typescript"] as const) {
             env: {
               ...env,
               TRELLIS_URL: runtime.trellisUrl,
-              TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+              TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
               TRELLIS_IDENTITY_SEED: identity.seed,
               REVERSE: "false",
               CRASH: String(crash),
@@ -644,7 +646,7 @@ for (const sdk of ["rust", "typescript"] as const) {
             env: {
               ...env,
               CRASH: String(crash),
-              NODE_EXTRA_CA_CERTS: runtime.caCertificate,
+              NODE_EXTRA_CA_CERTS: runtime.caCertificatePath,
             },
             stdio: "inherit",
           },
@@ -952,7 +954,7 @@ test("Rust consumer-only service rejects explicit ephemeral at the runtime bound
       env: {
         ...env,
         TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CONSUMER_ONLY: "true",
         EPHEMERAL: "true",

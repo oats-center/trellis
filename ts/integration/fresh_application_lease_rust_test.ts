@@ -60,7 +60,7 @@ test("Rust fresh RPC started during loss is sent once on the replacement while i
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: instance.seed,
         },
       });

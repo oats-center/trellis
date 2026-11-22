@@ -264,6 +264,31 @@ impl Records {
         .await
     }
 
+    /// The outcome and reason of the newest request received since
+    /// `since_ms` whose verification reached a verdict: accepted, ignored,
+    /// duplicate, or rejected.
+    pub(crate) async fn latest_verdict(
+        &self,
+        deployment_id: &str,
+        endpoint: &str,
+        since_ms: i64,
+    ) -> Result<Option<(String, Option<String>)>> {
+        let (deployment_id, endpoint) = (deployment_id.to_owned(), endpoint.to_owned());
+        self.with(move |connection| {
+            connection
+                .query_row(
+                    "SELECT outcome,reason FROM webhook_attempts \
+                    WHERE deployment_id=?1 AND endpoint=?2 AND received_at>=?3 \
+                    AND outcome IN ('accepted','ignored','duplicate','rejected') \
+                    ORDER BY attempt_id DESC LIMIT 1",
+                    params![deployment_id, endpoint, since_ms],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+        })
+        .await
+    }
+
     /// Note that a request to `endpoint` received at `matched_at_ms` matched
     /// the `key` value of secret `field`, counted toward the field's
     /// `generation`.

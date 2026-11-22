@@ -3,9 +3,10 @@
 //!
 //! Intake runs the cheap checks and the credential verifiers (`token`,
 //! `basic`, `address`) as a request arrives and removes the credential before
-//! anything is written. An `async` endpoint stores the request in its
-//! deployment's intake stream, answers, and a worker verifies it afterwards;
-//! a `sync` endpoint verifies first and answers once the outcome is recorded.
+//! anything is written. An `async` endpoint also checks `hmac` before it
+//! answers, then stores the request in its deployment's intake stream and
+//! answers; a worker runs the decide handler and publishes afterwards. A
+//! `sync` endpoint verifies first and answers once the outcome is recorded.
 //! A request that passes becomes a `trellis.webhooks@v1` `Received` event,
 //! delivered through the endpoint's own durable consumer.
 
@@ -39,6 +40,18 @@ pub(crate) fn decide_subject(deployment: &str, endpoint: &str) -> String {
         trellis_protocol::encode_subject_token(endpoint)
     )
 }
+
+/// The subject a service instance asks on for `endpoint`'s health check.
+pub(crate) fn health_subject(deployment: &str, endpoint: &str) -> String {
+    format!(
+        "webhooks.v1.health.{}.{}",
+        trellis_protocol::encode_subject_token(deployment),
+        trellis_protocol::encode_subject_token(endpoint)
+    )
+}
+
+/// How far back an endpoint's health looks for a rejected request.
+const HEALTH_WINDOW_MS: i64 = 10 * 60_000;
 
 /// The dedupe KV bucket shared by every endpoint.
 const DEDUPE_BUCKET: &str = "trellis_webhook_dedupe";
@@ -584,6 +597,10 @@ impl Webhooks {
                 )]
             }),
         );
+        let health = self.clone();
+        let _health = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            health.answer_health().await;
+        }));
         let mut workers: BTreeMap<String, tokio_util::task::AbortOnDropHandle<()>> =
             BTreeMap::new();
         let mut sweep = tokio::time::interval(Duration::from_secs(60));
@@ -624,6 +641,118 @@ impl Webhooks {
                     }
                 }
             }
+        }
+    }
+
+    /// Answer service instances asking for their endpoints' health checks.
+    async fn answer_health(self) {
+        use futures_util::StreamExt as _;
+        loop {
+            match self
+                .inner
+                .nats
+                .queue_subscribe("webhooks.v1.health.>", "trellis.webhooks.health".into())
+                .await
+            {
+                Ok(mut requests) => {
+                    while let Some(request) = requests.next().await {
+                        let Some(reply) = request.reply else {
+                            continue;
+                        };
+                        let endpoint = self
+                            .directory()
+                            .by_name
+                            .values()
+                            .find(|endpoint| {
+                                health_subject(
+                                    &endpoint.record.deployment_id,
+                                    &endpoint.record.endpoint,
+                                ) == request.subject.as_str()
+                            })
+                            .cloned();
+                        let report = match endpoint {
+                            Some(endpoint) => self.health(&endpoint).await,
+                            None => serde_json::json!({
+                                "status": "degraded",
+                                "summary": "Trellis does not serve this endpoint",
+                            }),
+                        };
+                        let _ = self
+                            .inner
+                            .nats
+                            .publish(reply, report.to_string().into())
+                            .await;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "webhook health requests could not be served");
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    /// An endpoint's health check. It is degraded while the endpoint is
+    /// disabled, while a setting its verifiers read has no value, and while
+    /// the newest request within [`HEALTH_WINDOW_MS`] that reached a verdict
+    /// was rejected. A later accepted request, or the window passing with no
+    /// new rejection, clears that.
+    async fn health(&self, endpoint: &Endpoint) -> serde_json::Value {
+        let record = &endpoint.record;
+        let mut problems = Vec::new();
+        if !record.deployment_enabled || !record.endpoint_enabled {
+            problems.push("disabled by an administrator, so requests get 503".to_owned());
+        }
+        let mut unset = Vec::new();
+        for verifier in &record.definition.verifiers {
+            let fields: Vec<&String> = match verifier {
+                trellis_idl::WebhookVerifier::Hmac(hmac) => vec![&hmac.key],
+                trellis_idl::WebhookVerifier::Token { secret, .. } => vec![secret],
+                trellis_idl::WebhookVerifier::Basic { username, password } => {
+                    vec![username, password]
+                }
+                trellis_idl::WebhookVerifier::Address { ranges } => vec![ranges],
+                trellis_idl::WebhookVerifier::None => Vec::new(),
+            };
+            for field in fields {
+                let set = record
+                    .values
+                    .get(field)
+                    .and_then(|value| value.current.as_ref())
+                    .is_some_and(|value| !value.is_null());
+                if !set && !unset.contains(&field) {
+                    unset.push(field);
+                }
+            }
+        }
+        if !unset.is_empty() {
+            let names: Vec<&str> = unset.iter().map(|field| field.as_str()).collect();
+            problems.push(format!(
+                "{} not set, so requests are refused",
+                names.join(", ")
+            ));
+        }
+        let (deployment, name) = endpoint.key();
+        match self
+            .inner
+            .records
+            .latest_verdict(&deployment, &name, now_ms() - HEALTH_WINDOW_MS)
+            .await
+        {
+            Ok(Some((outcome, reason))) if outcome == "rejected" => problems.push(format!(
+                "the latest request was rejected: {}",
+                reason.as_deref().unwrap_or("no reason recorded")
+            )),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "webhook request records could not be read");
+                problems.push("request records could not be read".to_owned());
+            }
+        }
+        if problems.is_empty() {
+            serde_json::json!({ "status": "ok" })
+        } else {
+            serde_json::json!({ "status": "degraded", "summary": problems.join("; ") })
         }
     }
 

@@ -9,7 +9,7 @@
  * @module
  */
 
-import { type AsyncResult, type BaseError } from "@oatscenter/result";
+import { type AsyncResult, type BaseError, Result } from "@oatscenter/result";
 
 import type {
   WebhookDecideRequest,
@@ -22,7 +22,8 @@ import {
   WebhookDecideRequestCodec,
   WebhookDecisionCodec,
 } from "./internal_sdk/generated/types/index.js";
-import type { UnexpectedError } from "./errors/index.ts";
+import { type UnexpectedError, ValidationError } from "./errors/index.ts";
+import type { TrellisTransportProvider } from "./transport/generations.ts";
 
 export type {
   WebhookDecideRequest,
@@ -32,10 +33,75 @@ export type {
   WebhookResponse,
 };
 
+/**
+ * Text, JSON, and form views of a webhook body. `body` stays the bytes as
+ * received, so a handler that checks a signature still checks those bytes.
+ */
+export type WebhookBodyViews = {
+  /** The body as UTF-8 text, or a `ValidationError` when it is not UTF-8. */
+  text(): Result<string, ValidationError>;
+  /** The body parsed as JSON, or a `ValidationError` when it is not JSON. */
+  json(): Result<unknown, ValidationError>;
+  /**
+   * The fields of an `application/x-www-form-urlencoded` body, or a
+   * `ValidationError` when it is not UTF-8 text.
+   */
+  form(): Result<URLSearchParams, ValidationError>;
+};
+
+/** A received request with views of its body. */
+export type WebhookRequestDelivery = WebhookDelivery & WebhookBodyViews;
+
+/** What a decide handler gets: the decide request, with body views. */
+export type WebhookDecideCall = WebhookDecideRequest & {
+  readonly delivery: WebhookRequestDelivery;
+};
+
+/** @internal Adds the body views to a decoded delivery. */
+export function withBodyViews(
+  delivery: WebhookDelivery,
+): WebhookRequestDelivery {
+  const text = (): Result<string, ValidationError> => {
+    try {
+      return Result.ok(
+        new TextDecoder("utf-8", { fatal: true }).decode(delivery.body),
+      );
+    } catch (cause) {
+      return Result.err(
+        new ValidationError({
+          errors: [{ path: "/body", message: "the body is not UTF-8 text" }],
+          cause,
+        }),
+      );
+    }
+  };
+  return {
+    ...delivery,
+    text,
+    json: () =>
+      text().andThen((body) => {
+        try {
+          return Result.ok<unknown>(JSON.parse(body));
+        } catch (cause) {
+          return Result.err(
+            new ValidationError({
+              errors: [{ path: "/body", message: "the body is not JSON" }],
+              cause,
+            }),
+          );
+        }
+      }),
+    form: () => text().map((body) => new URLSearchParams(body)),
+  };
+}
+
 /** The arguments a `Received` handler gets. */
 export type WebhookReceivedArgs<TClient = unknown> = {
-  /** The request exactly as Trellis received it, without credentials. */
-  readonly event: WebhookDelivery;
+  /**
+   * The request exactly as Trellis received it, without credentials, with
+   * text, JSON, and form views of its body.
+   */
+  readonly event: WebhookRequestDelivery;
   readonly context: unknown;
   readonly client: TClient;
 };
@@ -64,7 +130,7 @@ export type WebhookEndpoint<TClient = unknown> = {
    */
   decide(
     handler: (
-      request: WebhookDecideRequest,
+      request: WebhookDecideCall,
     ) => WebhookDecision | Promise<WebhookDecision>,
     options?: WebhookReceivedOptions,
   ): AsyncResult<void, UnexpectedError>;
@@ -94,6 +160,61 @@ function subjectToken(value: string): string {
     .replace(/=+$/u, "");
 }
 
+/**
+ * @internal The health check Trellis reports for one webhook endpoint of a
+ * deployment: degraded while the endpoint is disabled, while a setting its
+ * verifiers read is unset, or while its latest verified request was rejected.
+ * A check Trellis does not answer reads as degraded.
+ */
+export function webhookHealthCheck(
+  transport: TrellisTransportProvider,
+  inboxPrefix: string,
+  deploymentId: string,
+  endpoint: string,
+): () => Promise<{
+  status: "ok" | "degraded";
+  summary?: string;
+}> {
+  const subject = `webhooks.v1.health.${subjectToken(deploymentId)}.${subjectToken(endpoint)}`;
+  return async () => {
+    const deadlineMs = Date.now() + 5_000;
+    try {
+      const lease = await transport.acquireFor(
+        { publish: [subject], subscribe: [`${inboxPrefix}.>`] },
+        { deadlineMs },
+      );
+      try {
+        const reply = await lease.nc.request(subject, "", {
+          timeout: Math.max(1, deadlineMs - Date.now()),
+        });
+        const report: unknown = JSON.parse(
+          new TextDecoder().decode(reply.data),
+        );
+        if (
+          report &&
+          typeof report === "object" &&
+          "status" in report &&
+          report.status === "ok"
+        ) {
+          return { status: "ok" };
+        }
+        const summary =
+          report && typeof report === "object" && "summary" in report
+            ? String(report.summary)
+            : "Trellis reported this endpoint degraded";
+        return { status: "degraded", summary };
+      } finally {
+        lease.release();
+      }
+    } catch {
+      return {
+        status: "degraded",
+        summary: "Trellis did not report this endpoint's state",
+      };
+    }
+  };
+}
+
 /** The runtime event name a webhook endpoint's `Received` event has in a participant. */
 export function webhookEventName(endpoint: string): string {
   return `webhook.${endpoint}`;
@@ -118,7 +239,7 @@ export function createWebhookEndpoints<TClient>(
           { service: deploymentId ?? "", endpoint: name },
           (message, context) =>
             handler({
-              event: message as WebhookDelivery,
+              event: withBodyViews(message as WebhookDelivery),
               context,
               client: client(),
             }),
@@ -130,10 +251,15 @@ export function createWebhookEndpoints<TClient>(
       decide: (handler, options) =>
         caller.serveWebhookDecide(
           `webhooks.v1.decide.${subjectToken(deploymentId ?? "")}.${subjectToken(name)}`,
-          async (request) =>
-            WebhookDecisionCodec.encode(
-              await handler(WebhookDecideRequestCodec.decode(request)),
-            ),
+          async (request) => {
+            const decoded = WebhookDecideRequestCodec.decode(request);
+            return WebhookDecisionCodec.encode(
+              await handler({
+                ...decoded,
+                delivery: withBodyViews(decoded.delivery),
+              }),
+            );
+          },
           options?.signal,
         ),
     };

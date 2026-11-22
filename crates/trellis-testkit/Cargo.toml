@@ -43,3 +43,4 @@ runtime-trellis = { path = "../../integration/fixtures/runtime/crates/runtime-tr
 time = { workspace = true, features = ["formatting", "parsing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 async-nats.workspace = true
+rcgen.workspace = true

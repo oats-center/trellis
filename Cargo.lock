@@ -6536,6 +6536,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "libc",
+ "rcgen",
  "reqwest",
  "runtime-trellis",
  "rustls",

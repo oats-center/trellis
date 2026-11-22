@@ -53,8 +53,8 @@ function startService(
   const child = spawnTracked(command, args, {
     env: {
       ...process.env,
-      NODE_EXTRA_CA_CERTS: runtime.caCertificate,
-      TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+      NODE_EXTRA_CA_CERTS: runtime.caCertificatePath,
+      TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
       TRELLIS_URL: runtime.trellisUrl,
       ...env,
     },

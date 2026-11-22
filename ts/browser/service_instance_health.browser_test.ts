@@ -119,7 +119,10 @@ test("the CLI and the Console show an unhealthy instance's failing check and not
           // Its output (the waiting one prints the review link) only
           // explains a failure.
           stdio: ["ignore", "pipe", "pipe"],
-          env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificate },
+          env: {
+            ...process.env,
+            NODE_EXTRA_CA_CERTS: runtime.caCertificatePath,
+          },
         },
       );
     const stalled = launch(stalledKey.seed, "runtime");

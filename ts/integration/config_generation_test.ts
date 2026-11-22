@@ -130,7 +130,7 @@ test("a Rust service's settings watch lets the old transport drain and follows c
       env: {
         ...process.env,
         TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
         TRELLIS_IDENTITY_SEED: growable.key.seed,
       },
     });

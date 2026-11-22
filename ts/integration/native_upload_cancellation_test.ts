@@ -30,7 +30,7 @@ test("a Rust upload cancellation settles within the client timeout when its prov
           env: {
             ...process.env,
             TRELLIS_URL: runtime.trellisUrl,
-            TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+            TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
             TRELLIS_IDENTITY_SEED: identity.seed,
           },
         },
@@ -42,7 +42,7 @@ test("a Rust upload cancellation settles within the client timeout when its prov
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_CALLER_MODE: "cancel-unresponsive-upload",
           XDG_CONFIG_HOME: join(runtime.workdir, "rust-caller-config"),
         },

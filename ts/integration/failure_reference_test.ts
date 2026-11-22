@@ -116,7 +116,7 @@ test("a TypeScript handler failure is logged once under the reference its caller
         runtime.trellisUrl,
         identity.seed,
       ],
-      { env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificate } },
+      { env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificatePath } },
     );
     child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
@@ -168,7 +168,7 @@ test("a Rust handler failure is logged once under the reference its caller gets"
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: identity.seed,
           RUST_LOG: "info",
           NO_COLOR: "1",

@@ -29,7 +29,7 @@ async function completeRustLogin(
     env: {
       ...process.env,
       TRELLIS_URL: runtime.trellisUrl,
-      TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+      TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
       XDG_CONFIG_HOME: join(runtime.workdir, configDir),
       CARGO_TARGET_DIR: fileURLToPath(new URL("../../target", import.meta.url)),
     },
@@ -66,7 +66,7 @@ test("NX01 rust caller receives Watch frames from rust provider", async () => {
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fileURLToPath(
             new URL("../../target", import.meta.url),
@@ -145,7 +145,7 @@ test("NX03 empty finite Watch completes with no frames", async () => {
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: identity.seed,
           TRELLIS_FEED_EMPTY: "1",
           CARGO_TARGET_DIR: fileURLToPath(
@@ -210,7 +210,7 @@ test("L2 TypeScript caller receives rust Watch over live open", async () => {
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fileURLToPath(
             new URL("../../target", import.meta.url),
@@ -319,7 +319,7 @@ test("NX02 rust console client receives Health Watch", async () => {
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
         },
       },
     );

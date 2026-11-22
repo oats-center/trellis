@@ -1434,6 +1434,9 @@ impl TrellisClient {
                 timeout_ms,
                 heartbeat,
             ));
+            if kind == trellis_protocol::PrincipalKind::Service {
+                crate::client::webhooks::add_health_checks(&connected);
+            }
         }
         Ok(connected)
     }
