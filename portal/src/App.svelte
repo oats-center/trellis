@@ -327,7 +327,7 @@
     if (!view) return [];
     const byKey = new Map<string, Group>();
     for (const capability of view.capabilities) {
-      if (capability.administrative) continue;
+      if (capability.administrative || capability.required) continue;
       const api = capability.capabilityId.split(":")[0] ?? "";
       const key =
         capability.kind === "group"
@@ -359,7 +359,7 @@
         left.label.localeCompare(right.label),
     );
     const administration = view.capabilities.filter(
-      (capability) => capability.administrative,
+      (capability) => capability.administrative && !capability.required,
     );
     if (administration.length) {
       result.push({
@@ -373,15 +373,20 @@
     }
     return result;
   });
+  // What the app requires has no choice: approving grants it.
+  let needed = $derived(
+    view?.capabilities
+      .filter((capability) => capability.required)
+      .map(toChoice) ?? [],
+  );
+  // Required administration takes the confirmation step too.
   let selectedAdministration = $derived(
-    groups
-      .flatMap((group) => group.choices)
-      .filter(
-        (choice) =>
-          choice.administrative &&
-          choice.available &&
-          selected.includes(choice.id),
-      ),
+    [...needed, ...groups.flatMap((group) => group.choices)].filter(
+      (choice) =>
+        choice.administrative &&
+        choice.available &&
+        (choice.required || selected.includes(choice.id)),
+    ),
   );
   let needsConfirmation = $derived(
     (view?.confirmAdministration ?? false) && selectedAdministration.length > 0,
@@ -391,11 +396,7 @@
       .flatMap((group) => group.choices)
       .filter((choice) => !choice.required && choice.available),
   );
-  let blocked = $derived(
-    groups.some((group) =>
-      group.choices.some((choice) => choice.required && !choice.available),
-    ),
-  );
+  let blocked = $derived(needed.some((choice) => !choice.available));
   let allOptionalSelected = $derived(
     optional.every((choice) => selected.includes(choice.id)),
   );
@@ -1009,9 +1010,29 @@
       {/if}
 
       <div hidden={confirming}>
-        <div class="section-head">
-          <h2>Allow it to</h2>
-          {#if optional.length}
+        {#if needed.length}
+          <div class="section-head"><h2>Approving lets it</h2></div>
+          <ul class="groups">
+            {#each needed as choice (choice.id)}
+              <li class={["need", !choice.available && "unavailable"]}>
+                <span class="choice-title"
+                  >{choice.title}{#if !choice.available}<span class="tag"
+                      >Not available to you</span
+                    >{/if}</span
+                >
+                <span class="choice-desc">{choice.description}</span>
+                {#if choice.members.length}<span class="choice-desc"
+                    >Includes {choice.members.join(", ")}</span
+                  >{/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        {#if optional.length}
+          <div class="section-head">
+            <h2>
+              {needed.length ? "You can also allow it to" : "Allow it to"}
+            </h2>
             <button
               type="button"
               class="link"
@@ -1020,8 +1041,8 @@
                 for (const group of groups) setGroup(group, select);
               }}>{allOptionalSelected ? "Clear all" : "Select all"}</button
             >
-          {/if}
-        </div>
+          </div>
+        {/if}
 
         {#each sections as section, index (index)}
           {#if headedByApi && section.api !== null}<h3 class="api-name">
@@ -1086,7 +1107,7 @@
                           type="checkbox"
                           checked={choice.available &&
                             selected.includes(choice.id)}
-                          disabled={choice.required || !choice.available}
+                          disabled={!choice.available}
                           onchange={(event) => {
                             selected = event.currentTarget.checked
                               ? [...selected, choice.id]
@@ -1098,8 +1119,6 @@
                             >{choice.title}
                             {#if !choice.available}<span class="tag"
                                 >Not available to you</span
-                              >{:else if choice.required}<span class="tag"
-                                >Required</span
                               >{/if}</span
                           >
                           <span class="choice-desc">{choice.description}</span>
@@ -1120,12 +1139,6 @@
             {/each}
           </ul>
         {/each}
-
-        <label class="check remember"
-          ><input type="checkbox" name="remember" value="true" checked /><span
-            >Remember my choices for this app</span
-          ></label
-        >
       </div>
 
       {#if confirming}

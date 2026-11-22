@@ -746,11 +746,13 @@ async fn consent_page(
 
 /// A web app signs in without a consent page when everything it asks for that
 /// the person can have is already settled: allowed without asking for a
-/// registered app, or approved before and remembered at the same `grants`
-/// wording. Optional access the person can't have is not offered, so it never
-/// asks. An administrator who allowed administration without asking already
-/// confirmed it. When the person lacks something the app requires, the page
-/// explains. Native and Device Code sign-ins always ask.
+/// registered app, or answered before at the same `grants` wording. Every
+/// answer is remembered, so a remembered decline stays declined without the
+/// page, unless the app asks again (`prompt=consent`), as it does when the
+/// person uses what they declined. Optional access the person can't have is
+/// not offered, so it never asks. An administrator who allowed administration
+/// without asking already confirmed it. When the person lacks something the
+/// app requires, the page explains. Native and Device Code sign-ins always ask.
 async fn approve_without_asking(
     engine: &OAuthEngine,
     headers: &HeaderMap,
@@ -762,37 +764,10 @@ async fn approve_without_asking(
     }
     let client = view.get("clientId")?.as_str()?.to_owned();
     let store = engine.server.store().clone();
-    let implied: Option<Vec<String>> = blocking(move || {
-        store.authority.read(|connection| {
-            let implied: Option<(String, String)> = connection
-                .query_row(
-                    "SELECT implied_capabilities_json,metadata_json FROM auth_oauth_clients \
-                    WHERE client_id=?1 AND state='active' AND kind='browser'",
-                    [&client],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            implied
-                .map(|(implied, metadata)| {
-                    let mut implied: Vec<String> = super::super::sqlite::decode(&implied)?;
-                    // Administration is allowed without asking only where
-                    // someone who manages the platform allowed it.
-                    let metadata: Value = super::super::sqlite::decode(&metadata)?;
-                    if metadata.get(super::super::lifecycle::IMPLIED_ADMINISTRATION)
-                        != Some(&Value::Bool(true))
-                    {
-                        let mut kept = Vec::new();
-                        for id in implied {
-                            if !super::super::administration::administrative(connection, &id)? {
-                                kept.push(id);
-                            }
-                        }
-                        implied = kept;
-                    }
-                    super::super::policy::with_members(connection, implied)
-                })
-                .transpose()
-        })
+    let implied = blocking(move || {
+        store
+            .authority
+            .read(|connection| super::super::lifecycle::implied_capabilities(connection, &client))
     })
     .await
     .ok()?;
@@ -800,7 +775,7 @@ async fn approve_without_asking(
     // registered web app may do that without asking.
     let registered = implied.is_some();
     let implied = implied.unwrap_or_default();
-    let (mut approved, mut reused) = (Vec::new(), Vec::new());
+    let (mut approved, mut reused, mut declined) = (Vec::new(), Vec::new(), false);
     for capability in view.get("capabilities")?.as_array()? {
         let id = capability.get("capabilityId")?.as_str()?;
         let flag = |name: &str| capability.get(name).and_then(Value::as_bool) == Some(true);
@@ -814,6 +789,8 @@ async fn approve_without_asking(
         } else if flag("remembered") {
             approved.push(id.to_owned());
             reused.push(id.to_owned());
+        } else if flag("declined") {
+            declined = true;
         } else {
             return None;
         }
@@ -827,8 +804,20 @@ async fn approve_without_asking(
     let (login, flow) = login_and_flow(engine, cookie, csrf, transaction, now)
         .await
         .ok()?;
+    // An app asking again about what was declined gets the page.
+    if declined {
+        if let super::portal::ConsentRequest::Authorization(pairs) = &flow.request {
+            if pairs.iter().any(|(key, value)| {
+                key == "prompt" && value.split(' ').any(|prompt| prompt == "consent")
+            }) {
+                return None;
+            }
+        }
+    }
     let presentation = flow.presentation.clone()?;
     let validated = engine.consent_intent(&flow.request).await.ok()?;
+    // Nothing new is decided here, so nothing is remembered. Administration
+    // reaches the app only where an administrator allowed it without asking.
     Some(
         complete_approval(
             engine,
@@ -840,7 +829,7 @@ async fn approve_without_asking(
             approved,
             reused,
             false,
-            true,
+            false,
         )
         .await,
     )
@@ -1052,30 +1041,33 @@ async fn consent_data(
                             .collect::<Result<Vec<_>, super::super::AuthError>>()
                     })
                     .transpose()?;
-                let remembered: bool = connection.query_row(
-                    "SELECT EXISTS(SELECT 1 \
-                FROM auth_remembered_consent d \
-                JOIN auth_capability_identities c ON c.capability_id=d.capability_id \
-                AND c.identity_generation=d.capability_generation \
-                AND c.consent_revision=d.consent_revision \
-                WHERE d.principal_id=?1 \
-                AND d.binding_kind=?2 \
-                AND d.binding_value=?3 \
-                AND d.client_id=?4 AND d.capability_id=?5 \
-                AND d.decision='approved' \
-                AND c.state='active' \
-                AND (d.expires_at IS NULL \
-                OR d.expires_at>?6))",
-                    rusqlite::params![
-                        login.principal_id,
-                        kind,
-                        binding,
-                        validated.client_id.as_str(),
-                        capability,
-                        now
-                    ],
-                    |row| row.get(0),
-                )?;
+                // The person's last answer at this `grants` wording, if any.
+                let answer: Option<String> = connection
+                    .query_row(
+                        "SELECT d.decision \
+                        FROM auth_remembered_consent d \
+                        JOIN auth_capability_identities c ON c.capability_id=d.capability_id \
+                        AND c.identity_generation=d.capability_generation \
+                        AND c.consent_revision=d.consent_revision \
+                        WHERE d.principal_id=?1 \
+                        AND d.binding_kind=?2 \
+                        AND d.binding_value=?3 \
+                        AND d.client_id=?4 AND d.capability_id=?5 \
+                        AND c.state='active' \
+                        AND (d.expires_at IS NULL \
+                        OR d.expires_at>?6)",
+                        rusqlite::params![
+                            login.principal_id,
+                            kind,
+                            binding,
+                            validated.client_id.as_str(),
+                            capability,
+                            now
+                        ],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let remembered = answer.as_deref() == Some("approved");
                 let administrative =
                     super::super::administration::administrative(connection, capability)?;
                 let required = requested.capabilities.required.contains(capability);
@@ -1090,6 +1082,12 @@ async fn consent_data(
                 if !required && !available {
                     continue;
                 }
+                let declined = answer.as_deref() == Some("declined") && !required;
+                // Required access has no choice. Optional access starts
+                // selected unless the person declined it before; approving
+                // administration is never remembered and takes its own
+                // confirmation, so it starts unselected.
+                let selected = required || (available && !declined && !administrative);
                 capabilities.push(serde_json::json!({
                     "capabilityId":capability,
                     "apiId":api_id,
@@ -1103,8 +1101,8 @@ async fn consent_data(
                     "required":required,
                     "available":available,
                     "remembered":remembered && available,
-                    "selected": requested.capabilities.required.contains(capability)
-                            || (remembered && available)
+                    "declined":declined,
+                    "selected":selected
                 }));
             }
             let presentation_id = super::super::sqlite::id();
@@ -1238,16 +1236,13 @@ async fn approve(
         ))
         .into_response();
     };
-    let remember = match form.get("remember").map(String::as_str) {
-        Some("true") => true,
-        None | Some("false") => false,
-        _ => return error(ErrorCode::InvalidRequest),
-    };
     let administration_confirmed = match form.get("confirm_administration").map(String::as_str) {
         Some("true") => true,
         None => false,
         _ => return error(ErrorCode::InvalidRequest),
     };
+    // Every answer given here is remembered: what the person approved and
+    // what they left unselected alike.
     complete_approval(
         &engine,
         transaction,
@@ -1257,7 +1252,7 @@ async fn approve(
         presentation,
         approved,
         Vec::new(),
-        remember,
+        true,
         administration_confirmed,
     )
     .await

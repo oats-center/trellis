@@ -54,11 +54,12 @@ implemented. CONNECT proves possession of the registered immutable identity key.
 
 ## Account actions
 
-`Auth.Users.PasswordReset.Create` returns a five-minute, one-use token for a
-non-bootstrap user. Open `/account/reset?token=...` on the Trellis origin and submit
-the native password form. Completion requires the requester's original logical
-session and current accepted `accounts.manage`, rejects stale credentials, and
-atomically changes the password and signs out existing login/grant families.
+`Auth.Users.PasswordReset.Create` returns a one-use token for a non-bootstrap
+user that lasts 24 hours. Open `/account/reset?token=...` on the Trellis origin and
+submit the native password form. Completion requires that the requester still
+holds `accounts.manage`, not that they are still signed in, rejects stale
+credentials, and atomically changes the password and signs out existing
+login/grant families.
 Bootstrap administrators use the existing local recovery path instead.
 
 `Auth.Users.IdentityLink.Providers` lists the providers the current user can
@@ -212,6 +213,19 @@ Their IDs do not grant access by themselves.
 Capabilities are approval and explanation groups. Approval is constrained by
 current policy and is converted to exact selected grants; it is not itself a
 runtime permission token.
+
+The consent page lists what the app requires without checkboxes: approving
+grants it. Optional capabilities start checked, except administration and
+anything the person declined before. The page remembers every answer,
+approvals and declines alike; there is no switch to forget them. A person who
+clears an optional capability isn't asked about it again at sign-in. The app
+asks again when they use it, and the page shows it unchecked. An
+app registered with access it may have without asking (`impliedConsent`) keeps
+that access in its grant even before the person holds it, so a role an
+administrator assigns later reaches the open app at its next authority renewal,
+within `context_lifetime_seconds`, with no new sign-in. That is how the Console
+picks up a new role. An app that has to ask gets new access only after the
+person approves it.
 
 ## Effective authority
 

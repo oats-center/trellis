@@ -396,7 +396,7 @@ after the rotation has settled, not in place of rotating.
 Fresh startup creates the protected administrator and accepted built-in authority
 before provider admission. The username defaults to `admin`. Without an initial
 password, startup emits `adminAccountUrl`, a one-time password-setup link on the
-Trellis origin that expires after five minutes; no default password
+Trellis origin that stays valid until it is used; no default password
 exists. Startup flags `--admin-username`, `--admin-password`, and
 `--admin-password-stdin` configure fresh credentials. Explicit initialization
 uses `trellis-server admin [--config <dir>]` with `--username` (default `admin`),
@@ -927,11 +927,16 @@ consent after authentication without a second password prompt. Stale consent
 decisions are rejected and refreshed; policy denial is an authorization error,
 while unavailable runtime/resource evidence remains bounded pending.
 
-A browser sign-in skips the consent page when everything requested that the
-user can have is allowed without asking or already approved and remembered at
-an unchanged `grants` text. Optional capabilities the user can't be granted are
-never offered and never force the page. Explicit one-off consent overrides
-older remembered choices without changing them. Reused choices retain their expiry; later shared withdrawals still retire
+Every answer on the consent page is remembered, approvals and declines alike;
+there is no choice to forget them (approvals of administration are the
+exception). A browser sign-in skips the consent page when everything requested
+that the user can have is allowed without asking or already answered at an
+unchanged `grants` text; a remembered decline stays declined without the page.
+An app asks again about a declined capability with `prompt=consent` on its
+authorization request, which shows the page. Optional capabilities the user
+can't be granted are never offered, never force the page, and are not
+remembered as declined. A fresh answer overrides older remembered choices.
+Reused choices retain their expiry; later shared withdrawals still retire
 affected sessions. A shortened effective authorization deadline is a reduction
 unless another entitlement path preserves the outstanding authority. Deadlines
 on newly gained rights bound new contexts, not older narrower contexts or the
@@ -941,7 +946,11 @@ presentation. Signed session authority has a shared 64 KiB issuer,
 verification, and parsing budget.
 
 Configured implied consent applies only to registered browser bindings and their
-bounded capability subset; a listed group allows its current members. Saving a
+bounded capability subset; a listed group allows its current members. The
+grant keeps listed access the app asks for even before the user holds it;
+evaluation still requires them to hold it, so a role given later reaches the
+app at its next authority renewal without a new sign-in, administration on the
+list included. Access the app must ask for reaches it only once approved. Saving a
 client that allows an administrative capability without asking requires
 `trellis.auth.v1:platform.manage`. Native and Device Code clients require explicit user
 approval even when registered, and Device Code confirmation remains mandatory.
@@ -1032,7 +1041,9 @@ A running service whose new build adds an administrative capability waits for
 
 Apps request administrative capabilities like any other, through their generated
 required/optional selections; there is no separate privilege request. Optional
-administration is never preselected or remembered. Delegating one to an app has
+administration is never preselected, and approving it is never remembered (other
+optional access starts selected unless declined before; required access has no
+checkbox). Delegating one to an app has
 two safeguards, on by default under `[auth.administration]`: a separate consent
 confirmation and registered clients only. The initialized administrator holds
 all seven inherently, and everything else through an editable Administrator role. Localhost or
@@ -1161,11 +1172,12 @@ information. Operators disable all
 remote-derived images, including cached ones, with
 `auth.avatar.external_fetch_enabled=false`.
 
-`Users.PasswordReset.Create` targets `userId` and returns a five-minute, one-use
-token for `/account/reset?token=...` on the Trellis origin. Completion checks
-Origin/CSRF, credential CAS, and the requester's original active logical session
-and current `trellis.auth.v1:accounts.manage` with the target still in reach,
-then atomically changes the password
+`Users.PasswordReset.Create` targets `userId` and returns a one-use token that
+lasts 24 hours, for `/account/reset?token=...` on the Trellis origin. Completion
+checks Origin/CSRF, credential CAS, and that the requester still holds
+`trellis.auth.v1:accounts.manage` with the target in reach; it doesn't need the
+requester's session, so the token works after they sign out. It then
+atomically changes the password
 and revokes login/grant families. Bootstrap administrators use local recovery
 instead.
 

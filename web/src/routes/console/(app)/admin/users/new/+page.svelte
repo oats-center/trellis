@@ -241,7 +241,8 @@
               <h2 class="text-sm font-semibold">Password setup link</h2>
               <p class="trellis-field-help mt-1">
                 Send this link to the person so they can choose a password. It
-                works once, until {formatDate(setupReceipt.expiresAt)}.
+                works once, until {formatDate(setupReceipt.expiresAt)}, even
+                after you sign out.
               </p>
             </div>
             <div class="flex flex-wrap gap-2">

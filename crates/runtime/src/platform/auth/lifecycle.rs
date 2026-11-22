@@ -18,6 +18,40 @@ use super::sqlite::{decode, id, json, AuthError, Connection, Mutation, SqliteAut
 /// administrative capabilities without asking.
 pub(super) const IMPLIED_ADMINISTRATION: &str = "trellis_implied_administration";
 
+/// What an active registered web app may have without asking: each listed
+/// capability, and each listed group with its current members. Administration
+/// counts only where someone who manages the platform allowed it, which the
+/// client's saved mark records. `None` when the client is not an active
+/// registered web app.
+pub(super) fn implied_capabilities(
+    connection: &Connection,
+    client_id: &str,
+) -> Result<Option<Vec<String>>, AuthError> {
+    let client: Option<(String, String)> = connection
+        .query_row(
+            "SELECT implied_capabilities_json,metadata_json FROM auth_oauth_clients \
+            WHERE client_id=?1 AND state='active' AND kind='browser'",
+            [client_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((implied, metadata)) = client else {
+        return Ok(None);
+    };
+    let mut implied: Vec<String> = decode(&implied)?;
+    let metadata: Value = decode(&metadata)?;
+    if metadata.get(IMPLIED_ADMINISTRATION) != Some(&Value::Bool(true)) {
+        let mut kept = Vec::new();
+        for id in implied {
+            if !super::administration::administrative(connection, &id)? {
+                kept.push(id);
+            }
+        }
+        implied = kept;
+    }
+    super::policy::with_members(connection, implied).map(Some)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ClientRegistration {
     pub(crate) client_id: String,
@@ -77,6 +111,9 @@ pub(crate) struct GrantApproval {
     /// The user confirmed, in a separate step, that the app may manage this
     /// Trellis installation.
     pub(crate) administration_confirmed: bool,
+    /// The person answered on the consent page, so each answer is remembered:
+    /// approvals and declines alike. False when the page was skipped and
+    /// nothing new was decided.
     pub(crate) remember: bool,
     pub(crate) remember_until: Option<i64>,
     pub(crate) expires_at: i64,
@@ -723,40 +760,33 @@ impl SqliteAuthorizationStore {
                     return Err(AuthError::Denied);
                 }
             }
-            let client: Option<(String, String, String)> = connection
+            let client: Option<(String, String)> = connection
                 .query_row(
-                    "SELECT state,kind,implied_capabilities_json \
-                    FROM auth_oauth_clients \
-                    WHERE client_id=?1",
+                    "SELECT state,kind FROM auth_oauth_clients WHERE client_id=?1",
                     [&approval.client_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
             let registered = client.is_some();
-            let (kind, implied) = match client {
-                Some((state, kind, implied)) if state == "active" => (kind, implied),
+            let kind = match client {
+                Some((state, kind)) if state == "active" => kind,
                 Some(_) => return Err(AuthError::Denied),
-                None => {
-                    let kind: Option<String> = connection
-                        .query_row(
-                            "SELECT kind FROM auth_cimd_clients WHERE client_id=?1",
-                            [&approval.client_id],
-                            |row| row.get(0),
-                        )
-                        .optional()?;
-                    (kind.ok_or(AuthError::Denied)?, "[]".into())
-                }
+                None => connection
+                    .query_row(
+                        "SELECT kind FROM auth_cimd_clients WHERE client_id=?1",
+                        [&approval.client_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .ok_or(AuthError::Denied)?,
             };
             if kind != approval.binding_kind {
                 return Err(AuthError::Denied);
             }
             // Registered browser trust cannot stand in for a native user's
             // explicit approval, including Device Authorization Grant consent.
-            let implied: Vec<String> = if kind == "browser" {
-                super::policy::with_members(connection, decode(&implied)?)?
-            } else {
-                Vec::new()
-            };
+            let implied =
+                implied_capabilities(connection, &approval.client_id)?.unwrap_or_default();
             let safeguards = self.settings.administration;
             let entitled = entitlements(
                 connection,
@@ -791,17 +821,31 @@ impl SqliteAuthorizationStore {
             let mut approved: Vec<CapabilityAuthority> = Vec::new();
             let mut consent_basis = BTreeMap::new();
             for name in &selected {
-                // Implied choices are still explicit members of this request;
-                // original declines always win and are retained in the grant.
-                let accepted = (choices.contains(name) || implied.contains(name))
-                    && !declined.contains(name)
-                    && super::policy::covers(
-                        connection,
-                        &entitled,
-                        name,
-                        approval.selection.required.contains(name),
-                    )?;
-                if !accepted && approval.selection.required.contains(name) {
+                let required = approval.selection.required.contains(name);
+                let covered = super::policy::covers(connection, &entitled, name, required)?;
+                let allowed = implied.contains(name);
+                let administrative = super::administration::administrative(connection, name)?;
+                // Optional access the person can't have yet is never offered,
+                // so nothing about it was answered. What the app may have
+                // without asking is kept in the grant all the same: evaluation
+                // still requires the person to hold it, so it reaches the app
+                // at the first renewal after they gain it, by a role or grant.
+                let offered = required || covered;
+                // Nor is administration an app can't receive shown, so leaving
+                // it out is no answer either.
+                let shown = offered
+                    && (required
+                        || !administrative
+                        || registered
+                        || !safeguards.registered_clients_only);
+                let accepted = if offered {
+                    // Implied choices are still explicit members of this
+                    // request; original declines always win.
+                    (choices.contains(name) || allowed) && !declined.contains(name) && covered
+                } else {
+                    allowed
+                };
+                if !accepted && required {
                     return Err(AuthError::RequiredMissing);
                 }
                 let cap = match capability(connection, name) {
@@ -811,16 +855,26 @@ impl SqliteAuthorizationStore {
                     }
                     Err(error) => return Err(error),
                 };
-                let administrative = super::administration::administrative(connection, name)?;
+                // Administration the app may have without asking was confirmed
+                // by whoever allowed it, someone who manages the platform; any
+                // other is confirmed by the person, in its own step.
                 if accepted
                     && administrative
                     && ((safeguards.registered_clients_only && !registered)
-                        || (safeguards.confirm_on_consent && !approval.administration_confirmed))
+                        || (safeguards.confirm_on_consent
+                            && !approval.administration_confirmed
+                            && !allowed))
                 {
                     return Err(AuthError::Denied);
                 }
-                // Administration is never remembered: each delegation is confirmed.
-                if approval.remember && !reused.contains(name) && !administrative {
+                // Every answer on the page is remembered, declines included,
+                // except an approval of administration: each delegation of it
+                // is confirmed.
+                if approval.remember
+                    && shown
+                    && !reused.contains(name)
+                    && !(accepted && administrative)
+                {
                     connection.execute(
                         "INSERT INTO auth_remembered_consent \
                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10) \

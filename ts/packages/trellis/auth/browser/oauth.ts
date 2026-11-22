@@ -218,12 +218,14 @@ export class BrowserOAuthClient {
   /**
    * Build a PKCE authorization URL and retain only this tab's continuation.
    * With `extendGrant`, approval widens that grant of this app instead of
-   * creating another, so its live session gains what the user approves.
+   * creating another, so its live session gains what the user approves. With
+   * `askAgain`, the approval page also asks about choices the user declined
+   * before, which sign-in otherwise leaves declined without asking.
    */
   async authorize(
     redirectUri: string,
     capabilities: BrowserCapabilityRequest,
-    options: { extendGrant?: string } = {},
+    options: { extendGrant?: string; askAgain?: boolean } = {},
   ): Promise<Result<string, AuthError>> {
     try {
       const redirect = new URL(redirectUri);
@@ -274,6 +276,7 @@ export class BrowserOAuthClient {
           },
         ]),
         ...(options.extendGrant ? { trellis_grant: options.extendGrant } : {}),
+        ...(options.askAgain ? { prompt: "consent" } : {}),
       }).toString();
       return ok(url.href);
     } catch {

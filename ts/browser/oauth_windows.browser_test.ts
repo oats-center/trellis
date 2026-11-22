@@ -22,6 +22,7 @@ import { TrellisService } from "../packages/trellis/service/mod.ts";
 import {
   approveConsentIfRequired,
   browserRuntimeOptions,
+  createOrdinaryUserWithPassword,
 } from "./browser_test_support.ts";
 
 type Outcome = {
@@ -135,20 +136,30 @@ test("windows the app opens sign in on their own, consent's choices hold from th
             expectedRevision: 0n,
             idempotencyKey: codecs.ulid.decode(ulid()),
           });
+          // The first part declines the optional capability, and that answer
+          // is kept, so the part that approves it signs in as someone else.
+          const approver = {
+            username: "oauth-windows-approver",
+            password: "oauth-windows-approver-password",
+          };
           const {
             user: { principalId },
           } = await runtime.callAdminRpc("authUsersResolve", {});
-          for (const capabilityId of new Set([
-            ...apps.OptionalCaller.request.requiredCapabilities,
-            ...apps.OptionalCaller.request.optionalCapabilities,
-          ])) {
-            await runtime.callAdminRpc("authCapabilityGrantsGrant", {
-              principalId,
-              capabilityId,
-              expectedRevision: 0n,
-              idempotencyKey: codecs.ulid.decode(ulid()),
-            });
-          }
+          for (const user of [
+            principalId,
+            await createOrdinaryUserWithPassword(runtime, approver),
+          ])
+            for (const capabilityId of new Set([
+              ...apps.OptionalCaller.request.requiredCapabilities,
+              ...apps.OptionalCaller.request.optionalCapabilities,
+            ])) {
+              await runtime.callAdminRpc("authCapabilityGrantsGrant", {
+                principalId: user,
+                capabilityId,
+                expectedRevision: 0n,
+                idempotencyKey: codecs.ulid.decode(ulid()),
+              });
+            }
           browser = await chromium.launch({
             headless: true,
             env: browserTrustEnvironment(),
@@ -172,13 +183,19 @@ test("windows the app opens sign in on their own, consent's choices hold from th
               .then((message): Outcome =>
                 JSON.parse(message.text().slice("outcome ".length)),
               );
-          const signIn = async (page: Page) => {
+          const signIn = async (
+            page: Page,
+            credentials = {
+              username: runtime.adminUsername,
+              password: runtime.adminPassword,
+            },
+          ) => {
             await page
               .getByLabel("Username", { exact: true })
-              .fill(runtime.adminUsername);
+              .fill(credentials.username);
             await page
               .getByLabel("Password", { exact: true })
-              .fill(runtime.adminPassword);
+              .fill(credentials.password);
             await page
               .getByRole("button", { name: "Sign in", exact: true })
               .click();
@@ -199,9 +216,14 @@ test("windows the app opens sign in on their own, consent's choices hold from th
             );
             const window1 = await opened;
             await signIn(window1);
-            await window1
-              .getByRole("button", { name: "Allow", exact: true })
-              .click();
+            const allow = window1.getByRole("button", {
+              name: "Allow",
+              exact: true,
+            });
+            await allow.waitFor();
+            for (const choice of await window1.getByRole("checkbox").all())
+              if (await choice.isEnabled()) await choice.uncheck();
+            await allow.click();
             const signedIn = await outcome(window1);
             assert.equal(signedIn.connected, true, JSON.stringify(signedIn));
             assert.deepEqual(signedIn.declined, [true]);
@@ -228,7 +250,7 @@ test("windows the app opens sign in on their own, consent's choices hold from th
           try {
             const page = await second.newPage();
             await page.goto(connectUrl("OptionalCaller"));
-            await signIn(page);
+            await signIn(page, approver);
             const approved = outcome(page);
             await approveConsentIfRequired(page, 15_000);
             const optional = await approved;

@@ -335,12 +335,13 @@ account lifecycle nor its profile. Owner edits continue through
 does not provide a zero-revision bypass for updating existing profiles.
 
 `Auth.Users.PasswordReset.Create` accepts a target `userId` and returns a
-five-minute, one-use token. Open `/account/reset?token=...` on the
+one-use token that lasts 24 hours. Open `/account/reset?token=...` on the
 Trellis origin to complete it with an Origin-checked, CSRF-protected
 native form. Creating the token does not change the password. Completion checks
-credential CAS, the target's protected-administrator status, and the requester's
-still-active logical authorization session, current
-`trellis.auth.v1:accounts.manage`, and that the target is still in reach. It atomically changes the credential, consumes
+credential CAS, the target's protected-administrator status, and that the
+requester still holds `trellis.auth.v1:accounts.manage` and still reaches the
+target. It does not need the requester's session, so the token keeps working
+after they sign out. It atomically changes the credential, consumes
 the action, and revokes existing logins, OAuth grants, and refresh families.
 Bootstrap administrators cannot use this RPC reset path; their existing local
 recovery path remains authoritative. Replay responses keep the same bearer token

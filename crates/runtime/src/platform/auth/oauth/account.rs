@@ -45,9 +45,15 @@ struct Payload {
 
 #[derive(Serialize, Deserialize)]
 enum PasswordResetAuthority {
-    AuthorizationSession(String),
+    /// An administrator who manages accounts made the link. It keeps working
+    /// after they sign out, while they still manage the account.
+    Administrator,
     LocalOperator,
 }
+
+/// How long a password setup or reset link an administrator makes stays
+/// valid: long enough to reach the person by email or chat. It works once.
+const ADMINISTRATOR_LINK_SECONDS: i64 = 24 * 60 * 60;
 
 #[derive(Serialize, Deserialize)]
 struct LinkHandoff {
@@ -208,15 +214,14 @@ pub(crate) fn create_reset(
             let token = token()?;
             let payload = Payload {
                 actor: identity.actor.clone(),
-                reset_authority: Some(PasswordResetAuthority::AuthorizationSession(
-                    requester_session.to_owned(),
-                )),
+                reset_authority: Some(PasswordResetAuthority::Administrator),
                 username: Some(username),
                 credential_version: version,
                 provider_revision: None,
                 protected,
                 handoff: None,
             };
+            let expires = now + ADMINISTRATOR_LINK_SECONDS;
             insert(
                 connection,
                 &token,
@@ -225,11 +230,11 @@ pub(crate) fn create_reset(
                 None,
                 &payload,
                 now,
-                Some(now + 300),
+                Some(expires),
             )?;
             let response = AuthPasswordResetCreateResponse {
                 token,
-                expires_at: super::super::sqlite::timestamp(now + 300)?,
+                expires_at: super::super::sqlite::timestamp(expires)?,
                 extra: Default::default(),
             };
             storage
@@ -332,7 +337,7 @@ pub(crate) fn create_link(
 /// Issue an account reset under local filesystem/operator authority, never RPC
 /// authority, returning its one-time token. Initialization and explicit local
 /// recovery share this issuer. The initial administrator setup link (`expires`
-/// false) stays valid until used; other links last five minutes.
+/// false) stays valid until used; a recovery link lasts five minutes.
 pub(crate) fn create_local_reset_in_transaction(
     connection: &Connection,
     principal: &str,
@@ -507,11 +512,12 @@ pub(crate) fn complete_reset(
             return Err(AuthError::Denied);
         }
         match &action.payload.reset_authority {
-            Some(PasswordResetAuthority::AuthorizationSession(session)) => {
+            // The administrator may have signed out since; what counts is
+            // that they still manage this account.
+            Some(PasswordResetAuthority::Administrator) => {
                 if protected {
                     return Err(AuthError::Denied);
                 }
-                reset_requester(connection, &action.payload.actor, session, now)?;
                 SqliteAuthorizationStore::require_account_access(
                     connection,
                     &action.payload.actor,

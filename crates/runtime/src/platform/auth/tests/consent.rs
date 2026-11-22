@@ -115,7 +115,7 @@ fn remembered_decline_enforces_existing_sessions_without_a_renewal() {
 }
 
 #[test]
-fn explicit_one_off_approval_overrides_old_choices_but_honors_later_withdrawal() {
+fn fresh_approval_overrides_old_choices_but_honors_later_withdrawal() {
     for expired in [false, true] {
         let f = fixture();
         let login = f
@@ -151,7 +151,6 @@ fn explicit_one_off_approval_overrides_old_choices_but_honors_later_withdrawal()
         let mut explicit = grant_request(&f.principal, &login, &f.read, &f.write, now);
         explicit.selection.required.push(f.write.clone());
         explicit.selection.optional.clear();
-        explicit.remember = false;
         let mut invalid_reuse = explicit.clone();
         invalid_reuse.reused_remembered = vec![f.write.clone()];
         assert!(matches!(
@@ -175,20 +174,16 @@ fn explicit_one_off_approval_overrides_old_choices_but_honors_later_withdrawal()
             .any(|cap| cap.capability_id == f.write));
         let mut previous = f.admission.clone();
         previous.runtime_id = URL_SAFE_NO_PAD.encode([8; 16]);
-        if expired {
-            assert!(matches!(
-                issue_authority(&f.store, &previous, None, now),
-                Err(AuthError::RequiredMissing)
-            ));
-        } else {
-            let previous = issue_authority(&f.store, &previous, None, now).unwrap();
-            assert!(!previous
-                .authority
-                .unsigned
-                .capabilities
-                .iter()
-                .any(|cap| cap.capability_id == f.write));
-        }
+        // Every answer is remembered, so the fresh approval is the binding's
+        // latest decision and reaches the earlier grant too, whatever it held
+        // before: a decline or an approval that expired.
+        let previous = issue_authority(&f.store, &previous, None, now).unwrap();
+        assert!(previous
+            .authority
+            .unsigned
+            .capabilities
+            .iter()
+            .any(|cap| cap.capability_id == f.write));
         while f.store.enforce_next_page(now).unwrap().is_some() {}
         assert!(f
             .store
@@ -466,7 +461,6 @@ fn extending_a_grant_widens_its_live_session_only_from_the_same_login() {
     let widen = |principal: &str, login: &str| {
         let mut wider = grant_request(principal, login, &f.read, &f.write, NOW + 1);
         wider.extends = Some(grant.clone());
-        wider.remember = false;
         f.store
             .approve_grant(&mutation(principal, &wider), &wider, NOW + 1)
     };

@@ -968,7 +968,8 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
         NOW + 2,
     )
     .unwrap();
-    let guest = store.create_portal_session(NOW + 303).unwrap();
+    // The link lasts a day.
+    let guest = store.create_portal_session(NOW + 2 + 86_400).unwrap();
     assert!(matches!(
         complete_reset(
             &storage,
@@ -976,7 +977,7 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
             &guest.cookie,
             &guest.csrf,
             &replacement,
-            NOW + 303
+            NOW + 2 + 86_400
         ),
         Err(AuthError::Denied)
     ));
@@ -1149,44 +1150,6 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
             NOW + 4
         ),
         Err(AuthError::Conflict(_))
-    ));
-    let revoked_request = AuthPasswordResetCreateRequest {
-        user_id: alice.parse().unwrap(),
-        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
-        extra: Default::default(),
-    };
-    let revoked = create_reset(
-        &storage,
-        &mutation(operator, &revoked_request),
-        &revoked_request,
-        &session,
-        NOW + 4,
-    )
-    .unwrap();
-    let grant: String = store
-        .transaction(|connection| {
-            Ok(connection.query_row(
-                "SELECT oauth_grant_id \
-                FROM auth_authorization_sessions \
-                WHERE authorization_session_id=?1",
-                [&session],
-                |row| row.get(0),
-            )?)
-        })
-        .unwrap();
-    let root = EnforcementScope::Grant(grant);
-    crate::platform::auth::tests::revoke_root(&store, &mutation(&admin, &root), &root, NOW + 5)
-        .unwrap();
-    assert!(matches!(
-        complete_reset(
-            &storage,
-            &revoked.token,
-            &guest.cookie,
-            &guest.csrf,
-            &replacement,
-            NOW + 5
-        ),
-        Err(AuthError::Denied)
     ));
 }
 
