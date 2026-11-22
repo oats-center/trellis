@@ -62,6 +62,10 @@ and this project adheres to
 
 ### Fixed
 
+- A Portal or app sign-out the server couldn't finish reports the failure
+  with a reference and keeps its retry screen, instead of looking signed out.
+- `ServiceUpdates.Status` and service identity status answer another
+  deployment's records the same way as missing ones.
 - An issuer revoke that overlaps the activation retiring that key always gets
   a definitive answer: it commits only when its reply verifies for the caller,
   and is otherwise refused with nothing written. A revoke made under authority
