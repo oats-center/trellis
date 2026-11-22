@@ -326,10 +326,19 @@ impl SqliteAuthorizationStore {
                     let verifier = PasswordHash::new(hash).map_err(|_| AuthError::Unavailable)?;
                     Argon2::default()
                         .verify_password(password.as_bytes(), &verifier)
-                        .map_err(|_| AuthError::Conflict)?;
+                        .map_err(|_| {
+                            AuthError::Conflict(
+                                "the first administrator already exists with another password"
+                                    .into(),
+                            )
+                        })?;
                 }
                 (None, None) => {}
-                _ => return Err(AuthError::Conflict),
+                _ => {
+                    return Err(AuthError::Conflict(
+                        "the first administrator already exists with another way to sign in".into(),
+                    ))
+                }
             }
             Ok(result)
         })
@@ -391,7 +400,9 @@ impl super::OAuthStorage {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| {
+                    AuthError::NotFound("Trellis has no first administrator yet".into())
+                })?;
             if only_without_password && password_hash.is_some() {
                 return Ok(None);
             }
@@ -743,7 +754,7 @@ mod tests {
                 "different-password",
                 1005
             ),
-            Err(AuthError::Conflict)
+            Err(AuthError::Conflict(_))
         ));
         assert!(OAuthStorage::new(store.clone(), &[17u8; 32])
             .unwrap()

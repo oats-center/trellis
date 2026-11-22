@@ -434,7 +434,8 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
             NOW
         )
         .await,
-        Err(AuthError::Conflict)
+        Err(AuthError::Invalid(message))
+            if message.ends_with("only a detached resource can be removed")
     ));
     // Apply a new native participant version which omits the allocation.
     let current = store
@@ -604,7 +605,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     };
     assert!(matches!(
         remove_resource(&store, &nats, &mutation(&f.admin, &stale), &stale, NOW + 3).await,
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     // An owned catalog record does not authorize deleting a foreign provider.
     let mut stream = jetstream
@@ -618,7 +619,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     let manual = mutation(&f.admin, &removal);
     assert!(matches!(
         remove_resource(&store, &nats, &manual, &removal, NOW + 3).await,
-        Err(AuthError::Conflict)
+        Err(AuthError::Invalid(message)) if message.ends_with("so Trellis leaves it in place")
     ));
     assert_eq!(
         bucket.get("retained").await.unwrap().unwrap().as_ref(),
@@ -651,7 +652,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         .unwrap();
     assert!(matches!(
         remove_resource(&store, &nats, &manual, &removal, NOW + 4).await,
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let other_request = AuthResourceRemoveRequest {
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
@@ -666,7 +667,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
             NOW + 35
         )
         .await,
-        Err(AuthError::Conflict)
+        Err(AuthError::Invalid(message)) if message.ends_with("is already being removed")
     ));
     let removed = remove_resource(&store, &nats, &manual, &removal, NOW + 35)
         .await

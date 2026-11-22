@@ -1,6 +1,6 @@
 //! Typed catalog and provisioning reads over the authoritative SQLite aggregates.
 
-use super::sqlite::timestamp;
+use super::sqlite::{changed_since, timestamp};
 use super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
@@ -359,7 +359,12 @@ pub(super) fn create_deployment(
                 .participants()
                 .values()
                 .find(|participant| participant.identity().as_str() == input.participant_id)
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| {
+                    AuthError::NotFound(format!(
+                        "the package has no participant {}",
+                        input.participant_id
+                    ))
+                })?;
             let kind = match participant.kind() {
                 trellis_idl::ParticipantKind::Service => "service",
                 trellis_idl::ParticipantKind::Device => "device",
@@ -411,7 +416,9 @@ pub(super) fn deployment_input(
         .participants()
         .values()
         .find(|definition| definition.identity().as_str() == participant)
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| {
+            AuthError::NotFound(format!("the package has no participant {participant}"))
+        })?;
     let mut expected_api_generations = std::collections::BTreeMap::new();
     for api in definition.implements() {
         let generation = connection
@@ -457,10 +464,16 @@ pub(super) fn apply_deployment(
             )?;
             let deployment = input.deployment_id.to_string();
             let current = read_deployment(connection, &deployment)?;
-            if current.revision != input.expected_revision
-                || current.state == AuthDeploymentState::Removed
-            {
-                return Err(AuthError::Conflict);
+            if current.state == AuthDeploymentState::Removed {
+                return Err(AuthError::Invalid(format!(
+                    "deployment {deployment} is removed"
+                )));
+            }
+            if current.revision != input.expected_revision {
+                return Err(changed_since(
+                    &format!("deployment {deployment}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             let resources: String = connection.query_row(
                 "SELECT resource_commitments_json \
@@ -492,7 +505,12 @@ pub(super) fn apply_deployment(
                 .participants()
                 .values()
                 .find(|participant| participant.identity().as_str() == current.participant_id)
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| {
+                    AuthError::NotFound(format!(
+                        "the package has no participant {}",
+                        current.participant_id
+                    ))
+                })?;
             super::service_updates::require_webhooks_acknowledged(
                 super::service_updates::unauthenticated_webhooks(participant),
                 input.acknowledge_unauthenticated_webhooks,
@@ -590,10 +608,16 @@ pub(super) fn change_deployment(
             )?;
             let deployment = input.deployment_id.to_string();
             let current = read_deployment(connection, &deployment)?;
-            if current.revision != input.expected_revision
-                || current.state == AuthDeploymentState::Removed
-            {
-                return Err(AuthError::Conflict);
+            if current.state == AuthDeploymentState::Removed {
+                return Err(AuthError::Invalid(format!(
+                    "deployment {deployment} is removed"
+                )));
+            }
+            if current.revision != input.expected_revision {
+                return Err(changed_since(
+                    &format!("deployment {deployment}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             connection.execute(
                 "UPDATE auth_deployments SET state=?2 WHERE deployment_id=?1",
@@ -731,10 +755,34 @@ pub(super) fn change_instance(
             )?;
             let instance_id = input.instance_id.to_string();
             let instance = read_instance(connection, &instance_id)?;
-            if instance.principal.kind.as_str() != kind
-                || instance.revision != input.expected_revision
-            {
-                return Err(AuthError::Conflict);
+            if instance.principal.kind.as_str() != kind {
+                return Err(AuthError::NotFound(format!(
+                    "no {kind} instance {instance_id}"
+                )));
+            }
+            let ended: Option<String> = connection
+                .query_row(
+                    "SELECT state FROM auth_instances \
+                    WHERE instance_id=?1 AND state IN ('revoked','retired')",
+                    [&instance_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(ended) = ended {
+                return Err(AuthError::Invalid(format!(
+                    "{kind} instance {instance_id} is already {}",
+                    if ended == "retired" {
+                        "retired"
+                    } else {
+                        "removed"
+                    }
+                )));
+            }
+            if instance.revision != input.expected_revision {
+                return Err(changed_since(
+                    &format!("{kind} instance {instance_id}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             let deployment = read_deployment(connection, &instance.deployment_id.to_string())?;
             if state == "active" {
@@ -750,7 +798,10 @@ pub(super) fn change_instance(
                     |row| row.get(0),
                 )?;
                 if !current {
-                    return Err(AuthError::Conflict);
+                    return Err(AuthError::Invalid(format!(
+                        "{kind} instance {instance_id} is not on its deployment's current version, \
+                        so it can't be turned on until it updates"
+                    )));
                 }
             }
             let command = PolicyMutation::PrincipalState {
@@ -767,7 +818,10 @@ pub(super) fn change_instance(
                 params![instance_id, state, now, input.expected_revision.0 .0],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                return Err(changed_since(
+                    &format!("{kind} instance {instance_id}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             if state == "revoked" {
                 // A returning process is told it was removed, even after the
@@ -839,7 +893,7 @@ pub(super) fn read_instance(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no instance {instance_id}")))?;
     let (kind, state, created_at, version): (String, String, i64, u64) = connection.query_row(
         "SELECT kind,state,created_at,version FROM auth_principals WHERE principal_id=?1",
         [&principal],
@@ -1161,10 +1215,18 @@ fn reviewed_acceptance(
             |row| row.get(0),
         )
         .optional()?
-        .ok_or(AuthError::Conflict)?;
+        .ok_or_else(|| {
+            AuthError::Invalid(format!(
+                "API review {} has expired or was already used; review the API again",
+                acceptance.review_id
+            ))
+        })?;
     let review: ApiReview = super::sqlite::decode(&review)?;
     if (generation, revision) != (review.expected_generation, review.expected_revision) {
-        return Err(AuthError::Conflict);
+        return Err(AuthError::Conflict(format!(
+            "API {} changed since it was reviewed; review it again",
+            review.api_id
+        )));
     }
     let mut edits = Vec::new();
     for edit in roles {
@@ -1198,7 +1260,9 @@ fn reviewed_acceptance(
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .optional()?
-                    .ok_or(AuthError::NotFound)?;
+                    .ok_or_else(|| {
+                        AuthError::NotFound(format!("no OIDC role mapping {mapping_id}"))
+                    })?;
                 edits.push(PolicyMutation::OidcMappingPut {
                     mapping_id,
                     provider_id,
@@ -1238,7 +1302,7 @@ fn defined_api<'a>(
                 .find(|api| api.identity().as_str() == api_id)
                 .map(|api| (package, api))
         })
-        .ok_or(AuthError::NotFound)
+        .ok_or_else(|| AuthError::NotFound(format!("no API {api_id} in the package")))
 }
 
 fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi, AuthError> {
@@ -1260,7 +1324,7 @@ fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi
                 },
             )
             .optional()?
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| AuthError::NotFound(format!("no accepted API {api_id}")))?;
     let graph = trellis_idl::compile_evidence(super::sqlite::decode(&evidence)?)
         .map_err(|_| AuthError::Unavailable)?;
     let (_, definition) = defined_api(&graph, api_id)?;
@@ -1299,7 +1363,7 @@ pub(super) fn read_api(
             |row| row.get(0),
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no accepted API {}", input.api_id)))?;
     let evidence: trellis_idl::PackageEvidence = super::sqlite::decode(&evidence)?;
     let graph = trellis_idl::compile_evidence(evidence).map_err(|_| AuthError::Unavailable)?;
     let canonical_idl = trellis_idl::canonical_package(
@@ -1496,7 +1560,7 @@ pub(super) fn read_deployment(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no deployment {deployment_id}")))?;
     Ok(AuthDeployment {
         deployment_id: deployment_id.parse().map_err(|_| AuthError::Unavailable)?,
         title,

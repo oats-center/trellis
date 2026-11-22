@@ -119,7 +119,9 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                         )?;
                         let target = Target::resolve(connection, &input.target)?;
                         let key = target.key();
-                        let current = current(connection, &key)?.ok_or(AuthError::NotFound)?;
+                        let current = current(connection, &key)?.ok_or_else(|| {
+                            AuthError::NotFound(format!("{} has no saved settings", target.name()))
+                        })?;
                         let revision = input.revision.0;
                         if revision == current.revision {
                             return Err(AuthError::Invalid(
@@ -163,7 +165,10 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                             params![key, revision],
                         )?;
                         if deleted == 0 {
-                            return Err(AuthError::NotFound);
+                            return Err(AuthError::NotFound(format!(
+                                "settings of {} have no revision {revision}",
+                                target.name()
+                            )));
                         }
                         let after = read(connection)?;
                         for (((build, _), before), after) in builds.iter().zip(&before).zip(&after)
@@ -576,7 +581,7 @@ impl Target {
                 Some((state, Some(deployment))) if state == "claimed" => {
                     Ok(Self::Deployment { deployment })
                 }
-                _ => Err(AuthError::NotFound),
+                _ => Err(AuthError::NotFound(format!("no waiting service {claim}"))),
             };
         }
         if let Some(client) = &target.client_id {
@@ -593,7 +598,7 @@ impl Target {
                 |row| row.get(0),
             )?;
             if !exists {
-                return Err(AuthError::NotFound);
+                return Err(AuthError::NotFound(format!("no app {client}")));
             }
             return Ok(Self::Client { client });
         }
@@ -609,7 +614,7 @@ impl Target {
             |row| row.get(0),
         )?;
         if !exists {
-            return Err(AuthError::NotFound);
+            return Err(AuthError::NotFound(format!("no deployment {deployment}")));
         }
         let Some(instance) = target.instance_id.as_ref().map(ToString::to_string) else {
             return Ok(Self::Deployment { deployment });
@@ -621,12 +626,24 @@ impl Target {
             |row| row.get(0),
         )?;
         if !belongs {
-            return Err(AuthError::NotFound);
+            return Err(AuthError::NotFound(format!(
+                "no instance {instance} in deployment {deployment}"
+            )));
         }
         Ok(Self::Instance {
             deployment,
             instance,
         })
+    }
+
+    /// How errors name what the settings belong to.
+    fn name(&self) -> String {
+        match self {
+            Self::Deployment { deployment } => format!("deployment {deployment}"),
+            Self::Instance { instance, .. } => format!("instance {instance}"),
+            Self::Client { client } => format!("app {client}"),
+            Self::Claim { claim } => format!("waiting service {claim}"),
+        }
     }
 
     fn key(&self) -> String {
@@ -1535,10 +1552,25 @@ fn set_values(
                     "setting secrets",
                 )?;
             }
-            if previous.as_ref().map(|stored| stored.revision)
-                != input.expected_revision.as_ref().map(|revision| revision.0)
-            {
-                return Err(AuthError::Conflict);
+            match (
+                previous.as_ref().map(|stored| stored.revision),
+                input.expected_revision.as_ref().map(|revision| revision.0),
+            ) {
+                (current, expected) if current == expected => {}
+                (Some(current), None) => {
+                    return Err(AuthError::Conflict(format!(
+                        "settings of {} were saved as revision {current} since you read \
+                        them; reload and try again",
+                        target.name()
+                    )))
+                }
+                (_, Some(expected)) => {
+                    return Err(super::sqlite::changed_since(
+                        &format!("settings of {}", target.name()),
+                        expected,
+                    ))
+                }
+                (None, None) => unreachable!("equal revisions matched above"),
             }
             if !changed.is_empty() || !changed_secrets.is_empty() {
                 let revision = previous.as_ref().map_or(1, |stored| stored.revision + 1);
@@ -1570,12 +1602,22 @@ fn roll_back(
         .mutate(identity, "rpc.config.rollback", input, now, |connection| {
             let target = Target::resolve(connection, &input.target)?;
             let key = target.key();
-            let previous = current(connection, &key)?.ok_or(AuthError::NotFound)?;
+            let previous = current(connection, &key)?.ok_or_else(|| {
+                AuthError::NotFound(format!("{} has no saved settings", target.name()))
+            })?;
             if previous.revision != input.expected_revision.0 {
-                return Err(AuthError::Conflict);
+                return Err(super::sqlite::changed_since(
+                    &format!("settings of {}", target.name()),
+                    input.expected_revision.0,
+                ));
             }
-            let earlier =
-                stored(connection, &key, Some(input.revision.0))?.ok_or(AuthError::NotFound)?;
+            let earlier = stored(connection, &key, Some(input.revision.0))?.ok_or_else(|| {
+                AuthError::NotFound(format!(
+                    "settings of {} have no revision {}",
+                    target.name(),
+                    input.revision.0
+                ))
+            })?;
             let before_secrets = open_secrets(storage, &key, previous.sealed.as_deref())?;
             let after_secrets = open_secrets(storage, &key, earlier.sealed.as_deref())?;
             let changed = changed_keys(&previous.values, &earlier.values);

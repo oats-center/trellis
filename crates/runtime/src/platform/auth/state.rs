@@ -61,7 +61,9 @@ impl SqliteAuthorizationStore {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()?;
-            let (commitment, physical, allocation) = declaration.ok_or(AuthError::NotFound)?;
+            let (commitment, physical, allocation) = declaration.ok_or_else(|| {
+                AuthError::NotFound(format!("no ready state resource {resource_id}"))
+            })?;
             if physical != format!("{resource_id}.{allocation}") {
                 return Err(AuthError::Denied);
             }

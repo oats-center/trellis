@@ -242,7 +242,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
                 .unwrap()
                 .get(encoded, now)
                 .await,
-            Err(AuthError::NotFound)
+            Err(AuthError::NotFound(_))
         ),
         "operator disable fences already cached remote images"
     );

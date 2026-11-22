@@ -1546,7 +1546,7 @@ staticPasswords:
     };
     assert!(matches!(
         super::super::rpc_users::delete_user(&authority, &mutation(&f.admin, &retry), &retry, now),
-        Err(AuthError::NotFound)
+        Err(AuthError::NotFound(_))
     ));
     let (transaction, signed_up, _) = company_sign_in().await;
     assert_eq!(

@@ -112,7 +112,9 @@ impl BuiltinProviderSource {
             .participants()
             .values()
             .find(|definition| definition.identity().as_str() == participant)
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| {
+                AuthError::NotFound(format!("the package has no participant {participant}"))
+            })?;
         if definition.kind() != ParticipantKind::Service
             || definition.companion().is_some()
             || definition
@@ -221,7 +223,10 @@ impl BuiltinProviderSource {
                 return Err(AuthError::Denied);
             }
             if installed_digest != self.participant_digest {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "built-in service {} changed since it was installed",
+                    self.participant
+                )));
             }
             return Ok(ProvisionedDeployment {
                 participant_id: participant,
@@ -239,7 +244,10 @@ impl BuiltinProviderSource {
         Err(if known {
             AuthError::Denied
         } else {
-            AuthError::NotFound
+            AuthError::NotFound(format!(
+                "built-in service {} is not installed",
+                self.participant
+            ))
         })
     }
 }
@@ -298,8 +306,8 @@ impl SqliteAuthorizationStore {
         Self::require_administration(connection, &admin, Administration::ManagePrincipals)?;
         match source.lookup(connection, now) {
             Ok(existing) => Ok(Some(existing)),
-            Err(AuthError::NotFound) => Ok(None),
-            Err(AuthError::Conflict) => {
+            Err(AuthError::NotFound(_)) => Ok(None),
+            Err(AuthError::Conflict(_)) => {
                 // The operator chose this build by upgrading the server,
                 // so it needs no approval; an incompatible API still fails.
                 super::service_updates::upgrade_builtin(
@@ -358,7 +366,7 @@ impl SqliteAuthorizationStore {
                 Ok(catalog) => {
                     expected_api_generations.insert(api.clone(), catalog.generation.get());
                 }
-                Err(AuthError::NotFound) => {
+                Err(AuthError::NotFound(_)) => {
                     let review = self.review_api(&admin, source.evidence.clone(), api, now)?;
                     let acceptance = super::catalog::ApiAcceptance {
                         review_id: review.review_id.clone(),
@@ -442,7 +450,12 @@ impl SqliteAuthorizationStore {
                 .participants()
                 .values()
                 .find(|participant| participant.identity().as_str() == input.participant_id)
-                .ok_or(AuthError::NotFound)?
+                .ok_or_else(|| {
+                    AuthError::NotFound(format!(
+                        "the package has no participant {}",
+                        input.participant_id
+                    ))
+                })?
                 .name();
             let deployment = Self::install_deployment_in_transaction(
                 connection,
@@ -483,10 +496,20 @@ impl SqliteAuthorizationStore {
             .participants()
             .values()
             .find(|participant| participant.identity().as_str() == input.participant_id)
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| {
+                AuthError::NotFound(format!(
+                    "the package has no participant {}",
+                    input.participant_id
+                ))
+            })?;
         let needs = graph
             .participant_needs(participant.identity())
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| {
+                AuthError::NotFound(format!(
+                    "the package has no participant {}",
+                    input.participant_id
+                ))
+            })?;
         let participant_digest = participant_digest(&graph, participant.identity())
             .map_err(|error| AuthError::Invalid(error.to_string()))?;
         let required: Vec<String> = needs
@@ -527,11 +550,15 @@ impl SqliteAuthorizationStore {
                     .optional()?
                     .ok_or(AuthError::Denied)?;
                 if input.expected_api_generations.get(api.as_str()) != Some(&generation) {
-                    return Err(AuthError::Conflict);
+                    return Err(AuthError::Conflict(format!(
+                        "API {api} is at generation {generation} now; reload and try again"
+                    )));
                 }
                 let accepted = compile_evidence(decode(&accepted)?)
                     .map_err(|error| AuthError::Invalid(error.to_string()))?;
-                let implementation = graph.api(api).ok_or(AuthError::NotFound)?;
+                let implementation = graph
+                    .api(api)
+                    .ok_or_else(|| AuthError::NotFound(format!("no API {api} in the package")))?;
                 let accepted = resolve_api(&accepted, api.as_str())?;
                 if !trellis_idl::compare_implementation(implementation, accepted).compatible {
                     return Err(AuthError::Denied);
@@ -561,7 +588,10 @@ impl SqliteAuthorizationStore {
                 });
             }
             if input.expected_api_generations.len() != provided.len() {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Invalid(format!(
+                    "the expected API generations name APIs participant {} doesn't implement",
+                    input.participant_id
+                )));
             }
             // Its permissions only exist once each API it uses is accepted.
             let mut unaccepted = Vec::new();
@@ -664,7 +694,12 @@ impl SqliteAuthorizationStore {
                     .packages()
                     .values()
                     .find_map(|package| package.app_requests().get(&companion.request))
-                    .ok_or(AuthError::NotFound)?;
+                    .ok_or_else(|| {
+                        AuthError::NotFound(format!(
+                            "the package has no app request {}",
+                            companion.request
+                        ))
+                    })?;
                 if request.kind() != trellis_idl::AppKind::Native {
                     return Err(AuthError::Invalid(
                         "device companions require a native OAuth request".into(),
@@ -982,7 +1017,10 @@ impl SqliteAuthorizationStore {
             |row| row.get(0),
         )?;
         if known {
-            return Err(AuthError::Conflict);
+            return Err(AuthError::Invalid(format!(
+                "identity key {} is already provisioned",
+                result.identity_key_id
+            )));
         }
         connection.execute(
             "INSERT INTO auth_principals(principal_id,kind,state,created_at,\

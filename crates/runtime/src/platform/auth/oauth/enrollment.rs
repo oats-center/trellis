@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use trellis_runtime_apis::__types::trellis::AuthDeviceEnrollmentRequest;
 use trellis_runtime_apis::types::*;
 
-use super::super::sqlite::{digest, id};
+use super::super::sqlite::{changed_since, digest, id};
 
 pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
     provider: &mut trellis_runtime_apis::apis::trellis_auth_v1::Provider<'_, P>,
@@ -183,7 +183,7 @@ fn confirm(connection: &Connection, review: &str, code: &str) -> Result<(), Auth
             |row| row.get(0),
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no device activation {review}")))?;
     if expected != digest(&code)? {
         return Err(AuthError::Denied);
     }
@@ -216,7 +216,7 @@ fn read_review(connection: &Connection, review: &str) -> Result<AuthDeviceReview
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no device activation {review}")))?;
     let payload: Value = serde_json::from_str(&payload)?;
     let client = format!("trellis.device.{deployment}.companion");
     let request: Option<String> = connection
@@ -288,10 +288,17 @@ fn decide(
             let id = input.review_id.to_string();
             confirm(connection, &id, &input.confirmation_code)?;
             let review = read_review(connection, &id)?;
-            if review.state != AuthDeviceReviewState::Pending
-                || review.revision != input.expected_revision
-            {
-                return Err(AuthError::Conflict);
+            if review.state != AuthDeviceReviewState::Pending {
+                return Err(AuthError::Invalid(format!(
+                    "device activation {id} is already {}",
+                    review.state.as_str()
+                )));
+            }
+            if review.revision != input.expected_revision {
+                return Err(changed_since(
+                    &format!("device activation {id}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             let current: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 \
@@ -315,7 +322,10 @@ fn decide(
                 |row| row.get(0),
             )?;
             if !current {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Invalid(format!(
+                    "device activation {id} can't be decided any more: the device, its \
+                    deployment or its sign-in changed since it asked; ask the device to start again"
+                )));
             }
             let state = match input.decision {
                 AuthDecision::Approved => "approved",
@@ -378,10 +388,18 @@ fn attach(
             let review_id = input.review_id.to_string();
             confirm(connection, &review_id, &input.confirmation_code)?;
             let review = read_review(connection, &review_id)?;
-            if review.state != AuthDeviceReviewState::Approved
-                || review.revision != input.expected_revision
-            {
-                return Err(AuthError::Conflict);
+            if review.state != AuthDeviceReviewState::Approved {
+                return Err(AuthError::Invalid(format!(
+                    "device activation {review_id} is {}; only an approved activation can be \
+                    attached",
+                    review.state.as_str()
+                )));
+            }
+            if review.revision != input.expected_revision {
+                return Err(changed_since(
+                    &format!("device activation {review_id}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             let instance = review.instance_id.to_string();
             let client = review
@@ -460,7 +478,9 @@ fn attach(
                 )
                 .optional()?;
             if old.as_ref().is_some_and(|(state, _)| state == "active") {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Invalid(format!(
+                    "device instance {instance} already has a companion app"
+                )));
             }
             let revision = old.map_or(1, |(_, revision)| revision + 1);
             connection.execute(
@@ -492,7 +512,9 @@ fn attach(
                 params![review_id, identity.actor],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Invalid(format!(
+                    "device activation {review_id} is already attached"
+                )));
             }
             Ok(AuthDeviceCompanion {
                 instance_id: review.instance_id,
@@ -635,7 +657,9 @@ fn revoke(
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| {
+                    AuthError::NotFound(format!("device instance {instance} has no companion app"))
+                })?;
             if owner != identity.actor {
                 if !delegated_admin {
                     return Err(AuthError::Denied);
@@ -647,7 +671,10 @@ fn revoke(
                 )?;
             }
             if revision != input.expected_revision.0 .0 {
-                return Err(AuthError::Conflict);
+                return Err(changed_since(
+                    &format!("companion app of device instance {instance}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             if revoked.is_none() {
                 let scope = super::super::EnforcementScope::Grant(grant);
@@ -827,7 +854,9 @@ fn enroll(store: &SqliteAuthorizationStore, mut body: Value, now: i64) -> Result
                     params![secret_id, now],
                 )? != 1
                 {
-                    return Err(AuthError::Conflict);
+                    return Err(AuthError::Conflict(
+                        "another device used this provisioning secret at the same moment".into(),
+                    ));
                 }
                 instance
             }
@@ -881,7 +910,9 @@ fn enroll(store: &SqliteAuthorizationStore, mut body: Value, now: i64) -> Result
                 |row| row.get(0),
             )?;
             if pending {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Invalid(format!(
+                    "device instance {instance} already has an activation waiting for review"
+                )));
             }
             let review = id();
             let payload = json!({
@@ -1108,7 +1139,7 @@ pub(super) async fn portal_inspect(
     .await;
     match result {
         Ok(view) => Json(view).into_response(),
-        Err(AuthError::Denied) | Err(AuthError::NotFound) => (
+        Err(AuthError::Denied) | Err(AuthError::NotFound(_)) => (
             StatusCode::FORBIDDEN,
             Json(json!({"error":"code_mismatch"})),
         )
@@ -1165,7 +1196,7 @@ pub(super) async fn portal_decide(
     let response = match decided {
         Ok(response) => response,
         Err(AuthError::Denied) => return back("not_allowed"),
-        Err(AuthError::Conflict) => return back("changed"),
+        Err(AuthError::Conflict(_) | AuthError::Invalid(_)) => return back("changed"),
         Err(_) => return back("unavailable"),
     };
     let approved = response.review.state == AuthDeviceReviewState::Approved;

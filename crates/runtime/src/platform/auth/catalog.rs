@@ -89,7 +89,7 @@ pub(super) fn resolve_api<'a>(
         .flat_map(|package| package.apis().keys())
         .find(|id| id.as_str() == api)
         .and_then(|id| graph.api(id))
-        .ok_or(AuthError::NotFound)
+        .ok_or_else(|| AuthError::NotFound(format!("no API {api} in the package")))
 }
 
 /// A review fences all relevant policy edits, not just the catalog row. This
@@ -434,7 +434,12 @@ impl SqliteAuthorizationStore {
                     |row| row.get(0),
                 )
                 .optional()?
-                .ok_or(AuthError::Conflict)?;
+                .ok_or_else(|| {
+                    AuthError::Invalid(format!(
+                        "API review {} has expired or was already used; review the API again",
+                        acceptance.review_id
+                    ))
+                })?;
             let review: ApiReview = decode(&review)?;
             if acceptance.reviewed_digest != review.definition_digest
                 || (!review.compatible && !acceptance.force)
@@ -448,7 +453,10 @@ impl SqliteAuthorizationStore {
                 return Err(AuthError::Denied);
             }
             if review.policy_digest != policy_snapshot(connection, &review.api_id)? {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "access to API {} changed since it was reviewed; review it again",
+                    review.api_id
+                )));
             }
             let current: Option<(u64, u64)> = connection
                 .query_row(
@@ -458,7 +466,10 @@ impl SqliteAuthorizationStore {
                 )
                 .optional()?;
             if current.unwrap_or((0, 0)) != (review.expected_generation, review.expected_revision) {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "API {} changed since it was reviewed; review it again",
+                    review.api_id
+                )));
             }
             let graph = compile_evidence(review.proposed.clone())
                 .map_err(|error| AuthError::Invalid(error.to_string()))?;
@@ -740,7 +751,7 @@ impl SqliteAuthorizationStore {
                     |row| row.get(0),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| AuthError::NotFound(format!("no accepted API {api_id}")))?;
             Ok(serde_json::from_slice(&bytes)?)
         })
     }

@@ -20,7 +20,7 @@ use trellis_runtime_apis::{
 use super::catalog::{resolve_api, ApiAcceptance};
 use super::deployments::{CONSUMER_RUNTIME_CAPABILITY, JOB_HISTORY_CAPABILITY};
 use super::rpc::{caller, mutation, rpc_error};
-use super::sqlite::{decode, digest, id, json, timestamp, Connection};
+use super::sqlite::{changed_since, decode, digest, id, json, timestamp, Connection};
 use super::{
     blocking, Administration, AuthError, EnforcementScope, Mutation, SqliteAuthorizationStore,
 };
@@ -81,7 +81,10 @@ pub(crate) fn register_service_update_rpc<P: ParticipantDescriptor>(
                     let update = read_update(connection, &store, &input.update_id.to_string())?;
                     let owner = update.deployment_id.to_string();
                     if !deployments.contains(&Some(owner)) {
-                        return Err(AuthError::NotFound);
+                        return Err(AuthError::NotFound(format!(
+                            "no service update {} for this service",
+                            input.update_id
+                        )));
                     }
                     Ok(AuthServiceUpdateResponse {
                         update,
@@ -748,7 +751,9 @@ pub(super) fn accept_participant_apis(
         .participants()
         .values()
         .find(|definition| definition.identity().as_str() == participant)
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| {
+            AuthError::NotFound(format!("the package has no participant {participant}"))
+        })?;
     let mut apis = apis_to_accept(connection, &graph, definition)?;
     apis.extend(used_apis_to_accept(connection, definition)?);
     accept_apis(connection, store, identity, evidence, &apis, now)
@@ -1180,7 +1185,7 @@ fn decide(
                     },
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| AuthError::NotFound(format!("no service update {update}")))?;
             if state == "applied" && input.decision == AuthDecision::Approved {
                 // Approving an installed update again only retries its storage.
                 return Ok(AuthServiceUpdateResponse {
@@ -1188,8 +1193,21 @@ fn decide(
                     extra: Default::default(),
                 });
             }
-            if state != "pending" || revision != input.expected_revision.0 .0 {
-                return Err(AuthError::Conflict);
+            if state != "pending" {
+                return Err(AuthError::Invalid(format!(
+                    "service update {update} is already {}",
+                    match state.as_str() {
+                        "applied" => "approved and installed",
+                        "superseded" => "replaced by a newer update",
+                        _ => "rejected",
+                    }
+                )));
+            }
+            if revision != input.expected_revision.0 .0 {
+                return Err(changed_since(
+                    &format!("service update {update}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             if input.decision == AuthDecision::Approved && claim_waiting(connection, &deployment)? {
                 let candidate = Candidate::compile(decode(&evidence)?, &participant)?;
@@ -1319,7 +1337,7 @@ fn read_update(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no service update {update}")))?;
     // A person decided when the recorded actor is a user. Any other actor (the
     // submitting instance for a build that asked for no more access, or
     // Trellis for a built-in's build) decided without asking anyone.
@@ -1612,7 +1630,9 @@ pub(super) fn create_claim(
             |row| row.get(0),
         )?;
             if known {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Invalid(format!(
+                    "a service with identity key {public_key} is already added"
+                )));
             }
             let (claim, principal) = (id(), id());
             connection.execute(
@@ -1686,9 +1706,22 @@ pub(super) fn remove_claim(
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
-            if state != "waiting" || revision != input.expected_revision.0 .0 {
-                return Err(AuthError::Conflict);
+                .ok_or_else(|| AuthError::NotFound(format!("no waiting service {claim}")))?;
+            if state != "waiting" {
+                return Err(AuthError::Invalid(if state == "claimed" {
+                    format!(
+                        "waiting service {claim} is approved and is a deployment now; remove the \
+                        deployment instead"
+                    )
+                } else {
+                    format!("waiting service {claim} is already removed")
+                }));
+            }
+            if revision != input.expected_revision.0 .0 {
+                return Err(changed_since(
+                    &format!("waiting service {claim}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             connection.execute(
             "UPDATE auth_service_claims SET state='removed',revision=revision+1 WHERE claim_id=?1",
@@ -1751,7 +1784,7 @@ fn read_claim(connection: &Connection, claim: &str) -> Result<AuthServiceClaim, 
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no waiting service {claim}")))?;
     let ulid = |value: &str| value.parse().map_err(|_| AuthError::Unavailable);
     Ok(AuthServiceClaim {
         claim_id: ulid(claim)?,

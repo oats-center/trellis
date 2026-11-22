@@ -138,9 +138,12 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         ..update
     };
+    // The refusal says what changed, so the caller knows to reload.
     assert!(matches!(
         update_user(&store, &mutation(&admin, &stale), &stale, NOW + 2),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(message))
+            if message.contains("changed since revision")
+                && message.ends_with("reload and try again")
     ));
     assert_eq!(
         store
@@ -357,7 +360,7 @@ fn provider_disable_blocks_verified_login_and_stale_delete_cannot_remove_it() {
     };
     assert!(matches!(
         delete_provider(&store, &mutation(&admin, &stale), &stale, NOW + 2),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let listed = store
         .transaction(|connection| {
@@ -411,7 +414,7 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
     };
     assert!(matches!(
         create_user(&store, &mutation(&admin, &duplicate), &duplicate, NOW + 1),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(message)) if message == "username reserved is already taken"
     ));
     let cookie = store.create_portal_session(NOW).unwrap();
     assert!(matches!(
@@ -482,7 +485,7 @@ fn racing_password_changes_cannot_both_replace_the_same_credential() {
     let loser = outcomes.iter().find(|(_, result)| result.is_err()).unwrap();
     assert!(matches!(
         loser.1,
-        Err(AuthError::Conflict | AuthError::Denied)
+        Err(AuthError::Conflict(_) | AuthError::Denied)
     ));
     let cookie = store.create_portal_session(NOW + 2).unwrap();
     assert!(store
@@ -564,7 +567,7 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
             IssuerPin::Keep,
             NOW + 2
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     assert_eq!(
         store
@@ -786,7 +789,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
     };
     assert!(matches!(
         unlink_identity(&store, &mutation(&admin, &unlink), &unlink, NOW + 1),
-        Err(AuthError::NotFound)
+        Err(AuthError::NotFound(_))
     ));
     // Her only way to sign in: refused, saying so.
     match unlink_identity(&store, &mutation(&alice, &unlink), &unlink, NOW + 1) {
@@ -1145,7 +1148,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
             &replacement,
             NOW + 4
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let revoked_request = AuthPasswordResetCreateRequest {
         user_id: alice.parse().unwrap(),
@@ -1703,7 +1706,7 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
     let retry = delete(&disabled);
     assert!(matches!(
         delete_user(&store, &mutation(&manager, &retry), &retry, NOW + 3),
-        Err(AuthError::NotFound)
+        Err(AuthError::NotFound(_))
     ));
     // The sign-in is free: the person's next OIDC sign-in links a new account.
     let fresh = create(&admin, "boss-again")
@@ -1999,6 +2002,7 @@ fn a_creation_recorded_before_linked_sign_ins_replays_its_result() {
     };
     assert!(matches!(
         create_user(&store, &changed, &linked, NOW + 1),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(message))
+            if message.contains("was already used for a different request")
     ));
 }

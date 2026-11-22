@@ -203,7 +203,7 @@ pub(crate) fn create_reset(
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| AuthError::NotFound(format!("no active user {target}")))?;
             let username = username.ok_or(AuthError::Denied)?;
             let token = token()?;
             let payload = Payload {
@@ -281,7 +281,9 @@ pub(crate) fn create_link(
                     |row| row.get(0),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| {
+                    AuthError::NotFound(format!("no active OIDC provider {provider}"))
+                })?;
             let protected: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 \
                 FROM auth_bootstrap_administrator \
@@ -349,7 +351,11 @@ pub(crate) fn create_local_reset_in_transaction(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| {
+            AuthError::NotFound(format!(
+                "active user {principal} has no username and password"
+            ))
+        })?;
     let protected = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
         [principal],
@@ -528,7 +534,9 @@ pub(crate) fn complete_reset(
                     params![replacement, now, action.target, version],
                 )? != 1
                 {
-                    return Err(AuthError::Conflict);
+                    return Err(AuthError::Conflict(
+                        "the password changed since this link was made; ask for a new link".into(),
+                    ));
                 }
             }
             None => {
@@ -540,7 +548,9 @@ pub(crate) fn complete_reset(
                     |row| row.get(0),
                 )?;
                 if present {
-                    return Err(AuthError::Conflict);
+                    return Err(AuthError::Conflict(
+                        "a password was set since this link was made; ask for a new link".into(),
+                    ));
                 }
                 connection.execute(
                     "INSERT INTO auth_local_credentials(principal_id,normalized_username,\

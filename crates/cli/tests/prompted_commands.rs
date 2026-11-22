@@ -851,6 +851,19 @@ async fn revoking_a_secret_with_its_instances_disconnects_them() {
         .unwrap()
         .iter()
         .all(|instance| instance["instanceId"] != enrolled["instanceId"]));
+    // Revoking it again says it is revoked already, not that something
+    // conflicted.
+    let again = cli
+        .script(&["svc", deployment, "enrollment", "revoke", &secret])
+        .await;
+    assert!(
+        refused_with(
+            &again,
+            &format!("enrollment secret {secret} is already revoked")
+        ),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
     runtime.shutdown().await.unwrap();
 }
 
@@ -1087,5 +1100,43 @@ async fn issuer_keys_rotate_and_revoke_from_the_cli() {
     );
     // The new key still signs: commands keep working.
     assert_eq!(cli.json(&["whoami"]).await["loggedIn"], true);
+    runtime.shutdown().await.unwrap();
+}
+
+/// Auth's refusals name what was wrong: a role that doesn't exist, or a user
+/// who has the role already.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn role_changes_say_why_they_are_refused() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime, None).await;
+    let role = cli
+        .json(&["roles", "create", "--title", "Readers", "--no-new-users"])
+        .await["role"]["roleId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let username = format!("member-{}", ulid::Ulid::generate()).to_lowercase();
+    let user = cli
+        .json(&["users", "create", "--username", &username])
+        .await["user"]["principalId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    cli.json(&["roles", "assign", &role, &user]).await;
+    let twice = cli.script(&["roles", "assign", &role, &user]).await;
+    assert!(
+        refused_with(&twice, &format!("{user} already has role {role}")),
+        "{}",
+        String::from_utf8_lossy(&twice.stderr)
+    );
+
+    let missing = ulid::Ulid::generate().to_string();
+    let unknown = cli.script(&["roles", "delete", &missing]).await;
+    assert!(
+        refused_with(&unknown, &format!("no role {missing}")),
+        "{}",
+        String::from_utf8_lossy(&unknown.stderr)
+    );
     runtime.shutdown().await.unwrap();
 }

@@ -121,7 +121,11 @@ pub(super) fn update(
                 |row| row.get(0),
             )
             .optional()?
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| {
+                AuthError::NotFound(format!(
+                    "deployment {deployment} has no webhook endpoint {endpoint}"
+                ))
+            })?;
         let enabled = match &input.change {
             AuthWebhookChange::Enable | AuthWebhookChange::Disable => {
                 let enable = input.change == AuthWebhookChange::Enable;

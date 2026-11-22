@@ -205,7 +205,10 @@ pub(super) fn write(
     let before = current.clone();
     if let Some(patch) = patch {
         if current.revision != patch.expected_revision.0 .0 {
-            return Err(AuthError::Conflict);
+            return Err(super::sqlite::changed_since(
+                &format!("profile of user {principal}"),
+                patch.expected_revision.0 .0,
+            ));
         }
         if (patch.email.is_some() && patch.clear_email == Some(true))
             || (patch.picture_provider_id.is_some() && patch.use_gravatar == Some(true))

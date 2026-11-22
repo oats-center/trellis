@@ -382,7 +382,7 @@ fn denial_code(error: &AuthError) -> &'static str {
     match error {
         AuthError::Denied
         | AuthError::DeniedNeeding(_)
-        | AuthError::NotFound
+        | AuthError::NotFound(_)
         | AuthError::Retired
         | AuthError::RequiredMissing
         | AuthError::Protocol(_)

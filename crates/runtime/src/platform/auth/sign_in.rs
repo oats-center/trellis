@@ -105,7 +105,10 @@ pub(super) fn update(
                 ],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                return Err(super::sqlite::changed_since(
+                    "sign-in settings",
+                    input.expected_revision.0 .0,
+                ));
             }
             require_a_way_in(connection, Change::Settings)?;
             Ok(AuthSignInSettingsGetResponse {

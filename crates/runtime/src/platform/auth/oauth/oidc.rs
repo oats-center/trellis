@@ -620,7 +620,11 @@ impl super::super::SqliteAuthorizationStore {
             None if sign_up => super::super::sqlite::id(),
             // No account has this provider identity, and this app does not let
             // people create one by signing in.
-            None => return Err(AuthError::NotFound),
+            None => {
+                return Err(AuthError::NotFound(
+                    "no account is linked to this provider account".into(),
+                ))
+            }
         };
         let input = (
             &flow.session_id,
@@ -656,7 +660,10 @@ impl super::super::SqliteAuthorizationStore {
             )?;
             // The provider was edited or turned off.
             if !current {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "OIDC provider {} changed or was turned off during the sign-in",
+                    flow.provider.provider_id
+                )));
             }
             if created {
                 super::super::rpc_users::insert_user(connection, &principal, now)?;

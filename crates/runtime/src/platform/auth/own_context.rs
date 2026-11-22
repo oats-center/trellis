@@ -329,7 +329,7 @@ impl SqliteAuthorizationStore {
             };
             response.result = match result {
                 Ok(payload) => IssuerMetadataResult::Value { payload },
-                Err(AuthError::NotFound) => IssuerMetadataResult::Missing,
+                Err(AuthError::NotFound(_)) => IssuerMetadataResult::Missing,
                 Err(_) => IssuerMetadataResult::Unavailable,
             };
             match sign_issuer_metadata(response.clone(), &self.current_signer(connection)?) {

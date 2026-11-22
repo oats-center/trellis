@@ -223,7 +223,9 @@ impl SqliteAuthorizationStore {
                         let lookup = session.to_owned();
                         let signed = blocking(move || store.resolve_revocation(&lookup))
                             .await?
-                            .ok_or(AuthError::NotFound)?;
+                            .ok_or_else(|| {
+                                AuthError::NotFound(format!("no revocation for session {session}"))
+                            })?;
                         if signed.latest_context_expiry > now {
                             let ttl = Duration::from_secs(
                                 u64::try_from(signed.latest_context_expiry - now)

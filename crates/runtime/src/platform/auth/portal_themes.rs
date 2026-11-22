@@ -179,6 +179,14 @@ fn read_theme(connection: &Connection, client: &str) -> Result<Option<AuthPortal
 }
 
 /// The installation theme needs `platform.manage`; an app's `clients.manage`.
+/// How errors name the theme `client` uses: its own, or the default one.
+fn theme_name(client: Option<&str>) -> String {
+    client.map_or_else(
+        || "default portal theme".to_owned(),
+        |client| format!("portal theme for app {client}"),
+    )
+}
+
 fn authorize(connection: &Connection, actor: &str, client: Option<&str>) -> Result<(), AuthError> {
     SqliteAuthorizationStore::require_administration(
         connection,
@@ -201,10 +209,11 @@ fn put(
     store.mutate(identity, "rpc.portalTheme.put", input, now, |connection| {
         authorize(connection, &identity.actor, client.as_deref())?;
         let key = client.as_deref().unwrap_or("");
-        let current = read_row(connection, key)?.map_or(0, |row| row.5);
-        if current != input.expected_revision.0 {
-            return Err(AuthError::Conflict);
-        }
+        super::sqlite::expect_revision(
+            &theme_name(client.as_deref()),
+            read_row(connection, key)?.map(|row| row.5),
+            input.expected_revision.0,
+        )?;
         let settings = serde_json::to_string(&Settings {
             name: input.name.clone(),
             colors: input.colors.clone(),
@@ -226,7 +235,7 @@ fn put(
                 format,
                 logo,
                 input.stylesheet.as_ref().map(|value| value.as_str()),
-                current + 1,
+                input.expected_revision.0 + 1,
                 now
             ],
         )?;
@@ -252,9 +261,16 @@ fn delete(
         |connection| {
             authorize(connection, &identity.actor, client.as_deref())?;
             let key = client.as_deref().unwrap_or("");
-            let current = read_row(connection, key)?.ok_or(AuthError::NotFound)?.5;
+            let current = read_row(connection, key)?
+                .ok_or_else(|| {
+                    AuthError::NotFound(format!("no {}", theme_name(client.as_deref())))
+                })?
+                .5;
             if current != input.expected_revision.0 .0 {
-                return Err(AuthError::Conflict);
+                return Err(super::sqlite::changed_since(
+                    &theme_name(client.as_deref()),
+                    input.expected_revision.0 .0,
+                ));
             }
             connection.execute("DELETE FROM auth_portal_themes WHERE client_id=?1", [key])?;
             Ok(AuthMutationResult {

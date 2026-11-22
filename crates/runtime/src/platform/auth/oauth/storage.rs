@@ -376,7 +376,10 @@ impl OAuthStorage {
                 |row| row.get(0),
             )?;
             if registered {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "client ID {} belongs to a registered app",
+                    client.client_id.as_str()
+                )));
             }
             self.cleanup_expired_in(connection, now)
                 .map_err(|_| AuthError::Unavailable)?;
@@ -395,7 +398,10 @@ impl OAuthStorage {
                 |row| row.get(0),
             )?;
             if pending_changed {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "app {} changed its metadata while a sign-in was under way; try again shortly",
+                    client.client_id.as_str()
+                )));
             }
             let approved: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 \
@@ -1696,7 +1702,7 @@ mod tests {
                 .server
                 .store()
                 .install_client_document(&document(clients[0].as_str(), "Changed client")),
-            Err(AuthError::Conflict)
+            Err(AuthError::Conflict(_))
         ));
         let overflow = format!(
             "https://{}.example/client.json",

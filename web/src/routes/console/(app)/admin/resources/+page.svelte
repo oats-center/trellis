@@ -161,12 +161,10 @@
       if (scope.disposed) return;
       const outcome = classifyMutationError(cause);
       uncertain = outcome.kind === "unknown";
-      actionMessage =
-        outcome.kind === "conflict"
-          ? "The resource changed before deletion. No retry was sent. Refresh and review its current state before making another choice."
-          : uncertain
-            ? "Deletion outcome unknown. No retry was sent. Refresh to inspect the allocation; deletion controls remain disabled for this page visit."
-            : projectConsoleError(cause).message;
+      // A conflict says what changed; the list reloads below to show it.
+      actionMessage = uncertain
+        ? "Deletion outcome unknown. No retry was sent. Refresh to inspect the allocation; deletion controls remain disabled for this page visit."
+        : projectConsoleError(cause).message;
       if (outcome.kind === "conflict" || uncertain) await load();
     } finally {
       if (!scope.disposed) busy = false;

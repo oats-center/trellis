@@ -155,7 +155,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                                 },
                             )
                             .optional()?
-                            .ok_or(AuthError::NotFound)?;
+                            .ok_or_else(|| AuthError::NotFound(format!("no sign-in {login}")))?;
                         let ulid = |value: &str| value.parse().map_err(|_| AuthError::Unavailable);
                         Some(trellis_runtime_apis::types::AuthLoginSession {
                             login_session_id: ulid(login)?,
@@ -235,12 +235,11 @@ pub(super) fn mutation(
 pub(super) fn rpc_error(error: AuthError) -> ServerError {
     let needed;
     let (error_type, code, message) = match &error {
-        AuthError::NotFound => (errors::AuthError::TYPE, "not_found", "Not found"),
-        AuthError::Missing(detail) => (errors::AuthError::TYPE, "not_found", detail.as_str()),
-        AuthError::Conflict => (
+        AuthError::NotFound(detail) => (errors::AuthError::TYPE, "not_found", detail.as_str()),
+        AuthError::Conflict(detail) => (
             errors::AuthError::TYPE,
             "revision_conflict",
-            "Revision conflict",
+            detail.as_str(),
         ),
         AuthError::Denied => (errors::AuthError::TYPE, "access_denied", "Not authorized"),
         AuthError::DeniedNeeding(detail) => {

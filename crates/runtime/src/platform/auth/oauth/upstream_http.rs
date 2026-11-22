@@ -802,14 +802,14 @@ pub(super) async fn callback(
                 "upstream OIDC linked-account login rejected",
             );
             match cause {
-                super::super::AuthError::NotFound => refused(
+                super::super::AuthError::NotFound(_) => refused(
                     ErrorCode::AccessDenied,
                     "no_linked_account",
                     "No Trellis account is linked to this provider account. Sign in another \
                     way, then link the provider from your account page.",
                     false,
                 ),
-                super::super::AuthError::Conflict => refused(
+                super::super::AuthError::Conflict(_) => refused(
                     ErrorCode::AccessDenied,
                     "provider_changed",
                     "The provider or OIDC sign-in was changed or turned off during the \

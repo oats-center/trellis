@@ -18,7 +18,7 @@ use super::{
     policy::apply_policy_in_transaction,
     revocation::EnforcementScope,
     rpc::{caller, mutation, rpc_error},
-    sqlite::{digest, id},
+    sqlite::{changed_since, digest, id},
     AuthError, Mutation, PolicyMutation, SqliteAuthorizationStore,
 };
 
@@ -556,7 +556,9 @@ pub(super) fn put_provider(
                 .as_ref()
                 .is_some_and(|(_, state, _)| state == "deleted")
             {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Invalid(format!(
+                    "OIDC provider {provider} is deleted; add a new provider instead"
+                )));
             }
             let (previous_secret, previous_certificate) = previous
                 .map(|(secret, _, certificate)| (secret, certificate))
@@ -707,7 +709,12 @@ pub(super) fn unlink_identity(
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| {
+                    AuthError::NotFound(format!(
+                        "your account has no OIDC sign-in {}",
+                        input.identity_id
+                    ))
+                })?;
             let protected: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 \
                 FROM auth_bootstrap_administrator \
@@ -865,7 +872,18 @@ fn advance_account_revision(
         params![now, principal, expected_revision],
     )? != 1
     {
-        return Err(AuthError::Conflict);
+        let state: Option<String> = connection
+            .query_row(
+                "SELECT state FROM auth_principals WHERE principal_id=?1 AND kind='user'",
+                [principal],
+                |row| row.get(0),
+            )
+            .optional()?;
+        return Err(match state.as_deref() {
+            None => AuthError::NotFound(format!("no user {principal}")),
+            Some("revoked") => AuthError::Invalid(format!("user {principal} is deleted")),
+            Some(_) => changed_since(&format!("user {principal}"), expected_revision),
+        });
     }
     Ok(())
 }
@@ -905,7 +923,7 @@ fn account_with_identities(
         },
     )?
     .found
-    .ok_or(AuthError::NotFound)
+    .ok_or_else(|| AuthError::NotFound(format!("no user {principal}")))
 }
 
 /// Link an OIDC sign-in to an enabled account. One the account already has is
@@ -983,7 +1001,12 @@ pub(super) fn unlink_user_identity(
                     |row| row.get(0),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| {
+                    AuthError::NotFound(format!(
+                        "user {principal} has no OIDC sign-in {} from provider {provider}",
+                        input.identity.subject
+                    ))
+                })?;
             advance_account_revision(connection, &principal, input.expected_revision.0 .0, now)?;
             remove_identity(
                 store,
@@ -1042,7 +1065,7 @@ pub(super) fn find_user(
         }
     };
     let user = match principal.map(|principal| read_user(store, connection, &principal, true)) {
-        None | Some(Err(AuthError::NotFound)) => None,
+        None | Some(Err(AuthError::NotFound(_))) => None,
         Some(user) => Some(user?),
     };
     let Some(user) = user else {
@@ -1119,7 +1142,7 @@ pub(super) fn read_user(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no user {principal}")))?;
     let profile = super::profiles::read(connection, principal)?;
     let avatar_url = if state == "active" {
         super::avatars::avatar_url(store, connection, principal, &profile)
@@ -1217,7 +1240,9 @@ pub(super) fn insert_local_account(
         |row| row.get(0),
     )?;
     if taken {
-        return Err(AuthError::Conflict);
+        return Err(AuthError::Conflict(format!(
+            "username {username} is already taken"
+        )));
     }
     let profile = AuthUserProfileUpdateRequest {
         expected_revision: AuthRevision(
@@ -1570,7 +1595,9 @@ pub(super) fn change_password(
                 params![replacement, now, identity.actor, version, hash],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(
+                    "your password changed while this change was being made; try again".into(),
+                ));
             }
             let mut statement = connection.prepare(
                 "SELECT login_session_id \
@@ -1631,7 +1658,7 @@ pub(super) fn read_provider(
                 },
             )
             .optional()?
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| AuthError::NotFound(format!("no OIDC provider {provider}")))?;
     let config: serde_json::Value = serde_json::from_str(&config)?;
     Ok(AuthOIDCProvider {
         provider_id: provider.parse().map_err(|_| AuthError::Unavailable)?,
@@ -1757,7 +1784,23 @@ fn set_provider_state(
                 params![state, now, provider, input.expected_revision.0 .0],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                let current: Option<String> = connection
+                    .query_row(
+                        "SELECT state FROM auth_oidc_providers WHERE provider_id=?1",
+                        [&provider],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                return Err(match current.as_deref() {
+                    None => AuthError::NotFound(format!("no OIDC provider {provider}")),
+                    Some("deleted") => {
+                        AuthError::Invalid(format!("OIDC provider {provider} is already deleted"))
+                    }
+                    Some(_) => changed_since(
+                        &format!("OIDC provider {provider}"),
+                        input.expected_revision.0 .0,
+                    ),
+                });
             }
             // The last active provider cannot go while it is the only way in.
             super::sign_in::require_a_way_in(connection, super::sign_in::Change::Provider)?;
@@ -1816,7 +1859,7 @@ pub(super) fn read_mapping(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no OIDC role mapping {mapping}")))?;
     let roles = connection
         .prepare(
             "SELECT role_id FROM auth_oidc_mapping_roles WHERE mapping_id=?1 ORDER BY role_id",

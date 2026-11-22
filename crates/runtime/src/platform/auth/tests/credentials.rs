@@ -49,7 +49,7 @@ fn client_put_replay_preserves_original_result_without_overwriting_later_edits()
     };
     assert!(matches!(
         put_client(&f.store, &mutation(&f.admin, &stale), &stale, NOW + 3),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let disable = AuthOAuthClientMutationRequest {
         client_id: input.client_id.clone(),

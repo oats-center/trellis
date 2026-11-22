@@ -83,7 +83,7 @@ fn state_registration_is_namespace_owned_and_survives_native_key_replacement() {
             SqliteAuthorizationStore::state_namespace(principal, &binding, "settings").unwrap();
         assert!(matches!(
             fixture.store.state_declaration(&resource),
-            Err(AuthError::NotFound)
+            Err(AuthError::NotFound(_))
         ));
     }
     let native = SessionBinding::Native {
