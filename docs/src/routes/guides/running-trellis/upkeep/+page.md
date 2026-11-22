@@ -1,6 +1,6 @@
 ---
 title: "Keep Trellis running"
-description: "Upgrade the server, keep certificates current, know what a failure costs, back up and restore, reset the administrator password, use the nats CLI, run jobs, health or events on their own server, run a second Trellis on one machine, and start over."
+description: "Upgrade the server, keep certificates current, know what a failure costs, find a failure from its reference, back up and restore, reset the administrator password, use the nats CLI, run jobs, health or events on their own server, run a second Trellis on one machine, and start over."
 ---
 
 ## Upgrade
@@ -103,6 +103,46 @@ because jobs and stored files would silently go missing. If a signing key in
 `platform.issuer-keys/` goes missing, restore it from a backup; Trellis won't
 make a new one in its place. Recreating NATS streams or buckets by hand
 doesn't bring back lost jobs or files either.
+
+## Find a failure from its reference
+
+When a request fails because something went wrong on the server, the Console
+says `Something went wrong on the server. Reference: 01KAQ7Z3M4R5S6T7V8W9X0Y1Z2`
+and the CLI ends its error with `Reference: 01KAQ7Z3M4R5S6T7V8W9X0Y1Z2`. The
+reference is the error's ID. The process that failed wrote one log line with
+that ID, and that line has the cause the caller wasn't shown.
+
+Look in the log of the process that answered the request: `trellis-server` for
+Auth, the Console's APIs, jobs, health, events and state, and the service's
+own log for a service's API. With systemd:
+
+```sh
+sudo journalctl -u trellis | grep 01KAQ7Z3M4R5S6T7V8W9X0Y1Z2
+```
+
+With Podman, `podman logs trellis 2>&1 | grep ...` does the same. When
+`trellis-server` doesn't write to a terminal, each line is JSON and the fields
+are under `fields`, so `jq 'select(.fields.error_id == "01KAQ...")'` finds it
+too. Services written with the Trellis SDKs use the same field names in Rust
+and TypeScript:
+
+| Field                                | What it is                                                  |
+| ------------------------------------ | ----------------------------------------------------------- |
+| `error_id`                           | The reference the caller was shown                          |
+| `request_id`                         | The request's ID, also in the caller's error as `requestId` |
+| `trace_id`                           | The W3C trace, when the caller or the service traced it     |
+| `route`                              | The RPC, Operation, Live, event or job type                 |
+| `service`                            | The service that failed                                     |
+| `caller_principal`, `caller_session` | Who asked: their principal and authorization session        |
+| `error_type`, `code`                 | The error's type and code, as the caller got them           |
+| `error`, `cause`                     | What went wrong and why. The caller never gets these        |
+
+A failure the service caused logs at `error`. A refusal, such as a missing
+permission, logs at `warn`, and a declared outcome such as "not found" or
+invalid input at `info`. With `trace_id`, the same request can be followed
+through your trace backend. A failed job's reference is its job ID, a failed
+event delivery's is the event's ID, a failed Operation's is its Operation ID,
+and a webhook request's is its attempt ID; each log line carries that ID.
 
 ## Back up
 

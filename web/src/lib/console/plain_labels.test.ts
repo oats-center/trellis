@@ -83,7 +83,7 @@ test("a stored unexpected failure without a cause shows its error ID", () => {
         message: "An unexpected error has occurred",
       }),
     ),
-    "Something went wrong on the server. Look for error ID 01M5N1W3RMBDAQ5QV4S5PMPQN6 in the service's log.",
+    "Something went wrong on the server. Reference: 01M5N1W3RMBDAQ5QV4S5PMPQN6",
   );
 });
 

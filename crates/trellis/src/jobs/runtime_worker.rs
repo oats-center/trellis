@@ -622,6 +622,13 @@ where
         &job.context.traceparent,
         job.context.tracestate.as_deref(),
     );
+    let failure_context = (
+        job.id.clone(),
+        job.service.clone(),
+        job.job_type.clone(),
+        job.context.request_id.clone(),
+        job.context.trace_id.clone(),
+    );
     let result = manager
         .process_with_heartbeat_and_terminal_hooks(
             job,
@@ -649,6 +656,40 @@ where
     };
     attempt_span.record("trellis.outcome", outcome);
     observation.finish(outcome);
+    // The job ID is the reference an operator sees in Console and the CLI.
+    let (job_id, service, job_type, request_id, trace_id) = failure_context;
+    match &result {
+        Ok(JobProcessOutcome::Retry { tries, error }) => tracing::warn!(
+            job_id,
+            service,
+            job_type,
+            request_id,
+            trace_id,
+            tries,
+            error,
+            "job attempt failed; it will retry",
+        ),
+        Ok(JobProcessOutcome::Failed { tries, error }) => tracing::error!(
+            job_id,
+            service,
+            job_type,
+            request_id,
+            trace_id,
+            tries,
+            error,
+            "job failed",
+        ),
+        Err(error) => tracing::error!(
+            job_id,
+            service,
+            job_type,
+            request_id,
+            trace_id,
+            %error,
+            "job attempt could not be processed",
+        ),
+        Ok(_) => {}
+    }
     result
 }
 

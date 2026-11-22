@@ -83,6 +83,7 @@ import {
   isOperationDeferred,
   isResultLike,
   isTerminalRuntimeOperationSnapshot,
+  logFailure,
   type MethodsOf,
   type OperationHandlerContext,
   type OperationInputOf,
@@ -2012,14 +2013,19 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     };
   }
 
-  /** Logs a failure's cause under its IDs and returns what its caller may see. */
+  /**
+   * Logs a failure once, under the error ID its caller sees, and returns what
+   * the caller may see: the IDs without the cause.
+   */
   #operationFailureData(target: string, error: BaseError): BaseErrorSchema {
-    if (error.getContext().causeMessage !== undefined) {
-      this.#log.error(
-        { operation: target, error: error.toSerializable() },
-        "Operation failed",
-      );
-    }
+    const context = error.getContext();
+    logFailure(this.#log, error, {
+      ...(typeof context.operation === "string"
+        ? { route: context.operation }
+        : {}),
+      service: this.name,
+      extra: { operation_id: target },
+    });
     return callerErrorData(error);
   }
 

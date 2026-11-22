@@ -1107,10 +1107,17 @@ fn render_api(graph: &PackageGraph, api: &ApiDefinition) -> Result<String, Codeg
             ));
         }
         let qualified = format!("{}::{name}", api.identity());
+        // An unexpected failure's message says nothing; its ID finds the
+        // server's log line, so the error shows it.
+        let display = if name == "UnexpectedError" {
+            "write!(formatter, \"{} (Reference: {})\", self.error.message, self.error.id)"
+        } else {
+            "formatter.write_str(&self.error.message)"
+        };
         out.push_str(&format!(
             "impl std::fmt::Display for {rust_name} {{ fn fmt(&self, formatter: \
             &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ \
-            formatter.write_str(&self.error.message) }} }}\nimpl std::error::Error \
+            {display} }} }}\nimpl std::error::Error \
             for {rust_name} {{}}\nimpl trellis_rs::generated::TrellisError for \
             {rust_name} {{ const TYPE: &'static str = {qualified:?}; }}\n"
         ));

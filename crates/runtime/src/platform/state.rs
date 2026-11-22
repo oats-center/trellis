@@ -605,13 +605,16 @@ fn auth_denied() -> ServerError {
     ))
 }
 
+/// The request loop logs the cause under the error ID the caller receives.
 fn unexpected(error: impl std::fmt::Display) -> ServerError {
-    tracing::error!(error = %error, "State runtime failure");
-    ServerError::DeclaredRpc(DeclaredRpcError::new(
-        "UnexpectedError",
-        "State is temporarily unavailable",
-        std::iter::empty::<(&str, Value)>(),
-    ))
+    ServerError::DeclaredRpc(
+        DeclaredRpcError::new(
+            "UnexpectedError",
+            "State is temporarily unavailable",
+            std::iter::empty::<(&str, Value)>(),
+        )
+        .with_cause(error),
+    )
 }
 
 fn kv_error(error: impl std::fmt::Display) -> ServerError {

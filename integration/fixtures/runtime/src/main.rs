@@ -66,6 +66,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     provider
         .runtime_trellis_runtime_v1()
         .register_echo(|_, input| async move {
+            if input.value == "fail" {
+                return Err(trellis_rs::service::ServerError::Internal(
+                    "echo failed: the fixture's store is unreachable".to_owned(),
+                ));
+            }
             assert_eq!(input.value, "from TypeScript");
             Ok(Value {
                 value: format!("Rust received {}", input.value),
