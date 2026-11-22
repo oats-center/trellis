@@ -384,6 +384,10 @@ can't revoke the current signing key, since Trellis would have nothing left to
 sign with; the refusal says to rotate first, or, while a new key is announced,
 when the switch happens. An unknown key ID is `not_found`
 ("no issuer key ..."), and a key revoked once is refused as already revoked.
+A revoke sent with a session still on authority the key signed is refused too,
+since its reply would not verify once the key is revoked; the CLI connects
+afresh for each command, so this only affects a long-running session in the
+moment after the switch. Every refusal leaves the key as it was.
 
 Successor keys are private files in a sibling directory obtained by replacing
 the configured issuer seed file's extension with `.keys`. Back up that directory,

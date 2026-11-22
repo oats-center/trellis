@@ -137,6 +137,16 @@ signing key is a validation error that says to rotate first, and a key already
 revoked is a validation error saying so. A retried request with the same
 idempotency key still returns the original result.
 
+The reply to a revoke must verify after the revocation it reports, so the
+transaction that commits it also checks that the reply does not depend on the
+key. It refuses with a validation error, writing nothing, when the authority the
+request was made with came from the key (connect again or wait for the session
+to renew onto the current key), or while Auth's own authority, which signs the
+reply, still came from it. Before that transaction Auth renews its own
+authority off a key that isn't current. Activation and renewal commit through
+the same writer, so a revoke that races the rotation or activation retiring
+the key is either refused or committed with its success reply.
+
 ### Upstream Identity Providers
 
 `SignInSettings` holds `localUsers`, `localSignUp` and `passwordMinLength`.

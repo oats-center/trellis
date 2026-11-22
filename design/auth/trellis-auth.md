@@ -1131,7 +1131,17 @@ links it has published, so each link is written once per Auth process and an
 answer otherwise costs only a database read of the newest rotation.
 
 Explicit key compromise (`Issuers.Revoke`) makes the key unusable; restart must
-not reinstall it as an active signer. It retires every user session holding any
+not reinstall it as an active signer. The operator always gets a definitive
+answer. A caller refuses a reply once it knows the key is revoked if either the
+authority its request was made with or Auth's own authority, which signs the
+reply, came from that key. So the transaction that commits the revocation
+first checks both and, if either came from the key, refuses and writes nothing.
+It runs on the same database writer as activation and renewal. The key's
+state therefore cannot change between the check and the commit. Auth's own
+authority cannot move back onto the key either: its renewals run one at a time,
+and every renewal after the switch is signed by a later key. Before that
+transaction Auth renews its own authority off a key that is no longer current,
+so normally only a request made under the key is refused. It retires every user session holding any
 authority the key signed, since such a session may have been admitted with an
 OAuth admission the key signed. A service or device session admits with its own
 identity key, which the issuer key cannot forge, so it is retired only when its

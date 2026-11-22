@@ -389,7 +389,9 @@ key, is refused with the switch time. `Issuers.Revoke` is for a compromised key.
 that overlap at once and retires every user session holding authority the key
 signed. A service or device session that already renewed onto the new key
 keeps running, because it signs in with its own identity key. Revoke an old key
-after the rotation has settled, not in place of rotating.
+after the rotation has settled, not in place of rotating. A revoke sent from a
+session still on authority the key signed is refused, since its reply would not
+verify; a refusal changes nothing.
 
 ### Administrator bootstrap
 

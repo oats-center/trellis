@@ -497,11 +497,21 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                 &input,
             )
             .map_err(rpc_error)?;
+            // The caller accepts the reply only while the key that signed the
+            // authority its request was made with is not revoked.
+            let opening_issuer = context
+                .request()
+                .verified_request()
+                .ok_or_else(|| rpc_error(AuthError::Denied))?
+                .authority()
+                .authority()
+                .issuer_key_id
+                .clone();
             // Auth signs this reply with its own authority. If the key being
             // revoked still signs that authority, renew under the current key
-            // first, or the revocation commits and the reply cannot be sent.
-            // The current key is refused below. No renewal moves off it, so
-            // waiting for one would only run out the caller's request timeout.
+            // first, so that the revocation below can commit. The current key
+            // is refused below. No renewal moves off it, so waiting for one
+            // would only run out the caller's request timeout.
             let key_id = input.key_id.to_string();
             let reader = store.clone();
             let current = blocking(move || {
@@ -530,6 +540,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                         ))
                     })?;
             }
+            let handle = context.handle().clone();
             blocking(move || {
                 let now = crate::clock::unix_now();
                 store.mutate(&identity, "rpc.issuer.revoke", &input, now, |connection| {
@@ -538,12 +549,35 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                         &identity.actor,
                         Administration::ManagePlatform,
                     )?;
-                    let scope = EnforcementScope::Issuer(input.key_id.to_string());
+                    let key = input.key_id.as_ref();
+                    let scope = EnforcementScope::Issuer(key.to_owned());
                     let root = Mutation {
                         request_digest: digest(&scope)?,
                         ..identity.clone()
                     };
                     let work = store.revoke_root_in_transaction(connection, &root, &scope, now)?;
+                    // The reply must verify after the revocation it reports,
+                    // so the commit requires that neither it nor the request
+                    // depends on the key. An error here rolls the revocation
+                    // back. Activation and renewal commit through this same
+                    // writer, so the key's state cannot change before the
+                    // commit. Auth's own authority cannot return to the key:
+                    // every renewal from here on is signed by a later key.
+                    if opening_issuer == key {
+                        return Err(AuthError::Invalid(format!(
+                            "this request was made with authority issuer key {key} signed, \
+                            so its reply would not verify once {key} is revoked; connect \
+                            again, or wait a moment for the session to renew onto the \
+                            current key, then revoke {key}"
+                        )));
+                    }
+                    if !handle.own_issuer_key_id().is_some_and(|own| own != key) {
+                        return Err(AuthError::Invalid(
+                            "Trellis is still moving to its current signing key; try again in \
+                            a moment"
+                                .into(),
+                        ));
+                    }
                     Ok(AuthIssuerRevokeResponse {
                         key_id: input.key_id.clone(),
                         enforcement: read_enforcement(connection, &work)?,

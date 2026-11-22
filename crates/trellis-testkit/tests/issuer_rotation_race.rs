@@ -41,7 +41,7 @@ struct Admin {
 }
 
 impl Admin {
-    async fn sign_in(runtime: &mut TrellisTestRuntime) -> (Self, NativeOAuthSession) {
+    async fn sign_in(runtime: &mut TrellisTestRuntime, name: &str) -> (Self, NativeOAuthSession) {
         let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
             .await
             .unwrap();
@@ -52,7 +52,7 @@ impl Admin {
             client_id: "trellis.cli".into(),
             credential_handle: ulid::Ulid::generate(),
         };
-        let custody = runtime.workdir().join("issuer-race-admin");
+        let custody = runtime.workdir().join(name);
         let login = NativeOAuthClient::open(custody.clone(), scope.clone(), server.trust.clone())
             .await
             .unwrap()
@@ -201,7 +201,7 @@ async fn rotating_and_revoking_in_quick_succession_keeps_trellis_answering() {
         .start()
         .await
         .unwrap();
-    let (admin, session) = Admin::sign_in(&mut runtime).await;
+    let (admin, session) = Admin::sign_in(&mut runtime, "issuer-race-admin").await;
     let mut session = Some(session);
     let mut retired: Option<String> = None;
     for round in 0..ROUNDS {
@@ -263,6 +263,134 @@ async fn rotating_and_revoking_in_quick_succession_keeps_trellis_answering() {
     runtime.shutdown().await.unwrap();
 }
 
+/// Rounds of the test that revokes a key as Auth retires it. Each round signs
+/// in again, and with the final sign-in they stay inside Auth's per-address
+/// budget of 120 sign-in requests a minute. Before revokes refused a request
+/// made under the key, every run failed within the second round.
+const RETIREMENT_ROUNDS: usize = 6;
+
+/// Revoke `key`, returning the call's outcome as the operator sees it.
+async fn revoke(client: &TrellisClient, key: &str) -> Result<Value, TrellisClientError> {
+    call(
+        client,
+        "Issuers.Revoke",
+        IssuersRevoke::API_ID,
+        IssuersRevoke::SUBJECT,
+        json!({
+            "keyId": key,
+            "idempotencyKey": ulid::Ulid::generate().to_string(),
+        }),
+    )
+    .await
+}
+
+/// Assert that a revoke got Auth's refusal, a definitive answer, and return
+/// its text. Any other error, a timeout or a reply the client would not
+/// accept, leaves the operator not knowing whether the key is revoked.
+fn refusal(outcome: Result<Value, TrellisClientError>, when: &str) -> String {
+    match outcome {
+        Err(TrellisClientError::RpcError(payload)) => payload.raw().to_owned(),
+        other => panic!("{when}: no definitive answer: {other:?}"),
+    }
+}
+
+/// An operator revokes key K while Trellis retires it: concurrently with the
+/// rotation from K, and then again and again across the moment the activation
+/// switches signing off K. Every revoke gets a definitive answer. A refusal
+/// writes nothing, so no later revoke finds K already revoked, and the one
+/// that succeeds is reflected: a revoke after it is refused as already
+/// revoked. Auth keeps answering throughout.
+///
+/// Were the revoke to commit while Auth's reply credentials or the request's
+/// own authority still came from K, the reply would not verify once the
+/// caller learned of the revocation, and the operator would get an error or
+/// a timeout for a revoke that took effect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoking_a_key_as_trellis_retires_it_always_gets_a_definitive_answer() {
+    let mut runtime = TrellisTestRuntime::builder()
+        .issuer_activation_delay(ACTIVATION_DELAY)
+        .start()
+        .await
+        .unwrap();
+    for round in 0..RETIREMENT_ROUNDS {
+        // Revoking K retires the session, which holds authority K signed,
+        // and the custody stays pinned to K, so each round signs in afresh.
+        let (admin, session) =
+            Admin::sign_in(&mut runtime, &format!("issuer-retirement-admin-{round}")).await;
+        let (key, client) = admin.connect(Some(session)).await;
+        let (rotated, revoked) = tokio::join!(
+            call(
+                &client,
+                "Issuers.Rotate",
+                IssuersRotate::API_ID,
+                IssuersRotate::SUBJECT,
+                json!({
+                    "expectedCurrentKeyId": key,
+                    "idempotencyKey": ulid::Ulid::generate().to_string(),
+                }),
+            ),
+            revoke(&client, &key),
+        );
+        let rotated =
+            rotated.unwrap_or_else(|error| panic!("round {round}: rotating {key}: {error:?}"));
+        // K signs on either side of the rotation, so the revoke is refused.
+        let refused = refusal(
+            revoked,
+            &format!("round {round}: revoking during the rotation"),
+        );
+        assert!(
+            refused.contains("current signing key"),
+            "round {round}: {refused}"
+        );
+        let activates_at = time::OffsetDateTime::parse(
+            rotated["activatesAt"].as_str().unwrap(),
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        let lead =
+            activates_at - time::OffsetDateTime::now_utc() - time::Duration::milliseconds(200);
+        if lead.is_positive() {
+            tokio::time::sleep(lead.unsigned_abs()).await;
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let mut attempts = 0usize;
+        let revoked = loop {
+            attempts += 1;
+            let when = format!("round {round}: revoke {attempts} of {key} at its retirement");
+            match revoke(&client, &key).await {
+                Ok(revoked) => break revoked,
+                outcome => {
+                    let refused = refusal(outcome, &when);
+                    assert!(
+                        !refused.contains("already revoked"),
+                        "{when}: an earlier refused revoke took effect: {refused}"
+                    );
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{when}: the key never became revocable"
+            );
+        };
+        assert_eq!(
+            revoked["keyId"].as_str(),
+            Some(key.as_str()),
+            "round {round}"
+        );
+        let again = refusal(
+            revoke(&client, &key).await,
+            &format!("round {round}: revoking {key} again"),
+        );
+        assert!(again.contains("already revoked"), "round {round}: {again}");
+        drop(client);
+    }
+    let (admin, session) = Admin::sign_in(&mut runtime, "issuer-retirement-admin").await;
+    let (_, client) = admin.connect(Some(session)).await;
+    assert!(assert_active_services_connected(&client, "after the rounds").await > 0);
+    drop(client);
+    runtime.shutdown().await.unwrap();
+}
+
 /// A rotation announces its key before Auth signs with it: the chain link is
 /// in the registry at once, the current key keeps signing, and only after the
 /// activation delay does Auth sign with the new key. Requests run throughout,
@@ -275,7 +403,7 @@ async fn a_rotation_announces_its_key_before_auth_signs_with_it() {
         .start()
         .await
         .unwrap();
-    let (admin, session) = Admin::sign_in(&mut runtime).await;
+    let (admin, session) = Admin::sign_in(&mut runtime, "issuer-race-admin").await;
     let (current, client) = admin.connect(Some(session)).await;
     assert_eq!(own_issuer(&client), current);
     let client = std::sync::Arc::new(client);
