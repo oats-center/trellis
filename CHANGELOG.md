@@ -62,6 +62,14 @@ and this project adheres to
 
 ### Fixed
 
+- A database held locked for a few seconds no longer stops trellis-server:
+  background work logs the storage failure and retries with backoff, and only
+  a corrupt database stops the server. The Jobs and Events stores wait 5 s on a
+  busy database.
+- Retrying an app sign-out after its session revocation failed revokes the
+  sign-in's sessions; the refresh token is kept until that succeeds.
+- Portal sign-in, account and OIDC pages answer a storage failure with
+  `server_error` and a reference instead of `access_denied`.
 - A Portal or app sign-out the server couldn't finish reports the failure
   with a reference and keeps its retry screen, instead of looking signed out.
 - `ServiceUpdates.Status` and service identity status answer another

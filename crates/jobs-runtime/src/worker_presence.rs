@@ -147,12 +147,27 @@ pub async fn start_worker_presence_projector(
                 }
             };
 
-            project_worker_heartbeat(&store, &heartbeat).map_err(|error| {
-                ServerError::Internal(format!(
-                    "worker presence projector failed to project worker \
-                    '{subject_service}/{job_type}/{instance_id}': {error}"
-                ))
-            })?;
+            // A database another process holds locked, or a passing I/O
+            // error, fails the heartbeat; recording it again is harmless.
+            let mut failures = 0;
+            while let Err(error) = project_worker_heartbeat(&store, &heartbeat) {
+                if error.database_unusable() {
+                    return Err(ServerError::Internal(format!(
+                        "the Jobs database is unusable: {error}"
+                    )));
+                }
+                let delay = crate::storage::retry_delay(failures);
+                failures += 1;
+                tracing::warn!(
+                    %error,
+                    service = %subject_service,
+                    job_type = %job_type,
+                    instance_id = %instance_id,
+                    retry_in_ms = delay.as_millis(),
+                    "worker heartbeat not recorded; it will try again"
+                );
+                tokio::time::sleep(delay).await;
+            }
             tracing::debug!(
                 service = %subject_service,
                 job_type = %job_type,

@@ -114,21 +114,6 @@ pub(crate) fn record(error: impl Display, cause: impl Display) {
     });
 }
 
-/// Whether anything was [`record`]ed for the current request, for a handler
-/// whose library call can succeed after part of its work failed.
-pub(crate) fn recorded() -> bool {
-    REQUEST
-        .try_with(|current| {
-            !current
-                .failure
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .causes
-                .is_empty()
-        })
-        .unwrap_or(false)
-}
-
 /// Marks the current request as failed by the server with `code` and returns
 /// its reference, for the caller to be shown. The request is logged once,
 /// however often this is called. Outside a request there is no reference.

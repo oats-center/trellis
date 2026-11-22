@@ -220,9 +220,13 @@ impl AuthCallout {
 
     pub(crate) async fn run(mut self, stop: StopHandle) -> Result<(), RuntimeError> {
         let mut requests = tokio::task::JoinSet::new();
+        // Recording a disconnect runs beside the callouts, so one the database
+        // refuses for a while is tried again without holding up sign-ins.
+        let mut disconnecting = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 ()=stop.stopped()=>break,
+                Some(_)=disconnecting.join_next(),if !disconnecting.is_empty()=>{}
                 completed=requests.join_next(),if !requests.is_empty()=> {
                     if let Some(result) = completed {
                         if let Err(error) =
@@ -268,11 +272,33 @@ impl AuthCallout {
                         }
                         let store = self.store.clone();
                         let now = crate::clock::unix_now();
-                        blocking(move || {
-                            store.disconnect_attachment(&server, cid, &key, now)
-                        })
-                        .await
-                        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+                        disconnecting.spawn(async move {
+                            let mut backoff = crate::storage::Backoff::default();
+                            loop {
+                                let (store, server, key) =
+                                    (store.clone(), server.clone(), key.clone());
+                                match blocking(move || {
+                                    store.disconnect_attachment(&server, cid, &key, now)
+                                })
+                                .await
+                                {
+                                    Ok(()) => return,
+                                    Err(error) if error.unusable() => {
+                                        tracing::error!(%error, "disconnect not recorded");
+                                        return;
+                                    }
+                                    Err(error) => {
+                                        let delay = backoff.failed();
+                                        tracing::warn!(
+                                            %error,
+                                            retry_in_ms = delay.as_millis(),
+                                            "disconnect not recorded yet; trying again"
+                                        );
+                                        tokio::time::sleep(delay).await;
+                                    }
+                                }
+                            }
+                        });
                     }
                 }
             }
@@ -290,6 +316,7 @@ impl AuthCallout {
             Ok::<(), RuntimeError>(())
         })
         .await;
+        disconnecting.abort_all();
         match drained {
             Ok(result) => result,
             Err(_) => {

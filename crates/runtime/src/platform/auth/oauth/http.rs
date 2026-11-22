@@ -624,7 +624,7 @@ async fn login_page(
         let session = store
             .authority
             .portal_session_identity(&cookie, &csrf, now)
-            .map_err(|_| ErrorCode::AccessDenied)?;
+            .map_err(|cause| denied_or_failed("could not read the Portal session", cause))?;
         let flow = store
             .authorization(&pending_transaction, &session, now)
             .map_err(|_| ErrorCode::InvalidRequest)?;
@@ -872,7 +872,7 @@ async fn login_and_flow(
         let login = store
             .authority
             .portal_login(&cookie, &csrf, now)
-            .map_err(|_| ErrorCode::AccessDenied)?;
+            .map_err(|cause| denied_or_failed("could not read the Portal login", cause))?;
         let flow = store
             .authorization(&transaction, &login.session_id, now)
             .map_err(|_| ErrorCode::InvalidRequest)?;
@@ -1713,6 +1713,24 @@ async fn portal_logout(
     }
 }
 
+/// The answer to a Portal step the store refused: `access_denied` when the
+/// person's login, link or flow is not one that permits it, which the Portal
+/// shows as such, and otherwise the server's own failure with its reference,
+/// as [`failed`] gives it. A store that could not answer never reads as a
+/// denial.
+pub(super) fn denied_or_failed(error: &str, cause: super::super::AuthError) -> ErrorCode {
+    use super::super::AuthError;
+    match cause {
+        AuthError::Denied
+        | AuthError::DeniedNeeding(_)
+        | AuthError::NotFound(_)
+        | AuthError::Hidden(..)
+        | AuthError::IdentityTaken
+        | AuthError::Conflict(_) => ErrorCode::AccessDenied,
+        cause => failed(error, cause),
+    }
+}
+
 /// Records what the server could not do for the current request, and why
 /// (see [`crate::http_failure::record`]), and answers `server_error`.
 pub(super) fn failed(error: &str, cause: impl std::fmt::Display) -> ErrorCode {
@@ -1938,14 +1956,51 @@ async fn revoke(
     };
     let (client, token) = (ClientId::new(client), token.clone());
     match tokio::spawn(crate::http_failure::carry(async move {
+        // The library takes the refresh token even when revoking its family
+        // failed, which leaves a retry nothing to revoke while the family's
+        // sessions stay live. So the family is revoked here first, and the
+        // token is left in place when that fails: the caller is told the
+        // sign-out failed, and trying again revokes the family. Only a public
+        // client revokes with no credential; anything else is left to the
+        // library, which refuses it.
+        let store = engine.server.store();
+        let public = store
+            .get_client(&client)
+            .await
+            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
+            .is_some_and(|registered| !registered.auth.is_confidential());
+        let record = if public {
+            store
+                .get_refresh_token(&token)
+                .await
+                .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
+        } else {
+            None
+        };
+        if let Some(record) = record.filter(|record| record.client_id == client) {
+            let config = engine.server.config();
+            let recorded_at = std::time::SystemTime::now();
+            // The barrier outlives every token the family could still hold,
+            // as the library's own revocation records it.
+            let window = oauth_as::store::RevocationWindow {
+                recorded_at,
+                until: recorded_at
+                    + config
+                        .access_token_ttl
+                        .max(config.refresh_token_ttl.unwrap_or_default())
+                        .max(config.refresh_reuse_window)
+                        .max(config.authorization_code_ttl)
+                        .max(config.device_code_ttl),
+            };
+            store
+                .revoke_token_family(record.family_id.as_str(), window)
+                .await
+                .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?;
+        }
         engine.server.revoke(&client, None, &token, None).await
     }))
     .await
     {
-        // The library answers success even when revoking the token's refresh
-        // family failed. That family's sessions stay live, so the caller is
-        // told the sign-out failed instead of being shown it as done.
-        Ok(Ok(())) if crate::http_failure::recorded() => error(ErrorCode::ServerError),
         Ok(Ok(())) => StatusCode::OK.into_response(),
         Ok(Err(response)) => error(response.error),
         Err(cause) => error(failed("the revocation's task failed", cause)),

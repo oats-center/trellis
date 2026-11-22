@@ -392,11 +392,13 @@ async fn run_owner(
                 )
                 .await?;
             }
-            _ = deadlines.tick() => {
-                if let Some(commit) = store.expire_due(now_ns()).map_err(map_runtime_store_error)? {
+            _ = deadlines.tick() => match store.expire_due(now_ns()) {
+                Ok(Some(commit)) => {
                     publish_invalidation(&nats, &config.invalidation_subject, commit).await?;
                 }
-            }
+                Ok(None) => {}
+                Err(error) => retained(error, "Health deadlines")?,
+            },
             _ = outbox.tick() => publish_outbox(
                 &store,
                 &event_owner,
@@ -406,8 +408,12 @@ async fn run_owner(
                 let cutoff = now_ns().saturating_sub(
                     config.history_days.saturating_mul(24 * 60 * 60 * 1_000_000_000),
                 );
-                if let Some(commit) = store.cleanup(cutoff).map_err(map_runtime_store_error)? {
-                    publish_invalidation(&nats, &config.invalidation_subject, commit).await?;
+                match store.cleanup(cutoff) {
+                    Ok(Some(commit)) => {
+                        publish_invalidation(&nats, &config.invalidation_subject, commit).await?;
+                    }
+                    Ok(None) => {}
+                    Err(error) => retained(error, "Health retention")?,
                 }
             }
             () = stop.stopped() => {
@@ -509,14 +515,14 @@ async fn project_message(
     let (identity, sample) = match result {
         Ok(value) => value,
         Err(reason) => {
-            store
-                .record_rejection(
-                    stream_sequence,
-                    message.subject.as_str(),
-                    observed_at_ns,
-                    &reason,
-                )
-                .map_err(map_runtime_store_error)?;
+            if let Err(error) = store.record_rejection(
+                stream_sequence,
+                message.subject.as_str(),
+                observed_at_ns,
+                &reason,
+            ) {
+                return redeliver(message, error).await;
+            }
             message
                 .ack_with(AckKind::Term)
                 .await
@@ -524,15 +530,16 @@ async fn project_message(
             return Ok(());
         }
     };
-    let commit = store
-        .project_sample(
-            &identity,
-            &sample,
-            observed_at_ns,
-            now_ns(),
-            stream_sequence,
-        )
-        .map_err(map_runtime_store_error)?;
+    let commit = match store.project_sample(
+        &identity,
+        &sample,
+        observed_at_ns,
+        now_ns(),
+        stream_sequence,
+    ) {
+        Ok(commit) => commit,
+        Err(error) => return redeliver(message, error).await,
+    };
     message
         .ack()
         .await
@@ -648,10 +655,11 @@ async fn publish_outbox(
     store: &HealthStore,
     owner: &trellis_rs::__internal::LiveProviderOwner,
 ) -> Result<(), RuntimeError> {
-    for transition in store
-        .pending_transitions(100)
-        .map_err(map_runtime_store_error)?
-    {
+    let transitions = match store.pending_transitions(100) {
+        Ok(transitions) => transitions,
+        Err(error) => return retained(error, "Health status events"),
+    };
+    for transition in transitions {
         let event = PreparedTrellisEvent::restore(
             HealthStatusChangedEvent::SUBJECT.to_string(),
             Bytes::from(transition.payload),
@@ -661,13 +669,12 @@ async fn publish_outbox(
             store::rfc3339(transition.created_at_ns).map_err(map_runtime_store_error)?,
         )
         .map_err(|error| RuntimeError::Health(error.to_string()))?;
-        match owner.publish_prepared(&event).await {
-            Ok(()) => store
-                .mark_transition_published(&transition.event_id, now_ns())
-                .map_err(map_runtime_store_error)?,
-            Err(error) => store
-                .mark_transition_failed(&transition.event_id, &error.to_string())
-                .map_err(map_runtime_store_error)?,
+        let settled = match owner.publish_prepared(&event).await {
+            Ok(()) => store.mark_transition_published(&transition.event_id, now_ns()),
+            Err(error) => store.mark_transition_failed(&transition.event_id, &error.to_string()),
+        };
+        if let Err(error) = settled {
+            return retained(error, "Health status events");
         }
     }
     Ok(())
@@ -745,6 +752,37 @@ fn map_store_error(error: store::HealthStoreError) -> ServerError {
     } else {
         ServerError::Internal(error.to_string())
     }
+}
+
+/// A store failure in the Health owner's periodic `work`: logged, and the work
+/// runs again on its next tick. Only a database that is unusable stops Health.
+fn retained(error: store::HealthStoreError, work: &str) -> Result<(), RuntimeError> {
+    if error.unusable() {
+        return Err(RuntimeError::Health(format!(
+            "the Health database is unusable: {error}"
+        )));
+    }
+    tracing::warn!(%error, work, "Health storage failed; it will run again");
+    Ok(())
+}
+
+/// A heartbeat the store could not record goes back to the stream, to be
+/// delivered again in five seconds. Only a database that is unusable stops
+/// Health.
+async fn redeliver(
+    message: jetstream::Message,
+    error: store::HealthStoreError,
+) -> Result<(), RuntimeError> {
+    if error.unusable() {
+        return Err(RuntimeError::Health(format!(
+            "the Health database is unusable: {error}"
+        )));
+    }
+    tracing::warn!(%error, "Health heartbeat not recorded; it will be delivered again");
+    message
+        .ack_with(AckKind::Nak(Some(Duration::from_secs(5))))
+        .await
+        .map_err(|error| RuntimeError::Health(error.to_string()))
 }
 
 fn map_runtime_store_error(error: store::HealthStoreError) -> RuntimeError {

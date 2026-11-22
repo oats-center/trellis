@@ -32,6 +32,18 @@ SQL history is removed by hourly loops in the subsystem that owns the database,
 in transactions of at most 1,000 rows, so a backlog never holds the writer for
 long. A failed pass is retried at the next tick and never stops projection.
 
+The same holds for every background loop that writes a runtime database: the
+Auth enforcement, effect, event-publication, cleanup and disconnect work, the
+Jobs and worker-presence projectors, the Events projector and exhaustion
+advisories, and the Health projector, deadlines and outbox. Each connection
+waits up to five seconds for a lock another connection holds. Work that still
+fails, because a lock is held longer, the database is busy, or an I/O error
+passes, is logged and tried again: 250 milliseconds after the first failure,
+doubling up to 30 seconds, or for Health at its next tick and a heartbeat
+redelivered after five seconds. Durable work stays queued and a projector
+retries the same batch. Only a database file that is corrupt or not a database stops its
+subsystem, and with it trellis-server, with a message naming that database.
+
 `Health.Storage` and the `trellis.storage.bytes`, `trellis.storage.records`, and
 `trellis.storage.oldest.age` gauges (attribute `trellis.data_class`) report each
 class's size, record count, and oldest retained record from JetStream stream
