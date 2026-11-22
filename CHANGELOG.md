@@ -50,6 +50,11 @@ and this project adheres to
 
 ### Fixed
 
+- The Portal consent page no longer shows optional access the user can't be
+  granted, says "Signed in as" with the user's name and username or email
+  instead of an ID, and heads choices by API when a request spans several. A
+  browser sign-in skips the page when everything requested is allowed without
+  asking or was approved before and remembered with unchanged grants text.
 - Events are judged at the time they were signed. Each event carries a signed
   `issuedAt` beside its event time, so an outbox backlog dispatched after its
   session renewed, or a publish that waited across a reconnect, is accepted
