@@ -332,7 +332,11 @@ the response is ready, one line is logged at `error` with `error_id` and
 `route` (`<method> <path>`, never the query), `service` = `trellis`, `status`,
 `error_type` = `UnexpectedError`, `code` (the code the caller got), `error` and
 `cause`. Refusals and invalid requests are not server failures and log no such
-line. The caller sees the reference without changing a standard error code:
+line. A store that could not answer is a server failure, never a refusal: a
+Portal page whose login, session or account-link lookup failed answers
+`server_error` with a reference, and `access_denied` only when the login or
+link is gone or does not permit the step. The caller sees the reference without
+changing a standard error code:
 
 - OAuth `server_error` responses put `Something went wrong on the server.
 Reference: <id>` in `error_description`.

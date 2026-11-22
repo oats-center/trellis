@@ -286,6 +286,9 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             // starts, while processes that were connected reconnect.
             let quiet_until = crate::clock::unix_now() + auth::STARTUP_QUIET_SECONDS;
             let mut next_retirement = 0;
+            // A database another process holds locked, or a passing I/O error,
+            // fails a pass; the work stays durable and the pass runs again.
+            let mut backoff = crate::storage::Backoff::default();
             loop {
                 let ticked = tokio::select! {
                     () = worker_stop.stopped() => return Ok(()),
@@ -297,37 +300,37 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                         false
                     }
                 };
-                // Keep draining while turns make progress, but give other tasks a
-                // turn between bounded batches.
-                for _ in 0..EFFECT_DRAIN_TURNS {
-                    match store
-                        .process_effects(
-                            &material,
-                            &revocations,
-                            &system,
-                            &notices,
-                            crate::clock::unix_now(),
-                        )
-                        .await
-                    {
-                        Ok(0) => break,
-                        Ok(_) => tokio::task::yield_now().await,
-                        Err(auth::AuthError::Broker(_) | auth::AuthError::Unavailable) => {
-                            tracing::warn!(
-                                "Auth broker effects unavailable; durable work retained"
-                            );
-                            break;
+                let pass = async {
+                    // Keep draining while turns make progress, but give other
+                    // tasks a turn between bounded batches.
+                    for _ in 0..EFFECT_DRAIN_TURNS {
+                        match store
+                            .process_effects(
+                                &material,
+                                &revocations,
+                                &system,
+                                &notices,
+                                crate::clock::unix_now(),
+                            )
+                            .await
+                        {
+                            Ok(0) => break,
+                            Ok(_) => tokio::task::yield_now().await,
+                            Err(auth::AuthError::Broker(_) | auth::AuthError::Unavailable) => {
+                                tracing::warn!(
+                                    "Auth broker effects unavailable; durable work retained"
+                                );
+                                break;
+                            }
+                            Err(error) => return Err(error),
                         }
-                        Err(error) => return Err(RuntimeError::Platform(error.to_string())),
                     }
-                }
-                if ticked {
+                    if !ticked {
+                        return Ok(());
+                    }
                     let now = crate::clock::unix_now();
                     let (pruned, cleaned) = (store.clone(), engine.server.store().clone());
                     let retire = now >= next_retirement;
-                    if retire {
-                        next_retirement = now + 300;
-                    }
                     auth::blocking(move || {
                         pruned.prune_expired_artifacts(now)?;
                         cleaned
@@ -342,8 +345,32 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                         }
                         Ok::<_, auth::AuthError>(())
                     })
-                    .await
-                    .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+                    .await?;
+                    if retire {
+                        next_retirement = now + 300;
+                    }
+                    Ok(())
+                }
+                .await;
+                match pass {
+                    Ok(()) => backoff.succeeded(),
+                    Err(error) if error.unusable() => {
+                        return Err(RuntimeError::Platform(format!(
+                            "the Auth database is unusable: {error}"
+                        )));
+                    }
+                    Err(error) => {
+                        let delay = backoff.failed();
+                        tracing::warn!(
+                            %error,
+                            retry_in_ms = delay.as_millis(),
+                            "Auth background work failed; it will run again"
+                        );
+                        tokio::select! {
+                            () = worker_stop.stopped() => return Ok(()),
+                            () = tokio::time::sleep(delay) => {}
+                        }
+                    }
                 }
             }
         });
@@ -367,6 +394,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 let mut queued = event_store.work_signal();
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut backoff = crate::storage::Backoff::default();
                 loop {
                     tokio::select! {
                         () = provider_stop.stopped() => break Ok::<(), RuntimeError>(()),
@@ -379,59 +407,85 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     }
                     // Claim each publication immediately before sending it, so
                     // a slow broker cannot consume another event's lease.
-                    for _ in 0..EFFECT_DRAIN_TURNS {
-                        let claimer = event_store.clone();
-                        let Some(effect) = auth::blocking(move || {
-                            claimer.claim_effects(1, crate::clock::unix_now(), 10, true)
-                        })
-                        .await
-                        .map_err(|error| RuntimeError::Platform(error.to_string()))?
-                        .into_iter()
-                        .next() else {
-                            break;
-                        };
-                        let result = async {
-                            let text = |key: &str| {
-                                effect.payload[key]
-                                    .as_str()
-                                    .ok_or(auth::AuthError::Unavailable)
+                    let pass = async {
+                        for _ in 0..EFFECT_DRAIN_TURNS {
+                            let claimer = event_store.clone();
+                            let Some(effect) = auth::blocking(move || {
+                                claimer.claim_effects(1, crate::clock::unix_now(), 10, true)
+                            })
+                            .await?
+                            .into_iter()
+                            .next() else {
+                                break;
                             };
-                            let body = &effect.payload["event"];
-                            let event = trellis_rs::client::PreparedTrellisEvent::restore(
-                                text("subject")?,
-                                serde_json::to_vec(body)?.into(),
-                                text("descriptor")?,
-                                body["eventId"]
-                                    .as_str()
-                                    .ok_or(auth::AuthError::Unavailable)?,
-                                body["occurredAt"]
-                                    .as_str()
-                                    .ok_or(auth::AuthError::Unavailable)?,
-                            )
-                            .map_err(|error| auth::AuthError::Invalid(error.to_string()))?;
-                            publisher
-                                .publish_prepared(&event)
-                                .await
-                                .map_err(|error| auth::AuthError::Broker(error.to_string()))
-                        }
-                        .await;
-                        let now = crate::clock::unix_now();
-                        let settler = event_store.clone();
-                        match result {
-                            Ok(()) => {
-                                auth::blocking(move || settler.complete_effect(&effect, now)).await
+                            let result = async {
+                                let text = |key: &str| {
+                                    effect.payload[key]
+                                        .as_str()
+                                        .ok_or(auth::AuthError::Unavailable)
+                                };
+                                let body = &effect.payload["event"];
+                                let event = trellis_rs::client::PreparedTrellisEvent::restore(
+                                    text("subject")?,
+                                    serde_json::to_vec(body)?.into(),
+                                    text("descriptor")?,
+                                    body["eventId"]
+                                        .as_str()
+                                        .ok_or(auth::AuthError::Unavailable)?,
+                                    body["occurredAt"]
+                                        .as_str()
+                                        .ok_or(auth::AuthError::Unavailable)?,
+                                )
+                                .map_err(|error| auth::AuthError::Invalid(error.to_string()))?;
+                                publisher
+                                    .publish_prepared(&event)
+                                    .await
+                                    .map_err(|error| auth::AuthError::Broker(error.to_string()))
                             }
-                            Err(error) => {
-                                tracing::warn!(
-                                    action_id=%effect.action_id,
-                                    attempt=effect.attempts,
-                                    %error,
-                                    "Auth event publication remains pending"
-                                );
-                                auth::blocking(move || settler.retry_effect(&effect, now)).await
+                            .await;
+                            let now = crate::clock::unix_now();
+                            let settler = event_store.clone();
+                            match result {
+                                Ok(()) => {
+                                    auth::blocking(move || settler.complete_effect(&effect, now))
+                                        .await
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        action_id=%effect.action_id,
+                                        attempt=effect.attempts,
+                                        %error,
+                                        "Auth event publication remains pending"
+                                    );
+                                    auth::blocking(move || settler.retry_effect(&effect, now)).await
+                                }
+                            }?;
+                        }
+                        Ok::<(), auth::AuthError>(())
+                    }
+                    .await;
+                    // A claim or settlement the database refused leaves the
+                    // publication pending; its lease runs out and it is sent
+                    // again.
+                    match pass {
+                        Ok(()) => backoff.succeeded(),
+                        Err(error) if error.unusable() => {
+                            break Err(RuntimeError::Platform(format!(
+                                "the Auth database is unusable: {error}"
+                            )));
+                        }
+                        Err(error) => {
+                            let delay = backoff.failed();
+                            tracing::warn!(
+                                %error,
+                                retry_in_ms = delay.as_millis(),
+                                "Auth event publication failed; it will run again"
+                            );
+                            tokio::select! {
+                                () = provider_stop.stopped() => break Ok(()),
+                                () = tokio::time::sleep(delay) => {}
                             }
                         }
-                        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
                     }
                 }
             });

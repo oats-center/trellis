@@ -367,11 +367,38 @@ pub enum SqliteJobsStoreError {
     },
 }
 
+impl SqliteJobsStoreError {
+    /// Whether the database itself is unusable, so trying again cannot help:
+    /// the file is corrupt or is not a database. A lock another connection
+    /// holds, a busy database or an I/O error can pass.
+    pub(crate) fn database_unusable(&self) -> bool {
+        matches!(
+            self,
+            Self::Sqlite(error) if matches!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase)
+            )
+        )
+    }
+}
+
+/// The wait before a projector stores what failed again: 250 milliseconds
+/// after the first failure, doubling up to 30 seconds.
+pub(crate) fn retry_delay(failures: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(250)
+        .saturating_mul(1 << failures.min(7))
+        .min(std::time::Duration::from_secs(30))
+}
+
 impl SqliteJobsStore {
-    /// Open a store at `path` and initialize the schema if needed.
+    /// Open a store at `path` and initialize the schema if needed. The
+    /// connection waits up to five seconds for a lock another connection
+    /// holds.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SqliteJobsStoreError> {
+        let connection = Connection::open(path)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
         let store = Self {
-            connection: Arc::new(Mutex::new(Connection::open(path)?)),
+            connection: Arc::new(Mutex::new(connection)),
         };
         store.initialize_schema()?;
         Ok(store)

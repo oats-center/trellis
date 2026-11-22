@@ -133,6 +133,9 @@ pub async fn start_events_projector(
     );
 
     let task = tokio::spawn(async move {
+        // A database another process holds locked, or a passing I/O error,
+        // fails a store step; the step is tried again after a growing wait.
+        let mut failures = 0;
         loop {
             let mut batch = Vec::new();
             let mut messages = consumer
@@ -150,7 +153,10 @@ pub async fn start_events_projector(
                 collect_message(message, &mut batch)?;
             }
             if batch.is_empty() {
-                reconcile_unprojected(&runtime, &store).await?;
+                match reconcile_unprojected(&runtime, &store).await {
+                    Ok(()) => failures = 0,
+                    Err(error) => retry(error, &mut failures).await?,
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -160,7 +166,10 @@ pub async fn start_events_projector(
                 .map(|info| info.stream_sequence)
                 .max()
             {
-                store.record_observed(observed)?;
+                while let Err(error) = store.record_observed(observed) {
+                    retry(error, &mut failures).await?;
+                }
+                failures = 0;
             }
 
             batch.sort_by_key(|message| {
@@ -180,11 +189,33 @@ pub async fn start_events_projector(
                     persist_message(store.clone(), message, event).await;
                 }
             }
-            reconcile_unprojected(&runtime, &store).await?;
+            match reconcile_unprojected(&runtime, &store).await {
+                Ok(()) => failures = 0,
+                Err(error) => retry(error, &mut failures).await?,
+            }
         }
     });
 
     Ok(EventsProjectorHandle { task: Some(task) })
+}
+
+/// Waits before the projector tries a failed store step again, or fails the
+/// projector when the database itself is unusable.
+async fn retry(error: EventsStoreError, failures: &mut u32) -> Result<(), ServerError> {
+    if error.database_unusable() {
+        return Err(ServerError::Internal(format!(
+            "the Events database is unusable: {error}"
+        )));
+    }
+    let delay = crate::storage::retry_delay(*failures);
+    *failures += 1;
+    tracing::warn!(
+        %error,
+        retry_in_ms = delay.as_millis(),
+        "Events projector storage failed; it will try again"
+    );
+    tokio::time::sleep(delay).await;
+    Ok(())
 }
 
 /// Settle each sequence the projector has passed without storing it.
@@ -195,7 +226,7 @@ pub async fn start_events_projector(
 async fn reconcile_unprojected(
     runtime: &EventsRuntime,
     store: &EventsStore,
-) -> Result<(), ServerError> {
+) -> Result<(), EventsStoreError> {
     while let Some(sequence) = store.next_unprojected_sequence()? {
         match runtime.stream_message_subject(sequence).await {
             Ok(Some(subject)) if nats_subject_matches(EVENT_SUBJECT_WILDCARD, &subject) => {

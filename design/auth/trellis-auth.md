@@ -1024,10 +1024,11 @@ Sign-out reports success only once the server has ended what it was asked to
 end. `/portal/logout` answers `access_denied` only when no Portal login is left,
 which the page treats as signed out; when ending the login fails on the server
 it answers `server_error`, the login stays valid, and the page keeps its
-"Try again" screen with the request's reference. `/revoke` answers
-`server_error` when revoking the token's refresh family failed, even though the
-token itself is gone; the browser app then keeps its stored session and reports
-the failure instead of clearing it while that family's sessions stay live.
+"Try again" screen with the request's reference. `/revoke` revokes a refresh
+token's family before the OAuth library takes the token. When revoking the
+family fails it answers `server_error` and leaves the token in place, so the
+browser app keeps its stored session, reports the failure, and a retry revokes
+the family and ends its sessions.
 
 Ending the Portal login does not end the OIDC provider's own session. So that
 the next OIDC sign-in from that browser does not sign the person straight back

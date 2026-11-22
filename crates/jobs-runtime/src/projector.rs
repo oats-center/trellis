@@ -170,19 +170,42 @@ pub async fn start_jobs_projector(
                 .iter()
                 .map(|(_, event)| event.clone())
                 .collect::<Vec<_>>();
-            let batch_store = store.clone();
-            let projected = tokio::task::spawn_blocking(move || {
-                let projected = project_job_events_with_payloads(&batch_store, &events)?;
-                // Batches project in stream order, so no accepted event at
-                // or below this horizon is left unprojected.
-                batch_store.advance_projected_sequence(horizon)?;
-                Ok::<_, SqliteJobsStoreError>(projected)
-            })
-            .await
-            .map_err(|error| ServerError::Internal(format!("jobs projector task failed: {error}")))?
-            .map_err(|error| {
-                ServerError::Internal(format!("jobs projector failed to project batch: {error}"))
-            })?;
+            // A database another process holds locked, or a passing I/O
+            // error, fails the batch; projecting it again changes nothing
+            // already committed, so the same batch is retried.
+            let mut failures = 0;
+            let projected = loop {
+                let (batch_store, events) = (store.clone(), events.clone());
+                let result = tokio::task::spawn_blocking(move || {
+                    let projected = project_job_events_with_payloads(&batch_store, &events)?;
+                    // Batches project in stream order, so no accepted event at
+                    // or below this horizon is left unprojected.
+                    batch_store.advance_projected_sequence(horizon)?;
+                    Ok::<_, SqliteJobsStoreError>(projected)
+                })
+                .await
+                .map_err(|error| {
+                    ServerError::Internal(format!("jobs projector task failed: {error}"))
+                })?;
+                match result {
+                    Ok(projected) => break projected,
+                    Err(error) if error.database_unusable() => {
+                        return Err(ServerError::Internal(format!(
+                            "the Jobs database is unusable: {error}"
+                        )));
+                    }
+                    Err(error) => {
+                        let delay = crate::storage::retry_delay(failures);
+                        failures += 1;
+                        tracing::warn!(
+                            %error,
+                            retry_in_ms = delay.as_millis(),
+                            "jobs projector could not store a batch; it will try again"
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            };
             let projected_count = projected.iter().filter(|job| job.is_some()).count();
             tracing::debug!(
                 stream = %jobs_stream,

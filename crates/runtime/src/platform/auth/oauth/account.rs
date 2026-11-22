@@ -755,7 +755,12 @@ pub(super) async fn page(
         .await
         {
             Ok(action) => action,
-            Err(_) => return error(ErrorCode::AccessDenied),
+            Err(cause) => {
+                return error(super::http::denied_or_failed(
+                    "could not read the account link",
+                    cause,
+                ))
+            }
         };
         let Some(provider) = action.provider else {
             return error(ErrorCode::AccessDenied);
@@ -792,7 +797,9 @@ pub(super) async fn page(
         let action = storage
             .authority
             .transaction(|connection| action(connection, &flow_token, flow_kind, now))
-            .map_err(|_| ErrorCode::AccessDenied)?;
+            .map_err(|cause| {
+                super::http::denied_or_failed("could not read the account link", cause)
+            })?;
         let (current, guest) = match current.filter(|(cookie, csrf)| {
             storage
                 .authority
@@ -828,7 +835,13 @@ pub(super) async fn page(
                     .unwrap_or_else(|| login.principal_id.clone());
                 Some((login.principal_id, label))
             }
-            Err(_) => None,
+            Err(AuthError::Denied) => None,
+            Err(cause) => {
+                return Err(super::http::failed(
+                    "could not read the Portal login",
+                    cause,
+                ))
+            }
         };
         let minimum = storage
             .authority
@@ -970,7 +983,10 @@ pub(super) async fn submit(
                 );
                 response
             }
-            Err(_) => error(ErrorCode::AccessDenied),
+            Err(cause) => error(super::http::denied_or_failed(
+                "could not continue the account link",
+                cause,
+            )),
         };
     }
     let Some(password) = form.get("password") else {
@@ -1037,7 +1053,10 @@ pub(super) async fn submit(
                 "<p class=\"muted\">Your new password is set and you were signed out everywhere \
                 else. You can close this window.</p>",
             ),
-            _ => error(ErrorCode::AccessDenied),
+            Err(cause) => error(super::http::denied_or_failed(
+                "could not set the new password",
+                cause,
+            )),
         };
     }
     if kind == "login" {
@@ -1086,7 +1105,10 @@ pub(super) async fn submit(
                 300,
                 Redirect::to(&destination).into_response(),
             ),
-            _ => error(ErrorCode::AccessDenied),
+            Err(cause) => error(super::http::denied_or_failed(
+                "could not sign in to link the account",
+                cause,
+            )),
         };
     }
     error(ErrorCode::InvalidRequest)
