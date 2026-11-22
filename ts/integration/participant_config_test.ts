@@ -26,6 +26,7 @@ import {
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { apps as pinnedApps } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
+import { apis as adminApis } from "../packages/trellis-testkit/trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 const participant = participants.ConfiguredService.participant;
@@ -106,11 +107,20 @@ test("a service waits for its settings, keeps secrets from administrators, and f
     });
     assert.deepEqual(service.config.revision, { deployment: 1 });
 
-    // A write based on an old revision is refused.
+    // A write based on an old revision is refused and changes nothing.
     await assert.rejects(
       set(deployment, { values: { level: "debug" } }),
-      /were saved as revision \d+ since you read them; reload and try again/,
+      (error) => {
+        assert(error instanceof adminApis.auth.AuthError);
+        assert.equal(error.data.code, "revision_conflict");
+        return true;
+      },
     );
+    const unchanged = await read(deployment);
+    const saved = (view: Awaited<ReturnType<typeof read>>) =>
+      view.fields.map(({ name, value, isSet }) => ({ name, value, isSet }));
+    assert.equal(unchanged.revision, 1);
+    assert.deepEqual(saved(unchanged), saved(first));
 
     // A live field changes in place; a restart-only one waits for reconnect.
     const changed = new Promise<{

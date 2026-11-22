@@ -310,7 +310,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             assert!(
                 matches!(
                     &denied,
-                    trellis_rs::client::CallError::Remote(payload) if payload.raw().contains("Forbidden")
+                    trellis_rs::client::CallError::Remote(payload) if payload.error_type() == Some("Forbidden")
                 ),
                 "cross-Consumer inspection: {denied}"
             );
@@ -332,7 +332,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             assert!(
                 matches!(
                     &denied,
-                    trellis_rs::client::CallError::Remote(payload) if payload.raw().contains("Forbidden")
+                    trellis_rs::client::CallError::Remote(payload) if payload.error_type() == Some("Forbidden")
                 ),
                 "cross-Consumer terminal report: {denied}"
             );
@@ -850,8 +850,11 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 );
                 let denied = scoped.dead_letters_inspect(&probe).await.unwrap_err();
                 assert!(
-                    denied.to_string().contains("not found")
-                        || denied.to_string().contains("Not found"),
+                    matches!(
+                        &denied,
+                        trellis_rs::client::CallError::Remote(payload)
+                            if payload.error_type() == Some("NotFoundError")
+                    ),
                     "renewed owned inspection must reach retained lookup: {denied}"
                 );
                 auth.deployments_apply(

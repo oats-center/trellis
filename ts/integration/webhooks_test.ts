@@ -20,6 +20,7 @@ import { codecs } from "@oatscenter/trellis/generated";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as laterParticipants } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
+import { apis as adminApis } from "../packages/trellis-testkit/trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 const participant = participants.WebhookService.participant;
@@ -505,7 +506,7 @@ test("token and Basic credentials are checked at intake, refused with 401, and n
     )!;
     await assert.rejects(
       inspect("query", tokenRecord.attemptId),
-      /no such request/u,
+      (error) => error instanceof adminApis.webhooks.NotFoundError,
     );
 
     // The endpoint's request budget is its own runtime setting.
