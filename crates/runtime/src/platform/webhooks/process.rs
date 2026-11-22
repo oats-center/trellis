@@ -298,9 +298,11 @@ impl Webhooks {
         attempt: u32,
     ) -> Verdict {
         let definition = &endpoint.record.definition;
-        let now = super::now_ms();
+        let received_at = request.received_at_ms;
         // Intake checks stand only under the policy they ran under, and only
-        // while each secret they matched still accepts the value matched.
+        // while each secret they matched still accepts the value matched: a
+        // replaced value matched during its overlap stands after the overlap
+        // ends, unless the revision holding it is deleted.
         // Under another policy every verifier runs again where the stored
         // request allows it; a credential removed at intake cannot be checked
         // again, so the request is refused.
@@ -313,7 +315,7 @@ impl Webhooks {
         let mut checks = Vec::new();
         if same_policy {
             for (field, generation) in &request.matched {
-                if !endpoint.accepts(field, *generation, now) {
+                if !endpoint.accepts(field, *generation, received_at) {
                     return rejected(format!(
                         "secret {field} changed after intake and no longer accepts the value \
                         the request matched; the credential check can't be rerun"
@@ -326,7 +328,7 @@ impl Webhooks {
         for verifier in &definition.verifiers {
             match verifier {
                 WebhookVerifier::Hmac(hmac) => {
-                    let secrets = endpoint.secrets(&hmac.key, now);
+                    let secrets = endpoint.secrets(&hmac.key, received_at);
                     match verify::hmac(request, hmac, &secrets) {
                         Ok(key) => {
                             let captured = request.generations.get(&hmac.key).copied();

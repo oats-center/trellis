@@ -87,12 +87,14 @@ with `trellis svc billing config delete-revision <revision>` ends the overlap
 at once.
 
 An `async` request is checked under the policy it was accepted with. Its token
-or password, checked on arrival, keeps counting only while the value it
-matched is still accepted and the endpoint's verifiers and the settings they
-read (address ranges, the Basic username) are unchanged. Otherwise the request
-is rejected, and its record says why. A signed request is checked again under
-the secrets and address ranges in force when it is processed or verified
-again.
+or password, checked on arrival, keeps counting while the endpoint's verifiers
+and the settings they read (address ranges, the Basic username) are unchanged.
+A request that arrived with the old value during the overlap is still
+delivered if it is processed after the overlap ends. Deleting the settings
+revision that holds the old value withdraws it from waiting requests too.
+Otherwise the request is rejected, and its record says why. A signed request is
+checked again under the current secrets and address ranges when it is
+processed or verified again, with the old secret accepted on the same terms.
 
 ## Handle requests in TypeScript
 

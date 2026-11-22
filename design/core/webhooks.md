@@ -250,12 +250,16 @@ processes the request:
 
 - Under the same policy, the intake verdicts stand while each secret still
   accepts the generation it matched: the current one, or the one the newest
-  change replaced while its overlap lasts. A change of secret alone is not a
-  change of policy. Once the matched value is no longer accepted, because a
-  later change replaced it or its overlap ended or the revision holding it was
-  deleted, the request is rejected with the reason `secret <field> changed
-after intake and no longer accepts the value the request matched; the
-credential check can't be rerun`.
+  change replaced, if the overlap was open when the request was received. An
+  overlap that ends while the request waits leaves its match standing, so a
+  request the sender was answered for is never refused only because
+  processing was late. A change of secret alone is not a change of policy.
+  Once the matched value is no longer accepted, because a later change
+  replaced it or the revision holding it was deleted, the request is rejected
+  with the reason `secret <field> changed after intake and no longer accepts
+the value the request matched; the credential check can't be rerun`.
+  Deleting that revision is how an administrator withdraws the replaced
+  value, queued requests included.
 - Under a different policy, the intake verdicts count for nothing. Every
   verifier runs again where the stored request allows it: `address` against
   the stored client address, `hmac` against the stored bytes. A `token` or
@@ -263,9 +267,9 @@ credential check can't be rerun`.
   request is rejected with the reason `verifier policy changed after intake;
 credential checks can't be rerun`.
 
-`hmac` always runs under the secrets in force when the request is processed:
-the current secret, and the one the newest change replaced while the overlap
-lasts at that moment.
+`hmac` runs under the secrets in force when the request is processed: the
+current secret, and the one the newest change replaced if the overlap was open
+when the request was received and the revision holding it still exists.
 
 ### `address`
 

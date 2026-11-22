@@ -194,15 +194,16 @@ impl Endpoint {
         )
     }
 
-    /// The secrets a verifier may use at `now_ms`: the current one, and the
-    /// one the newest change replaced while the overlap after that change
-    /// lasts.
-    pub(crate) fn secrets(&self, field: &str, now_ms: i64) -> verify::Secrets {
+    /// The secrets a verifier may use for a request received at
+    /// `received_at_ms`: the current one, and the one the newest change
+    /// replaced when the overlap after that change was open at receipt and
+    /// the revision holding it still exists.
+    pub(crate) fn secrets(&self, field: &str, received_at_ms: i64) -> verify::Secrets {
         verify::Secrets {
             current: self.text(field),
             previous: self
                 .overlap_until(field)
-                .filter(|until| now_ms < *until)
+                .filter(|until| received_at_ms < *until)
                 .and_then(|_| self.record.values.get(field)?.previous.as_ref())
                 .and_then(|previous| previous.value.as_str().map(str::to_owned)),
         }
@@ -234,11 +235,19 @@ impl Endpoint {
         (captured == Some(generation)).then_some(generation)
     }
 
-    /// Whether secret `field` still accepts the value of `generation` at
-    /// `now_ms`: it is the current generation, or the one the newest change
-    /// replaced while the overlap lasts. `None` is a value no change set,
-    /// such as a default, accepted while the field has no generation.
-    pub(crate) fn accepts(&self, field: &str, generation: Option<i64>, now_ms: i64) -> bool {
+    /// Whether secret `field` still accepts the value of `generation` that a
+    /// request received at `received_at_ms` matched: the current generation,
+    /// or the one the newest change replaced when the overlap was open at
+    /// receipt. An overlap that ends later leaves the match standing;
+    /// deleting the revision holding the replaced value does not. `None` is
+    /// a value no change set, such as a default, accepted while the field
+    /// has no generation.
+    pub(crate) fn accepts(
+        &self,
+        field: &str,
+        generation: Option<i64>,
+        received_at_ms: i64,
+    ) -> bool {
         let Some(value) = self.record.values.get(field) else {
             return false;
         };
@@ -252,7 +261,7 @@ impl Endpoint {
                         .is_some_and(|previous| previous.generation == generation)
                         && self
                             .overlap_until(field)
-                            .is_some_and(|until| now_ms < until))
+                            .is_some_and(|until| received_at_ms < until))
             }
         }
     }

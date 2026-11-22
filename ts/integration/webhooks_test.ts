@@ -93,6 +93,41 @@ async function configure(
   });
 }
 
+/**
+ * Give `endpoint` a 5-second change overlap, and return how to read what it
+ * reports about one of its secrets.
+ */
+async function shortOverlap(
+  runtime: Runtime,
+  deploymentId: string,
+  endpoint: string,
+) {
+  await runtime.callAdminRpc("authWebhooksUpdate", {
+    deploymentId: codecs.ulid.decode(deploymentId),
+    endpoint,
+    change: "set",
+    setting: "rotationOverlap",
+    value: 5_000n,
+    idempotencyKey: codecs.ulid.decode(ulid()),
+  });
+  const report = async (secret: string) => {
+    const { endpoints } = await runtime.callAdminRpc("webhooksEndpointsList", {
+      service: deploymentId,
+    });
+    const found = endpoints.find((entry) => entry.endpoint === endpoint)!;
+    const reported = found.secrets.find((entry) => entry.name === secret)!;
+    return {
+      overlapMs: found.settings.rotationOverlapMs,
+      isSet: reported.isSet,
+      overlap: reported.previousAcceptedUntil !== null,
+    };
+  };
+  await runtime.waitFor(
+    async () => (await report("relaySigning")).overlapMs === 5_000n,
+  );
+  return report;
+}
+
 /** A relayed request: the sender's credential and the relay's signature. */
 function relay(url: string, body: string, headers: Record<string, string>) {
   return fetch(url, {
@@ -1000,7 +1035,7 @@ test("each change of a secret is a generation of its own, and deleting revisions
   });
 });
 
-test("a queued request keeps its token check only under the verifier policy and secret values it was accepted with", async () => {
+test("a queued request keeps its token check under the policy it was accepted with, past the overlap's end, until the matched value's revision is deleted", async () => {
   await withTrellisRuntime(async (runtime) => {
     const { key, service, url, attempts } = await install(runtime);
     void service.wait();
@@ -1027,73 +1062,93 @@ test("a queued request keeps its token check only under the verifier policy and 
       assert.equal(response.status, 200);
       return body;
     };
-    const intake = async (token: string) => {
-      const response = await fetch(url("token"), {
-        method: "POST",
-        body: "{}",
-        headers: { "x-hook-token": token },
-      });
-      await response.body?.cancel();
-      return response.status;
-    };
-    await configure(runtime, key.deploymentId, {
-      secrets: { hookToken: "next-token" },
-    });
-    await runtime.waitFor(async () => (await intake("next-token")) === 200);
-
-    // Held until the relay's secret is set, which comes with new relay
-    // addresses: its token was checked under the old ones.
-    const queued = await send("next-token");
-    await runtime.waitFor(
-      async () =>
-        (await record(queued))?.reason === "secret relaySigning not set",
+    const report = await shortOverlap(
+      runtime,
+      key.deploymentId,
+      "relayedToken",
     );
-    await configure(runtime, key.deploymentId, {
-      values: { relayRanges: [...RELAY_RANGES, "192.0.2.0/24"] },
-      secrets: { relaySigning: RELAY },
+    const held = (body: string) =>
+      runtime.waitFor(
+        async () =>
+          (await record(body))?.reason === "secret relaySigning not set",
+      );
+    const relaySet = async (isSet: boolean) => {
+      await configure(
+        runtime,
+        key.deploymentId,
+        isSet
+          ? { secrets: { relaySigning: RELAY } }
+          : { unset: ["relaySigning"] },
+      );
+      await runtime.waitFor(
+        async () => (await report("relaySigning")).isSet === isSet,
+      );
+    };
+    const changeToken = async (hookToken: string) => {
+      await configure(runtime, key.deploymentId, { secrets: { hookToken } });
+      await runtime.waitFor(async () => (await report("hookToken")).overlap);
+    };
+    const overlapOver = () =>
+      runtime.waitFor(async () => !(await report("hookToken")).overlap);
+
+    // Received with the replaced token during the overlap and held until
+    // after it ends: the match stands.
+    await changeToken("next-token");
+    const late = await send(TOKEN);
+    await held(late);
+    await overlapOver();
+    await relaySet(true);
+    assert.equal((await verified(late)).outcome, "accepted");
+
+    // The same, but the revision holding the replaced token is deleted
+    // before the request is processed: it is refused.
+    await relaySet(false);
+    await changeToken("third-token");
+    const revoked = await send("next-token");
+    await held(revoked);
+    const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {
+      target,
     });
-    const refused = await verified(queued);
+    // Newest first: the change to third-token, then the revision before it,
+    // which holds next-token.
+    await runtime.callAdminRpc("authConfigRevisionsDelete", {
+      target,
+      revision: items[1]!.revision,
+      idempotencyKey: codecs.ulid.decode(ulid()),
+    });
+    await overlapOver();
+    await relaySet(true);
+    const refused = await verified(revoked);
     assert.deepEqual(
       [refused.outcome, refused.reason],
       [
         "rejected",
-        "verifier policy changed after intake; credential checks can't be rerun",
+        "secret hookToken changed after intake and no longer accepts the value the request matched; the credential check can't be rerun",
       ],
     );
 
-    // Under an unchanged policy the replaced token is honoured while the
-    // overlap lasts.
-    const overlapping = await send(TOKEN);
-    const accepted = await verified(overlapping);
-    assert.equal(accepted.outcome, "accepted");
-    // Once the revision holding that token is deleted, verifying the request
-    // again refuses it.
-    const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {
-      target,
+    // Held until the relay's secret is set, which comes with new relay
+    // addresses: its token was checked under the old ones.
+    await relaySet(false);
+    const queued = await send("third-token");
+    await held(queued);
+    await configure(runtime, key.deploymentId, {
+      values: { relayRanges: [...RELAY_RANGES, "192.0.2.0/24"] },
+      secrets: { relaySigning: RELAY },
     });
-    await runtime.callAdminRpc("authConfigRevisionsDelete", {
-      target,
-      revision: items.at(-1)!.revision,
-      idempotencyKey: codecs.ulid.decode(ulid()),
-    });
-    await runtime.waitFor(async () => (await intake(TOKEN)) === 401);
-    const { attempt } = await runtime.callAdminRpc("webhooksAttemptsReverify", {
-      service: key.deploymentId,
-      endpoint: "relayedToken",
-      attemptId: codecs.ulid.decode(accepted.attemptId),
-    });
+    const changed = await verified(queued);
     assert.deepEqual(
-      [attempt.outcome, attempt.reason],
+      [changed.outcome, changed.reason],
       [
         "rejected",
-        "secret hookToken changed after intake and no longer accepts the value the request matched; the credential check can't be rerun",
+        "verifier policy changed after intake; credential checks can't be rerun",
       ],
     );
     await service.stop();
   });
 });
 
-test("a queued signed request is verified under the policy and secrets in force when it is processed", async () => {
+test("a queued signed request keeps a replaced secret matched during its overlap until that revision is deleted, and is verified under the policy in force", async () => {
   await withTrellisRuntime(async (runtime) => {
     const { key, service, url, attempts } = await install(runtime);
     void service.wait();
@@ -1112,8 +1167,77 @@ test("a queued signed request is verified under the policy and secrets in force 
       return body;
     };
 
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    const report = await shortOverlap(runtime, key.deploymentId, "relayed");
+    const verified = (body: string) =>
+      runtime.waitFor(
+        async () => {
+          const found = await record(body);
+          return found && found.outcome !== "pending" ? found : undefined;
+        },
+        { timeoutMs: 20_000 },
+      );
+    const held = (body: string) =>
+      runtime.waitFor(
+        async () =>
+          (await record(body))?.reason === "secret relaySigning not set",
+      );
+    const relaySet = async (isSet: boolean) => {
+      await configure(
+        runtime,
+        key.deploymentId,
+        isSet
+          ? { secrets: { relaySigning: RELAY } }
+          : { unset: ["relaySigning"] },
+      );
+      await runtime.waitFor(
+        async () => (await report("relaySigning")).isSet === isSet,
+      );
+    };
+    const changeSigning = async (signing: string) => {
+      await configure(runtime, key.deploymentId, { secrets: { signing } });
+      await runtime.waitFor(async () => (await report("signing")).overlap);
+    };
+    const overlapOver = () =>
+      runtime.waitFor(async () => !(await report("signing")).overlap);
+
+    // Signed with the replaced secret, received during the overlap, and
+    // held until after it ends: it is accepted.
+    await changeSigning("second-signing");
+    const late = await send(SIGNING);
+    await held(late);
+    await overlapOver();
+    await relaySet(true);
+    const honoured = await verified(late);
+    assert.deepEqual([honoured.outcome, honoured.reason], ["accepted", null]);
+
+    // The same, but the revision holding the replaced secret is deleted
+    // before the request is processed: it is refused.
+    await relaySet(false);
+    await changeSigning("third-signing");
+    const revoked = await send("second-signing");
+    await held(revoked);
+    const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {
+      target,
+    });
+    // Newest first: the change to third-signing, then the revision before
+    // it, which holds second-signing.
+    await runtime.callAdminRpc("authConfigRevisionsDelete", {
+      target,
+      revision: items[1]!.revision,
+      idempotencyKey: codecs.ulid.decode(ulid()),
+    });
+    await overlapOver();
+    await relaySet(true);
+    const refused = await verified(revoked);
+    assert.deepEqual(
+      [refused.outcome, refused.reason],
+      ["rejected", "signature does not match"],
+    );
+
     // Both are held until the relay's secret is set, which comes with new
     // relay addresses and a new signing secret.
+    await relaySet(false);
     const renewed = await send("next-signing");
     const forged = await send("forged-signing");
     await runtime.waitFor(async () => {
@@ -1146,7 +1270,7 @@ test("a queued signed request is verified under the policy and secrets in force 
       values: { relayRanges: ["192.0.2.0/24"] },
     });
     const accepted = (await record(renewed))!;
-    const refused = await runtime.waitFor(async () => {
+    const excluded = await runtime.waitFor(async () => {
       const { attempt } = await runtime.callAdminRpc(
         "webhooksAttemptsReverify",
         {
@@ -1157,7 +1281,7 @@ test("a queued signed request is verified under the policy and secrets in force 
       );
       return attempt.outcome === "rejected" ? attempt : undefined;
     });
-    assert.equal(refused.reason, "client address outside the allowed ranges");
+    assert.equal(excluded.reason, "client address outside the allowed ranges");
     await service.stop();
   });
 });
