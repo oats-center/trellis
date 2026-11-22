@@ -1,3 +1,5 @@
+import { auth } from trellis;
+
 model Value { value: string; }
 api fields@v1 {
   title "Fields";
@@ -33,4 +35,5 @@ app Reviewer {
   use fields { required capability records.read; capability records.edit; }
   use crops { capability records.read; capability plans.edit; }
   use fieldmaps { capability records.read; }
+  use auth { capability accounts.manage; }
 }

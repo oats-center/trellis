@@ -1044,9 +1044,8 @@ A running service whose new build adds an administrative capability waits for
 
 Apps request administrative capabilities like any other, through their generated
 required/optional selections; there is no separate privilege request. Optional
-administration is never preselected, and approving it is never remembered (other
-optional access starts selected unless declined before; required access has no
-checkbox). Delegating one to an app has
+administration starts selected unless declined before, like other optional
+access, and approving it is never remembered (required access has no checkbox). Delegating one to an app has
 two safeguards, on by default under `[auth.administration]`: a separate consent
 confirmation and registered clients only. The initialized administrator holds
 all seven inherently, and everything else through an editable Administrator role. Localhost or

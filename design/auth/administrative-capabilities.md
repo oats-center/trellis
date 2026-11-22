@@ -76,9 +76,9 @@ registered_clients_only = true
 
 - **Confirm on consent.** After selection, a separate caution step asks
   whether the app may manage this Trellis and lists the selected
-  administrative capabilities by title; approving it confirms. Nothing
-  administrative starts selected, but Select all includes it like any other
-  optional access, so the caution step is the one check. Approvals of
+  administrative capabilities by title; approving it confirms. Optional
+  administration starts selected like any other optional access, unless the
+  person declined it before, so the caution step is the one check. Approvals of
   administration are never remembered; declines are, like every other
   answer. Administration on an app's allowed-without-asking list takes no
   caution step: the administrator who listed it confirmed it. An administrator's confirmed

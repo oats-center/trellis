@@ -91,7 +91,12 @@ test("the consent page offers only what the person can have, names them and each
           ...optionalCapabilities,
         ])
           if (capabilityId !== plans) await grant(capabilityId);
-        const withoutPlans = optionalCapabilities.filter((id) => id !== plans);
+        const manage = optionalCapabilities.find((id) =>
+          id.endsWith(":accounts.manage"),
+        );
+        assert(manage);
+        const ordinary = optionalCapabilities.filter((id) => id !== manage);
+        const withoutPlans = ordinary.filter((id) => id !== plans);
 
         const register = async (title: string) => {
           const clientId = ulid();
@@ -110,6 +115,7 @@ test("the consent page offers only what the person can have, names them and each
         };
         const returning = await register("Field notes");
         const fresh = await register("Crop planner");
+        const office = await register("Farm office");
 
         browser = await chromium.launch({
           headless: true,
@@ -130,9 +136,17 @@ test("the consent page offers only what the person can have, names them and each
         const signIn = async (
           clientId: string,
           optional: readonly string[],
+          askAgain = false,
         ) => {
           const url = await page.evaluate(
-            async ({ issuer, origin, clientId, required, optional }) => {
+            async ({
+              issuer,
+              origin,
+              clientId,
+              required,
+              optional,
+              askAgain,
+            }) => {
               const module: Module = await import(`${origin}/app.js`);
               const oauth = (
                 await module.BrowserOAuthClient.open({
@@ -144,10 +158,11 @@ test("the consent page offers only what the person can have, names them and each
                 throw error;
               });
               const url = (
-                await oauth.authorize(`${origin}/callback`, {
-                  required,
-                  optional,
-                })
+                await oauth.authorize(
+                  `${origin}/callback`,
+                  { required, optional },
+                  { askAgain },
+                )
               ).unwrapOrElse((error) => {
                 throw error;
               });
@@ -160,6 +175,7 @@ test("the consent page offers only what the person can have, names them and each
               clientId,
               required: requiredCapabilities,
               optional,
+              askAgain,
             },
           );
           shown.length = 0;
@@ -252,13 +268,13 @@ test("the consent page offers only what the person can have, names them and each
 
         // So does a request whose only addition is optional access the
         // person can't be granted.
-        await signIn(returning, optionalCapabilities);
+        await signIn(returning, ordinary);
         await returnedToApp();
         assert(!shown.includes("/consent"), shown.join(" "));
 
         // Another app asking for the same never offers what the person
         // can't have, not even as a disabled choice.
-        await signIn(fresh, optionalCapabilities);
+        await signIn(fresh, ordinary);
         await page
           .getByRole("heading", {
             name: "Crop planner wants to use your account",
@@ -276,12 +292,27 @@ test("the consent page offers only what the person can have, names them and each
 
         // Once the person may have crop plans, the returning app asks about it.
         await grant(plans);
-        await signIn(returning, optionalCapabilities);
+        await signIn(returning, ordinary);
         await consent
           .getByRole("checkbox", { name: /^Change crop plans\b/ })
           .waitFor();
         assert(shown.includes("/consent"), shown.join(" "));
         await allow(page);
+
+        // Administration starts checked like any other optional access.
+        // Declined, it starts unchecked when the app asks again.
+        const administration = consent.getByRole("checkbox", {
+          name: /^Manage accounts\b/,
+        });
+        await signIn(office, [manage]);
+        await administration.waitFor();
+        assert.equal(await administration.isChecked(), true);
+        await administration.uncheck();
+        await page.getByRole("button", { name: "Allow", exact: true }).click();
+        await returnedToApp();
+        await signIn(office, [manage], true);
+        await administration.waitFor();
+        assert.equal(await administration.isChecked(), false);
       }, browserRuntimeOptions());
     } finally {
       await browser?.close();
