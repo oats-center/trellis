@@ -109,7 +109,7 @@ test("a service waits for its settings, keeps secrets from administrators, and f
     // A write based on an old revision is refused.
     await assert.rejects(
       set(deployment, { values: { level: "debug" } }),
-      /conflict/i,
+      /were saved as revision \d+ since you read them; reload and try again/,
     );
 
     // A live field changes in place; a restart-only one waits for reconnect.

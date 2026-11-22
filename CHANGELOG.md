@@ -8,15 +8,6 @@ and this project adheres to
 
 ## [Unreleased]
 
-### Fixed
-
-- After an issuer rotation, Auth could sign replies and cutoffs with the new
-  key before clients could trust it, so admin requests stalled for their
-  timeout and clients reported "revocation mirror is not current". Nothing the
-  new key signs leaves Auth before its chain link is published.
-- The platform no longer opens a second platform session at startup that
-  nothing used and that the next issuer revoke ended.
-
 ## [0.100.0-rc.53] - 2026-11-22
 
 ### Added
@@ -75,6 +66,12 @@ and this project adheres to
 
 ### Fixed
 
+- After an issuer rotation, Auth could sign replies and cutoffs with the new
+  key before clients could trust it, so admin requests stalled for their
+  timeout and clients reported "revocation mirror is not current". Nothing the
+  new key signs leaves Auth before its chain link is published.
+- The platform no longer opens a second platform session at startup that
+  nothing used and that the next issuer revoke ended.
 - An issuer revoke that overlapped a rotation could revoke the key Auth was
   still signing its replies with, so the operator got a timeout though the
   revoke took effect. Auth now decides and commits a revoke in one
