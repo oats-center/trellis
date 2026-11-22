@@ -170,6 +170,38 @@ impl SqliteAuthorizationStore {
         Ok(())
     }
 
+    /// Publish the issuer chain links that the registry may still lack.
+    ///
+    /// A rotation's key signs from the moment its transaction commits, but a
+    /// participant pinned to an earlier key can authenticate it only through
+    /// the chain link, which the outbox publishes later. Anything Auth signed
+    /// therefore leaves Auth only after this returns: until the link is
+    /// published, a participant must discard what the new key signed.
+    pub(crate) async fn publish_issuer_chain(
+        self: &Arc<Self>,
+        material: &kv::Store,
+    ) -> Result<(), AuthError> {
+        use std::sync::atomic::Ordering;
+        let store = Arc::clone(self);
+        let head = blocking(move || {
+            store.read(|connection| {
+                Ok(connection.query_row(
+                    "SELECT coalesce(max(sequence),0) FROM auth_issuer_rotations",
+                    [],
+                    |row| row.get::<_, u64>(0),
+                )?)
+            })
+        })
+        .await?;
+        let published = self.published_rotation.load(Ordering::Acquire);
+        for sequence in published.saturating_add(1)..=head {
+            self.publish_verification_material(material, "rotation", &sequence.to_string())
+                .await?;
+        }
+        self.published_rotation.fetch_max(head, Ordering::AcqRel);
+        Ok(())
+    }
+
     /// One ordinary worker turn: resume one enforcement page and a bounded
     /// outbox batch. Publication acknowledges durable JetStream acceptance;
     /// physical closure completes only after exact system-account evidence.
@@ -195,6 +227,21 @@ impl SqliteAuthorizationStore {
         // startup must drain bootstrap scopes before accepting policy mutations.
         let mut completed = usize::from(enforcement_progress);
         let mut failure = None;
+        // Every effect was committed under the current issuer or an earlier
+        // one, and what it publishes must be verifiable on arrival.
+        if !effects.is_empty() {
+            if let Err(error) = self.publish_issuer_chain(material).await {
+                let (store, claimed) = (Arc::clone(self), effects);
+                blocking(move || {
+                    for effect in &claimed {
+                        store.retry_effect(effect, now)?;
+                    }
+                    Ok::<_, AuthError>(())
+                })
+                .await?;
+                return Err(error);
+            }
+        }
         for effect in effects {
             let result = async {
                 match effect.kind.as_str() {

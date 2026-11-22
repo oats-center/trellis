@@ -169,6 +169,9 @@ pub(crate) struct SqliteAuthorizationStore {
     /// Bumped after each commit that changed what webhook intake serves.
     webhook_signal: tokio::sync::watch::Sender<u64>,
     pub(super) avatar_signer: std::sync::OnceLock<Arc<super::avatars::AvatarSigner>>,
+    /// The issuer chain is in the material registry up to this rotation
+    /// sequence; see `publish_issuer_chain`.
+    pub(super) published_rotation: std::sync::atomic::AtomicU64,
     pub(crate) settings: AuthSettings,
 }
 
@@ -616,6 +619,7 @@ impl SqliteAuthorizationStore {
             webhooks_changed,
             webhook_signal: tokio::sync::watch::Sender::new(0),
             avatar_signer: std::sync::OnceLock::new(),
+            published_rotation: std::sync::atomic::AtomicU64::new(0),
             settings,
         })
     }
