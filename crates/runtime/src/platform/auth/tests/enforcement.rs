@@ -122,10 +122,15 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
         .await
         .unwrap();
     drain(&f.store, NOW);
-    f.store
+    // One turn delivers a bounded batch, and the fixture queues more effects
+    // than one batch holds, so drain until a turn finds nothing to do.
+    while f
+        .store
         .process_effects(&material, &revocations, &system, &system, NOW)
         .await
-        .unwrap();
+        .unwrap()
+        != 0
+    {}
     let published = material
         .get(format!("context.{}", issued.digest))
         .await
@@ -217,10 +222,13 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
     let mut watcher = revocations.watch_with_history(&session).await.unwrap();
     let scope = EnforcementScope::Session(session.clone());
     revoke_root(&f.store, &mutation(&f.admin, &scope), &scope, NOW + 1).unwrap();
-    f.store
+    while f
+        .store
         .process_effects(&material, &revocations, &system, &system, NOW + 1)
         .await
-        .unwrap();
+        .unwrap()
+        != 0
+    {}
     use futures_util::StreamExt;
     let update = tokio::time::timeout(Duration::from_secs(5), watcher.next())
         .await
