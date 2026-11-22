@@ -62,6 +62,10 @@ and this project adheres to
 
 ### Fixed
 
+- An issuer revoke that overlaps the activation retiring that key always gets
+  a definitive answer: it commits only when its reply verifies for the caller,
+  and is otherwise refused with nothing written. A revoke made under authority
+  from the key being revoked is refused until the caller renews.
 - The Portal consent page groups choices by API, showing each API's ID beneath
   its title when two APIs share one.
 - TypeScript requests and events are never sent once signing runs past the
