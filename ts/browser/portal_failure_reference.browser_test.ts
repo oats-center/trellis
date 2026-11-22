@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { readdir } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { codecs } from "@oatscenter/trellis/generated";
 import { chromium } from "playwright";
@@ -7,6 +10,7 @@ import { ulid } from "ulid";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserRuntimeOptions } from "./browser_test_support.ts";
+import { openConsoleAsRuntimeAdmin } from "./console_test_support.ts";
 import { startDex } from "./dex_support.ts";
 
 // An OIDC provider that went away after an administrator saved it: starting a
@@ -90,6 +94,150 @@ test(
       } finally {
         await browser.close();
         if (!dexStopped) await dex.stop();
+      }
+    }, browserRuntimeOptions());
+  },
+);
+
+// The Trellis database refuses to end logins while the Portal signs out (a
+// trigger another process added aborts the write), so ending the login fails
+// on the server. The sign-out page must stay on its retry screen with a
+// reference that finds exactly one log line, and the login must still be
+// there: once the database accepts the write again, trying again ends it.
+// This catches a failed sign-out answered as "no login left", which the page
+// shows as signed out while the login stays valid.
+test(
+  "a sign-out the server cannot finish keeps the login and shows its reference",
+  { timeout: 300_000 },
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const browser = await chromium.launch({
+        headless: true,
+        env: browserTrustEnvironment(),
+      });
+      try {
+        const page = await (await browser.newContext()).newPage();
+        page.setDefaultTimeout(30_000);
+        await openConsoleAsRuntimeAdmin(page, runtime);
+
+        const files = await readdir(runtime.workdir, { recursive: true });
+        const path = files.find((file) => basename(file) === "platform.sqlite");
+        assert(path, files.join("\n"));
+        const database = new DatabaseSync(join(runtime.workdir, path), {
+          timeout: 10_000,
+        });
+        database.exec(
+          "CREATE TRIGGER refuse_sign_out BEFORE UPDATE OF revoked_at ON auth_login_sessions " +
+            "BEGIN SELECT RAISE(ABORT, 'sign-out refused'); END",
+        );
+
+        const signOut = new URL("/logout", runtime.trellisUrl);
+        signOut.searchParams.set("client_id", "trellis.console");
+        signOut.searchParams.set(
+          "post_logout_redirect_uri",
+          `${runtime.consoleUrl}/console`,
+        );
+        await page.goto(signOut.href, { waitUntil: "domcontentloaded" });
+        const alert = page.getByRole("alert").filter({ hasText: "Reference:" });
+        await alert.waitFor();
+        database.exec("DROP TRIGGER refuse_sign_out");
+        database.close();
+        const text = (await alert.textContent()) ?? "";
+        assert(text.includes("still signed in"), text);
+        const reference = /Reference: ([0-9A-HJKMNP-TV-Z]{26})/.exec(text)?.[1];
+        assert(reference, text);
+
+        await runtime.waitFor(() =>
+          runtime.controlPlaneOutput().includes(reference),
+        );
+        const lines = runtime
+          .controlPlaneOutput()
+          .split("\n")
+          .filter((line) => line.includes(reference));
+        assert.equal(lines.length, 1, lines.join("\n"));
+        const line = JSON.parse(lines[0]!) as {
+          fields: Record<string, unknown>;
+        };
+        assert.equal(line.fields.route, "POST /portal/logout");
+        assert.equal(line.fields.code, "server_error");
+        assert.match(String(line.fields.cause), /sign-out refused/);
+
+        // The login survived: the retry ends it, rather than being told there
+        // is no login left, and the page returns to the Console.
+        const retried = page.waitForResponse((response) =>
+          response.url().endsWith("/portal/logout"),
+        );
+        await page.getByRole("button", { name: "Try again" }).click();
+        assert.equal((await retried).status(), 200);
+        await page.waitForURL(`${runtime.consoleUrl}/console`);
+      } finally {
+        await browser.close();
+      }
+    }, browserRuntimeOptions());
+  },
+);
+
+// Revoking an app's token also revokes its refresh family, which ends the
+// app's sessions. When the database refuses that part, the revocation must
+// not answer success: the app would show itself signed out while its
+// sessions stay live. The failure carries a reference to its one log line.
+test(
+  "an app sign-out whose session revocation fails is not reported as done",
+  { timeout: 300_000 },
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const browser = await chromium.launch({
+        headless: true,
+        env: browserTrustEnvironment(),
+      });
+      try {
+        const page = await (await browser.newContext()).newPage();
+        page.setDefaultTimeout(30_000);
+        await openConsoleAsRuntimeAdmin(page, runtime);
+
+        const files = await readdir(runtime.workdir, { recursive: true });
+        const path = files.find((file) => basename(file) === "platform.sqlite");
+        assert(path, files.join("\n"));
+        const database = new DatabaseSync(join(runtime.workdir, path), {
+          timeout: 10_000,
+        });
+        database.exec(
+          "CREATE TRIGGER refuse_family_revocation BEFORE UPDATE OF revoked_at ON auth_oauth_families " +
+            "BEGIN SELECT RAISE(ABORT, 'family revocation refused'); END",
+        );
+        try {
+          const revoked = page.waitForResponse(
+            (response) =>
+              new URL(response.url()).pathname === "/revoke" &&
+              response.request().method() === "POST",
+          );
+          await page.getByLabel("Open user menu", { exact: true }).click();
+          await page
+            .getByRole("button", { name: "Sign out", exact: true })
+            .click();
+          const response = await revoked;
+          assert.equal(response.status(), 500);
+          const reference = response.headers()["trellis-reference"];
+          assert(reference);
+          await runtime.waitFor(() =>
+            runtime.controlPlaneOutput().includes(reference),
+          );
+          const lines = runtime
+            .controlPlaneOutput()
+            .split("\n")
+            .filter((line) => line.includes(reference));
+          assert.equal(lines.length, 1, lines.join("\n"));
+          const line = JSON.parse(lines[0]!) as {
+            fields: Record<string, unknown>;
+          };
+          assert.equal(line.fields.route, "POST /revoke");
+          assert.match(String(line.fields.cause), /family revocation refused/);
+        } finally {
+          database.exec("DROP TRIGGER refuse_family_revocation");
+          database.close();
+        }
+      } finally {
+        await browser.close();
       }
     }, browserRuntimeOptions());
   },

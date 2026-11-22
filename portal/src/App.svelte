@@ -139,6 +139,8 @@
   const signingOut = path === "/logout";
   const returnTo = query.get("post_logout_redirect_uri") ?? "";
   let signOutFailed = $state(false);
+  /** When Trellis failed to end the login: the reference its log line has. */
+  let signOutReference = $state<string | null>(null);
 
   interface EnrollmentReview {
     reviewId: string;
@@ -481,6 +483,7 @@
   /** Ends the Portal login on this browser, then returns to the app. */
   async function endPortalLogin(): Promise<void> {
     signOutFailed = false;
+    signOutReference = null;
     try {
       if (csrf) {
         const response = await fetch(`/portal/logout`, {
@@ -492,8 +495,10 @@
         if (
           !response.ok &&
           (await response.json().catch(() => null))?.error !== "access_denied"
-        )
+        ) {
+          signOutReference = response.headers.get("Trellis-Reference");
           throw new Error("logout_failed");
+        }
       }
       window.location.replace(returnTo);
     } catch {
@@ -610,7 +615,14 @@
   <main class="card narrow center">
     {#if signOutFailed}
       <h1>We couldn't sign you out</h1>
-      <p class="muted" role="alert">Check your connection and try again.</p>
+      {#if signOutReference}
+        <p class="muted" role="alert">
+          Something went wrong on the server. You're still signed in. Try again.
+          <span class="refusal-code">Reference: {signOutReference}</span>
+        </p>
+      {:else}
+        <p class="muted" role="alert">Check your connection and try again.</p>
+      {/if}
       <button class="button block" type="button" onclick={endPortalLogin}
         >Try again</button
       >

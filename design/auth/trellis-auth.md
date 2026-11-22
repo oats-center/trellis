@@ -951,6 +951,15 @@ redirect URI on, so it is no open redirector; the page then posts the Portal's
 CSRF-protected logout and returns. It asks for no confirmation: a forged
 navigation can only sign someone out, never in or into another account.
 
+Sign-out reports success only once the server has ended what it was asked to
+end. `/portal/logout` answers `access_denied` only when no Portal login is left,
+which the page treats as signed out; when ending the login fails on the server
+it answers `server_error`, the login stays valid, and the page keeps its
+"Try again" screen with the request's reference. `/revoke` answers
+`server_error` when revoking the token's refresh family failed, even though the
+token itself is gone; the browser app then keeps its stored session and reports
+the failure instead of clearing it while that family's sessions stay live.
+
 Ending the Portal login does not end the OIDC provider's own session. So that
 the next OIDC sign-in from that browser does not sign the person straight back
 in, the validated `/logout` page sets `__Host-trellis-portal-reauth` (HttpOnly,
