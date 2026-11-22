@@ -186,6 +186,7 @@ CREATE INDEX auth_instances_ended ON auth_instances(state, updated_at);
 -- are deleted, so a returning process is still told which.
 CREATE TABLE auth_identity_tombstones (
     identity_key_id TEXT PRIMARY KEY CHECK (length(identity_key_id) = 43),
+    kind TEXT NOT NULL CHECK (kind IN ('service', 'device')),
     outcome TEXT NOT NULL CHECK (outcome IN ('removed', 'retired')),
     recorded_at INTEGER NOT NULL CHECK (recorded_at BETWEEN 0 AND 9007199254740991)
 );

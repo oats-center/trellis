@@ -240,7 +240,10 @@ result. `Packages.Pull` and the registry RPCs require
 Deployment Apply is the administrator's direct mutation path. A running
 service can also submit its own build: `ServiceUpdates.Submit` and
 `ServiceUpdates.Status` are callable by every service instance through
-`trellis.auth.v1:serviceUpdates.submit`; `ServiceUpdates.List`, `Get`, and
+`trellis.auth.v1:serviceUpdates.submit`. `Status` answers only for the
+caller's own deployment (or its claim): another deployment's update gets the
+same `not_found` reply as an update that doesn't exist, and only the log says
+which it was. `ServiceUpdates.List`, `Get`, and
 `Decide` require `trellis.auth.v1:users.manage`. An update that asks for no new
 capability or resource installs at once; one that does waits for `Decide`.
 Create, Apply, and Decide all refuse to make a deployment serve an API another
