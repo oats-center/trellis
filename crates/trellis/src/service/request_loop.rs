@@ -7,8 +7,6 @@ use futures_util::{FutureExt, Stream, StreamExt};
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 use tracing::Instrument as _;
@@ -20,8 +18,6 @@ use crate::telemetry::instruments::{self, DurationFamily, UpDownFamily};
 use crate::telemetry::lifecycle::Observation;
 use crate::telemetry::propagation;
 use crate::telemetry::KeyValue;
-
-static ERROR_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Decoded request message consumed by the host dispatcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,9 +84,36 @@ pub struct ErrorAnnotationContext {
     method: Option<String>,
     live: Option<String>,
     operation: Option<String>,
+    caller_principal: Option<String>,
+    caller_session: Option<String>,
 }
 
 impl ErrorAnnotationContext {
+    /// Record the authenticated caller once dispatch has verified it, and the
+    /// server span's trace when the caller sent none. Only the log uses the
+    /// caller; replies never repeat it.
+    fn after_dispatch(
+        &mut self,
+        verified: Option<crate::client::VerifiedAuthorizationRequest>,
+        span: Option<&tracing::Span>,
+    ) {
+        if let Some(request) = verified {
+            let caller = request.caller();
+            self.caller_principal = Some(caller.principal_id.clone());
+            self.caller_session = Some(caller.authorization_session_id.clone());
+        }
+        if self.trace_id.is_none() {
+            if let Some(span) = span {
+                let span_context = opentelemetry::trace::TraceContextExt::span(&span.context())
+                    .span_context()
+                    .clone();
+                if span_context.is_valid() {
+                    self.trace_id = Some(span_context.trace_id().to_string());
+                }
+            }
+        }
+    }
+
     fn from_request<H>(subject: &str, context: &RequestContext, handler: &H) -> Self
     where
         H: RequestHandler + ?Sized,
@@ -519,169 +542,164 @@ pub fn encode_error_reply(reply_to: String, error: &ServerError) -> OutboundRepl
     encode_error_reply_with_context(reply_to, error, &ErrorAnnotationContext::default())
 }
 
-#[doc = concat!("Trellis API operation `", stringify!(encode_error_reply_with_context), "`.")]
+/// Encode one failed handler result as the caller's error reply, and log it.
+///
+/// One error ID is generated here and used in both the reply and the one log
+/// line, so the reference a caller shows finds the line. The line also has the
+/// request and trace IDs, the route, the caller and the error with its cause;
+/// an unexpected failure's text stays in that line and never reaches the caller.
 pub fn encode_error_reply_with_context(
     reply_to: String,
     error: &ServerError,
     annotations: &ErrorAnnotationContext,
 ) -> OutboundReply {
-    match error {
-        ServerError::DeclaredRpc(error) => {
-            let payload = serde_json::to_vec(&error.to_payload_with_context(
-            error_id(),
-            annotations.context_map(),
-            annotations.trace_id(),
-        ))
-        .unwrap_or_else(|_| {
-            br#"{"id":"rust-server-error","type":"UnexpectedError","message":"An unexpected error has occurred"}"#.to_vec()
-        });
-            return OutboundReply {
-                reply_to,
-                payload: Bytes::from(payload),
-                is_error: true,
-            };
-        }
-        ServerError::SchemaValidation { issues } => {
-            let mut payload = Map::new();
-            payload.insert("id".to_string(), Value::String(error_id()));
-            payload.insert(
-                "type".to_string(),
-                Value::String("SchemaValidationError".to_string()),
-            );
-            payload.insert(
-                "message".to_string(),
-                Value::String("Schema validation failed.".to_string()),
-            );
-            payload.insert(
-                "issues".to_string(),
-                serde_json::to_value(issues).unwrap_or_default(),
-            );
-            let context = annotations.context_map();
-            merge_context(&mut payload, context);
-            if let Some(trace_id) = annotations.trace_id() {
-                payload.insert("traceId".to_string(), Value::String(trace_id.to_string()));
-            }
-            let payload_bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| {
-            br#"{"id":"rust-server-error","type":"UnexpectedError","message":"An unexpected error has occurred"}"#.to_vec()
-        });
-            return OutboundReply {
-                reply_to,
-                payload: Bytes::from(payload_bytes),
-                is_error: true,
-            };
-        }
-        ServerError::Validation { issues } => {
-            let mut payload = Map::new();
-            payload.insert("id".to_string(), Value::String(error_id()));
-            payload.insert(
-                "type".to_string(),
-                Value::String("ValidationError".to_string()),
-            );
-            payload.insert(
-                "message".to_string(),
-                Value::String("Data validation failed.".to_string()),
-            );
-            payload.insert(
-                "issues".to_string(),
-                serde_json::to_value(issues).unwrap_or_default(),
-            );
-            let context = annotations.context_map();
-            merge_context(&mut payload, context);
-            if let Some(trace_id) = annotations.trace_id() {
-                payload.insert("traceId".to_string(), Value::String(trace_id.to_string()));
-            }
-            let payload_bytes = serde_json::to_vec(&payload).unwrap_or_else(|_| {
-            br#"{"id":"rust-server-error","type":"UnexpectedError","message":"An unexpected error has occurred"}"#.to_vec()
-        });
-            return OutboundReply {
-                reply_to,
-                payload: Bytes::from(payload_bytes),
-                is_error: true,
-            };
-        }
-        _ => {}
-    }
-
-    #[derive(serde::Serialize)]
-    struct ErrorPayload<'a> {
-        id: String,
-        r#type: &'static str,
-        message: &'static str,
-        #[serde(rename = "traceId", skip_serializing_if = "Option::is_none")]
-        trace_id: Option<&'a str>,
-        context: ErrorContext<'a>,
-    }
-
-    #[derive(serde::Serialize)]
-    struct ErrorContext<'a> {
-        #[serde(rename = "requestId", skip_serializing_if = "Option::is_none")]
-        request_id: Option<&'a str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        service: Option<&'a str>,
-        #[serde(rename = "contractId", skip_serializing_if = "Option::is_none")]
-        contract_id: Option<&'a str>,
-        #[serde(rename = "contractDigest", skip_serializing_if = "Option::is_none")]
-        contract_digest: Option<&'a str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        method: Option<&'a str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        live: Option<&'a str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        operation: Option<&'a str>,
-    }
-
-    // Callers get these IDs instead of the failure text; the log holds both.
+    const FALLBACK: &[u8] = br#"{"id":"unencodable","type":"UnexpectedError","message":"An unexpected error has occurred"}"#;
     let id = error_id();
+    let (error_type, payload) = match error {
+        ServerError::DeclaredRpc(declared) => (
+            declared.error_type(),
+            serde_json::to_vec(&declared.to_payload_with_context(
+                id.clone(),
+                annotations.context_map(),
+                annotations.trace_id(),
+            )),
+        ),
+        ServerError::SchemaValidation { issues } => (
+            "SchemaValidationError",
+            serde_json::to_vec(&issues_payload(
+                &id,
+                "SchemaValidationError",
+                "Schema validation failed.",
+                serde_json::to_value(issues).unwrap_or_default(),
+                annotations,
+            )),
+        ),
+        ServerError::Validation { issues } => (
+            "ValidationError",
+            serde_json::to_vec(&issues_payload(
+                &id,
+                "ValidationError",
+                "Data validation failed.",
+                serde_json::to_value(issues).unwrap_or_default(),
+                annotations,
+            )),
+        ),
+        _ => (
+            "UnexpectedError",
+            serde_json::to_vec(&UnexpectedPayload {
+                id: &id,
+                r#type: "UnexpectedError",
+                message: "An unexpected error has occurred",
+                trace_id: annotations.trace_id(),
+                context: UnexpectedContext {
+                    request_id: annotations.request_id.as_deref(),
+                    service: annotations.service.as_deref(),
+                    contract_id: annotations.contract_id.as_deref(),
+                    contract_digest: annotations.contract_digest.as_deref(),
+                    method: annotations.method.as_deref(),
+                    live: annotations.live.as_deref(),
+                    operation: annotations.operation.as_deref(),
+                },
+            }),
+        ),
+    };
+
     let route = annotations
         .method
         .as_deref()
         .or(annotations.live.as_deref())
         .or(annotations.operation.as_deref());
-    if matches!(server_outcome(error), "error" | "unavailable") {
-        tracing::error!(
-            error_id = %id,
-            request_id = annotations.request_id.as_deref(),
-            trace_id = annotations.trace_id(),
-            route,
-            %error,
-            "unexpected service error",
-        );
-    } else {
-        tracing::warn!(
-            error_id = %id,
-            request_id = annotations.request_id.as_deref(),
-            trace_id = annotations.trace_id(),
-            route,
-            %error,
-            "request refused",
-        );
+    let (code, cause) = match error {
+        ServerError::DeclaredRpc(declared) => (declared.code(), declared.cause()),
+        _ => (None, None),
+    };
+    macro_rules! log_failure {
+        ($level:ident, $message:literal) => {
+            tracing::$level!(
+                error_id = %id,
+                request_id = annotations.request_id.as_deref(),
+                trace_id = annotations.trace_id(),
+                route,
+                service = annotations.service.as_deref(),
+                caller_principal = annotations.caller_principal.as_deref(),
+                caller_session = annotations.caller_session.as_deref(),
+                error_type,
+                code,
+                %error,
+                cause,
+                $message,
+            )
+        };
     }
-    let payload = match serde_json::to_vec(&ErrorPayload {
-    id,
-    r#type: "UnexpectedError",
-    message: "An unexpected error has occurred",
-    trace_id: annotations.trace_id(),
-    context: ErrorContext {
-        request_id: annotations.request_id.as_deref(),
-        service: annotations.service.as_deref(),
-        contract_id: annotations.contract_id.as_deref(),
-        contract_digest: annotations.contract_digest.as_deref(),
-        method: annotations.method.as_deref(),
-        live: annotations.live.as_deref(),
-        operation: annotations.operation.as_deref(),
-    },
-}) {
-    Ok(value) => Bytes::from(value),
-    Err(_) => Bytes::from_static(
-        br#"{"id":"rust-server-error","type":"UnexpectedError","message":"An unexpected error has occurred"}"#,
-    ),
-};
+    // An unexpected failure is the service's own fault and an operator must
+    // see it; a refusal or a declared outcome is the caller's to act on.
+    let unexpected = match error {
+        ServerError::DeclaredRpc(declared) => {
+            declared.error_type() == "UnexpectedError"
+                || declared.error_type().ends_with("::UnexpectedError")
+        }
+        _ => matches!(server_outcome(error), "error" | "unavailable"),
+    };
+    match error {
+        _ if unexpected => log_failure!(error, "request failed"),
+        ServerError::DeclaredRpc(_)
+        | ServerError::SchemaValidation { .. }
+        | ServerError::Validation { .. } => log_failure!(info, "request refused"),
+        _ => log_failure!(warn, "request refused"),
+    }
 
     OutboundReply {
         reply_to,
-        payload,
+        payload: payload.map_or_else(|_| Bytes::from_static(FALLBACK), Bytes::from),
         is_error: true,
     }
+}
+
+fn issues_payload(
+    id: &str,
+    error_type: &str,
+    message: &str,
+    issues: Value,
+    annotations: &ErrorAnnotationContext,
+) -> Map<String, Value> {
+    let mut payload = Map::new();
+    payload.insert("id".to_string(), Value::String(id.to_owned()));
+    payload.insert("type".to_string(), Value::String(error_type.to_owned()));
+    payload.insert("message".to_string(), Value::String(message.to_owned()));
+    payload.insert("issues".to_string(), issues);
+    merge_context(&mut payload, annotations.context_map());
+    if let Some(trace_id) = annotations.trace_id() {
+        payload.insert("traceId".to_string(), Value::String(trace_id.to_string()));
+    }
+    payload
+}
+
+#[derive(serde::Serialize)]
+struct UnexpectedPayload<'a> {
+    id: &'a str,
+    r#type: &'static str,
+    message: &'static str,
+    #[serde(rename = "traceId", skip_serializing_if = "Option::is_none")]
+    trace_id: Option<&'a str>,
+    context: UnexpectedContext<'a>,
+}
+
+#[derive(serde::Serialize)]
+struct UnexpectedContext<'a> {
+    #[serde(rename = "requestId", skip_serializing_if = "Option::is_none")]
+    request_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    service: Option<&'a str>,
+    #[serde(rename = "contractId", skip_serializing_if = "Option::is_none")]
+    contract_id: Option<&'a str>,
+    #[serde(rename = "contractDigest", skip_serializing_if = "Option::is_none")]
+    contract_digest: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    method: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    live: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation: Option<&'a str>,
 }
 
 fn insert_string(context: &mut Map<String, Value>, key: &str, value: Option<&str>) {
@@ -734,12 +752,10 @@ fn is_lower_hex(value: &str) -> bool {
         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// A new error ID: a ULID, the same form the TypeScript SDK uses, so an
+/// operator searches for every reference the same way.
 pub(super) fn error_id() -> String {
-    let sequence = ERROR_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    format!("rust-server-error-{timestamp}-{sequence}")
+    ulid::Ulid::generate().to_string()
 }
 
 /// Outcome classification for one dispatched server request.
@@ -990,8 +1006,9 @@ where
     let mut unary = (handler.is_unary_rpc_route(&request.subject) && request.reply_to.is_some())
         .then(|| UnaryRequest::start(&request.context, route));
     let reply_to = request.reply_to;
-    let annotations =
+    let mut annotations =
         ErrorAnnotationContext::from_request(&request.subject, &request.context, handler);
+    let opening = request.context.verified_opening.clone();
     let call = handler.handle_frames(&request.subject, request.payload, request.context);
     let (dispatch, result) = if let Some(unary) = &unary {
         dispatch_outcome(call.instrument(unary.span.clone())).await
@@ -1007,6 +1024,8 @@ where
         })),
         Err(error) => match reply_to {
             Some(reply_to) if !live_route || !is_dropped_live_denial(&error) => {
+                annotations
+                    .after_dispatch(opening.current(), unary.as_ref().map(|unary| &unary.span));
                 Ok(Some(vec![encode_error_reply_with_context(
                     reply_to,
                     &error,
@@ -1038,7 +1057,7 @@ where
         .is_unary_rpc_route(&request.subject)
         .then(|| UnaryRequest::start(&request.context, route));
     let reply_to = request.reply_to;
-    let annotations =
+    let mut annotations =
         ErrorAnnotationContext::from_request(&request.subject, &request.context, handler);
     let context = request.context.clone();
     let request_payload = request.payload.clone();
@@ -1084,6 +1103,10 @@ where
                 }
                 return Ok(DispatchResponse::NoReply);
             }
+            annotations.after_dispatch(
+                context.verified_request(),
+                unary.as_ref().map(|unary| &unary.span),
+            );
             (
                 HandlerResponse::Error(
                     encode_error_reply_with_context(reply_to.clone(), &error, &annotations).payload,

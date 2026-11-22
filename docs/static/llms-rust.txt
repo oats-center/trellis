@@ -245,7 +245,11 @@ A handler reports a failure with no declared error as
 `ServerError::Internal(message)`. The text goes only to the service's log.
 Callers receive `UnexpectedError` with a fixed message, its `id`, `traceId` and
 `context.requestId`, and the log line carries the same IDs. A failed Operation
-carries `id` and `traceId`, and its log line also has the operation ID.
+carries `id` and `traceId`, and its log line also has the operation ID. A
+contract-declared error that stands in for an internal failure keeps its cause
+for that log line with `DeclaredRpcError::new(...).with_cause(error)`; the
+reply never includes it. A generated `UnexpectedError` displays as
+`<message> (Reference: <id>)`.
 
 Rust schema-validation issue paths use JSON Pointer: an empty path is the root,
 `/` is an empty-name property, and property names escape `~` as `~0` and `/` as

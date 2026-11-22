@@ -284,18 +284,20 @@ pub(super) fn rpc_error(error: AuthError) -> ServerError {
             "temporarily_unavailable",
             "Temporarily unavailable",
         ),
-        AuthError::Storage(_) | AuthError::Json(_) | AuthError::Protocol(_) => {
-            tracing::error!(error = %error, "Auth RPC failed");
-            (
-                errors::UnexpectedError::TYPE,
-                "server_error",
-                "Request failed",
-            )
-        }
+        AuthError::Storage(_) | AuthError::Json(_) | AuthError::Protocol(_) => (
+            errors::UnexpectedError::TYPE,
+            "server_error",
+            "Request failed",
+        ),
     };
-    ServerError::DeclaredRpc(DeclaredRpcError::new(
-        error_type,
-        message,
-        [("code", serde_json::Value::String(code.to_owned()))],
-    ))
+    // The request loop logs this failure once, under the error ID the caller
+    // receives, with the internal cause the reply leaves out.
+    ServerError::DeclaredRpc(
+        DeclaredRpcError::new(
+            error_type,
+            message,
+            [("code", serde_json::Value::String(code.to_owned()))],
+        )
+        .with_cause(&error),
+    )
 }

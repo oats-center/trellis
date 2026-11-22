@@ -197,6 +197,7 @@ import {
   activeTraceId,
   causeLogData,
   causeMessage,
+  eventHeaderId,
   ingressRetiredError,
   isBrowserAuthRequiredError,
   isRuntimeRpcErrorDesc,
@@ -228,9 +229,16 @@ import {
   annotateHandlerBoundaryError,
   callerErrorData,
   isResultLike,
+  logFailure,
   reconstructDeclaredRpcError,
   recordRuntimeError,
 } from "./session/handler_errors.ts";
+
+/** What an RPC learned before it failed, for the failure's log line. */
+type RpcObservation = {
+  caller?: { principal: string; session: string };
+  traceId?: string;
+};
 export {
   verifyLocalAuthorization,
   toCatalogAction,
@@ -334,8 +342,12 @@ export {
   isResultLike,
   annotateHandlerBoundaryError,
   callerErrorData,
+  logFailure,
 } from "./session/handler_errors.ts";
-export type { HandlerErrorAnnotationContext } from "./session/handler_errors.ts";
+export type {
+  FailureLogFields,
+  HandlerErrorAnnotationContext,
+} from "./session/handler_errors.ts";
 export type { EventListenerContext } from "./session/events.ts";
 export type {
   ActiveRpcFacade,
@@ -2550,18 +2562,21 @@ export class Trellis<
           }
         }
         try {
+          const observed: RpcObservation = {};
           const resultPromise = await this.#processRPCMessage(
             method,
             ctx,
             msg,
             fn,
             handlerTrellis,
+            observed,
           );
           const result = resultPromise.take();
 
           if (isErr(result)) {
             await this.#respondWithError(msg, result.error, {
               method: String(method),
+              ...observed,
             });
             continue;
           }
@@ -2624,6 +2639,7 @@ export class Trellis<
     msg: Msg,
     fn: HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>,
     handlerTrellis: HandlerTrellis<TA, TRequests>,
+    observed: RpcObservation,
   ): Promise<Result<ProcessedRpcResponse, BaseError>> {
     this.#log.debug(
       { method: String(method), subject: msg.subject },
@@ -2643,6 +2659,7 @@ export class Trellis<
     const incomingTraceId = traceIdFromTraceparent(
       msg.headers?.get("traceparent"),
     );
+    observed.traceId = activeTraceId(span) ?? incomingTraceId;
 
     const serverRoute = trellisRoute("rpc", method);
     const serverStartedAt = performance.now();
@@ -2713,6 +2730,10 @@ export class Trellis<
             return err(authValue.error);
           }
           caller = authValue;
+          observed.caller = {
+            principal: authValue.principalId,
+            session: authValue.authorizationSessionId,
+          };
           callerInboxPrefix = authValue.inboxPrefix;
           await this.rememberVerifiedRequest(msg, authValue, ctx.permission);
         }
@@ -2816,17 +2837,7 @@ export class Trellis<
               traceId: activeTraceId(span) ?? incomingTraceId,
             },
           );
-          this.#log.error(
-            {
-              method,
-              error: error.message,
-              cause:
-                error.cause instanceof Error
-                  ? { message: error.cause.message, stack: error.cause.stack }
-                  : error.cause,
-            },
-            "Handler threw unexpectedly.",
-          );
+          // The reply path logs this failure once, under its error ID.
           span.setStatus({
             code: SpanStatusCode.ERROR,
             message: "handler failed",
@@ -2853,19 +2864,7 @@ export class Trellis<
             contractDigest: this.contractDigest,
             traceId: activeTraceId(span) ?? incomingTraceId,
           });
-
-          this.#log.error(
-            {
-              method,
-              error: error.message,
-              errorType: error.name,
-              cause:
-                error.cause instanceof Error
-                  ? { message: error.cause.message, stack: error.cause.stack }
-                  : error.cause,
-            },
-            "Handler returned error.",
-          );
+          // The reply path logs this failure once, under its error ID.
           span.setStatus({
             code: SpanStatusCode.ERROR,
             message: "handler error",
@@ -3029,22 +3028,36 @@ export class Trellis<
   async #respondWithError(
     msg: Msg,
     error: Error | BaseError,
-    context: { method?: string; responseBytes?: number } = {},
+    context: { method?: string; responseBytes?: number } & RpcObservation = {},
   ): Promise<void> {
-    const trellisError =
-      error instanceof BaseError && !(error instanceof RemoteError)
-        ? error
-        : new UnexpectedError({ cause: error });
-
-    this.#log.error(
-      {
-        method: context.method,
-        subject: msg.subject,
-        responseBytes: context.responseBytes,
-        error: trellisError.toSerializable(),
-      },
-      "RPC error",
-    );
+    // One error ID, in the reply and in the one log line for this failure.
+    const requestId = msg.headers?.get("request-id") || undefined;
+    const traceId =
+      context.traceId ??
+      traceIdFromTraceparent(msg.headers?.get("traceparent"));
+    const trellisError = annotateHandlerBoundaryError(error, {
+      ...(context.method === undefined ? {} : { method: context.method }),
+      requestId,
+      service: this.name,
+      contractId: this.contractId,
+      contractDigest: this.contractDigest,
+      traceId,
+    });
+    const route =
+      context.method ??
+      (typeof trellisError.getContext().live === "string"
+        ? (trellisError.getContext().live as string)
+        : undefined);
+    logFailure(this.#log, trellisError, {
+      ...(route === undefined ? {} : { route }),
+      ...(requestId === undefined ? {} : { requestId }),
+      ...(traceId === undefined ? {} : { traceId }),
+      service: this.name,
+      ...(context.caller === undefined ? {} : { caller: context.caller }),
+      ...(context.responseBytes === undefined
+        ? {}
+        : { extra: { response_bytes: context.responseBytes } }),
+    });
 
     const errorData = callerErrorData(trellisError);
     const hdrs = natsHeaders();
@@ -3421,14 +3434,28 @@ export class Trellis<
       void (async () => {
         try {
           for await (const msg of sub) {
+            let request: unknown;
             try {
-              const reply = await decide(msg.json());
+              request = msg.json();
+              const reply = await decide(request);
               msg.respond(JSON.stringify(reply));
-            } catch (error) {
-              this.#log.error(
-                { error, subject: msg.subject },
-                "Webhook decide handler failed",
-              );
+            } catch (cause) {
+              // The delivery ID is the reference Console's webhook records show.
+              const delivery =
+                typeof request === "object" && request !== null
+                  ? (request as { delivery?: { deliveryId?: unknown } })
+                      .delivery
+                  : undefined;
+              logFailure(this.#log, new UnexpectedError({ cause }), {
+                route: msg.subject,
+                service: this.name,
+                extra: {
+                  delivery_id:
+                    typeof delivery?.deliveryId === "string"
+                      ? delivery.deliveryId
+                      : undefined,
+                },
+              });
             }
           }
         } finally {
@@ -3522,14 +3549,11 @@ export class Trellis<
               operation: String(event),
               phase: "handler_result",
             });
-            this.#log.error(
-              {
-                error: handlerValue.error.toSerializable(),
-                event,
-                subject: msg.subject,
-              },
-              "Event handler failed",
-            );
+            logFailure(this.#log, handlerValue.error, {
+              route: String(event),
+              service: this.name,
+              extra: { event_id: eventHeaderId(m), subject: msg.subject },
+            });
           }
         }
       } finally {

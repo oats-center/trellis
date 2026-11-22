@@ -773,12 +773,22 @@ where
                                 super::request_loop::trace_id_from_traceparent(&carrier.traceparent)
                                     .map(str::to_owned)
                             });
+                            let record = &admitted.record;
+                            let caller_session = record
+                                .caller
+                                .as_ref()
+                                .map(|caller| caller.authorization_session_id.as_str());
                             tracing::error!(
                                 error_id = %error_id,
                                 operation_id = %operation_id,
                                 trace_id = trace_id.as_deref(),
+                                route = %record.operation,
+                                api = %record.api_id,
+                                caller_principal = %record.creator_principal_id,
+                                caller_session,
+                                error_type = "OperationHandlerError",
                                 %error,
-                                "operation handler failed",
+                                "operation failed",
                             );
                             let mut fields = serde_json::Map::new();
                             fields.insert("id".to_owned(), Value::String(error_id));

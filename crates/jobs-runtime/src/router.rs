@@ -141,9 +141,7 @@ fn map_query_error(error: JobsQueryError) -> ServerError {
                 ],
             ))
         }
-        other => {
-            tracing::error!(error = %other, "Jobs query failed");
-            ServerError::Internal(format!("jobs RPC query failed: {other}"))
-        }
+        // The request loop logs this under the error ID the caller receives.
+        other => ServerError::Internal(format!("jobs RPC query failed: {other}")),
     }
 }

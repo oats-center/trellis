@@ -264,6 +264,10 @@ fn format_rpc_error_value(value: &Value, raw: &str) -> String {
     if let Some(context) = value.get("context").and_then(format_context) {
         message.push_str(&format!(" ({context})"));
     }
+    // The server's log line for this failure carries the same `error_id`.
+    if let Some(id) = value.get("id").and_then(Value::as_str) {
+        message.push_str(&format!(" Reference: {id}"));
+    }
 
     message
 }
@@ -420,6 +424,15 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "rpc returned error: deploymentId: service deployment not found (deploymentId=demo)"
+        );
+    }
+
+    #[test]
+    fn unexpected_error_display_names_its_reference() {
+        let raw = r#"{"id":"01KAQ7Z3M4R5S6T7V8W9X0Y1Z2","type":"UnexpectedError","message":"An unexpected error has occurred","context":{"requestId":"req-1"}}"#;
+        assert_eq!(
+            format_rpc_error_payload(raw),
+            "An unexpected error has occurred (requestId=req-1) Reference: 01KAQ7Z3M4R5S6T7V8W9X0Y1Z2"
         );
     }
 }

@@ -207,6 +207,9 @@ impl<D: WebhookDescriptor> WebhookHandle<D> {
                 else {
                     continue;
                 };
+                // The delivery ID is the reference Console's webhook records show.
+                let delivery_id = request.delivery.delivery_id.to_string();
+                let endpoint = request.delivery.endpoint.clone();
                 match handler(request).await {
                     Ok(decision) => {
                         if let Ok(body) = serde_json::to_vec(&decision) {
@@ -214,7 +217,13 @@ impl<D: WebhookDescriptor> WebhookHandle<D> {
                         }
                     }
                     Err(error) => {
-                        tracing::error!(%error, "webhook decide handler failed");
+                        tracing::error!(
+                            delivery_id,
+                            route = endpoint,
+                            error_type = "UnexpectedError",
+                            %error,
+                            "webhook decide handler failed",
+                        );
                     }
                 }
             }

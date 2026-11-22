@@ -122,6 +122,7 @@ async fn handle(
     let attempt_id = ulid::Ulid::generate().to_string();
     let received_at_ms = super::now_ms();
     let method = request.method().clone();
+    let mut reason = None;
     let (outcome, status, response, size) = match intake(
         &webhooks,
         &endpoint,
@@ -156,12 +157,13 @@ async fn handle(
                     },
                     Outcome {
                         outcome: refusal.outcome,
-                        reason: Some(refusal.reason),
+                        reason: Some(refusal.reason.clone()),
                         status: Some(refusal.status.as_u16()),
                         ..Outcome::default()
                     },
                 )
                 .await;
+            reason = Some(refusal.reason);
             let mut response = empty(refusal.status);
             match refusal.status {
                 StatusCode::METHOD_NOT_ALLOWED => {
@@ -193,17 +195,28 @@ async fn handle(
             opentelemetry::KeyValue::new("trellis.outcome", outcome),
         ],
     );
-    tracing::info!(
-        attempt_id = %attempt_id,
-        service = %endpoint.record.deployment_id,
-        endpoint = %endpoint.record.endpoint,
-        outcome,
-        status,
-        size,
-        duration_ms = started.elapsed().as_millis() as u64,
-        client = %client,
-        "webhook request"
-    );
+    // The attempt ID is the reference Console's webhook records show.
+    macro_rules! log_request {
+        ($level:ident) => {
+            tracing::$level!(
+                attempt_id = %attempt_id,
+                service = %endpoint.record.deployment_id,
+                endpoint = %endpoint.record.endpoint,
+                outcome,
+                status,
+                reason = reason.as_deref(),
+                size,
+                duration_ms = started.elapsed().as_millis() as u64,
+                client = %client,
+                "webhook request"
+            )
+        };
+    }
+    if status >= 500 {
+        log_request!(warn);
+    } else {
+        log_request!(info);
+    }
     response
 }
 
@@ -594,7 +607,7 @@ async fn intake(
                     ))
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "webhook intake stream refused a request");
+                    tracing::warn!(%attempt_id, %error, "webhook intake stream refused a request");
                     let _ = records
                         .set_outcome(
                             attempt_id,

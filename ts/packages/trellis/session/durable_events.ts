@@ -55,9 +55,9 @@ import {
   type RuntimeEventConsumers,
 } from "./events.ts";
 import { ulid } from "ulid";
-import { sleep } from "./helpers.ts";
+import { eventHeaderId, sleep } from "./helpers.ts";
 
-import { recordRuntimeError } from "./handler_errors.ts";
+import { logFailure, recordRuntimeError } from "./handler_errors.ts";
 import { recordCatalogCounter } from "../telemetry/mod.ts";
 import { API as EVENTS_API } from "../internal_sdk/generated/apis/events/mod.js";
 import { permission as actionPermission } from "../participant_runtime/participant.ts";
@@ -841,14 +841,15 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
                 operation: String(registration.event),
                 phase: "handler_result",
               });
-              this.#host.log.error(
-                {
-                  error: handlerValue.error.toSerializable(),
-                  event: registration.event,
-                  subject: msg.subject,
+              logFailure(this.#host.log, handlerValue.error, {
+                route: String(registration.event),
+                extra: {
+                  event_id: eventHeaderId(eventPayload),
+                  consumer: group,
+                  delivery,
+                  max_deliver: binding.maxDeliver,
                 },
-                "Event handler failed",
-              );
+              });
               if (delivery >= binding.maxDeliver) {
                 // The broker's exhaustion advisory owns DLQ capture, including replay.
                 this.#recordEventDisposition("nak", () => msg.nak());
