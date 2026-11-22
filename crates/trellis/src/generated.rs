@@ -772,24 +772,25 @@ impl Client {
         let input = input.encode().map_err(|error| {
             crate::client::CallError::Protocol(crate::client::ProtocolError::new(error.to_string()))
         })?;
-        let output = self
-            .client
-            .request_json_value_routed(
-                D::API_ID,
-                trellis_protocol::CatalogActionIdentity {
-                    kind: trellis_protocol::ApiSurfaceKind::Rpc,
-                    name: action_name(D::DESCRIPTOR_NAME).to_owned(),
-                    direction: trellis_protocol::PermissionAction::Call,
-                },
-                route,
-                &input,
-                crate::telemetry::instruments::route_token(
-                    crate::telemetry::instruments::RouteFamily::Rpc,
-                    &format!("{}:{}", D::API_ID, D::KEY),
-                ),
-            )
-            .await
-            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        // The routed request is a large state machine; on the heap it keeps
+        // every generated RPC future small, so callers that await many RPCs in
+        // one body do not accumulate its size in their own stack frames.
+        let output = Box::pin(self.client.request_json_value_routed(
+            D::API_ID,
+            trellis_protocol::CatalogActionIdentity {
+                kind: trellis_protocol::ApiSurfaceKind::Rpc,
+                name: action_name(D::DESCRIPTOR_NAME).to_owned(),
+                direction: trellis_protocol::PermissionAction::Call,
+            },
+            route,
+            &input,
+            crate::telemetry::instruments::route_token(
+                crate::telemetry::instruments::RouteFamily::Rpc,
+                &format!("{}:{}", D::API_ID, D::KEY),
+            ),
+        ))
+        .await
+        .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
         D::Output::decode(output).map_err(|error| {
             crate::client::CallError::Protocol(crate::client::ProtocolError::new(error.to_string()))
         })

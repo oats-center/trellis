@@ -166,7 +166,9 @@ impl TrellisTestRuntimeBuilder {
         let workdir = sandbox.root().to_owned();
         match tokio::time::timeout(
             timeouts.startup,
-            start_once(
+            // Startup is a large state machine; on the heap it leaves the
+            // caller's future and stack frames small.
+            Box::pin(start_once(
                 sandbox,
                 source,
                 self.native,
@@ -174,7 +176,7 @@ impl TrellisTestRuntimeBuilder {
                 username,
                 &password,
                 self.nats_websocket_only,
-            ),
+            )),
         )
         .await
         {
@@ -1087,7 +1089,7 @@ impl TrellisTestRuntime {
         &mut self,
         name: &str,
     ) -> Result<TestServiceIdentity, TrellisTestError> {
-        self.register::<P>(name, false).await
+        Box::pin(self.register::<P>(name, false)).await
     }
 
     /// Provisions another instance of `service`'s deployment: a replica that
@@ -1155,7 +1157,7 @@ impl TrellisTestRuntime {
         &mut self,
         name: &str,
     ) -> Result<TestServiceIdentity, TrellisTestError> {
-        self.register::<P>(name, true).await
+        Box::pin(self.register::<P>(name, true)).await
     }
 
     async fn register<P: ParticipantDescriptor>(

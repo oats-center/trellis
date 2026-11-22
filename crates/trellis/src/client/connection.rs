@@ -1319,7 +1319,9 @@ impl TrellisClient {
             ],
             "cancelled",
         );
-        let result = Self::connect_native_inner(opts).await;
+        // The connection handshake is a large state machine; keeping it on the
+        // heap keeps every connect future small for the caller to hold.
+        let result = Box::pin(Self::connect_native_inner(opts)).await;
         if let Ok(client) = &result {
             client.connection.usable();
         }
@@ -1541,7 +1543,7 @@ impl TrellisClient {
             ],
             "cancelled",
         );
-        let result = Self::connect_user_inner(opts).await;
+        let result = Box::pin(Self::connect_user_inner(opts)).await;
         if let Ok(client) = &result {
             client.connection.usable();
         }
