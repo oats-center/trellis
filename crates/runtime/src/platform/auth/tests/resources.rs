@@ -611,6 +611,25 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         .create("work", serde_json::json!({"value":"replacement"}))
         .await
         .unwrap();
+    // JOBS_WORK sources the lifecycle stream asynchronously. Wait until the
+    // replacement's work is queued (delivered, left unacknowledged) so the
+    // replayed purge below runs against stored replacement work.
+    let replacement_queue = &replacement.jobs.as_ref().unwrap().queues["work"];
+    let queued: async_nats::jetstream::consumer::PullConsumer = jetstream
+        .get_consumer_from_stream(
+            &replacement_queue.consumer_name,
+            crate::resources::JOBS_WORK_STREAM,
+        )
+        .await
+        .unwrap();
+    let mut queued = queued.messages().await.unwrap();
+    let delivered = tokio::time::timeout(Duration::from_secs(5), queued.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(delivered.subject.as_str(), replacement_queue.work_subject);
+    drop(queued);
     // Replay the exact broker requests from the completed command after the
     // new allocation has written data, as a delayed earlier execution can do.
     for purge in saved_purges["purges"].as_array().unwrap() {
@@ -627,11 +646,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
     assert!(
         lifecycle
             .get_first_raw_message_by_subject(
-                &format!(
-                    "{}.{}.*",
-                    replacement.jobs.as_ref().unwrap().queues["work"].publish_prefix,
-                    next.id
-                ),
+                &format!("{}.{}.*", replacement_queue.publish_prefix, next.id),
                 0
             )
             .await
@@ -639,12 +654,9 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         "delayed old purge preserves replacement lifecycle"
     );
     assert!(
-        work.get_first_raw_message_by_subject(
-            &replacement.jobs.as_ref().unwrap().queues["work"].work_subject,
-            0
-        )
-        .await
-        .is_ok(),
+        work.get_first_raw_message_by_subject(&replacement_queue.work_subject, 0)
+            .await
+            .is_ok(),
         "delayed old purge preserves replacement queued work"
     );
     let remaining: Vec<_> = keys.keys().await.unwrap().collect().await;
@@ -675,10 +687,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         );
     }
     assert!(work
-        .get_first_raw_message_by_subject(
-            &replacement.jobs.as_ref().unwrap().queues["work"].work_subject,
-            0,
-        )
+        .get_first_raw_message_by_subject(&replacement_queue.work_subject, 0)
         .await
         .is_ok());
     server.kill().await.unwrap();
