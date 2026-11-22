@@ -30,7 +30,7 @@ mod provider_ingress;
 #[doc(hidden)]
 mod publisher;
 #[doc(hidden)]
-mod request_loop;
+pub(crate) mod request_loop;
 mod resources;
 #[doc(hidden)]
 mod router;

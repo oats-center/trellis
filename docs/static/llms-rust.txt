@@ -249,7 +249,10 @@ carries `id` and `traceId`, and its log line also has the operation ID. A
 contract-declared error that stands in for an internal failure keeps its cause
 for that log line with `DeclaredRpcError::new(...).with_cause(error)`; the
 reply never includes it. A generated `UnexpectedError` displays as
-`<message> (Reference: <id>)`.
+`<message> (Reference: <id>)`. A panic in an RPC, Live, Operation, job, event
+or webhook decide handler fails only that call as an unexpected failure with a
+reference. The service keeps serving, a durable event is retried, and the log
+line holds the panic message.
 
 Rust schema-validation issue paths use JSON Pointer: an empty path is the root,
 `/` is an empty-name property, and property names escape `~` as `~0` and `/` as

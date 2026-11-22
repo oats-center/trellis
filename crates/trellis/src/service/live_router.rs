@@ -273,14 +273,34 @@ where
     TEvent: crate::generated::Codec + 'static,
     S: futures_util::Stream<Item = Result<TEvent, ServerError>> + Send + 'static,
 {
-    Box::pin(stream.map(|item| {
-        match item {
-            Ok(event) => crate::generated::Codec::encode(&event)
-                .map(SourceItem::Value)
-                .map_err(|error| error.to_string()),
-            Err(error) => Err(error.to_string()),
-        }
-    }))
+    // A panic while the handler's stream is polled ends this session with a
+    // reference, like any source failure, and leaves the provider serving.
+    Box::pin(
+        std::panic::AssertUnwindSafe(stream)
+            .catch_unwind()
+            .map(|item| match item {
+                Ok(Ok(event)) => crate::generated::Codec::encode(&event)
+                    .map(SourceItem::Value)
+                    .map_err(|error| error.to_string()),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(panic) => Err(live_handler_panicked(&super::request_loop::panic_message(
+                    &*panic,
+                ))),
+            }),
+    )
+}
+
+/// Log a Live handler's panic once, under a new error ID, and return the
+/// session's end message: the reference, without the panic's text.
+pub(crate) fn live_handler_panicked(panic: &str) -> String {
+    let id = super::request_loop::error_id();
+    tracing::error!(
+        error_id = %id,
+        error_type = "UnexpectedError",
+        error = %format!("live handler panicked: {panic}"),
+        "request failed",
+    );
+    format!("An unexpected error has occurred. Reference: {id}")
 }
 
 /// Adapt one Operation watch frame stream into the engine's source items.

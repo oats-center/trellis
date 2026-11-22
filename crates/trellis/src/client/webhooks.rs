@@ -210,29 +210,30 @@ impl<D: WebhookDescriptor> WebhookHandle<D> {
                 // The delivery ID is the reference Console's webhook records show.
                 let delivery_id = request.delivery.delivery_id.to_string();
                 let endpoint = request.delivery.endpoint.clone();
-                match handler(request).await {
-                    Ok(decision) => {
+                // The handler and its error's `Display` are the application's
+                // code; a panic in either is this request's failure and must
+                // not end the endpoint's decide subscription.
+                let outcome = crate::service::request_loop::catch_handler_panic(async {
+                    handler(request).await.map_err(|error| error.to_string())
+                })
+                .await;
+                let error = match outcome {
+                    Ok(Ok(decision)) => {
                         if let Ok(body) = serde_json::to_vec(&decision) {
                             let _ = nats.publish(reply, body.into()).await;
                         }
+                        continue;
                     }
-                    Err(error) => {
-                        // The error's `Display` is the application's code and
-                        // runs in this loop; a panic in it must not end the
-                        // endpoint's decide subscription.
-                        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            error.to_string()
-                        }))
-                        .unwrap_or_else(|_| "[unprintable cause]".to_owned());
-                        tracing::error!(
-                            delivery_id,
-                            route = endpoint,
-                            error_type = "UnexpectedError",
-                            error,
-                            "webhook decide handler failed",
-                        );
-                    }
-                }
+                    Ok(Err(error)) => error,
+                    Err(panic) => format!("webhook decide handler panicked: {panic}"),
+                };
+                tracing::error!(
+                    delivery_id,
+                    route = endpoint,
+                    error_type = "UnexpectedError",
+                    error,
+                    "webhook decide handler failed",
+                );
             }
         });
         Ok(WebhookDecideHandle {

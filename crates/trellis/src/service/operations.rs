@@ -668,7 +668,21 @@ where
                     caller: record.caller.clone(),
                     ..RequestContext::default()
                 };
-                Box::pin(handler(context, input, control))
+                // A panic in the handler fails this execution like an error
+                // would, so the caller gets its reference and the provider
+                // goes on.
+                let handler = Arc::clone(&handler);
+                Box::pin(async move {
+                    super::request_loop::catch_handler_panic(async move {
+                        handler(context, input, control).await
+                    })
+                    .await
+                    .unwrap_or_else(|panic| {
+                        Err(ServerError::Internal(format!(
+                            "operation handler panicked: {panic}"
+                        )))
+                    })
+                })
             };
             // One acquired execution observation; it ends with the attempt's
             // lifecycle disposition and never creates a lifetime-long span.
