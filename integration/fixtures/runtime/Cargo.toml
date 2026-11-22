@@ -17,7 +17,7 @@ runtime-pinned-trellis = { path = "../runtime-pinned/crates/runtime-pinned-trell
 trellis-runtime-apis = { path = "../../../crates/runtime-apis" }
 trellis-rs = { version = "0.100.0-rc.53", features = ["telemetry-otlp"] }
 tokio = { version = "1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "signal"] }
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 ulid = "3"
 tracing-opentelemetry = "0.34.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -316,6 +316,7 @@ export async function sessionEventSigningDigest(
         encoder.encode(event.subject),
         encoder.encode(event.eventId),
         encoder.encode(event.eventTime),
+        i64(event.issuedAt, "issuedAt"),
         await sha256([payload]),
       ]),
     ),

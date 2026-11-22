@@ -236,6 +236,7 @@ mod tests {
             event_time: time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap(),
+            issued_at: time::OffsetDateTime::now_utc().unix_timestamp(),
         };
         let payload = b"retained provider payload";
         let proof = sign_session_event(&event, payload, &runtime_key).unwrap();

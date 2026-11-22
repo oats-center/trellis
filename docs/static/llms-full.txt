@@ -1061,12 +1061,16 @@ revision. It does not require consumer capabilities. Delegated publication uses
 whole-capability membership. Provider certificates never grant RPC caller or
 event-consumption rights.
 
-Historical event verification requires both the signed event timestamp and
-trusted original JetStream publication metadata (`published` and
-`stream_sequence`). Both timestamps must fall within the publisher authority's
-validity window and precede any ordinary session revocation cutoff; certified
-publication also requires both within the provider certificate's validity
-window. A consumer's read time is not publication evidence, so a backdated
+An event is verified at the time its publisher signed it (`issuedAt`), under
+the authority it names, not at its event time, which records when it was
+recorded and may be much earlier, as for an outbox backlog dispatched after a
+renewal or reconnect. Publishing never fails because the session renewed.
+Historical event verification requires both the signing time and trusted
+original JetStream publication metadata (`published` and `stream_sequence`).
+Both times must fall within the publisher authority's validity window and
+precede any ordinary session revocation cutoff, and the publication must follow
+the signing within the 30-second clock skew; certified publication also
+requires both within the provider certificate's validity window. A consumer's read time is not publication evidence, so a backdated
 signature cannot authenticate a new publication after expiry or revocation.
 Current permission to read is a separate check from past publisher
 authenticity. Ordinary certificate expiry or issuer retirement does not

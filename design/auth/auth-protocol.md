@@ -124,11 +124,10 @@ requests to it. A reattached socket would resume subscriptions before authority
 was checked again and flush publishes buffered during the outage, some of them
 after their deadline. A request started during the gap, or one whose
 connection is lost while it is being signed, waits for the new generation
-within its deadline and is never sent after it. An event is checked against the
-authority that signs it: a verifier refuses one whose event time precedes that
-authority. So when the wait renewed or replaced the session, the SDKs fail
-the publish (prepare the event again) rather than send an event every consumer
-would reject.
+within its deadline and is never sent after it. An event publish waits the same
+way and is signed on the new generation under the authority current then, so a
+renewal or replacement during the wait never fails it (see [event signing
+time](#event-signing-time)).
 
 ## Requests, replies, and events
 
@@ -152,10 +151,11 @@ finite request, first send or resend, once its deadline has passed: a request
 whose transport acquisition, proof creation, or resend wakeup ran late fails as
 a timeout without reaching the broker.
 
-Request, response, and Live event times are accepted within 30 seconds of the
-verifier's clock in both SDKs. A request that waits in a provider's queue
-behind slower work is checked against its original issue time, so the window
-covers that wait as well as skew between hosts.
+Request, response, and Live event times, and the signing time of an event a
+consumer receives live, are accepted within 30 seconds of the verifier's clock
+in both SDKs. A request that waits in a provider's queue behind slower work is
+checked against its original issue time, so the window covers that wait as well
+as skew between hosts.
 
 A provider gives an unverified request no reply. When it cannot verify one only
 because its authorization evidence is briefly unavailable, as while material it
@@ -169,6 +169,42 @@ is redelivered later, not discarded as forged.
 Events retain signed authority by digest. Historical verification uses original
 JetStream publication time/sequence and the signed revocation cutoff, not replay
 time. Preserve immutable issued authority and authenticated trust history.
+
+### Event signing time
+
+An event carries two signed times. Its event time is when the publisher
+recorded it: an outbox event keeps the time its transaction committed, however
+long it waits to be dispatched. Its issue time (`issuedAt`, Unix seconds) is
+when the publisher signed it. A publisher signs each event as it publishes it,
+under the authority current then, and names that authority by digest in the
+event. Revocation is eventually consistent and never blocks good traffic, so an
+event signed while its session held valid, unrevoked authority is genuine,
+whenever it was recorded and whenever it is delivered.
+
+A consumer decides at the issue time:
+
+1. The named authority verifies against a trusted issuer key, and the issue
+   time falls within its validity window (`notBefore` <= issue time <
+   `expiresAt`).
+2. The issue time precedes the session's revocation cutoff, if it has one.
+3. The event time is not later than the issue time plus the 30-second clock
+   skew. It has no lower bound: a backlog recorded hours earlier is still an
+   event its publisher vouches for now.
+4. Live delivery also requires the authority to be current, the session not
+   known revoked, and the issue time within 30 seconds of the consumer's clock.
+5. Retained delivery also requires the broker's original publication time to
+   fall within the authority's window, before the cutoff, and within 30 seconds
+   of the issue time.
+
+The bound on how old a signature may be is therefore the authority window plus
+the skew, never the event time. The same signed bytes published again later
+than the skew allows are refused, and within it the stream's duplicate window
+drops a second copy by its event ID, so the publication-time bound is what
+stops replay. A key whose session was revoked cannot authenticate a new
+publication: one signed after the cutoff fails step 2, and one with a backdated
+issue time fails step 5, because the broker records it after the cutoff.
+Renewal, reconnection and outbox backlogs never make a genuine event fail, and
+a publish never fails because the session renewed while it waited.
 
 ## Authenticated verification material
 
@@ -196,7 +232,7 @@ digests are the raw 32 bytes of their canonical unpadded base64url form.
 | Message                 | Components, in order                                                                                                                                                                                                                                                     |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Request                 | `trellis.message.request.v1`, authority digest, API id, API generation, accepted revision, action, subject, reply subject (empty when none), request id, issued-at, `H(payload)`                                                                                         |
-| Event                   | `trellis.message.event.v1`, authority digest, API id, API generation, accepted revision, action, subject, event id, event time, `H(payload)`                                                                                                                             |
+| Event                   | `trellis.message.event.v1`, authority digest, API id, API generation, accepted revision, action, subject, event id, event time, issued-at, `H(payload)`                                                                                                                  |
 | Response                | `trellis.message.response.v1`, installation id, NATS account, provider authority digest, provider certificate digest, API id, API generation, action, request authority digest, request id, request proof digest, subject, `success` or `error`, `H(payload)`, issued-at |
 | Transfer frame          | `trellis.transfer-frame.v1`, canonical JSON of the frame descriptor, `H(payload)`                                                                                                                                                                                        |
 | Transfer provider proof | `trellis.transfer-server-proof.v1`, context digest, subject, Transfer frame digest                                                                                                                                                                                       |

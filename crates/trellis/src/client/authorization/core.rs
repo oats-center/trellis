@@ -264,18 +264,12 @@ impl AuthorizationVerificationCore {
             .authorizes(input.authority.signed(), input.action);
         if !authorized {
             if let Some((certificate, issuer)) = input.provider {
-                let event_time = time::OffsetDateTime::parse(
-                    &input.event.event_time,
-                    &time::format_description::well_known::Rfc3339,
-                )
-                .map_err(|_| AuthorizationVerificationError::PermissionDenied)?
-                .unix_timestamp();
                 authorized = certificate.authorizes_event_publication(
                     issuer,
                     input.authority.signed(),
                     input.catalog,
                     input.action,
-                    event_time,
+                    input.event.issued_at,
                 )?;
                 if let Some(publication) = input.original_publication {
                     let published = time::OffsetDateTime::parse(

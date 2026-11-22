@@ -1031,7 +1031,7 @@ export class SessionAuthorityOwner {
         action,
         originalPublication !== null,
         {
-          at: Math.floor(Date.parse(event.eventTime) / 1000),
+          at: event.issuedAt,
           ...(originalPublication
             ? {
                 publishedAt: Math.floor(

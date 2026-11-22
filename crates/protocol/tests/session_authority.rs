@@ -10,7 +10,7 @@ use trellis_protocol::{
     verify_session_authority, verify_session_event, verify_session_request, AuthorityApi,
     AuthorityIssuerKey, AuthorityIssuerState, CapabilityAuthority, OriginalEventPublication,
     PrincipalKind, SessionAuthorityPurpose, SessionAuthorityVerificationInput,
-    SessionAuthorityVerificationPolicy, SessionBinding, SessionEvent,
+    SessionAuthorityVerificationPolicy, SessionBinding, SessionEvent, SessionEventProof,
     SessionEventVerificationInput, SessionRequest, SessionRequestVerificationInput,
     SignedSessionAuthority, U64s, UnsignedSessionAuthority, SESSION_AUTHORITY_FORMAT_V1,
     USER_PROFILE_EXTENSION,
@@ -677,8 +677,10 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
 }
 
 #[test]
-fn historical_event_requires_original_publication_before_expiry_and_revocation() {
+fn historical_event_is_judged_at_its_signing_time_and_original_publication() {
     let (runtime, issuer, authority, mut policy) = issued();
+    // Recorded before the signing authority was issued, as an outbox backlog
+    // event is, and signed under it shortly before publication.
     let event = SessionEvent {
         authority_digest: authority.digest().unwrap(),
         api_id: "documents@v1".into(),
@@ -687,11 +689,17 @@ fn historical_event_requires_original_publication_before_expiry_and_revocation()
         action: "Documents.Changed".into(),
         subject: "event.documents.Changed".into(),
         event_id: "01JY0000000000000000000006".into(),
-        event_time: "1970-01-01T00:18:30Z".into(),
+        event_time: "1970-01-01T00:16:40Z".into(),
+        issued_at: 1_190,
     };
     let payload = br#"{"id":"document-1","unknown":{"retained":true}}"#;
-    let proof = sign_session_event(&event, payload, &runtime).unwrap();
+    let signed = |event: &SessionEvent| sign_session_event(event, payload, &runtime).unwrap();
+    let proof = signed(&event);
     policy.now_unix_seconds = 1_000_000;
+    let publication = OriginalEventPublication {
+        published_at: "1970-01-01T00:19:59.999999999Z".into(),
+        stream_sequence: U64s::new(17),
+    };
     for cutoff in [None, Some(1_200)] {
         let verified = verify_session_authority(SessionAuthorityVerificationInput {
             issuer: &issuer,
@@ -703,56 +711,43 @@ fn historical_event_requires_original_publication_before_expiry_and_revocation()
             revocation_cutoff: cutoff,
         })
         .unwrap();
-        let publication = OriginalEventPublication {
-            published_at: "1970-01-01T00:19:59.999999999Z".into(),
-            stream_sequence: U64s::new(17),
-        };
-        let check = |original_publication| {
+        let check = |event: &SessionEvent,
+                     proof: &SessionEventProof,
+                     original_publication: Option<&OriginalEventPublication>| {
             verify_session_event(SessionEventVerificationInput {
                 authority: &verified,
-                event: &event,
+                event,
                 payload_sha256: sha256(payload),
-                proof: &proof,
+                proof,
                 policy: &policy,
                 original_publication,
                 known_revoked: cutoff.is_some(),
             })
+            .map(|retained| retained.original_publication().cloned())
         };
-        let retained = check(Some(&publication)).unwrap();
+        assert_eq!(
+            check(&event, &proof, Some(&publication))
+                .unwrap()
+                .unwrap()
+                .stream_sequence,
+            U64s::new(17)
+        );
         if cutoff.is_some() {
-            for (event_time, accepted) in [
-                ("1970-01-01T00:19:59.999999999Z", true),
-                ("1970-01-01T00:20:00Z", false),
-                ("1970-01-01T00:20:00.000000001Z", false),
-            ] {
+            for (issued_at, accepted) in [(1_199, true), (1_200, false), (1_201, false)] {
                 let event = SessionEvent {
-                    event_time: event_time.into(),
+                    issued_at,
                     ..event.clone()
                 };
-                let proof = sign_session_event(&event, payload, &runtime).unwrap();
                 assert_eq!(
-                    verify_session_event(SessionEventVerificationInput {
-                        authority: &verified,
-                        event: &event,
-                        payload_sha256: sha256(payload),
-                        proof: &proof,
-                        policy: &policy,
-                        original_publication: Some(&publication),
-                        known_revoked: true,
-                    })
-                    .is_ok(),
+                    check(&event, &signed(&event), Some(&publication)).is_ok(),
                     accepted,
-                    "signed event time must precede the exclusive cutoff: {event_time}"
+                    "an event must be signed before the exclusive cutoff: {issued_at}"
                 );
             }
         }
-        assert_eq!(
-            retained.original_publication().unwrap().stream_sequence,
-            U64s::new(17)
-        );
         assert!(
-            check(None).is_err(),
-            "signed event time alone is not historical evidence"
+            check(&event, &proof, None).is_err(),
+            "the signing time alone is not historical evidence"
         );
         let republished = OriginalEventPublication {
             published_at: if cutoff.is_some() {
@@ -763,8 +758,24 @@ fn historical_event_requires_original_publication_before_expiry_and_revocation()
             stream_sequence: U64s::new(18),
         };
         assert!(
-            check(Some(&republished)).is_err(),
-            "a backdated signed event cannot authenticate a new publication after the cutoff"
+            check(&event, &proof, Some(&republished)).is_err(),
+            "a backdated signature cannot authenticate a new publication after the cutoff"
+        );
+        let stale = SessionEvent {
+            issued_at: 1_150,
+            ..event.clone()
+        };
+        assert!(
+            check(&stale, &signed(&stale), Some(&publication)).is_err(),
+            "a signature published more than the clock skew later is a replay"
+        );
+        let future = SessionEvent {
+            event_time: "1970-01-01T00:20:21Z".into(),
+            ..event.clone()
+        };
+        assert!(
+            check(&future, &signed(&future), Some(&publication)).is_err(),
+            "an event cannot be recorded after it was signed"
         );
     }
 }
@@ -791,6 +802,7 @@ fn event_proof_binds_descriptor_subject_payload_and_api_stamp() {
         subject: "event.documents.Changed".into(),
         event_id: "01JY0000000000000000000006".into(),
         event_time: "1970-01-01T00:18:30Z".into(),
+        issued_at: 1_110,
     };
     let payload = br#"{"id":"document-1","unknown":{"retained":true}}"#;
     let proof = sign_session_event(&event, payload, &runtime).unwrap();
@@ -1470,7 +1482,8 @@ fn native_signed_request_verifies_in_packaged_wasm() {
         action: "Documents.Changed".into(),
         subject: "event.documents.Changed".into(),
         event_id: "01JY0000000000000000000007".into(),
-        event_time: "1970-01-01T00:18:30Z".into(),
+        event_time: "1970-01-01T00:16:40Z".into(),
+        issued_at: 1_190,
     };
     let event_proof = sign_session_event(&event, payload.as_bytes(), &runtime).unwrap();
     let mut historical_policy = policy.clone();
@@ -1500,15 +1513,15 @@ fn native_signed_request_verifies_in_packaged_wasm() {
     })
     .unwrap();
     let signed_time_cases = [
-        ("1970-01-01T00:19:59.999999999Z", true),
-        ("1970-01-01T00:20:00Z", false),
-        ("1970-01-01T00:20:00.000000001Z", false),
-        ("1970-01-01T00:21:00Z", false),
+        (1_199, true),
+        (1_200, false),
+        (1_201, false),
+        (1_260, false),
     ]
     .into_iter()
-    .map(|(event_time, accepted)| {
+    .map(|(issued_at, accepted)| {
         let mut candidate = event.clone();
-        candidate.event_time = event_time.into();
+        candidate.issued_at = issued_at;
         let proof = sign_session_event(&candidate, payload.as_bytes(), &runtime).unwrap();
         json!({"event": candidate, "proof": proof, "accepted": accepted})
     })

@@ -234,9 +234,17 @@ export async function verifyLocalAuthorization(
         const descriptorIdentity = args.message.headers?.get(
           "Trellis-Event-Descriptor",
         );
+        const issuedAt =
+          eventPublication &&
+          typeof eventPublication === "object" &&
+          "issuedAt" in eventPublication
+            ? eventPublication.issuedAt
+            : undefined;
         if (
           !eventId ||
           !eventTime ||
+          typeof issuedAt !== "number" ||
+          !Number.isSafeInteger(issuedAt) ||
           descriptorIdentity !== args.descriptorIdentity
         ) {
           return err(new AuthError({ reason: "invalid_signature" }));
@@ -251,6 +259,7 @@ export async function verifyLocalAuthorization(
             subject: args.message.subject,
             eventId,
             eventTime,
+            issuedAt,
           },
           args.message.data,
           proof,

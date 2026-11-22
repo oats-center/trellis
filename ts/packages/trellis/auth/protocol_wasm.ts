@@ -187,7 +187,10 @@ export type SessionEvent = {
   action: string;
   subject: string;
   eventId: string;
+  /** When the publisher recorded the event; it can precede signing. */
   eventTime: string;
+  /** Unix seconds when the publisher signed this publication. */
+  issuedAt: number;
 };
 
 /** Stable error categories returned by local authorization verification. */
