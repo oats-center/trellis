@@ -408,9 +408,13 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
             required: args.request.requiredCapabilities,
             optional: args.request.optionalCapabilities,
           };
+          // The person used what they need to approve, so the page asks
+          // about it even if they declined it before.
           const redirectForApproval = async () => {
             const url = (
-              await oauth.authorize(args.auth.redirectTo, request)
+              await oauth.authorize(args.auth.redirectTo, request, {
+                askAgain: true,
+              })
             ).take();
             if (isErr(url)) return;
             if (args.onAuthRequired)
@@ -429,6 +433,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
               const url = (
                 await oauth.authorize(args.auth.redirectTo, request, {
                   extendGrant: grant,
+                  askAgain: true,
                 })
               ).take();
               if (isErr(url)) return false;

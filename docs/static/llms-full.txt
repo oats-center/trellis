@@ -933,11 +933,16 @@ consent after authentication without a second password prompt. Stale consent
 decisions are rejected and refreshed; policy denial is an authorization error,
 while unavailable runtime/resource evidence remains bounded pending.
 
-A browser sign-in skips the consent page when everything requested that the
-user can have is allowed without asking or already approved and remembered at
-an unchanged `grants` text. Optional capabilities the user can't be granted are
-never offered and never force the page. Explicit one-off consent overrides
-older remembered choices without changing them. Reused choices retain their expiry; later shared withdrawals still retire
+Every answer on the consent page is remembered, approvals and declines alike;
+there is no choice to forget them (approvals of administration are the
+exception). A browser sign-in skips the consent page when everything requested
+that the user can have is allowed without asking or already answered at an
+unchanged `grants` text; a remembered decline stays declined without the page.
+An app asks again about a declined capability with `prompt=consent` on its
+authorization request, which shows the page. Optional capabilities the user
+can't be granted are never offered, never force the page, and are not
+remembered as declined. A fresh answer overrides older remembered choices.
+Reused choices retain their expiry; later shared withdrawals still retire
 affected sessions. A shortened effective authorization deadline is a reduction
 unless another entitlement path preserves the outstanding authority. Deadlines
 on newly gained rights bound new contexts, not older narrower contexts or the
@@ -947,7 +952,11 @@ presentation. Signed session authority has a shared 64 KiB issuer,
 verification, and parsing budget.
 
 Configured implied consent applies only to registered browser bindings and their
-bounded capability subset; a listed group allows its current members. Saving a
+bounded capability subset; a listed group allows its current members. The
+grant keeps listed access the app asks for even before the user holds it;
+evaluation still requires them to hold it, so a role given later reaches the
+app at its next authority renewal without a new sign-in, administration on the
+list included. Access the app must ask for reaches it only once approved. Saving a
 client that allows an administrative capability without asking requires
 `trellis.auth.v1:platform.manage`. Native and Device Code clients require explicit user
 approval even when registered, and Device Code confirmation remains mandatory.
@@ -1038,7 +1047,9 @@ A running service whose new build adds an administrative capability waits for
 
 Apps request administrative capabilities like any other, through their generated
 required/optional selections; there is no separate privilege request. Optional
-administration is never preselected or remembered. Delegating one to an app has
+administration is never preselected, and approving it is never remembered (other
+optional access starts selected unless declined before; required access has no
+checkbox). Delegating one to an app has
 two safeguards, on by default under `[auth.administration]`: a separate consent
 confirmation and registered clients only. The initialized administrator holds
 all seven inherently, and everything else through an editable Administrator role. Localhost or
@@ -2174,7 +2185,9 @@ permission" for a capability the user can't hold. Without `auth.approval`, no
 call asks. `availability()` and `watchAvailability()` say which optional
 capabilities the session holds (`capabilities`) and which the user was asked
 about and didn't approve (`declined`). A declined capability is asked about
-again only from another click or key press.
+again only from another click or key press: Trellis remembers the decline, so
+signing in again doesn't ask, while asking at use sends `prompt=consent` and
+shows the approval screen.
 
 - `"redirect"`: the call fails with `ActionUnavailable` and the page goes to
   the approval screen (or `onAuthRequired`), returning to `redirectTo`.

@@ -78,8 +78,10 @@ registered_clients_only = true
   whether the app may manage this Trellis and lists the selected
   administrative capabilities by title; approving it confirms. Nothing
   administrative starts selected, but Select all includes it like any other
-  optional access, so the caution step is the one check. Administrative
-  choices are never remembered. An administrator's confirmed
+  optional access, so the caution step is the one check. Approvals of
+  administration are never remembered; declines are, like every other
+  answer. Administration on an app's allowed-without-asking list takes no
+  caution step: the administrator who listed it confirmed it. An administrator's confirmed
   delegation reaches the app at once: administrators administer, and nobody
   else approves their choice.
 - **Registered clients only.** Only OAuth clients an administrator registered

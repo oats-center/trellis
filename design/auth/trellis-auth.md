@@ -203,11 +203,16 @@ renew its own authority either, and expired authority authorizes nothing.
 
 ## Consent and delegation
 
-Interactive approval is opt-in: only required access and remembered choices
-start selected. The server rechecks the submitted selection against current
+Required access has no choice: approving the consent grants it. Optional
+access the user can be granted starts selected, unless an earlier answer
+declined it; optional administration starts unselected and takes its own
+confirmation. The server rechecks the submitted selection against current
 holdings in the approving transaction, and a changed meaning requires a fresh
-presentation. Remembered consent is per user, client binding, capability or
-group, identity generation, and consent revision.
+presentation. Every answer on the consent page is remembered, approvals and
+declines alike, with no choice to forget them; only approvals of
+administration are not, because each is confirmed. Remembered consent is per
+user, client binding, capability or group, identity generation, and consent
+revision.
 
 A group grants its members. Its holders see membership changes immediately;
 growth requires a higher consent revision, so an app keeps the members its user
@@ -445,15 +450,18 @@ before replacing only owner-marked output. Production builds require real
 embedded assets; placeholder assets and optional Console builds are not
 substitutes for the product.
 
-Interactive OAuth approval initially selects only required access and
-capabilities the user previously remembered for the client; optional
-capabilities and groups start unselected. Select all and Clear all are
-explicit actions over all optional access the user may grant, administration
-included; required access stays selected. Optional access the user can't be
-granted (through their roles, grants, or sign-in provider, or administration
-for an unregistered app) is not offered at all; required access they lack is
-shown, disabled, with a note to ask an administrator. Administrative choices
-are never remembered and take a separate confirmation step. A requested group
+The consent page lists required access first, without checkboxes, as what
+approving grants. Optional capabilities and groups the user can be granted
+follow with checkboxes, checked unless the user declined them before for this
+client at the current `grants` text; optional administration starts
+unchecked. Select all and Clear all are explicit actions over all optional
+access the user may grant, administration included. Optional access the user
+can't be granted (through their roles, grants, or sign-in provider, or
+administration for an unregistered app) is not offered at all; required access
+they lack is listed as not available, with a note to ask an administrator, and
+approval is blocked. Administrative approvals
+are never remembered and take a separate confirmation step, except for
+administration the app is allowed without asking (see below). A requested group
 is shown with the capabilities it includes. Each choice reads its own title,
 grouped by area, and a request across several APIs heads each API's choices
 with the API's title. The page names who is signed in by display name with
@@ -463,12 +471,17 @@ submitted selection against current authority.
 
 The page is skipped when nothing is left to decide: every capability or group
 the app asks for that the user can have is either allowed without asking (see
-below) or approved before and remembered at its current identity generation
-and consent revision, so an unchanged `grants` text. Remembered approvals
-reused this way keep their remembered expiry. Optional access the user can't
-have doesn't count, so it never forces the page. Only browser sign-ins skip
-it: native and Device Code sign-ins always ask. A remembered decline does not
-skip the page, and an app asking for nothing skips it only when registered.
+below) or answered before at its current identity generation and consent
+revision, so an unchanged `grants` text. A remembered decline stays declined
+at sign-in without the page. The page asks about it again only when the app
+asks again with `prompt=consent`, which the browser SDK sends when the person
+uses an optional capability they haven't approved (the ask-at-use redirect or
+popup). Remembered approvals reused this way keep their remembered expiry.
+Optional access the user can't have doesn't count, so it never forces the
+page, and nothing about it is remembered: once they hold it, it is offered.
+Only browser sign-ins skip the page: native and Device Code sign-ins always
+ask, with remembered approvals preselected, and their answers are remembered
+the same way. An app asking for nothing skips it only when registered.
 
 Registered-client implied capability consent is browser-only and limited to the
 configured subset, the requested selection and the user's current entitlement.
@@ -510,6 +523,18 @@ holdings remain the limit; when
 they lack something the client requires, or it asks for anything neither
 implied nor remembered, the ordinary consent page is shown. Administrators edit the Console's list like
 any other app's.
+
+The grant keeps what the client's list allows that the app asks for even where
+the user doesn't hold it yet. Evaluation still requires the user to hold it,
+so a role or grant given later reaches the app at the session's next authority
+renewal, with no new sign-in: an administrator assigning a role to someone with
+the Console open sees the new pages appear for them within one authority
+lifetime. Administration on the list arrives the same way without a separate
+confirmation, since the administrator who allowed it without asking confirmed
+it; administration an app asks for that isn't on its list still takes the
+user's own confirmation. Access an app must ask for is never kept this way: an
+app the user signed in to before they held it gains it only after they approve
+it.
 Production administrator seeding initializes the administrator and registers
 `trellis.console` and `trellis.cli` in one idempotent aggregate transaction. CLI
 is an explicitly registered native Device Code/refresh client without a callback
@@ -571,15 +596,18 @@ return to.
 
 Pending backing resources do not remove an ordinary user's capabilities.
 Approval never adds an unknown or declined optional capability at renewal.
+Renewal evaluates the grant afresh against current holdings, so it adds what
+the grant holds once the user holds it, as well as removing what they lost.
 Compatible API expansion is available to a renewed context only while the
 capability remains approved at the same consent revision.
 
-Fresh explicit approval records grant-local consent provenance. Older remembered
-declines or expired approvals cannot veto "approve once," and that one-off
-choice does not rewrite remembered policy. Reused remembered choices must still
-be approved and inherit their optional expiry. Later shared decisions and
-explicit withdrawals still constrain existing grants. Approval commits scoped
-enforcement work atomically when it changes remembered consent.
+A fresh answer on the consent page records grant-local consent provenance and
+is remembered as the binding's latest decision: it overrides older remembered
+declines or expired approvals, and it reaches the binding's other live grants.
+Reused remembered choices must still be approved and inherit their optional
+expiry. Later shared decisions and explicit withdrawals still constrain
+existing grants. Approval commits scoped enforcement work atomically when it
+changes remembered consent.
 
 Deadline reductions compare each outstanding context with its shared credential
 limit and the current limits of only the rights that context carries. Newly
@@ -987,7 +1015,9 @@ handle still rejects a different principal, and stale tabs cannot restore it.
 `Delegations.List` returns live grants only: an expired grant can no longer
 act for anyone, so it is left out like a revoked one. Each sign-in to an app is
 its own grant; the Console folds one person's grants for one app into a single
-row and disconnects it by revoking each of them.
+row and disconnects it by revoking each of them. A grant's choices list what the
+app can use now: access it keeps for when the person gains it is left out until
+they hold it.
 
 `Delegations.Revoke` atomically retires the selected grant and its refresh
 families, clears remembered approval for its app binding, and queues

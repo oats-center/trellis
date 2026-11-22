@@ -100,11 +100,15 @@ for (const selection of ["select-all", "ordinary"] as const) {
         const administration = page
           .getByRole("group", { name: "Manage this Trellis", exact: true })
           .getByRole("checkbox", { name: /^Allow all: / });
-        // Consent is opt-in: optional access, administration included, starts
-        // unselected.
+        // Optional access the person was never asked about starts selected;
+        // administration starts unselected and takes its own confirmation.
         for (const choice of await access.all()) {
           if (await choice.isEnabled())
-            strictEqual(await choice.isChecked(), false);
+            strictEqual(
+              await choice.isChecked(),
+              (await choice.getAttribute("aria-label")) !==
+                "Allow all: Manage this Trellis",
+            );
         }
         if (selection === "select-all") {
           await page

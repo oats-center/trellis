@@ -2168,7 +2168,6 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         ("presentation", &presentation),
         ("decision", &"approve".to_owned()),
         ("approved", &approved),
-        ("remember", &"true".to_owned()),
     ];
     let denied = http
         .post(format!("{origin}/portal/approve"))
@@ -2217,7 +2216,6 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         ("presentation", &presentation),
         ("decision", &"approve".to_owned()),
         ("approved", &approved),
-        ("remember", &"true".to_owned()),
     ];
     let unrelated = PolicyMutation::RolePut {
         role_id: id(),
@@ -2312,8 +2310,10 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
             .collect::<Vec<_>>(),
         vec![&f.read]
     );
-    // The declined optional choice must stay declined when the account later
-    // acquires it. An explicit one-time approval must not overwrite that memory.
+    // Write was not offered while the account lacked it, so nothing about it
+    // was answered: once held, it is offered and starts selected. Leaving it
+    // unselected is remembered without any choice to remember, so the next
+    // page starts with it unselected.
     let grant_write = PolicyMutation::CapabilityGrant {
         principal_id: f.admin.clone(),
         capability_id: f.write.clone(),
@@ -2327,7 +2327,7 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         now,
     )
     .unwrap();
-    for approve_once in [true, false] {
+    for answered in [false, true] {
         let response = http
             .get(authorize.as_str())
             .header(
@@ -2370,10 +2370,14 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
             .unwrap();
         assert_eq!(optional["available"], true);
         assert_eq!(
-            optional["selected"], false,
-            "remembered decline survives new entitlement and approve-once"
+            optional["declined"], answered,
+            "a decline is remembered, and only one given on the page"
         );
-        if approve_once {
+        assert_eq!(
+            optional["selected"], !answered,
+            "optional access starts selected unless declined"
+        );
+        if !answered {
             let callback = http
                 .post(format!("{origin}/portal/approve"))
                 .header("Origin", &origin)
@@ -2384,8 +2388,6 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
                     ("presentation", view["presentationId"].as_str().unwrap()),
                     ("decision", "approve"),
                     ("approved", f.read.as_str()),
-                    ("approved", f.write.as_str()),
-                    ("remember", "false"),
                 ])
                 .send()
                 .await

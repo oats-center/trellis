@@ -471,7 +471,9 @@ permission" for a capability the user can't hold. Without `auth.approval`, no
 call asks. `availability()` and `watchAvailability()` say which optional
 capabilities the session holds (`capabilities`) and which the user was asked
 about and didn't approve (`declined`). A declined capability is asked about
-again only from another click or key press.
+again only from another click or key press: Trellis remembers the decline, so
+signing in again doesn't ask, while asking at use sends `prompt=consent` and
+shows the approval screen.
 
 - `"redirect"`: the call fails with `ActionUnavailable` and the page goes to
   the approval screen (or `onAuthRequired`), returning to `redirectTo`.

@@ -421,9 +421,10 @@ export async function loginCliAsAdministrator(
     await page
       .getByRole("heading", { name: /wants to use your account/ })
       .waitFor();
-    if (allowOptional)
-      for (const checkbox of await page.getByRole("checkbox").all())
-        if (await checkbox.isEnabled()) await checkbox.check();
+    // Optional access starts selected, administration aside.
+    for (const checkbox of await page.getByRole("checkbox").all())
+      if (await checkbox.isEnabled())
+        await (allowOptional ? checkbox.check() : checkbox.uncheck());
     await page.getByRole("button", { name: "Allow", exact: true }).click();
     await confirmAdministrationIfAsked(page);
     assert.equal((await exited)[0], 0);

@@ -203,11 +203,16 @@ test("the consent page offers only what the person can have, names them and each
           await consent
             .getByRole("heading", { name: api, exact: true })
             .waitFor();
-        for (const title of [
-          "See field records",
-          "Change field records",
-          "See crop records",
-        ])
+        // What the app requires is listed as what approving grants, with no
+        // checkbox; each optional choice has one.
+        await consent.getByText("See field records", { exact: true }).waitFor();
+        assert.equal(
+          await consent
+            .getByRole("checkbox", { name: /^See field records\b/ })
+            .count(),
+          0,
+        );
+        for (const title of ["Change field records", "See crop records"])
           await consent
             .getByRole("checkbox", { name: new RegExp(`^${title}\\b`) })
             .waitFor();

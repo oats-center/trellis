@@ -418,6 +418,17 @@ ul {
   color: var(--muted);
   font-size: 0.8125rem;
 }
+.need {
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.65rem 0.9rem;
+}
+.need + .need {
+  border-top: 1px solid var(--line);
+}
+.need.unavailable {
+  opacity: 0.6;
+}
 .choice.unavailable label {
   opacity: 0.6;
   cursor: default;
@@ -427,10 +438,6 @@ ul {
   color: var(--muted);
   font-size: 0.75rem;
   font-weight: 400;
-}
-.remember {
-  margin-top: 1.25rem;
-  font-size: 0.875rem;
 }
 .actions {
   display: flex;

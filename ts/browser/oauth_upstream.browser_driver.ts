@@ -44,11 +44,16 @@ test("OIDC sign-in navigates through Dex and returns to Trellis consent under CS
       .getByRole("heading", { name: "Native client wants to use your account" })
       .waitFor();
     strictEqual(new URL(page.url()).origin, new URL(authorization).origin);
-    // The requested capability is shown by its group and title.
+    // The required capability is listed by its title, as what approving
+    // grants, without a checkbox.
     await page
-      .getByRole("group", { name: "Documents", exact: true })
-      .getByRole("checkbox", { name: /^Write\b/ })
+      .getByText(/^Write\b/)
+      .first()
       .waitFor();
+    strictEqual(
+      await page.getByRole("checkbox", { name: /^Write\b/ }).count(),
+      0,
+    );
     strictEqual(failures.length, 0, failures.join("\n"));
   } finally {
     await browser.close();

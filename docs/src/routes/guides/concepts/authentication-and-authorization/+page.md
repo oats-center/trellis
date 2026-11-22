@@ -214,6 +214,19 @@ Capabilities are approval and explanation groups. Approval is constrained by
 current policy and is converted to exact selected grants; it is not itself a
 runtime permission token.
 
+The consent page lists what the app requires without checkboxes: approving
+grants it. Optional capabilities start checked, except administration and
+anything the person declined before. The page remembers every answer,
+approvals and declines alike; there is no switch to forget them. A person who
+clears an optional capability isn't asked about it again at sign-in. The app
+asks again when they use it, and the page shows it unchecked. An
+app registered with access it may have without asking (`impliedConsent`) keeps
+that access in its grant even before the person holds it, so a role an
+administrator assigns later reaches the open app at its next authority renewal,
+within `context_lifetime_seconds`, with no new sign-in. That is how the Console
+picks up a new role. An app that has to ask gets new access only after the
+person approves it.
+
 ## Effective authority
 
 Auth computes a user's capabilities from roles, direct capability grants, and

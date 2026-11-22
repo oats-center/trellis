@@ -1393,7 +1393,8 @@ pub(super) fn read_delegation(
     connection: &Connection,
     id: &str,
 ) -> Result<AuthDelegation, AuthError> {
-    let (principal, client, kind, value, jkt, approved, revision): (
+    let (principal, login, client, kind, value, jkt, approved, revision): (
+        String,
         String,
         String,
         String,
@@ -1403,8 +1404,8 @@ pub(super) fn read_delegation(
         u64,
     ) = connection
         .query_row(
-            "SELECT principal_id,client_id,binding_kind,binding_value,durable_dpop_jkt,\
-            approved_capabilities_json,revision \
+            "SELECT principal_id,login_session_id,client_id,binding_kind,binding_value,\
+            durable_dpop_jkt,approved_capabilities_json,revision \
             FROM auth_oauth_grants \
             WHERE oauth_grant_id=?1",
             [id],
@@ -1417,13 +1418,28 @@ pub(super) fn read_delegation(
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
                 ))
             },
         )
         .optional()?
         .ok_or_else(|| AuthError::NotFound(format!("no app grant {id}")))?;
     let approved: Vec<trellis_protocol::CapabilityAuthority> = decode(&approved)?;
-    let choices = approved
+    // A grant also keeps what the app may have without asking once the
+    // person holds it; until then the app can't use it, so it isn't listed.
+    let entitled = super::policy::entitlements(
+        connection,
+        &principal,
+        Some(&login),
+        crate::clock::unix_now(),
+    )?;
+    let mut held = Vec::new();
+    for capability in approved {
+        if super::policy::covers(connection, &entitled, &capability.capability_id, false)? {
+            held.push(capability);
+        }
+    }
+    let choices = held
         .into_iter()
         .map(|capability| AuthConsentChoice {
             capability: AuthCapabilityIdentity {
