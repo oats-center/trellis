@@ -21,6 +21,16 @@ and this project adheres to
 
 ### Changed
 
+- Device codes are always typed: Trellis no longer advertises
+  `verification_uri_complete`, the Portal never fills a code from the URL, and
+  `trellis login` prints the plain `/device` link and the code to enter. The
+  SDKs' `verification_uri_complete()` / `verificationUriComplete` are gone. The
+  device consent page shows when and from what address the code was requested.
+- Portal flows that continue with an existing login show "Signed in as" with
+  "Use a different account", which signs in afresh and keeps the original
+  request. Operator-registered web apps such as the Console still sign in
+  silently; third-party apps show "Continue to {app}" first, and
+  `prompt=select_account` asks any app's user to choose.
 - Optional administration on the consent page starts checked unless declined
   before, and still asks for its separate "Allow management" confirmation.
 - Consent answers are always kept; the "Remember my choices" option is gone. A
@@ -62,6 +72,9 @@ and this project adheres to
 
 ### Fixed
 
+- Expired, used or unknown Portal links open a real page instead of raw JSON,
+  with "Start again" where the sign-in can be restarted. Every invalid device
+  code gets the same page.
 - A TypeScript client could fail to connect with "Auth failed: Unavailable"
   when its revocation mirror caught up during the connect's authority refresh;
   a superseded refresh now settles with the newer one.
