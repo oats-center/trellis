@@ -2606,13 +2606,15 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             let (client, binding) = loop {
                 let client = match first.take() {
                     Some(client) => client,
-                    None => connect_with(seed.clone()).await?,
+                    None => Box::pin(connect_with(seed.clone())).await?,
                 };
                 let binding = parse_bootstrap_binding(&client)?;
                 if BootstrapBindingInfo::bootstrap_binding(&binding).digest == C::DIGEST {
                     break (client, binding);
                 }
-                await_service_update::<C>(&client, &lifecycle).await?;
+                // Each step of connecting is a large state machine; on the heap
+                // they keep this body's debug stack frames small.
+                Box::pin(await_service_update::<C>(&client, &lifecycle)).await?;
                 client.shutdown_native_runtime().await?;
             };
             // Resource-only services have no default inbound API. Explicit generated
@@ -2637,9 +2639,9 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             }
             runtime.event_subscribe_needs = C::EVENT_SUBSCRIBE_NEEDS;
             if !C::CONFIG_FIELDS.is_empty() {
-                let loaded = super::config::load(&runtime.client, C::ID, &|missing| {
+                let loaded = Box::pin(super::config::load(&runtime.client, C::ID, &|missing| {
                     lifecycle.status(&format!("Waiting for settings: {missing}"));
-                })
+                }))
                 .await?;
                 let instance = runtime.client.own_instance_id()?;
                 runtime.config = Some(super::config::follow(
@@ -2654,9 +2656,12 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             let authority = owner.own_authority()?;
             let mut implements_operations = false;
             for api_id in C::IMPLEMENTED_API_IDS {
-                let certificate = owner
-                    .provider_certificate(&runtime.client.nats(), &authority, api_id)
-                    .await?;
+                let certificate = Box::pin(owner.provider_certificate(
+                    &runtime.client.nats(),
+                    &authority,
+                    api_id,
+                ))
+                .await?;
                 implements_operations |= certificate
                     .implemented_actions
                     .iter()

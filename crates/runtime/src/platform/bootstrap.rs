@@ -52,9 +52,12 @@ pub(crate) async fn connect_platform_provider(
     )
     .await
     .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    super::state::StateRuntime::start(operational.clone(), store.clone())
-        .await?
-        .register(&mut provider);
+    Box::pin(super::state::StateRuntime::start(
+        operational.clone(),
+        store.clone(),
+    ))
+    .await?
+    .register(&mut provider);
     super::webhooks::register_api(
         &mut trellis_runtime_apis::apis::trellis_webhooks_v1::Provider::new(&mut provider),
         webhooks,
