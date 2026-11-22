@@ -2,6 +2,9 @@
 // Real runtime, real Portal, real Console.
 
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { ulid } from "ulid";
 import { codecs } from "@oatscenter/trellis/generated";
@@ -25,8 +28,10 @@ const passwordsOff = "Password sign-in is off";
 
 // A fresh installation needs no switch turned on first. This catches a
 // created user who is left without a way in: a setup step that only hands
-// out a bare token, or sign-in that refuses the password it set.
-test("a user added in the Console on a fresh Trellis signs in with the password they choose", async () => {
+// out a bare token, a link that stops working once the administrator signs
+// out or within minutes, a link that works twice, or sign-in that refuses the
+// password it set.
+test("a user added in the Console on a fresh Trellis sets a password once from a day-long link, after the administrator signs out, and signs in with it", async () => {
   await withTrellisRuntime(async (runtime) => {
     const admin = await launchProfile(runtime);
     // The person uses a browser of their own.
@@ -53,6 +58,39 @@ test("a user added in the Console on a fresh Trellis signs in with the password 
       const setupUrl = new URL(await link.inputValue());
       assert.equal(setupUrl.origin, new URL(runtime.trellisUrl).origin);
 
+      // Waiting a day isn't practical, so the stored link says how long it
+      // lasts: a day, not minutes.
+      const platform = readdirSync(runtime.workdir, { recursive: true })
+        .map(String)
+        .find((path) => path.endsWith("platform.sqlite"));
+      assert(platform, "the runtime keeps a platform database");
+      const database = new DatabaseSync(join(runtime.workdir, platform), {
+        readOnly: true,
+      });
+      try {
+        const stored = database
+          .prepare(
+            "SELECT f.expires_at - f.created_at AS lifetime FROM auth_account_flows f JOIN auth_provider_identities i ON i.principal_id=f.target_principal_id AND i.provider='local' WHERE i.provider_subject=? AND f.kind='password_reset'",
+          )
+          .all(username);
+        assert.deepEqual(
+          stored.map((row) => ({ ...row })),
+          [{ lifetime: 24 * 60 * 60 }],
+        );
+      } finally {
+        database.close();
+      }
+
+      // The administrator who made the link signs out before it is used.
+      const header = page.locator("header");
+      await header
+        .getByRole("button", { name: "Open user menu", exact: true })
+        .click();
+      await header
+        .getByRole("button", { name: "Sign out", exact: true })
+        .click();
+      await page.getByLabel("Username", { exact: true }).waitFor();
+
       const personPage = await person.newPage();
       await personPage.goto(setupUrl.href, { waitUntil: "domcontentloaded" });
       const password = `Setup-${ulid()}`;
@@ -63,6 +101,15 @@ test("a user added in the Console on a fresh Trellis signs in with the password 
         .getByRole("button", { name: "Set password", exact: true })
         .click();
       await personPage.getByText("Your new password is set").waitFor();
+      // The link works once.
+      const again = await personPage.goto(setupUrl.href, {
+        waitUntil: "domcontentloaded",
+      });
+      assert.notEqual(again?.status(), 200);
+      assert.equal(
+        await personPage.getByLabel("New password", { exact: true }).count(),
+        0,
+      );
       await openConsole(personPage, runtime, { username, password });
     } finally {
       await browser.close();

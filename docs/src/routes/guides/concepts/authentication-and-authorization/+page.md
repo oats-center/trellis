@@ -54,11 +54,12 @@ implemented. CONNECT proves possession of the registered immutable identity key.
 
 ## Account actions
 
-`Auth.Users.PasswordReset.Create` returns a five-minute, one-use token for a
-non-bootstrap user. Open `/account/reset?token=...` on the Trellis origin and submit
-the native password form. Completion requires the requester's original logical
-session and current accepted `accounts.manage`, rejects stale credentials, and
-atomically changes the password and signs out existing login/grant families.
+`Auth.Users.PasswordReset.Create` returns a one-use token for a non-bootstrap
+user that lasts 24 hours. Open `/account/reset?token=...` on the Trellis origin and
+submit the native password form. Completion requires that the requester still
+holds `accounts.manage`, not that they are still signed in, rejects stale
+credentials, and atomically changes the password and signs out existing
+login/grant families.
 Bootstrap administrators use the existing local recovery path instead.
 
 `Auth.Users.IdentityLink.Providers` lists the providers the current user can

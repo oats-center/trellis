@@ -1161,18 +1161,21 @@ approved capabilities. Passwords use Argon2; password change/reset retires the
 affected login families in the same transaction. Authentication failures do not
 identify which credential check failed.
 
-Account reset and identity linking use five-minute, one-use account actions in
-the existing isolated OAuth portal. Action creation replay preserves the
-original response under OAuth sealing custody, never a renewed deadline. Reset
-completion checks the originating logical session, current
-`trellis.auth.v1:accounts.manage`, that the target is still in the requester's
-reach, credential CAS, and protected-administrator
-status before atomically changing the password and revoking login/grant
-families. Bootstrap-administrator reset remains on the existing local recovery
+Account reset and identity linking use one-use account actions in the existing
+isolated OAuth portal. A password setup or reset link an administrator makes
+lasts 24 hours, long enough to reach the person by email or chat; identity
+linking lasts five minutes. Action creation replay preserves the original
+response under OAuth sealing custody, never a renewed deadline. Reset
+completion checks that the administrator who made the link still holds
+`trellis.auth.v1:accounts.manage` and still reaches the target, credential CAS,
+and protected-administrator status before atomically changing the password and
+revoking login/grant families. It does not depend on the session the link was
+made from, so the link keeps working after that administrator signs out.
+Bootstrap-administrator reset remains on the existing local recovery
 path. Until the protected administrator sets a password, each startup issues and
 prints a fresh setup link before provider admission, superseding prior pending
-links. A setup link stays valid until it is used once; recovery and
-administrative reset links expire after five minutes. Once a password exists, startup never issues a link without explicit
+links. That setup link stays valid until it is used once; a local recovery
+link expires after five minutes. Once a password exists, startup never issues a link without explicit
 local recovery. Linking requires the exact initiating portal user and a fresh
 nonce/PKCE-verified upstream exchange; provider disablement or a revision change
 invalidates the action, and another user's identity cannot be reassigned.

@@ -396,7 +396,7 @@ after the rotation has settled, not in place of rotating.
 Fresh startup creates the protected administrator and accepted built-in authority
 before provider admission. The username defaults to `admin`. Without an initial
 password, startup emits `adminAccountUrl`, a one-time password-setup link on the
-Trellis origin that expires after five minutes; no default password
+Trellis origin that stays valid until it is used; no default password
 exists. Startup flags `--admin-username`, `--admin-password`, and
 `--admin-password-stdin` configure fresh credentials. Explicit initialization
 uses `trellis-server admin [--config <dir>]` with `--username` (default `admin`),
@@ -1161,11 +1161,12 @@ information. Operators disable all
 remote-derived images, including cached ones, with
 `auth.avatar.external_fetch_enabled=false`.
 
-`Users.PasswordReset.Create` targets `userId` and returns a five-minute, one-use
-token for `/account/reset?token=...` on the Trellis origin. Completion checks
-Origin/CSRF, credential CAS, and the requester's original active logical session
-and current `trellis.auth.v1:accounts.manage` with the target still in reach,
-then atomically changes the password
+`Users.PasswordReset.Create` targets `userId` and returns a one-use token that
+lasts 24 hours, for `/account/reset?token=...` on the Trellis origin. Completion
+checks Origin/CSRF, credential CAS, and that the requester still holds
+`trellis.auth.v1:accounts.manage` with the target in reach; it doesn't need the
+requester's session, so the token works after they sign out. It then
+atomically changes the password
 and revokes login/grant families. Bootstrap administrators use local recovery
 instead.
 

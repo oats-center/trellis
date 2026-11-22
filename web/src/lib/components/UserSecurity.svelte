@@ -184,9 +184,9 @@
       onclick={() => void createReset()}>Reset password</button
     >
     {#if reset}<p class="trellis-field-help mt-2">
-        Send this one-time code to the person. It expires {formatDate(
+        Send this code to the person. It works once, until {formatDate(
           reset.expiresAt,
-        )}.
+        )}, even after you sign out.
       </p>
       <p class="trellis-identifier break-all">
         {reset.token}<CopyButton

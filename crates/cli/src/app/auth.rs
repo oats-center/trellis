@@ -2217,7 +2217,8 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
             output::not_kept(
                 "setup link",
                 &format!(
-                    "Send it to the person; it lets them choose a password until {}.",
+                    "Send it to the person; it lets them choose a password once, until {}, \
+                    even after you sign out.",
                     output::absolute_time(&output::field(setup, "expiresAt"))
                 ),
             );
