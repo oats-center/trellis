@@ -22,8 +22,10 @@
     type Draft,
     type FreeSetting,
   } from "$lib/console/settings.ts";
+  import { sameValue } from "$lib/console/draft.ts";
   import ActionMenu from "$lib/components/ActionMenu.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
+  import DraftConflicts from "$lib/components/DraftConflicts.svelte";
   import FreeSettingRows from "$lib/components/FreeSettingRows.svelte";
   import Icon from "$lib/components/Icon.svelte";
   import Notice from "$lib/components/Notice.svelte";
@@ -33,6 +35,10 @@
   type Field = View["fields"][number];
   type Unused = View["unused"][number];
   type Revision = apis.auth.ConfigRevisionsListOutput["items"][number];
+  // What was saved for a field when its draft was typed over it.
+  type Base = Pick<Field, "value" | "isSet" | "source"> & {
+    revision: View["revision"];
+  };
 
   // Settings for a service or device deployment or one of its instances'
   // overrides, for a service added without its IDL, or for an app's
@@ -74,6 +80,10 @@
   // typed value for a setting, the text typed for a secret. Untouched fields
   // are absent; switching targets discards them.
   let drafts = $state<Record<string, Draft>>({});
+  // What each draft was typed over. A reread leaves a draft as typed; when
+  // someone saved its field meanwhile, it is a conflict, shown beside the
+  // saved value, and nothing is saved until the administrator settles it.
+  let bases = $state.raw<Record<string, Base>>({});
   // Settings added by name, saved with the drafts.
   let added = $state<FreeSetting[]>([]);
   // Secrets shown rather than masked: a typed draft, or a saved value Auth
@@ -125,6 +135,73 @@
         instanceId !== "" ||
         (editable && !clientId)),
   );
+  // Whether someone saved `field` since its draft was typed over `base`. A
+  // secret's value is never shown, so its versions say whether it changed;
+  // when they no longer reach back to `base`, it counts as changed.
+  function savedSince(field: Field, base: Base): boolean {
+    if (base.isSet !== field.isSet || base.source !== field.source) return true;
+    if (!field.secret) return !sameValue(base.value, field.value);
+    if (base.revision === view?.revision) return false;
+    const covered =
+      base.revision === undefined
+        ? revisions.length < 20
+        : revisions.some((item) => item.revision === base.revision);
+    return (
+      !covered ||
+      revisions.some(
+        (item) =>
+          (base.revision === undefined || item.revision > base.revision) &&
+          item.changedSecrets.includes(field.name),
+      )
+    );
+  }
+  function baseOf(field: Field): Base {
+    return {
+      value: field.value,
+      isSet: field.isSet,
+      source: field.source,
+      revision: view?.revision,
+    };
+  }
+  // Drafts typed over a value someone saved since. A plain draft that
+  // already equals the saved value is no conflict.
+  const conflicts = $derived(
+    ready && view
+      ? view.fields.filter((field) => {
+          const base = bases[field.name];
+          return (
+            field.name in drafts &&
+            base !== undefined &&
+            savedSince(field, base) &&
+            (field.secret || !sameValue(drafts[field.name], field.value))
+          );
+        })
+      : [],
+  );
+  function startDraft(field: Field): void {
+    if (!(field.name in drafts))
+      bases = { ...bases, [field.name]: baseOf(field) };
+  }
+  // Keep yours saves the draft over the newer value; use saved drops it.
+  function settle(name: string, choice: "keep" | "take"): void {
+    const field = view?.fields.find((item) => item.name === name);
+    if (!field) return;
+    if (choice === "keep") bases = { ...bases, [name]: baseOf(field) };
+    else {
+      drafts = Object.fromEntries(
+        Object.entries(drafts).filter(([other]) => other !== name),
+      );
+      hide([name]);
+    }
+  }
+  function draftText(draft: Draft): string {
+    try {
+      return formatValue(toJson(draft));
+    } catch {
+      return "(incomplete)";
+    }
+  }
+
   // Instances whose own build would read different restart-only values if
   // it connected now.
   const behind = $derived(
@@ -135,6 +212,7 @@
   $effect(() => {
     if (!scope.setKey(key)) return;
     drafts = {};
+    bases = {};
     added = [];
     shown = {};
     revealed = {};
@@ -169,6 +247,18 @@
       }
       revisions = history.items;
       loadError = null;
+      // A draft whose field nobody saved meanwhile moves onto this read;
+      // the others stay conflicts until the administrator settles them.
+      bases = Object.fromEntries(
+        Object.entries(bases).map(([name, base]) => {
+          const field = loaded.fields.find((item) => item.name === name);
+          const moves =
+            field !== undefined &&
+            (!savedSince(field, base) ||
+              (!field.secret && sameValue(drafts[name], field.value)));
+          return [name, moves ? baseOf(field) : base];
+        }),
+      );
     } catch (cause) {
       if (scope.isCurrent(token))
         loadError = projectConsoleError(cause).message;
@@ -303,7 +393,7 @@
   }
 
   async function save(): Promise<void> {
-    if (!ready || !view) return;
+    if (!ready || !view || conflicts.length > 0) return;
     const current = view;
     let values: Record<string, JsonValue>;
     let secrets: Record<string, JsonValue>;
@@ -548,6 +638,7 @@
               disabled={!editable || busy || !ready}
               missing={field.source === "unset"}
               onchange={(next) => {
+                startDraft(field);
                 if (field.secret)
                   typeSecret(field.name, typeof next === "string" ? next : "");
                 else drafts = { ...drafts, [field.name]: next };
@@ -704,11 +795,30 @@
             disabled={busy || !ready}
           />
         </div>
+        <DraftConflicts
+          conflicts={conflicts.map((field) => ({
+            field: field.name,
+            label: field.title,
+            mine: field.secret
+              ? "A new value (hidden)"
+              : draftText(drafts[field.name]),
+            saved: field.secret
+              ? field.isSet
+                ? "Changed (hidden)"
+                : "Not set"
+              : field.value === undefined
+                ? "Not set"
+                : formatValue(field.value),
+          }))}
+          disabled={busy}
+          onsettle={settle}
+        />
         <div class="trellis-action-row">
           <button
             class="btn btn-primary"
             type="submit"
-            disabled={busy || !changed || !ready}>Save settings</button
+            disabled={busy || !changed || !ready || conflicts.length > 0}
+            >Save settings</button
           >
         </div>{/if}
     </form>

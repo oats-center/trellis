@@ -895,3 +895,148 @@ test("a saved secret is shown on request and dropped when hidden, the CLI prints
     }
   }, browserRuntimeOptions());
 });
+
+// Two administrators edit the same service's settings. The first one's save
+// is refused, or the page rereads first; either way the settings the other
+// saved meanwhile show beside what was typed, a secret only as changed, and a
+// plain Save can't overwrite them. This catches a reread that keeps the draft
+// but saves it against the newer revision without ever showing the other
+// administrator's values.
+test("a settings draft over values saved meanwhile shows both and saves only what the administrator chose", async () => {
+  const services = startedServices();
+  try {
+    await withTrellisRuntime(async (runtime) => {
+      await runtime.ensureAdmin();
+      const key = await runtime.services.createInstance({
+        name: "configured",
+        deployment: "configured",
+        contract: participant,
+      });
+      services.add(
+        TrellisService.connect({
+          trellisUrl: runtime.trellisUrl,
+          participant,
+          seed: key.seed,
+          signal: services.signal,
+        }).orThrow(),
+      );
+      const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+      await runtime.waitFor(async () => {
+        const view = await runtime.callAdminRpc("authConfigGet", { target });
+        return view.instances[0]?.connectedAt;
+      });
+      const first = await runtime.callAdminRpc("authConfigSet", {
+        target,
+        values: { endpoint: "https://start.example" },
+        secrets: { apiKey: "start-key" },
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      });
+      const endpoint = async () =>
+        (await runtime.callAdminRpc("authConfigGet", { target })).fields.find(
+          (field) => field.name === "endpoint",
+        )?.value;
+
+      const admin = await launchProfile(runtime);
+      try {
+        const page = await admin.newPage();
+        await page.goto(
+          `${runtime.trellisUrl}/console/admin/services/${key.deploymentId}#settings`,
+          { waitUntil: "domcontentloaded" },
+        );
+        await completeConsoleEntry(page, BROWSER_ADMIN);
+        const settings = page.getByRole("region", { name: "Settings" });
+        const endpointInput = settings.getByLabel("Endpoint", { exact: true });
+        const region = settings.getByLabel("Region", { exact: true });
+        const save = settings.getByRole("button", {
+          name: "Save settings",
+          exact: true,
+        });
+        await runtime.waitFor(
+          async () =>
+            (await endpointInput.inputValue()) === "https://start.example" ||
+            undefined,
+        );
+        await endpointInput.fill("https://mine.example");
+        await region.fill("north");
+        await settings.getByLabel("API key", { exact: true }).fill("mine-key");
+
+        // The other administrator saves the endpoint and the key.
+        await runtime.callAdminRpc("authConfigSet", {
+          target,
+          values: { endpoint: "https://theirs.example" },
+          secrets: { apiKey: "their-key" },
+          expectedRevision: first.revision,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        });
+        // Unless a reread got there first, the save is refused and rereads.
+        if (await save.isEnabled()) await save.click();
+        const conflicts = settings.getByRole("group", {
+          name: "Changed while you were editing",
+        });
+        const endpointConflict = conflicts.getByRole("listitem", {
+          name: "Endpoint changed meanwhile",
+        });
+        const keyConflict = conflicts.getByRole("listitem", {
+          name: "API key changed meanwhile",
+        });
+        await endpointConflict.waitFor({ timeout: 30_000 });
+        await keyConflict.waitFor();
+        assert.equal(
+          await endpointConflict.locator('[data-draft="mine"]').innerText(),
+          "https://mine.example",
+        );
+        assert.equal(
+          await endpointConflict.locator('[data-draft="saved"]').innerText(),
+          "https://theirs.example",
+        );
+        // A secret says it changed and never shows either value.
+        assert.equal(
+          await keyConflict.locator('[data-draft="saved"]').innerText(),
+          "Changed (hidden)",
+        );
+        const shown = await conflicts.innerText();
+        assert.doesNotMatch(shown, /their-key|mine-key/);
+        // The region nobody else touched stays typed and is no conflict.
+        assert.equal(
+          await conflicts
+            .getByRole("listitem", { name: "Region changed meanwhile" })
+            .count(),
+          0,
+        );
+        assert.equal(await region.inputValue(), "north");
+        assert.equal(await endpointInput.inputValue(), "https://mine.example");
+        assert.equal(await save.isDisabled(), true);
+        assert.equal(await endpoint(), "https://theirs.example");
+
+        await endpointConflict
+          .getByRole("button", { name: "Keep yours for Endpoint" })
+          .click();
+        await keyConflict
+          .getByRole("button", { name: "Use saved for API key" })
+          .click();
+        await conflicts.waitFor({ state: "hidden" });
+        await save.click();
+        await settings.getByText("Settings saved.").waitFor();
+        const view = await runtime.callAdminRpc("authConfigGet", { target });
+        const value = (name: string) =>
+          view.fields.find((field) => field.name === name)?.value;
+        assert.equal(value("endpoint"), "https://mine.example");
+        assert.equal(value("region"), "north");
+        // The key is the one the other administrator saved.
+        await settings
+          .getByRole("button", { name: "Show API key", exact: true })
+          .click();
+        await runtime.waitFor(
+          async () =>
+            (await settings
+              .getByLabel("API key", { exact: true })
+              .inputValue()) === "their-key" || undefined,
+        );
+      } finally {
+        await admin.close();
+      }
+    }, browserRuntimeOptions());
+  } finally {
+    await services.stop();
+  }
+});
