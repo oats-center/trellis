@@ -34,6 +34,8 @@
   let completed = $state(false);
   let uncertain = $state(false);
   let error = $state<string | null>(null);
+  // Why the last sign-out or disconnect was refused; the list stays usable.
+  let actionError = $state<string | null>(null);
   let enforcement = $state<
     apis.auth.AuthorizationSessionsRevokeOutput["enforcement"] | null
   >(null);
@@ -48,6 +50,7 @@
     if (scope.setKey(`${action}:${id}`)) {
       completed = false;
       uncertain = false;
+      actionError = null;
       enforcement = null;
       selectedId = "";
     }
@@ -136,6 +139,7 @@
     )
       return;
     busy = true;
+    actionError = null;
     try {
       const response =
         action === "revoke"
@@ -163,9 +167,12 @@
     } catch (cause) {
       if (scope.disposed || scope.key !== capturedKey) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
-      error = uncertain
+      actionError = uncertain
         ? "We couldn't confirm the change. Check the session before trying again."
         : projectConsoleError(cause).message;
+      // A refusal means the session changed since it was read, such as one
+      // that already ended; show the sessions as they are now.
+      if (!uncertain) await load(action);
     } finally {
       busy = false;
     }
@@ -185,8 +192,10 @@
         href={resolve("/admin/sessions")}>Back to sessions</a
       >{/snippet}</PageToolbar
   >
-  {#if error}<Notice variant={uncertain ? "warning" : "error"}>{error}</Notice
+  {#if actionError}<Notice variant={uncertain ? "warning" : "error"}
+      >{actionError}</Notice
     >{/if}
+  {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if completed && enforcement}<Notice variant="success"
       >{kind === "revoke" ? "Signed out." : "Disconnected."}
       {enforcement.pendingKicks || enforcement.failedKicks

@@ -169,10 +169,12 @@
       await load();
       onchange();
     } catch (cause) {
-      error =
-        classifyMutationError(cause).kind === "unknown"
-          ? unknown
-          : projectConsoleError(cause).message;
+      const refused = classifyMutationError(cause).kind !== "unknown";
+      const message = refused ? projectConsoleError(cause).message : unknown;
+      // A refusal means the secret changed since it was read; show it as it
+      // is now, and keep saying why.
+      if (refused) await load();
+      error = message;
     } finally {
       busy = false;
     }

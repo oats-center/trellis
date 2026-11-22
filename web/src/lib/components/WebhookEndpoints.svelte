@@ -161,10 +161,13 @@
         .orThrow();
       await load();
     } catch (cause) {
-      error =
-        classifyMutationError(cause).kind === "unknown"
-          ? "We couldn't confirm the change. Refresh before trying again."
-          : projectConsoleError(cause).message;
+      const refused = classifyMutationError(cause).kind !== "unknown";
+      error = refused
+        ? projectConsoleError(cause).message
+        : "We couldn't confirm the change. Refresh before trying again.";
+      // A refusal means the endpoint changed since it was read; show it as
+      // it is now.
+      if (refused) await load();
     } finally {
       busy = false;
     }

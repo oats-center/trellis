@@ -274,12 +274,14 @@ pub(super) async fn remove_resource(
                         ))?
                     } else {
                         return Err(AuthError::Invalid(format!(
-                            "resource {id} can't be removed here; only deployment resources and                             user state can"
+                            "resource {id} can't be removed here; only deployment resources and \
+                            user state can"
                         )));
                     };
                     if expected_id != id {
                         return Err(AuthError::Invalid(format!(
-                            "resource {id} does not match the allocation Trellis made for it, so                             Trellis leaves it in place"
+                            "resource {id} does not match the allocation Trellis made for it, so \
+                            Trellis leaves it in place"
                         )));
                     }
                     let (physical, allocation): (String, String) = connection.query_row(
@@ -318,7 +320,8 @@ pub(super) async fn remove_resource(
                     };
                     if !physical_matches {
                         return Err(AuthError::Invalid(format!(
-                            "resource {id} does not match the allocation Trellis made for it, so                             Trellis leaves it in place"
+                            "resource {id} does not match the allocation Trellis made for it, so \
+                            Trellis leaves it in place"
                         )));
                     }
                     let revision = resource.revision.0 .0 + 1;

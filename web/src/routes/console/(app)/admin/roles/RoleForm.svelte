@@ -8,7 +8,11 @@
   import { getTrellis } from "$lib/trellis";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
-  import { captureIntent, MutationController } from "$lib/console/mutation.ts";
+  import {
+    captureIntent,
+    classifyMutationError,
+    MutationController,
+  } from "$lib/console/mutation.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { traverseAll } from "$lib/console/paging.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
@@ -160,7 +164,12 @@
         .orThrow();
       if (scope.key === key) await goto(resolve("/admin/roles"));
     } catch (cause) {
-      if (scope.key === key) error = projectConsoleError(cause).message;
+      if (scope.key !== key) return;
+      const message = projectConsoleError(cause).message;
+      // A refused delete means the role changed since it was read; show it as
+      // it is now. A refused save keeps the edits instead.
+      if (classifyMutationError(cause).kind !== "unknown") await load();
+      if (scope.key === key) error = message;
     } finally {
       saving = false;
     }

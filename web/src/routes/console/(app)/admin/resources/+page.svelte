@@ -161,11 +161,13 @@
       if (scope.disposed) return;
       const outcome = classifyMutationError(cause);
       uncertain = outcome.kind === "unknown";
-      // A conflict says what changed; the list reloads below to show it.
+      // A refusal says what changed, such as storage put back to use or
+      // already being deleted; the list reloads to show it. Nothing is sent
+      // again.
       actionMessage = uncertain
         ? "Deletion outcome unknown. No retry was sent. Refresh to inspect the allocation; deletion controls remain disabled for this page visit."
         : projectConsoleError(cause).message;
-      if (outcome.kind === "conflict" || uncertain) await load();
+      await load();
     } finally {
       if (!scope.disposed) busy = false;
     }

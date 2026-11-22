@@ -72,13 +72,15 @@ function allStorage(page: Page) {
 // Allocate through public deployment/provision/apply APIs. Never pick the first
 // allocation or seed private SQL.
 test(
-  "Console retains detached allocations until the operator confirms one exact deletion",
-  { timeout: 90_000 },
+  "Console retains detached allocations until the operator confirms one exact deletion, and shows a stale one as it is now",
+  { timeout: 120_000 },
   async (context) => {
     await withTrellisRuntime(async (runtime) => {
       let resourceId = "";
       let resourceName = "";
       let readyId = "";
+      let racedId = "";
+      let removeElsewhere = async (): Promise<void> => {};
       const application = runtime.consoleUrl;
       const issuer = runtime.trellisUrl;
       const username = runtime.adminUsername;
@@ -106,7 +108,7 @@ test(
         const provider = participants.ResourceProvider.participant;
         const omitted = removedParticipants.ResourceProvider.participant;
         const allocations = [];
-        for (const label of ["detached", "ready"]) {
+        for (const label of ["detached", "raced", "ready"]) {
           const { deployment } = await admin
             .deploymentsCreate({
               title: `console-${label}-${ulid()}`,
@@ -142,7 +144,7 @@ test(
             value,
           );
           await service.stop();
-          if (label === "detached") {
+          if (label !== "ready") {
             const current = await admin
               .deploymentsGet({ deploymentId: deployment.deploymentId })
               .orThrow();
@@ -176,12 +178,26 @@ test(
             "exact deployment records allocation must be retained",
           );
           const allocation = matches[0]!;
-          strictEqual(allocation.state, label);
+          strictEqual(
+            allocation.state,
+            label === "ready" ? "ready" : "detached",
+          );
           allocations.push(allocation);
         }
         resourceId = allocations[0]!.resourceId;
         resourceName = allocations[0]!.localName;
-        readyId = allocations[1]!.resourceId;
+        const raced = allocations[1]!;
+        racedId = raced.resourceId;
+        readyId = allocations[2]!.resourceId;
+        removeElsewhere = async () => {
+          await admin
+            .resourcesRemove({
+              resourceId: raced.resourceId,
+              expectedRevision: raced.revision,
+              idempotencyKey: codecs.ulid.decode(ulid()),
+            })
+            .orThrow();
+        };
       }
       const origin = new URL(application).origin;
       const browser = await chromium.launch({
@@ -230,8 +246,29 @@ test(
             .count(),
           0,
         );
-        await row.getByRole("button", { name: /^Delete / }).click();
         const dialog = page.getByRole("dialog");
+
+        // A second administrator starts deleting storage this page still
+        // shows as unused. The stale delete is refused, says why, and the
+        // page shows the storage as it is now, with no delete left to press.
+        const racedRow = unused
+          .getByRole("row")
+          .filter({ has: page.getByText(racedId, { exact: true }) });
+        await racedRow.waitFor();
+        await removeElsewhere();
+        await racedRow.getByRole("button", { name: /^Delete / }).click();
+        await dialog.getByRole("textbox").fill(resourceName);
+        await dialog
+          .getByRole("button", { name: "Permanently delete", exact: true })
+          .click();
+        await page
+          .getByText(new RegExp(`resource ${racedId}`))
+          .first()
+          .waitFor();
+        await racedRow.waitFor({ state: "hidden" });
+        await row.getByRole("button", { name: /^Delete / }).waitFor();
+
+        await row.getByRole("button", { name: /^Delete / }).click();
         await dialog
           .getByRole("button", { name: "Cancel", exact: true })
           .first()

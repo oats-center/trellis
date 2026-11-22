@@ -87,6 +87,12 @@ selection reread after an `await`. Update the local record from the returned
 result or a documented exact refresh. Preserve the draft on a conflict; treat an
 uncertain transport outcome as unknown rather than successful or failed.
 
+A refused action on a listed record, such as a delete of storage someone else
+already put back to use, usually means the record changed. Reread the list
+right away, keep the refusal's message on screen, and never send the action
+again on the operator's behalf. Show that message apart from read errors, so
+the other rows stay usable.
+
 ### Live views schedule coalesced refreshes
 
 A watch is established once per semantic scope and tied to component disposal,

@@ -339,7 +339,13 @@
         .orThrow();
       await goto(resolve("/admin/services"));
     } catch (cause) {
-      if (!scope.disposed) error = projectConsoleError(cause).message;
+      if (scope.disposed) return;
+      const message = projectConsoleError(cause).message;
+      // A refusal means the service changed since it was read, such as one
+      // that has since connected; show it as it is now.
+      if (classifyMutationError(cause).kind !== "unknown")
+        await load(target.claimId);
+      if (!scope.disposed) error = message;
     } finally {
       busy = false;
     }
@@ -414,9 +420,13 @@
     } catch (cause) {
       if (scope.disposed || scope.key !== route) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
-      error = uncertain
+      const message = uncertain
         ? "We couldn't confirm the change. Refresh before trying again."
         : projectConsoleError(cause).message;
+      // A refusal means the service or instance changed since it was read;
+      // show it as it is now, and keep saying why.
+      if (!uncertain) await load(target.deploymentId);
+      if (!scope.disposed && scope.key === route) error = message;
     } finally {
       busy = false;
     }

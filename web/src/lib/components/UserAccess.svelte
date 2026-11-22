@@ -44,6 +44,8 @@
   let busy = $state(false);
   let uncertain = $state(false);
   let error = $state<string | null>(null);
+  // Why the last change was refused; the lists stay usable.
+  let actionError = $state<string | null>(null);
 
   async function load(): Promise<void> {
     const id = principalId;
@@ -161,6 +163,7 @@
     const id = principalId;
     const route = scope.key;
     busy = true;
+    actionError = null;
     try {
       const expiry = expiresAt
         ? { expiresAt: new Date(expiresAt).toISOString() }
@@ -186,9 +189,12 @@
     } catch (cause) {
       if (scope.disposed || scope.key !== route) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
-      error = uncertain
+      actionError = uncertain
         ? "We couldn't confirm the change. Refresh before trying again."
         : projectConsoleError(cause).message;
+      // A refusal means this person's access changed since it was read;
+      // show it as it is now.
+      if (!uncertain) await load();
     } finally {
       if (!scope.disposed && scope.key === route) busy = false;
     }
@@ -230,7 +236,7 @@
     )
       return;
     busy = true;
-    error = null;
+    actionError = null;
     const key = codecs.ulid.decode(ulid());
     try {
       const expiry =
@@ -291,9 +297,82 @@
     } catch (cause) {
       if (scope.disposed || scope.key !== route) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
-      error = uncertain
+      actionError = uncertain
         ? "We couldn't confirm the change. Refresh before trying again."
         : projectConsoleError(cause).message;
+      // A refusal means this person's access changed since it was read;
+      // show it as it is now.
+      if (!uncertain) await load();
+    } finally {
+      if (!scope.disposed && scope.key === route) busy = false;
+    }
+  }
+
+  function expired(
+    existing: (typeof assignments)[number] | (typeof grants)[number],
+  ): boolean {
+    return (
+      existing.expiresAt !== undefined &&
+      Date.parse(existing.expiresAt) <= Date.now()
+    );
+  }
+
+  // Renews an expired role or permission by updating its saved revision; it
+  // then lasts until the "Until" time, or has no end.
+  async function renew(
+    existing: (typeof assignments)[number] | (typeof grants)[number],
+  ): Promise<void> {
+    const assignment = assignments.find((item) => item === existing);
+    const grant = grants.find((item) => item === existing);
+    if (
+      loading ||
+      busy ||
+      uncertain ||
+      error ||
+      !canPerform(
+        authority.authority,
+        assignment ? "roleAssignmentsAssign" : "capabilityGrantsGrant",
+      ) ||
+      !window.confirm(`Renew ${label(existing)}?`)
+    )
+      return;
+    const route = scope.key;
+    busy = true;
+    actionError = null;
+    try {
+      const change = {
+        principalId,
+        expectedRevision: String(existing.revision),
+        idempotencyKey: codecs.ulid.decode(ulid()),
+        ...(expiresAt ? { expiresAt: new Date(expiresAt).toISOString() } : {}),
+      };
+      if (assignment)
+        await trellis
+          .roleAssignmentsAssign(
+            apis.auth.API.actions["rpc:RoleAssignments.Assign"].input.decode({
+              ...change,
+              roleId: assignment.roleId,
+            }),
+          )
+          .orThrow();
+      else if (grant)
+        await trellis
+          .capabilityGrantsGrant(
+            apis.auth.API.actions["rpc:CapabilityGrants.Grant"].input.decode({
+              ...change,
+              capabilityId: grant.capability.capabilityId,
+            }),
+          )
+          .orThrow();
+      if (scope.disposed || scope.key !== route) return;
+      await load();
+    } catch (cause) {
+      if (scope.disposed || scope.key !== route) return;
+      uncertain = classifyMutationError(cause).kind === "unknown";
+      actionError = uncertain
+        ? "We couldn't confirm the change. Refresh before trying again."
+        : projectConsoleError(cause).message;
+      if (!uncertain) await load();
     } finally {
       if (!scope.disposed && scope.key === route) busy = false;
     }
@@ -314,6 +393,7 @@
       if (targetChanged) {
         expiresAt = "";
         uncertain = false;
+        actionError = null;
         busy = false;
       }
       void load();
@@ -340,6 +420,9 @@
       }}>Refresh</button
     >
   </div>
+  {#if actionError}<Notice variant={uncertain ? "warning" : "error"}
+      >{actionError}</Notice
+    >{/if}
   {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if loading}<LoadingState label="Loading user access" />{:else}
     <h3 class="text-sm font-semibold">Roles</h3>
@@ -351,9 +434,19 @@
           <span>
             <span class="font-medium">{roleTitle(assignment.roleId)}</span>
             {#if assignment.expiresAt}<span class="text-base-content/60">
-                · until {formatDate(assignment.expiresAt)}</span
+                · {expired(assignment) ? "ended" : "until"}
+                {formatDate(assignment.expiresAt)}</span
               >{/if}
           </span>
+          {#if expired(assignment)}<button
+              class="btn btn-ghost btn-xs"
+              onclick={() => void renew(assignment)}
+              disabled={busy ||
+                uncertain ||
+                !!error ||
+                !canPerform(authority.authority, "roleAssignmentsAssign")}
+              >Renew</button
+            >{/if}
           <button
             class="btn btn-ghost btn-xs text-error"
             onclick={() => change("role", assignment)}
@@ -413,10 +506,19 @@
               >{meaning
                 ? `· ${capabilityArea(meaning.identity.capabilityId).title}`
                 : ""}{grant.expiresAt
-                ? ` · until ${formatDate(grant.expiresAt)}`
+                ? ` · ${expired(grant) ? "ended" : "until"} ${formatDate(grant.expiresAt)}`
                 : ""}</span
             >
           </span>
+          {#if expired(grant)}<button
+              class="btn btn-ghost btn-xs"
+              onclick={() => void renew(grant)}
+              disabled={busy ||
+                uncertain ||
+                !!error ||
+                !canPerform(authority.authority, "capabilityGrantsGrant")}
+              >Renew</button
+            >{/if}
           <button
             class="btn btn-ghost btn-xs text-error"
             onclick={() => change("capability", grant)}
@@ -475,7 +577,7 @@
         bind:value={expiresAt}
         disabled={busy || uncertain || !!error}
       /><span class="trellis-field-help"
-        >New roles and permissions end at this time.</span
+        >New and renewed roles and permissions end at this time.</span
       ></label
     >
   {/if}
