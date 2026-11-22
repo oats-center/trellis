@@ -379,13 +379,14 @@ pub(crate) fn generate_compiled(
 
 /// Choose the model crates a generated Rust package may reuse.
 ///
-/// Reused models must come from the `trellis-models` the consuming Cargo graph
-/// builds, so the SDK's types are the ones `trellis-rs` exposes. The nearest
-/// `Cargo.lock` above `output` names that crate's version and source (a path,
-/// a git commit, or a registry archive checksum), and its models are read from
-/// that exact source on disk. Without a lock, or without `trellis-models` in
-/// it, the SDK itself brings in the CLI's version, so the binding the CLI
-/// bundles applies; it also applies to that version's crates.io release. A
+/// The SDK reaches reused models through `trellis_rs::models`, so they must be
+/// the `trellis-models` that `trellis-rs` links in the consuming Cargo graph.
+/// The nearest `Cargo.lock` above `output` names that crate's version and
+/// source (a path, a git commit, or a registry archive checksum), and its
+/// models are read from that exact source on disk. Without a lock, or without
+/// `trellis-models` in it, the SDK brings in the CLI's version of `trellis-rs`
+/// and with it that release's models, so the binding the CLI bundles applies;
+/// it also applies to that version's crates.io release. A
 /// locked source that is not on disk, or not verifiably the one locked,
 /// cannot be compared, so its models are emitted inline.
 fn project_model_bindings(

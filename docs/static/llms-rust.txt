@@ -41,9 +41,14 @@ constants carry source-package/participant evidence; applications do not supply
 digests to service bootstrap. Matching built-in models come from
 `trellis-models` rather than being copied into each generated package;
 package-name equality alone never substitutes one schema for another.
-Generation binds the `trellis-models` version your `Cargo.lock` resolves (the
-CLI's own version when there is no lock yet) and reuses it when its semantic
-digest equals the `trellis` dependency's; the two package versions may differ.
+Generation binds the `trellis-models` that `trellis-rs` links in your
+`Cargo.lock` (the CLI's own version when there is no lock yet) and reuses it when
+its semantic digest equals the `trellis` dependency's; the two package versions
+may differ. The generated SDK has no `trellis-models` dependency of its own: it
+reaches those models through `trellis_rs::models`, so its built-in types are the
+ones `trellis-rs` exposes even when `trellis-rs` links a path, git, or
+alternate-registry `trellis-models` with no `[patch]`. Name built-in models as
+`trellis_rs::models::trellis::<Type>` instead of adding `trellis-models` yourself.
 The binding comes from the exact source the lock names (a path, a git commit,
 or a registry archive with the locked checksum), never from another
 same-version copy. A locked source missing from the local Cargo cache, or a

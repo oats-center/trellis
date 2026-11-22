@@ -343,6 +343,30 @@ pub fn generate_rust_package(
         .collect::<BTreeMap<_, _>>();
 
     validate_names(graph, &public_types, &participant_types)?;
+    // The SDK names models through the trellis-rs it depends on, so they come
+    // from the exact trellis-models crate that trellis-rs links, wherever Cargo
+    // resolved it from, and are the types trellis-rs exposes.
+    let model_bindings = model_bindings
+        .iter()
+        .map(|binding| {
+            let module = binding
+                .module
+                .strip_prefix("trellis_models::")
+                .filter(|_| binding.dependency == "trellis-models")
+                .ok_or_else(|| {
+                    CodegenRustError::Semantic(format!(
+                        "generated SDKs reuse models only from the trellis-models that \
+                        trellis-rs links, not {}",
+                        binding.dependency
+                    ))
+                })?;
+            Ok(RustModelBinding {
+                module: format!("trellis_rs::models::{module}"),
+                ..binding.clone()
+            })
+        })
+        .collect::<Result<Vec<_>, CodegenRustError>>()?;
+    let model_bindings = model_bindings.as_slice();
     let mut bindings = BTreeSet::new();
     for binding in model_bindings {
         syn::parse_str::<syn::Path>(&binding.module).map_err(|error| {
@@ -442,28 +466,6 @@ pub fn generate_rust_package(
         source.contents = prettyplease::unparse(&syntax);
     }
 
-    let mut dependencies = BTreeMap::new();
-    for binding in model_bindings.iter().filter(|binding| {
-        graph
-            .packages()
-            .values()
-            .any(|package| binding.matches(graph, package))
-    }) {
-        if let Some(previous) =
-            dependencies.insert(&binding.dependency, &binding.dependency_version)
-        {
-            if previous != &binding.dependency_version {
-                return Err(CodegenRustError::Semantic(format!(
-                    "conflicting model dependency versions for {}",
-                    binding.dependency
-                )));
-            }
-        }
-    }
-    let model_dependencies = dependencies
-        .into_iter()
-        .map(|(name, version)| format!("{name:?} = {version:?}\n", version = version.to_string()))
-        .collect::<String>();
     sources.push(Source {
         path: "Cargo.toml".into(),
         contents: format!(
@@ -471,7 +473,7 @@ pub fn generate_rust_package(
             version = {:?}\nedition = \"2021\"\npublish = false\n\n\
             [package.metadata.trellis]\ngenerated = true\n\n[dependencies]\n\
             trellis-rs = \"{}\"\ntrellis-protocol = {:?}\n\
-            {model_dependencies}serde = {{ version = \"1.0\", features = \
+            serde = {{ version = \"1.0\", features = \
             [\"derive\"] }}\nserde_json = \"1.0\"\nfutures-util = \"0.3\"\n",
             root.version().to_string(),
             env!("CARGO_PKG_VERSION"),
@@ -3647,7 +3649,7 @@ mod tests {
     }
 
     #[test]
-    fn older_model_bundle_survives_sdk_upgrade_without_regeneration() {
+    fn generated_clients_share_linked_models_across_sdk_upgrade_without_regeneration() {
         let graph = graph(
             "model Value { counter: int64; observedAt: timestamp; } api main@v1 { \
             title \"Main\"; description \"Read values.\"; rpc Get { input Value; \
@@ -3660,25 +3662,37 @@ mod tests {
             .join("../..")
             .canonicalize()
             .unwrap();
+        // The trellis-models trellis-rs links, carrying this fixture's models
+        // beside the built-in ones trellis-rs binds for itself.
         let models = output.path().join("models");
         fs::create_dir_all(models.join("src")).unwrap();
-        let model_manifest =
-            "[package]\nname = \"trellis-models\"\nversion = \"0.99.0\"\nedition = \
-            \"2021\"\n[dependencies]\ntrellis-protocol = { path = ";
+        let models_version = toml::from_str::<toml::Table>(
+            &fs::read_to_string(root.join("crates/models/Cargo.toml")).unwrap(),
+        )
+        .unwrap()["package"]["version"]
+            .clone();
         let model_manifest = format!(
-            "{model_manifest}{:?} }}\nserde = {{ version = \"1\", features = \
-            [\"derive\"] }}\nserde_json = \"1\"\n",
+            "[package]\nname = \"trellis-models\"\nversion = {models_version}\nedition = \
+            \"2021\"\n[dependencies]\ntrellis-protocol = {{ path = {:?} }}\nserde = {{ \
+            version = \"1\", features = [\"derive\"] }}\nserde_json = \"1\"\n",
             root.join("crates/protocol")
         );
         fs::write(models.join("Cargo.toml"), &model_manifest).unwrap();
+        // Generated models name each other through `crate::__types`, so both
+        // snapshots share that module; the shared wire imports appear once.
+        let fixture = render_rust_models(&graph, &[]).unwrap();
         fs::write(
-            models.join("src/lib.rs"),
-            "pub mod __types; pub use __types::fixture;\n",
+            models.join("src/fixture.rs"),
+            &fixture[fixture.find("pub mod fixture").unwrap()..],
         )
         .unwrap();
         fs::write(
-            models.join("src/__types.rs"),
-            render_rust_models(&graph, &[]).unwrap(),
+            models.join("src/lib.rs"),
+            format!(
+                "pub mod __types {{ include!({:?}); include!(\"fixture.rs\"); }}\n\
+                pub use __types::{{fixture, trellis}};\n",
+                root.join("crates/models/generated/__types.rs")
+            ),
         )
         .unwrap();
         let binding = RustModelBinding::from_package_manifest(&graph, &model_manifest).unwrap();
@@ -3721,19 +3735,12 @@ fn main() {
                 \"1.0.0\"\nedition = \"2021\"\n[workspace]\n[dependencies]\nclient-a = \
                 {{ path = \"client-a\" }}\nclient-b = {{ path = \"client-b\" }}\n\
                 trellis-rs = {:?}\nserde_json = \"1\"\n[patch.crates-io]\ntrellis-rs = \
-                {{ path = {sdk:?} }}\ntrellis-protocol = {{ path = {:?} }}\nold-models \
-                = {{ package = \"trellis-models\", path = {models:?} }}\n\
-                current-models = {{ package = \"trellis-models\", path = {:?} }}\n",
+                {{ path = {sdk:?} }}\ntrellis-protocol = {{ path = {:?} }}\n\
+                trellis-models = {{ path = {models:?} }}\n",
                 env!("CARGO_PKG_VERSION"),
                 root.join("crates/protocol"),
-                root.join("crates/models")
             )
         };
-        fs::write(
-            output.path().join("Cargo.toml"),
-            manifest(&root.join("crates/trellis")),
-        )
-        .unwrap();
         let target = root.join("target/codegen-consumers");
         let run = || {
             let result = Command::new("cargo")
@@ -3748,8 +3755,8 @@ fn main() {
                 String::from_utf8_lossy(&result.stderr)
             );
         };
-        run();
-        // Use the real normalized SDK archive, not a stub of its public interface.
+        // The real normalized SDK archive names trellis-models by version, so it
+        // links the patched model crate, as a published trellis-rs would.
         let result = Command::new("cargo")
             .args([
                 "package",
@@ -3784,10 +3791,12 @@ fn main() {
             .status()
             .unwrap()
             .success());
-        let upgraded = output
+        let runtime = output
             .path()
             .join(format!("trellis-rs-{}", env!("CARGO_PKG_VERSION")));
-        let cargo_path = upgraded.join("Cargo.toml");
+        fs::write(output.path().join("Cargo.toml"), manifest(&runtime)).unwrap();
+        run();
+        let cargo_path = runtime.join("Cargo.toml");
         let mut cargo: toml::Value =
             toml::from_str(&fs::read_to_string(&cargo_path).unwrap()).unwrap();
         let mut version = semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
@@ -3798,8 +3807,8 @@ fn main() {
         }
         cargo["package"]["version"] = toml::Value::String(version.to_string());
         fs::write(cargo_path, toml::to_string(&cargo).unwrap()).unwrap();
-        fs::write(output.path().join("Cargo.toml"), manifest(&upgraded)).unwrap();
-        // Neither generated client nor the old native model snapshot is regenerated.
+        fs::write(output.path().join("Cargo.toml"), manifest(&runtime)).unwrap();
+        // Neither generated client is regenerated for the SDK upgrade.
         run();
     }
 

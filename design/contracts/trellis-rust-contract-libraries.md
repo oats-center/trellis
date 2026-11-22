@@ -45,9 +45,14 @@ same identity and digest. Neither package names alone nor matching API majors
 select shared models.
 
 The CLI offers the independently versioned `trellis-models` bundle through this
-binding mechanism. The provider must be the `trellis-models` the consuming Cargo
-graph builds, because a second copy would make the SDK's models different Rust
-types from the ones `trellis-rs` exposes. The CLI takes that crate from the
+binding mechanism. The provider must be the `trellis-models` that `trellis-rs`
+links, because a second copy would make the SDK's models different Rust types
+from the ones `trellis-rs` exposes. Generated packages therefore never name
+`trellis-models` themselves: `trellis-rs` re-exports the crate it links as
+`trellis_rs::models`, and reused models come through that path. Whatever source
+Cargo resolved for `trellis-rs`'s model dependency (crates.io, an alternate
+registry, git, or a sibling path with no workspace `[patch]`), the SDK gets that
+exact crate. The CLI takes that crate from the
 nearest `Cargo.lock` above the Rust output (the one `trellis-rs` links there),
 including its exact source, and reads its binding from that source's own
 `generated/__types.rs`. Generation stays offline and downloads nothing; it
@@ -65,19 +70,20 @@ finds each kind of source as the lock identifies it:
 
 The CLI's version from crates.io uses the binding the CLI embeds; the same
 version from any other source is read like any other version. With no lock, or
-no `trellis-models` in it, the generated SDK brings in the CLI's version, so the
-embedded binding applies. A locked source that is not on disk or does not
+no `trellis-models` in it, the generated SDK brings in the CLI's version of
+`trellis-rs` and with it that release's models, so the embedded binding applies. A locked source that is not on disk or does not
 verify cannot be compared, and its models are emitted inline.
 `trellis generate -v` (and `trellis install -v`) logs the lock, the resolved
 version, and where its binding was read, then, for each package, whether its
 models are reused or inlined and which provider's digest differed.
 
-Generated packages declare their model dependency directly at the bound version,
-an ordinary Cargo requirement, so a later release that Cargo selects still
-compiles when its digest is unchanged. They retain the normal compatible SDK
-dependency range. SDK implementation updates do not require
-regeneration when execution ABI and selected models remain compatible. The SDK
-can use a newer model snapshot without making an older generated client adopt it.
+Because reused models follow `trellis-rs`, a later `trellis-models` release that
+Cargo selects for it still compiles when its digest is unchanged. Generated
+packages retain the normal compatible SDK dependency range. SDK implementation
+updates do not require regeneration when execution ABI and selected models
+remain compatible. When `trellis-rs` moves to a model snapshot with another
+digest, the generated package's compile-time model check fails and the package
+is regenerated; it does not keep an older snapshot as a second, distinct copy.
 
 Generated implementations are disposable build artifacts, not committed source.
 The SDK keeps authored Cargo manifests and entrypoints. `cargo xtask install`

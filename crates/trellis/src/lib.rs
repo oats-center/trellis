@@ -76,6 +76,14 @@ pub mod jobs;
 /// Reusable OpenTelemetry ownership and instrumentation.
 pub mod telemetry;
 
+/// Models of the built-in `trellis` contract package, from the exact
+/// `trellis-models` crate this runtime links.
+///
+/// Generated SDKs reach built-in models through this path rather than naming
+/// `trellis-models` themselves, so their types are these types wherever Cargo
+/// resolved the crate from.
+pub use trellis_models as models;
+
 #[doc(hidden)]
 #[path = "internal.rs"]
 pub mod __internal;
