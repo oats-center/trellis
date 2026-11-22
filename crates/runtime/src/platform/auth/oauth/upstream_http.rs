@@ -28,7 +28,53 @@ pub(super) struct Refusal {
     description: String,
     /// The provider's own words, rather than Trellis's account of a step that failed.
     from_provider: bool,
+    /// The request's reference when Trellis itself failed the sign-in.
+    reference: Option<String>,
     expires_at: i64,
+}
+
+impl Refusal {
+    /// A refusal to show for ten minutes. A `server_error` names the current
+    /// request's reference, which finds its log line.
+    fn new(
+        provider_id: String,
+        code: &ErrorCode,
+        reason: &str,
+        description: &str,
+        from_provider: bool,
+    ) -> Self {
+        // Provider text is shown as plain text; bound it and drop control
+        // characters so it stays one readable line.
+        let clean = |text: &str, limit: usize| -> String {
+            text.chars()
+                .filter(|character| !character.is_control())
+                .take(limit)
+                .collect()
+        };
+        Self {
+            provider_id,
+            error: clean(reason, 64),
+            description: clean(description, 300),
+            from_provider,
+            reference: matches!(code, ErrorCode::ServerError)
+                .then(|| crate::http_failure::reference("server_error"))
+                .flatten(),
+            expires_at: crate::clock::unix_now() + 600,
+        }
+    }
+}
+
+/// Keeps `refusal` for the sign-in page of `key` (the browser's Portal session
+/// and its transaction or device review), and sends the browser back there.
+fn refuse(engine: &OAuthEngine, key: (String, String), refusal: Refusal, page: &str) -> Response {
+    if let Ok(mut refusals) = engine.upstream_refusals.lock() {
+        let now = crate::clock::unix_now();
+        refusals.retain(|_, refusal| refusal.expires_at > now);
+        if refusals.len() < 1024 || refusals.contains_key(&key) {
+            refusals.insert(key, refusal);
+        }
+    }
+    Redirect::to(page).into_response()
 }
 
 /// The sign-in methods for a `transaction` or device-approval `review` (see
@@ -45,7 +91,10 @@ pub(super) async fn providers(
     };
     match sign_in(&engine, &headers, find("transaction"), find("review")).await {
         Some(sign_in) => Json(sign_in).into_response(),
-        None => error(ErrorCode::ServerError),
+        None => error(super::http::failed(
+            "could not read the sign-in methods",
+            "they could not be read",
+        )),
     }
 }
 
@@ -113,7 +162,9 @@ pub(super) async fn sign_in(
         })
     })
     .await;
-    let (mut sign_in, session, names) = result.ok()?;
+    let (mut sign_in, session, names) = result
+        .map_err(|cause| crate::http_failure::record("could not read the sign-in methods", cause))
+        .ok()?;
     let now = crate::clock::unix_now();
     let refusal = session.zip(page).and_then(|key| {
         let refusals = engine.upstream_refusals.lock().ok()?;
@@ -125,6 +176,7 @@ pub(super) async fn sign_in(
             "error": refusal.error,
             "description": refusal.description,
             "fromProvider": refusal.from_provider,
+            "reference": refusal.reference,
         }))
     });
     if let Some(refusal) = refusal {
@@ -243,6 +295,30 @@ pub(super) async fn start(
             None,
         )
     };
+    // A server failure from here sends the browser back to the page it signed
+    // in from, which names the failure's reference. An account link has no
+    // such page.
+    let page = match &review {
+        Some(review) => format!("/device-enrollment?reviewId={review}&error=upstream_login_failed"),
+        None => format!("/login?transaction={transaction}&error=upstream_login_failed"),
+    };
+    let (refusal_key, refusal_provider) =
+        ((session.clone(), transaction.clone()), provider.clone());
+    let linking = account_token.is_some();
+    let failed = |reason: &str, error: String, cause: String| {
+        crate::http_failure::record(error, cause);
+        if linking {
+            return super::http::error(ErrorCode::ServerError);
+        }
+        let refusal = Refusal::new(
+            refusal_provider.clone(),
+            &ErrorCode::ServerError,
+            reason,
+            "Trellis could not start the sign-in with this provider.",
+            false,
+        );
+        refuse(&engine, refusal_key.clone(), refusal, &page)
+    };
     let selected = provider.clone();
     let configured = match with_store(&engine, move |store| {
         store.authority.upstream_provider(&selected)
@@ -259,20 +335,36 @@ pub(super) async fn start(
             return error(ErrorCode::AccessDenied);
         }
     };
-    let Ok(http) = engine.upstream_http.for_provider(&provider, &configured) else {
-        return error(ErrorCode::ServerError);
+    let http = match engine.upstream_http.for_provider(&provider, &configured) {
+        Ok(http) => http,
+        Err(cause) => {
+            return failed(
+                "discovery_failed",
+                format!("could not trust OIDC provider {provider}'s pinned certificate"),
+                cause.to_string(),
+            )
+        }
     };
     let snapshot = match ProviderSnapshot::discover(
-        provider,
+        provider.clone(),
         configured.revision,
-        configured.issuer,
-        configured.client_id,
+        configured.issuer.clone(),
+        configured.client_id.clone(),
         &http,
     )
     .await
     {
         Ok(snapshot) => snapshot,
-        Err(_) => return error(ErrorCode::ServerError),
+        Err(cause) => {
+            return failed(
+                "discovery_failed",
+                format!(
+                    "could not read OIDC provider {provider}'s OpenID configuration from {}",
+                    configured.issuer
+                ),
+                cause.to_string(),
+            )
+        }
     };
     let secret = match engine
         .server
@@ -281,12 +373,11 @@ pub(super) async fn start(
     {
         Ok(secret) => secret,
         Err(cause) => {
-            tracing::error!(
-                provider_id = %snapshot.identity.provider_id,
-                error = %cause,
-                "could not read the OIDC provider's client secret",
-            );
-            return error(ErrorCode::ServerError);
+            return failed(
+                "client_secret_unreadable",
+                format!("could not read OIDC provider {provider}'s client secret"),
+                cause.to_string(),
+            )
         }
     };
     let client = match snapshot.client(
@@ -295,13 +386,14 @@ pub(super) async fn start(
     ) {
         Ok(client) => client,
         Err(cause) => {
-            tracing::error!(
-                provider_id = %snapshot.identity.provider_id,
-                oauth_issuer = %authority.settings.oauth_issuer,
-                error = %cause,
-                "the OIDC sign-in callback URL is not valid",
-            );
-            return error(ErrorCode::ServerError);
+            return failed(
+                "callback_invalid",
+                format!(
+                    "the OIDC sign-in callback URL {}/portal/oidc/callback is not valid",
+                    authority.settings.oauth_issuer
+                ),
+                cause.to_string(),
+            )
         }
     };
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
@@ -368,11 +460,11 @@ pub(super) async fn start(
     })
     .await
     {
-        tracing::error!(
-            error = ?cause,
-            "could not save an OIDC sign-in before sending the user to the provider",
+        return failed(
+            "sign_in_unsaved",
+            "could not save an OIDC sign-in before sending the user to the provider".into(),
+            cause.to_string(),
         );
-        return error(ErrorCode::ServerError);
     }
     Redirect::to(url.as_str()).into_response()
 }
@@ -460,31 +552,14 @@ pub(super) async fn callback(
         if linking {
             return error(code);
         }
-        // Provider text is shown as plain text; bound it and drop control
-        // characters so it stays one readable line.
-        let clean = |text: &str, limit: usize| -> String {
-            text.chars()
-                .filter(|character| !character.is_control())
-                .take(limit)
-                .collect()
-        };
-        if let Ok(mut refusals) = engine.upstream_refusals.lock() {
-            let now = crate::clock::unix_now();
-            refusals.retain(|_, refusal| refusal.expires_at > now);
-            if refusals.len() < 1024 || refusals.contains_key(&refusal_key) {
-                refusals.insert(
-                    refusal_key.clone(),
-                    Refusal {
-                        provider_id: refusal_provider.clone(),
-                        error: clean(reason, 64),
-                        description: clean(description, 300),
-                        from_provider,
-                        expires_at: now + 600,
-                    },
-                );
-            }
-        }
-        Redirect::to(&return_to).into_response()
+        let refusal = Refusal::new(
+            refusal_provider.clone(),
+            &code,
+            reason,
+            description,
+            from_provider,
+        );
+        refuse(&engine, refusal_key.clone(), refusal, &return_to)
     };
     if let Some(reason) = form.get("error") {
         // The provider's own refusal, such as a client it doesn't recognize,
@@ -598,10 +673,12 @@ pub(super) async fn callback(
     {
         Ok(secret) => secret,
         Err(cause) => {
-            tracing::error!(
-                provider_id = %flow.provider.provider_id,
-                error = %cause,
-                "could not read the OIDC provider's client secret",
+            crate::http_failure::record(
+                format!(
+                    "could not read OIDC provider {}'s client secret",
+                    flow.provider.provider_id
+                ),
+                cause,
             );
             return refused(
                 ErrorCode::ServerError,
@@ -611,35 +688,52 @@ pub(super) async fn callback(
             );
         }
     };
-    let Ok(http) = engine
+    let http = match engine
         .upstream_http
         .for_provider(&flow.provider.provider_id, &configured)
-    else {
-        return refused(
-            ErrorCode::ServerError,
-            "discovery_failed",
-            "Trellis could not trust the provider's pinned certificate.",
-            false,
-        );
+    {
+        Ok(http) => http,
+        Err(cause) => {
+            crate::http_failure::record(
+                format!(
+                    "could not trust OIDC provider {}'s pinned certificate",
+                    flow.provider.provider_id
+                ),
+                cause,
+            );
+            return refused(
+                ErrorCode::ServerError,
+                "discovery_failed",
+                "Trellis could not trust the provider's pinned certificate.",
+                false,
+            );
+        }
     };
     let snapshot = match ProviderSnapshot::discover(
         flow.provider.provider_id.clone(),
         configured.revision,
-        configured.issuer,
+        configured.issuer.clone(),
         configured.client_id,
         &http,
     )
     .await
     {
         Ok(snapshot) => snapshot,
-        Err(_) => {
+        Err(cause) => {
+            crate::http_failure::record(
+                format!(
+                    "could not read OIDC provider {}'s OpenID configuration from {}",
+                    flow.provider.provider_id, configured.issuer
+                ),
+                cause.to_string(),
+            );
             return refused(
                 ErrorCode::ServerError,
                 "discovery_failed",
                 "Trellis could not read the provider's OpenID configuration. Check that its \
                 issuer matches the provider's discovery document exactly.",
                 false,
-            )
+            );
         }
     };
     let client = match snapshot.client(
@@ -648,11 +742,12 @@ pub(super) async fn callback(
     ) {
         Ok(client) => client,
         Err(cause) => {
-            tracing::error!(
-                provider_id = %flow.provider.provider_id,
-                oauth_issuer = %authority.settings.oauth_issuer,
-                error = %cause,
-                "the OIDC sign-in callback URL is not valid",
+            crate::http_failure::record(
+                format!(
+                    "the OIDC sign-in callback URL {}/portal/oidc/callback is not valid",
+                    authority.settings.oauth_issuer
+                ),
+                cause,
             );
             return refused(
                 ErrorCode::ServerError,
@@ -665,10 +760,12 @@ pub(super) async fn callback(
     let exchange = match client.exchange_code(AuthorizationCode::new(code.clone())) {
         Ok(exchange) => exchange,
         Err(cause) => {
-            tracing::error!(
-                provider_id = %flow.provider.provider_id,
-                error = %cause,
-                "OIDC provider has no usable token endpoint",
+            crate::http_failure::record(
+                format!(
+                    "OIDC provider {} has no usable token endpoint",
+                    flow.provider.provider_id
+                ),
+                cause,
             );
             return refused(
                 ErrorCode::ServerError,
@@ -685,27 +782,41 @@ pub(super) async fn callback(
     {
         Ok(tokens) => tokens,
         Err(cause) => {
-            // A wrong client secret shows here as the provider's `invalid_client`.
-            tracing::warn!(
-                provider_id = %flow.provider.provider_id,
-                error = %super::oidc::error_chain(&cause),
-                "upstream OIDC token exchange rejected",
-            );
             return match &cause {
-                openidconnect::RequestTokenError::ServerResponse(response) => refused(
-                    ErrorCode::AccessDenied,
-                    response.error().as_ref(),
-                    response
-                        .error_description()
-                        .map_or("The provider would not exchange the sign-in code.", |d| d),
-                    true,
-                ),
-                _ => refused(
-                    ErrorCode::AccessDenied,
-                    "token_exchange_failed",
-                    "Trellis could not exchange the sign-in code with the provider.",
-                    false,
-                ),
+                // The provider's own refusal. A wrong client secret shows here
+                // as `invalid_client`.
+                openidconnect::RequestTokenError::ServerResponse(response) => {
+                    tracing::warn!(
+                        provider_id = %flow.provider.provider_id,
+                        error = %super::oidc::error_chain(&cause),
+                        "upstream OIDC token exchange rejected",
+                    );
+                    refused(
+                        ErrorCode::AccessDenied,
+                        response.error().as_ref(),
+                        response
+                            .error_description()
+                            .map_or("The provider would not exchange the sign-in code.", |d| d),
+                        true,
+                    )
+                }
+                // No answer, or one that isn't a token response: the exchange
+                // failed, and the request's log line says how.
+                _ => {
+                    crate::http_failure::record(
+                        format!(
+                            "could not exchange the sign-in code with OIDC provider {}",
+                            flow.provider.provider_id
+                        ),
+                        super::oidc::error_chain(&cause),
+                    );
+                    refused(
+                        ErrorCode::ServerError,
+                        "token_exchange_failed",
+                        "Trellis could not exchange the sign-in code with the provider.",
+                        false,
+                    )
+                }
             };
         }
     };
@@ -743,8 +854,11 @@ pub(super) async fn callback(
         };
     }
     let mut replacement = [0; 32];
-    if getrandom::fill(&mut replacement).is_err() {
-        return error(ErrorCode::ServerError);
+    if let Err(cause) = getrandom::fill(&mut replacement) {
+        return error(super::http::failed(
+            "could not make a Portal login cookie",
+            cause,
+        ));
     }
     let replacement = URL_SAFE_NO_PAD.encode(replacement);
     let transaction = flow.authorization_transaction.clone();

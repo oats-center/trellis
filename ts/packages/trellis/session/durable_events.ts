@@ -55,7 +55,7 @@ import {
   type RuntimeEventConsumers,
 } from "./events.ts";
 import { ulid } from "ulid";
-import { eventHeaderId, sleep } from "./helpers.ts";
+import { eventHeaderId, sleep, traceIdFromTraceparent } from "./helpers.ts";
 
 import { logFailure, recordRuntimeError } from "./handler_errors.ts";
 import { recordCatalogCounter } from "../telemetry/mod.ts";
@@ -82,6 +82,8 @@ export type DurableEventHost<TA extends RuntimeApi> = {
   readonly timeout: number;
   readonly tasks: TrellisTasks;
   readonly log: LoggerLike;
+  /** Service name, for failure log lines. */
+  readonly name: string;
   readonly adaptiveTransport: boolean;
   transport(): TrellisTransportProvider;
   nats(): NatsConnection;
@@ -812,6 +814,9 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
             }
 
             const delivery = msg.info.deliveryCount;
+            const traceId = traceIdFromTraceparent(
+              deliveredMessage.headers?.get("traceparent"),
+            );
             const wait =
               binding.backoffMs[
                 Math.min(
@@ -843,8 +848,10 @@ export class DurableEventConsumers<TA extends RuntimeApi> {
               });
               logFailure(this.#host.log, handlerValue.error, {
                 route: String(registration.event),
+                service: this.#host.name,
+                ...(traceId === undefined ? {} : { traceId }),
                 extra: {
-                  event_id: eventHeaderId(eventPayload),
+                  event_id: eventHeaderId(deliveredMessage.headers),
                   consumer: group,
                   delivery,
                   max_deliver: binding.maxDeliver,

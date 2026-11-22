@@ -491,7 +491,12 @@ impl OAuthEngine {
             })
         })
         .await
-        .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?;
+        .map_err(|cause| {
+            ErrorResponse::new(super::http::failed(
+                "could not read the OAuth client",
+                cause,
+            ))
+        })?;
         if let Some(state) = state {
             return if state == "active" {
                 Ok(())
@@ -512,7 +517,10 @@ impl OAuthEngine {
                     AuthError::ResourceLimit | AuthError::Conflict(_) => {
                         ErrorCode::TemporarilyUnavailable
                     }
-                    _ => ErrorCode::ServerError,
+                    error => super::http::failed(
+                        "could not install the client's metadata document",
+                        error,
+                    ),
                 })
             })
     }
@@ -622,9 +630,13 @@ impl OAuthEngine {
         let challenge = self
             .nonces
             .lock()
-            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
+            .map_err(|cause| {
+                ErrorResponse::new(super::http::failed("could not check the DPoP nonce", cause))
+            })?
             .check(binding.nonce.as_deref(), Instant::now())
-            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?;
+            .map_err(|cause| {
+                ErrorResponse::new(super::http::failed("could not check the DPoP nonce", cause))
+            })?;
         if let Some(nonce) = challenge {
             return Err(TokenError::UseDpopNonce(nonce));
         }

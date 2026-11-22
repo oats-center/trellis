@@ -106,7 +106,10 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                             }
                             response
                         }
-                        _ => error(ErrorCode::ServerError),
+                        Err(cause) => error(failed(
+                            "could not describe this authorization server",
+                            cause,
+                        )),
                     }
                 }
             }),
@@ -267,7 +270,10 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                 // load would, and users behind one address run out sooner.
                 let allowed = request.uri().path().starts_with("/portal-assets/") || {
                     let Ok(mut requests) = requests.lock() else {
-                        return error(ErrorCode::ServerError);
+                        return error(failed(
+                            "could not count the request against its sign-in budget",
+                            "the budget table's lock is poisoned",
+                        ));
                     };
                     let expired =
                         |started: &Instant| now.duration_since(*started) >= Duration::from_secs(60);
@@ -316,7 +322,10 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                 }
                 let cleanup_due = {
                     let Ok(mut last) = maintenance.lock() else {
-                        return error(ErrorCode::ServerError);
+                        return error(failed(
+                            "could not schedule OAuth expiry cleanup",
+                            "the schedule's lock is poisoned",
+                        ));
                     };
                     if now.duration_since(*last) >= Duration::from_secs(60) {
                         *last = now;
@@ -527,7 +536,7 @@ async fn authorize(
             Some(
                 authority
                     .create_portal_session(now)
-                    .map_err(|_| ErrorCode::ServerError)?,
+                    .map_err(|cause| failed("could not open a Portal session", cause))?,
             )
         } else {
             None
@@ -535,7 +544,12 @@ async fn authorize(
         let session_id = match (&authenticated, &guest) {
             (Some(login), _) => login.session_id.clone(),
             (_, Some(guest)) => guest.session_id.clone(),
-            _ => return Err(ErrorCode::ServerError),
+            _ => {
+                return Err(failed(
+                    "could not start the authorization",
+                    "it has neither a Portal login nor a session",
+                ))
+            }
         };
         let flow = super::portal::PortalAuthorization {
             presentation: None,
@@ -546,7 +560,7 @@ async fn authorize(
         };
         store
             .store_authorization(&flow_transaction, &flow, &client_id)
-            .map_err(|_| ErrorCode::ServerError)?;
+            .map_err(|cause| failed("could not save the authorization", cause))?;
         Ok((authenticated, guest))
     })
     .await;
@@ -1075,7 +1089,7 @@ async fn consent_data(
         })
     })
     .await;
-    result.map_err(|_| ErrorCode::ServerError)
+    result.map_err(|cause| failed("could not present the consent", cause))
 }
 
 async fn approve(
@@ -1284,7 +1298,7 @@ async fn complete_approval(
     };
     let digest = match super::super::sqlite::digest(&approval) {
         Ok(digest) => digest,
-        Err(_) => return error(ErrorCode::ServerError),
+        Err(cause) => return error(failed("could not digest the consent decision", cause)),
     };
     let identity = super::super::Mutation {
         actor: login.principal_id,
@@ -1359,7 +1373,10 @@ pub(super) fn cookie_response(
         "__Host-trellis-portal={cookie}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age={max_age}"
     );
     let Ok(bearer) = HeaderValue::from_str(&bearer) else {
-        return error(ErrorCode::ServerError);
+        return error(failed(
+            "could not set the Portal cookie",
+            "it is not a header value",
+        ));
     };
     response.headers_mut().append(header::SET_COOKIE, bearer);
     if let Some(csrf) = csrf {
@@ -1367,7 +1384,10 @@ pub(super) fn cookie_response(
             "__Host-trellis-portal-csrf={csrf}; Path=/; Secure; SameSite=Lax; Max-Age={max_age}"
         );
         let Ok(csrf) = HeaderValue::from_str(&csrf) else {
-            return error(ErrorCode::ServerError);
+            return error(failed(
+                "could not set the Portal CSRF cookie",
+                "it is not a header value",
+            ));
         };
         response.headers_mut().append(header::SET_COOKIE, csrf);
     }
@@ -1393,7 +1413,7 @@ async fn portal_session(State(engine): State<Arc<OAuthEngine>>, headers: HeaderM
             600,
             Json(serde_json::json!({"sessionId":session.session_id})).into_response(),
         ),
-        Err(_) => error(ErrorCode::ServerError),
+        Err(cause) => error(failed("could not open a Portal session", cause)),
     }
 }
 
@@ -1424,8 +1444,8 @@ async fn portal_login(
         return error(ErrorCode::InvalidRequest);
     }
     let mut replacement = [0u8; 32];
-    if getrandom::fill(&mut replacement).is_err() {
-        return error(ErrorCode::ServerError);
+    if let Err(cause) = getrandom::fill(&mut replacement) {
+        return error(failed("could not make a Portal login cookie", cause));
     }
     let replacement = URL_SAFE_NO_PAD.encode(replacement);
     let (csrf, username, password, request_id) = (
@@ -1478,7 +1498,17 @@ async fn portal_login(
         ))
         .into_response(),
         Err(super::super::AuthError::Denied) => error(ErrorCode::AccessDenied),
-        _ => error(ErrorCode::ServerError),
+        Err(cause) => {
+            let code = failed("could not sign in", cause);
+            match crate::http_failure::reference("server_error") {
+                // The sign-in page names the reference.
+                Some(reference) if html => Redirect::to(&format!(
+                    "/login?transaction={transaction}&error=unavailable&reference={reference}"
+                ))
+                .into_response(),
+                _ => error(code),
+            }
+        }
     }
 }
 
@@ -1519,8 +1549,8 @@ async fn portal_sign_up(
         email: form.get("email").cloned().unwrap_or_default(),
     };
     let mut replacement = [0u8; 32];
-    if getrandom::fill(&mut replacement).is_err() {
-        return error(ErrorCode::ServerError);
+    if let Err(cause) = getrandom::fill(&mut replacement) {
+        return error(failed("could not make a Portal login cookie", cause));
     }
     let replacement = URL_SAFE_NO_PAD.encode(replacement);
     let new_cookie = replacement.clone();
@@ -1565,7 +1595,14 @@ async fn portal_sign_up(
         Err(super::super::AuthError::Conflict(_)) => "sign_up_taken",
         Err(super::super::AuthError::Invalid(_)) => "sign_up_invalid",
         Err(super::super::AuthError::Denied) => "sign_up_failed",
-        Err(_) => return error(ErrorCode::ServerError),
+        Err(cause) => {
+            crate::http_failure::record("could not create the account", cause);
+            let reference = crate::http_failure::reference("server_error").unwrap_or_default();
+            return Redirect::to(&format!(
+                "/login?transaction={transaction}&sign_up=1&error=unavailable&reference={reference}"
+            ))
+            .into_response();
+        }
     };
     Redirect::to(&format!(
         "/login?transaction={transaction}&sign_up=1&error={problem}"
@@ -1602,7 +1639,7 @@ async fn portal_logout(
             actor: login.principal_id.clone(),
             request_id,
             request_digest: super::super::sqlite::digest(&login.login_session_id)
-                .map_err(|_| ErrorCode::ServerError)?,
+                .map_err(|cause| failed("could not digest the sign-out", cause))?,
             session: None,
         };
         authority
@@ -1616,13 +1653,39 @@ async fn portal_logout(
     }
 }
 
+/// Records what the server could not do for the current request, and why
+/// (see [`crate::http_failure::record`]), and answers `server_error`.
+pub(super) fn failed(error: &str, cause: impl std::fmt::Display) -> ErrorCode {
+    crate::http_failure::record(error, cause);
+    ErrorCode::ServerError
+}
+
 pub(super) fn error(code: ErrorCode) -> Response {
     described_error(&oauth_as::error::ErrorResponse::new(code))
 }
 
 /// Reply with an OAuth error and its developer-facing `error_description`.
+///
+/// A `server_error` is the server's own failure: its description gives the
+/// request's reference, which finds the request's log line (see
+/// [`crate::http_failure`]). The error code stays the standard one.
 pub(super) fn described_error(error: &oauth_as::error::ErrorResponse) -> Response {
     let status = StatusCode::from_u16(error.error.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
+    let referenced;
+    let error = match error.error {
+        ErrorCode::ServerError => match crate::http_failure::reference("server_error") {
+            Some(reference) => {
+                let mut described = error.clone();
+                described.error_description = Some(
+                    format!("Something went wrong on the server. Reference: {reference}").into(),
+                );
+                referenced = described;
+                &referenced
+            }
+            None => error,
+        },
+        _ => error,
+    };
     let mut response = (status, Json(error)).into_response();
     response
         .headers_mut()
@@ -1755,8 +1818,10 @@ async fn token(
     }
     let (runtime, nkey) = (runtime.clone(), nkey.clone());
     // Complete engine transactions even if the HTTP caller drops its request.
-    let result =
-        tokio::spawn(async move { engine.token(request, &proof, &runtime, &nkey).await }).await;
+    let result = tokio::spawn(crate::http_failure::carry(async move {
+        engine.token(request, &proof, &runtime, &nkey).await
+    }))
+    .await;
     let mut response = match result {
         Ok(Ok(tokens)) => Json(tokens).into_response(),
         Ok(Err(super::engine::TokenError::OAuth(response))) => error(response.error),
@@ -1767,14 +1832,17 @@ async fn token(
             )
                 .into_response();
             let Ok(nonce) = HeaderValue::from_str(&nonce) else {
-                return error(ErrorCode::ServerError);
+                return error(failed(
+                    "could not send a DPoP nonce",
+                    "it is not a header value",
+                ));
             };
             response
                 .headers_mut()
                 .insert(HeaderName::from_static("dpop-nonce"), nonce);
             response
         }
-        Err(_) => error(ErrorCode::ServerError),
+        Err(cause) => error(failed("the token request's task failed", cause)),
     };
     response
         .headers_mut()
@@ -1809,10 +1877,13 @@ async fn revoke(
         return error(ErrorCode::InvalidRequest);
     };
     let (client, token) = (ClientId::new(client), token.clone());
-    match tokio::spawn(async move { engine.server.revoke(&client, None, &token, None).await }).await
+    match tokio::spawn(crate::http_failure::carry(async move {
+        engine.server.revoke(&client, None, &token, None).await
+    }))
+    .await
     {
         Ok(Ok(())) => StatusCode::OK.into_response(),
         Ok(Err(response)) => error(response.error),
-        Err(_) => error(ErrorCode::ServerError),
+        Err(cause) => error(failed("the revocation's task failed", cause)),
     }
 }

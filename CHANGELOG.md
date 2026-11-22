@@ -43,6 +43,13 @@ and this project adheres to
 
 ### Fixed
 
+- Server failures on the OAuth, Portal, sign-in and enrollment HTTP endpoints
+  are logged once under a reference the caller sees: OAuth `server_error`
+  descriptions, the Portal's sign-in, sign-up and device approval pages, the
+  enrollment error bodies and a `Trellis-Reference` header. A device enrollment
+  storage failure answers `unavailable` (503), not `device_enrollment_denied`.
+  Event failure lines carry the event ID, and Operation failure lines the
+  caller, in both SDKs.
 - A failed request is logged once, under the same reference the caller is
   shown, with `error_id`, `request_id`, `trace_id`, `route`, the caller and the
   cause, in Rust, TypeScript and trellis-server alike. The Console and CLI

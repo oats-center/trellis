@@ -636,7 +636,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         }),
       fail: (operationId, error) =>
         this.#applyOwnedOperationUpdate(operationId, "failed", {
-          patch: { error: this.#operationFailureData(operationId, error) },
+          failure: error,
           event: { type: "failed" },
         }),
       cancel: (operationId) =>
@@ -1516,6 +1516,8 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     state: RuntimeOperationState,
     opts: {
       patch?: Partial<RuntimeOperationSnapshot>;
+      /** The failure to record, logged under its caller's reference. */
+      failure?: BaseError;
       event: Record<string, unknown> & { type: string };
     },
   ): AsyncResult<RuntimeOperationSnapshot, BaseError> {
@@ -1525,7 +1527,25 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         if (!runtime) return err(this.#operationNotFoundError(operationId));
         const fence = this.#activeOperationFences.get(operationId);
         if (!fence) return err(this.#operationNotFoundError(operationId));
-        return await this.#applyOperationUpdate(runtime, fence, state, opts);
+        const { failure, ...update } = opts;
+        return await this.#applyOperationUpdate(
+          runtime,
+          fence,
+          state,
+          failure === undefined
+            ? update
+            : {
+                ...update,
+                patch: {
+                  ...update.patch,
+                  error: this.#operationFailureData(
+                    operationId,
+                    failure,
+                    runtime,
+                  ),
+                },
+              },
+        );
       })(),
     );
   }
@@ -1978,7 +1998,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         }),
       fail: (error: BaseError) =>
         this.#applyControlledOperationUpdate(runtime, fence, ctx, "failed", {
-          patch: { error: this.#operationFailureData(runtime.id, error) },
+          patch: {
+            error: this.#operationFailureData(runtime.id, error, runtime),
+          },
           event: { type: "failed" },
         }),
       cancel: () => this.#requestOwnedOperationCancellation(runtime, fence),
@@ -2015,15 +2037,34 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
 
   /**
    * Logs a failure once, under the error ID its caller sees, and returns what
-   * the caller may see: the IDs without the cause.
+   * the caller may see: the IDs without the cause. A failed Operation's line
+   * names the caller that started it and the trace it started in.
    */
-  #operationFailureData(target: string, error: BaseError): BaseErrorSchema {
+  #operationFailureData(
+    target: string,
+    error: BaseError,
+    runtime?: RuntimeOperationRecord,
+  ): BaseErrorSchema {
     const context = error.getContext();
+    const traceId = runtime?.telemetry?.traceparent.split("-")[1];
     logFailure(this.#log, error, {
       ...(typeof context.operation === "string"
         ? { route: context.operation }
+        : runtime
+          ? { route: runtime.operation }
+          : {}),
+      ...(error.toSerializable().traceId === undefined && traceId
+        ? { traceId }
         : {}),
       service: this.name,
+      ...(runtime
+        ? {
+            caller: {
+              principal: runtime.caller.principalId,
+              session: runtime.caller.authorizationSessionId,
+            },
+          }
+        : {}),
       extra: { operation_id: target },
     });
     return callerErrorData(error);
@@ -3431,6 +3472,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                         error: this.#operationFailureData(
                           runtime.id,
                           annotatedError,
+                          runtime,
                         ),
                         completedAt: now(),
                       },

@@ -63,19 +63,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Participant::connect(trellis_runtime_acceptance::service_options(&url, &identity).await?)
             .await?;
     let mut provider = Provider::new(&mut service);
+    let echo_jobs = provider.jobs_client();
     provider
         .runtime_trellis_runtime_v1()
-        .register_echo(|_, input| async move {
-            if input.value == "fail" {
-                return Err(trellis_rs::service::ServerError::Internal(
-                    "echo failed: the fixture's store is unreachable".to_owned(),
-                ));
+        .register_echo(move |_, input| {
+            let jobs = echo_jobs.clone();
+            async move {
+                if input.value == "fail" {
+                    return Err(trellis_rs::service::ServerError::Internal(
+                        "echo failed: the fixture's store is unreachable".to_owned(),
+                    ));
+                }
+                // A keyed job its worker fails; the caller gets the job's ID.
+                if input.value == "job" {
+                    let job = jobs
+                        .create_keyed_work(KeyedValue {
+                            key: "failing".to_owned(),
+                            value: "fail".to_owned(),
+                            extra: Default::default(),
+                        })
+                        .await
+                        .map_err(|error| {
+                            trellis_rs::service::ServerError::Internal(error.to_string())
+                        })?;
+                    return Ok(Value {
+                        value: job.identity().id.clone(),
+                        extra: Default::default(),
+                    });
+                }
+                assert_eq!(input.value, "from TypeScript");
+                Ok(Value {
+                    value: format!("Rust received {}", input.value),
+                    extra: Default::default(),
+                })
             }
-            assert_eq!(input.value, "from TypeScript");
-            Ok(Value {
-                value: format!("Rust received {}", input.value),
-                extra: Default::default(),
-            })
         });
     let release_first = Arc::new(Notify::new());
     let first_runs = Arc::new(AtomicUsize::new(0));

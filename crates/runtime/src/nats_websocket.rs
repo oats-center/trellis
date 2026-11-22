@@ -59,15 +59,22 @@ pub(crate) async fn relay(
     }
     head.push_str("\r\n");
 
+    // The broker failing the upgrade is the server's failure: the request's
+    // log line names the reference sent back in `Trellis-Reference`.
+    let bad_gateway = |cause: &dyn std::fmt::Display| {
+        crate::http_failure::record(
+            format!("could not relay the NATS WebSocket upgrade to {upstream}"),
+            cause,
+        );
+        crate::http_failure::reference("bad_gateway");
+        StatusCode::BAD_GATEWAY.into_response()
+    };
     let mut broker = match tokio::net::TcpStream::connect(&upstream).await {
         Ok(broker) => broker,
-        Err(error) => {
-            tracing::warn!(upstream, error = %error, "NATS WebSocket upstream unavailable");
-            return StatusCode::BAD_GATEWAY.into_response();
-        }
+        Err(error) => return bad_gateway(&error),
     };
-    if broker.write_all(head.as_bytes()).await.is_err() {
-        return StatusCode::BAD_GATEWAY.into_response();
+    if let Err(error) = broker.write_all(head.as_bytes()).await {
+        return bad_gateway(&error);
     }
     // The broker sends INFO right after its 101, so bytes past the response
     // head belong to the relayed stream.
@@ -77,11 +84,12 @@ pub(crate) async fn relay(
             break end + 4;
         }
         if received.len() > MAX_RESPONSE_HEAD {
-            return StatusCode::BAD_GATEWAY.into_response();
+            return bad_gateway(&"the broker's response head is too long");
         }
         let mut chunk = [0_u8; 4096];
         match broker.read(&mut chunk).await {
-            Ok(0) | Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
+            Ok(0) => return bad_gateway(&"the broker closed the connection"),
+            Err(error) => return bad_gateway(&error),
             Ok(read) => received.extend_from_slice(&chunk[..read]),
         }
     };
@@ -92,7 +100,10 @@ pub(crate) async fn relay(
         Ok(httparse::Status::Complete(_))
     ) || response_head.code != Some(101)
     {
-        return StatusCode::BAD_GATEWAY.into_response();
+        return bad_gateway(&format_args!(
+            "the broker answered status {:?}, not 101",
+            response_head.code
+        ));
     }
     let mut response_headers = HeaderMap::new();
     response_headers.insert(header::CONNECTION, HeaderValue::from_static("upgrade"));
@@ -102,7 +113,10 @@ pub(crate) async fn relay(
             .find(|name| name.as_str().eq_ignore_ascii_case(parsed.name))
         {
             let Ok(value) = HeaderValue::from_bytes(parsed.value) else {
-                return StatusCode::BAD_GATEWAY.into_response();
+                return bad_gateway(&format_args!(
+                    "the broker's {} header is invalid",
+                    parsed.name
+                ));
             };
             response_headers.append(name.clone(), value);
         }

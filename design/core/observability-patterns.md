@@ -289,6 +289,27 @@ Console shows an unexpected failure as `Something went wrong on the server.
 Reference: <error_id>`; the CLI and Rust callers end the error text with
 `Reference: <error_id>`.
 
+HTTP requests to `trellis-server` (OAuth, the Portal, service and device
+enrollment, and the other routes of the Trellis listener) each get a ULID when
+they arrive. A handler that fails the request on the server's side records
+what it could not do and why, and answers with that ID as the reference; once
+the response is ready, one line is logged at `error` with `error_id` and
+`request_id` both set to the ID, `trace_id` from an inbound `traceparent`,
+`route` (`<method> <path>`, never the query), `service` = `trellis`, `status`,
+`error_type` = `UnexpectedError`, `code` (the code the caller got), `error` and
+`cause`. Refusals and invalid requests are not server failures and log no such
+line. The caller sees the reference without changing a standard error code:
+
+- OAuth `server_error` responses put `Something went wrong on the server.
+Reference: <id>` in `error_description`.
+- Enrollment and identity-status errors carry it as `error.reference` in the
+  `{"error": {"code": ...}}` envelope, which the Rust and TypeScript clients
+  end their error text with.
+- Portal pages that fail by redirect add `reference=<id>` to the page URL, and
+  an OIDC sign-in Trellis could not start or finish stores it with the refusal
+  the sign-in page shows.
+- Every such response has the `Trellis-Reference: <id>` header.
+
 ## Request Correlation
 
 RPCs and jobs include a `requestId` for correlation and audit. Domain events

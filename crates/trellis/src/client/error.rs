@@ -272,6 +272,11 @@ fn format_rpc_error_value(value: &Value, raw: &str) -> String {
     message
 }
 
+/// ` Reference: <id>` for an error that has a reference, else nothing.
+pub(crate) fn reference_suffix(reference: Option<&str>) -> String {
+    reference.map_or_else(String::new, |reference| format!(" Reference: {reference}"))
+}
+
 #[cfg(test)]
 fn format_rpc_error_payload(raw: &str) -> String {
     let Ok(value) = serde_json::from_str::<Value>(raw) else {
@@ -313,8 +318,16 @@ pub enum TrellisClientError {
     #[error(transparent)]
     ServiceUnavailable(#[from] ServiceUnavailableError),
 
-    #[error("Trellis HTTP request failed with status {status}: {code}")]
-    BootstrapHttp { status: u16, code: String },
+    #[error(
+        "Trellis HTTP request failed with status {status}: {code}{}",
+        reference_suffix(reference.as_deref())
+    )]
+    BootstrapHttp {
+        status: u16,
+        code: String,
+        /// For a server failure, the reference its line in the Trellis log has.
+        reference: Option<String>,
+    },
 
     /// Required authorization evidence could not be obtained or kept current.
     #[error("authorization evidence unavailable: {0}")]

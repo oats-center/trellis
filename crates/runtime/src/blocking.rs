@@ -33,9 +33,11 @@ impl Drop for StoreWork {
 pub(crate) fn spawn<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> tokio::task::JoinHandle<T> {
+    // A failure in the work is the HTTP request's, when one is being answered.
+    let request = crate::http_failure::current();
     tokio::task::spawn_blocking(move || {
         let _work = StoreWork::enter();
-        work()
+        crate::http_failure::within(request, work)
     })
 }
 

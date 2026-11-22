@@ -66,6 +66,8 @@
     description: string;
     /** The provider's own words, rather than Trellis's account of a failed step. */
     fromProvider: boolean;
+    /** When Trellis itself failed the sign-in: the reference its log line has. */
+    reference?: string | null;
   }
 
   /** One consent row. */
@@ -89,6 +91,8 @@
 
   const query = new URL(window.location.href).searchParams;
   const path = window.location.pathname;
+  // A server failure's reference finds its line in the Trellis log.
+  const failureReference = query.get("reference");
 
   // What the server rendered into the page, so the sign-in and consent pages
   // show whole from their first paint instead of shifting as requests answer.
@@ -182,7 +186,13 @@
           "That code doesn't match this request. Check the device and try again.";
         return;
       }
-      if (!response.ok) throw new Error("unavailable");
+      if (!response.ok) {
+        const reference = response.headers.get("Trellis-Reference");
+        enrollmentError = reference
+          ? `Something went wrong on the server. Reference: ${reference}`
+          : "This request isn't available right now. Try again.";
+        return;
+      }
       enrollmentReview = await response.json();
       enrollmentStep = "review";
     } catch {
@@ -482,6 +492,13 @@
   });
 </script>
 
+{#snippet serverFailure()}
+  <p class="alert error" role="alert">
+    Something went wrong on the server. Try again.
+    <span class="refusal-code">Reference: {failureReference}</span>
+  </p>
+{/snippet}
+
 {#snippet upstreamRefusal()}
   <p class="alert error" role="alert">
     {#if refusal}
@@ -492,6 +509,9 @@
         ? `: ${refusal.description}`
         : "."}
       <span class="refusal-code">({refusal.error})</span>
+      {#if refusal.reference}
+        <span class="refusal-code">Reference: {refusal.reference}</span>
+      {/if}
     {:else}
       OIDC sign-in wasn't completed. Try again.
     {/if}
@@ -563,6 +583,8 @@
       <p class="alert" role="alert">
         This request changed or was already decided. Check it again.
       </p>
+    {:else if failureReference}
+      {@render serverFailure()}
     {:else if query.get("error") === "unavailable" || query.get("error") === "invalid"}
       <p class="alert error" role="alert">Something went wrong. Try again.</p>
     {/if}
@@ -749,6 +771,8 @@
       <p class="alert error" role="alert">
         Your account wasn't created. Try again.
       </p>
+    {:else if failureReference}
+      {@render serverFailure()}
     {/if}
     <form
       method="post"
@@ -830,9 +854,10 @@
       <p class="alert error" role="alert">
         That username and password didn't match. Try again.
       </p>
-    {/if}
-    {#if query.get("error") === "upstream_login_failed"}
+    {:else if query.get("error") === "upstream_login_failed"}
       {@render upstreamRefusal()}
+    {:else if failureReference}
+      {@render serverFailure()}
     {/if}
     {#if providers.length}
       <div class="providers">

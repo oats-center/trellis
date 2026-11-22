@@ -714,11 +714,17 @@ pub(super) async fn http_enroll(
     .await;
     match result {
         Ok(value) => axum::Json(value).into_response(),
-        Err(AuthError::Unavailable) => (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(json!({"error":{"code":"unavailable"}})),
-        )
-            .into_response(),
+        Err(cause @ (AuthError::Unavailable | AuthError::Storage(_) | AuthError::Broker(_))) => {
+            crate::http_failure::record("could not enroll the device", cause);
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error":{
+                    "code":"unavailable",
+                    "reference":crate::http_failure::reference("unavailable"),
+                }})),
+            )
+                .into_response()
+        }
         _ => (
             axum::http::StatusCode::FORBIDDEN,
             axum::Json(json!({"error":{"code":"device_enrollment_denied"}})),
@@ -1144,7 +1150,10 @@ pub(super) async fn portal_inspect(
             Json(json!({"error":"code_mismatch"})),
         )
             .into_response(),
-        Err(_) => super::http::error(oauth_as::error::ErrorCode::ServerError),
+        Err(cause) => super::http::error(super::http::failed(
+            "could not read the device review",
+            cause,
+        )),
     }
 }
 
@@ -1164,9 +1173,15 @@ pub(super) async fn portal_decide(
         Ok(review) => review,
         Err(response) => return *response,
     };
+    // The page names a server failure's reference, which finds its log line.
     let back = |error: &str| {
+        let reference = (error == "unavailable")
+            .then(|| crate::http_failure::reference("unavailable"))
+            .flatten()
+            .map(|reference| format!("&reference={reference}"))
+            .unwrap_or_default();
         Redirect::to(&format!(
-            "/device-enrollment?reviewId={}&error={error}",
+            "/device-enrollment?reviewId={}&error={error}{reference}",
             url::form_urlencoded::byte_serialize(review.review_id.as_bytes()).collect::<String>()
         ))
         .into_response()
@@ -1188,7 +1203,10 @@ pub(super) async fn portal_decide(
             request_digest,
             session: None,
         },
-        Err(_) => return back("unavailable"),
+        Err(cause) => {
+            crate::http_failure::record("could not digest the device decision", cause);
+            return back("unavailable");
+        }
     };
     let store = engine.server.store().authority.clone();
     let decided =
@@ -1197,22 +1215,29 @@ pub(super) async fn portal_decide(
         Ok(response) => response,
         Err(AuthError::Denied) => return back("not_allowed"),
         Err(AuthError::Conflict(_) | AuthError::Invalid(_)) => return back("changed"),
-        Err(_) => return back("unavailable"),
+        Err(cause) => {
+            crate::http_failure::record("could not decide the device review", cause);
+            return back("unavailable");
+        }
     };
     let approved = response.review.state == AuthDeviceReviewState::Approved;
     if approved {
         let Some(operational) = engine.operational() else {
+            crate::http_failure::record(
+                "could not prepare the approved device's resources",
+                "Trellis is not connected to NATS",
+            );
             return back("unavailable");
         };
-        if super::super::resources::materialize_native_kv(
+        if let Err(cause) = super::super::resources::materialize_native_kv(
             &engine.server.store().authority,
             operational,
             &response.review.deployment_id.to_string(),
             crate::clock::unix_now(),
         )
         .await
-        .is_err()
         {
+            crate::http_failure::record("could not prepare the approved device's resources", cause);
             return back("unavailable");
         }
     }
@@ -1252,8 +1277,11 @@ pub(super) async fn portal_login(
         url::form_urlencoded::byte_serialize(review_id.as_bytes()).collect::<String>()
     );
     let mut replacement = [0u8; 32];
-    if getrandom::fill(&mut replacement).is_err() {
-        return super::http::error(oauth_as::error::ErrorCode::ServerError);
+    if let Err(cause) = getrandom::fill(&mut replacement) {
+        return super::http::error(super::http::failed(
+            "could not make a Portal login cookie",
+            cause,
+        ));
     }
     let replacement = URL_SAFE_NO_PAD.encode(replacement);
     let new_cookie = replacement.clone();
@@ -1277,6 +1305,16 @@ pub(super) async fn portal_login(
             3600,
             Redirect::to(&page).into_response(),
         ),
-        _ => Redirect::to(&format!("{page}&error=login_failed")).into_response(),
+        Err(
+            cause @ (AuthError::Storage(_)
+            | AuthError::Json(_)
+            | AuthError::Unavailable
+            | AuthError::Broker(_)),
+        ) => {
+            crate::http_failure::record("could not sign in to approve a device", cause);
+            let reference = crate::http_failure::reference("unavailable").unwrap_or_default();
+            Redirect::to(&format!("{page}&error=unavailable&reference={reference}")).into_response()
+        }
+        Err(_) => Redirect::to(&format!("{page}&error=login_failed")).into_response(),
     }
 }
