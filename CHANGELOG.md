@@ -15,6 +15,11 @@ and this project adheres to
 
 ### Fixed
 
+- A failed request is logged once, under the same reference the caller is
+  shown, with `error_id`, `request_id`, `trace_id`, `route`, the caller and the
+  cause, in Rust, TypeScript and trellis-server alike. The Console and CLI
+  show "Reference: <id>", and the upkeep guide explains how to find the log
+  line from it. Jobs and event handlers log their failures too.
 - Console forms keep what you typed when the saved record changes underneath
   them: a "Changed while you were editing" panel shows yours next to the saved
   value, and Save waits until each conflict is settled. A refused deletion keeps
