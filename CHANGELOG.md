@@ -8,17 +8,6 @@ and this project adheres to
 
 ## [Unreleased]
 
-### Added
-
-- `trellis issuers rotate <current-key-id>` rotates Auth's signing key.
-
-### Fixed
-
-- `trellis issuers revoke` says what's wrong: an unknown key is "no issuer
-  key <id>", the current signing key is refused at once with a pointer to
-  `trellis issuers rotate` (it used to time out), and an already revoked key
-  says so.
-
 ## [0.100.0-rc.53] - 2026-11-22
 
 ### Added
@@ -61,6 +50,7 @@ and this project adheres to
   which prompt follows an app sign-out.
 - A Live provider at its session bound refuses the next opening with
   `resource_exhausted`, so callers can retry another replica.
+- `trellis issuers rotate <current-key-id>` rotates Auth's signing key.
 
 ### Changed
 
@@ -76,6 +66,12 @@ and this project adheres to
 
 ### Fixed
 
+- `trellis issuers revoke` says what's wrong: an unknown key is "no issuer
+  key <id>", the current signing key is refused at once with a pointer to
+  `trellis issuers rotate` (it used to time out), and an already revoked key
+  says so.
+- The Console shows a webhook endpoint whose checks read the same secret more
+  than once; endpoint details list each secret once.
 - A Rust service could stay unable to publish, pull or report health after a
   broker restart, because a delayed authority check undid the reconnected
   transport.

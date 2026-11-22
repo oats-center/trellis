@@ -66,7 +66,9 @@ impl Webhooks {
                 .copied()
                 .map(super::rfc3339)
         };
+        // Each secret is listed once, however many checks read it.
         let mut secrets = Vec::new();
+        let mut listed = std::collections::BTreeSet::new();
         for verifier in &definition.verifiers {
             let fields: Vec<&String> = match verifier {
                 WebhookVerifier::Hmac(hmac) => vec![&hmac.key],
@@ -74,7 +76,7 @@ impl Webhooks {
                 WebhookVerifier::Basic { password, .. } => vec![password],
                 _ => Vec::new(),
             };
-            for field in fields {
+            for field in fields.into_iter().filter(|field| listed.insert(*field)) {
                 secrets.push(serde_json::json!({
                     "name": field,
                     "isSet": endpoint.text(field).is_some(),

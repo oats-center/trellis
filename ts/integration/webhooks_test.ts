@@ -671,14 +671,20 @@ test("a changed secret's overlap accepts only the secret it replaced, for every 
         "webhooksEndpointsList",
         { service: key.deploymentId },
       );
-      return Object.fromEntries(
-        endpoints.flatMap((endpoint) =>
-          endpoint.secrets.map((secret) => [
-            `${endpoint.endpoint}:${secret.name}`,
-            secret.previousAcceptedUntil !== null,
-          ]),
+      const entries = endpoints.flatMap((endpoint) =>
+        endpoint.secrets.map(
+          (secret) =>
+            [
+              `${endpoint.endpoint}:${secret.name}`,
+              secret.previousAcceptedUntil !== null,
+            ] as const,
         ),
       );
+      // Each secret is listed once per endpoint, even when several of its
+      // checks read it.
+      const names = entries.map(([name]) => name);
+      assert.deepEqual(names, [...new Set(names)]);
+      return Object.fromEntries(entries);
     };
 
     await runtime.waitFor(async () =>
