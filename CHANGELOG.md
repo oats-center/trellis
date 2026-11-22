@@ -15,6 +15,9 @@ and this project adheres to
 
 ### Fixed
 
+- Debug builds of Rust services and tests could overflow a 2 MiB thread stack:
+  connecting, testkit startup and every generated RPC call held very large
+  futures. They are boxed where they are created, so callers hold small ones.
 - An expired role or grant is reported as expired, with the revision to renew,
   instead of "already has".
 - After the server refuses a change because the state moved on, the Console
