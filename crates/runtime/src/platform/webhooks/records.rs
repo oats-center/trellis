@@ -46,6 +46,9 @@ pub(crate) struct Outcome {
     pub(crate) verdict: Option<String>,
     pub(crate) status: Option<u16>,
     pub(crate) delivery_id: Option<String>,
+    /// The request's verifiers reached a verdict on it. A request refused
+    /// before verification, or still waiting for it, has not.
+    pub(crate) reached_verification: bool,
 }
 
 /// A new record's fixed facts.
@@ -139,7 +142,8 @@ impl Records {
             connection.execute(
                 "INSERT INTO webhook_attempts(attempt_id,deployment_id,endpoint,received_at,\
                 client_address,method,body_size,body_sha256,outcome,reason,matched_key,verdict,\
-                status,delivery_id,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15) \
+                status,delivery_id,reached_verification,updated_at) \
+                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) \
                 ON CONFLICT(attempt_id) DO NOTHING",
                 params![
                     values.0,
@@ -156,6 +160,7 @@ impl Records {
                     outcome.verdict,
                     outcome.status,
                     outcome.delivery_id,
+                    outcome.reached_verification,
                     now_ms()
                 ],
             )?;
@@ -169,7 +174,8 @@ impl Records {
         self.with(move |connection| {
             connection.execute(
                 "UPDATE webhook_attempts SET outcome=?2,reason=?3,matched_key=?4,verdict=?5,\
-                status=COALESCE(?6,status),delivery_id=?7,updated_at=?8 WHERE attempt_id=?1",
+                status=COALESCE(?6,status),delivery_id=?7,reached_verification=?8,updated_at=?9 \
+                WHERE attempt_id=?1",
                 params![
                     attempt_id,
                     outcome.outcome,
@@ -178,6 +184,7 @@ impl Records {
                     outcome.verdict,
                     outcome.status,
                     outcome.delivery_id,
+                    outcome.reached_verification,
                     now_ms()
                 ],
             )?;
@@ -265,8 +272,8 @@ impl Records {
     }
 
     /// The outcome and reason of the newest request received since
-    /// `since_ms` whose verification reached a verdict: accepted, ignored,
-    /// duplicate, or rejected.
+    /// `since_ms` whose verifiers reached a verdict on it. A request refused
+    /// before verification, such as one over the size limit, is not one.
     pub(crate) async fn latest_verdict(
         &self,
         deployment_id: &str,
@@ -279,7 +286,7 @@ impl Records {
                 .query_row(
                     "SELECT outcome,reason FROM webhook_attempts \
                     WHERE deployment_id=?1 AND endpoint=?2 AND received_at>=?3 \
-                    AND outcome IN ('accepted','ignored','duplicate','rejected') \
+                    AND reached_verification=1 \
                     ORDER BY attempt_id DESC LIMIT 1",
                     params![deployment_id, endpoint, since_ms],
                     |row| Ok((row.get(0)?, row.get(1)?)),

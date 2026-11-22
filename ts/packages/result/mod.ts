@@ -68,6 +68,7 @@ export const isErr = ResultClass.isErr;
 
 export {
   BaseError,
+  describeUnknown,
   UnexpectedError,
   UnexpectedErrorDataSchema,
 } from "./error.ts";

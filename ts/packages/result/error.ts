@@ -165,6 +165,61 @@ export abstract class BaseError<
   }
 }
 
+/** Longest text {@link describeUnknown} returns, in UTF-16 code units. */
+const DESCRIBE_MAX_LENGTH = 4096;
+/** Deepest nesting {@link describeUnknown} prints; deeper objects print as `"[Object]"`. */
+const DESCRIBE_MAX_DEPTH = 6;
+/** Most objects and arrays {@link describeUnknown} prints before eliding the rest. */
+const DESCRIBE_MAX_NODES = 256;
+
+/**
+ * Describe any thrown value or error cause as bounded text, for a log line.
+ * Objects print as JSON, with repeated references as `"[Circular]"`, BigInts
+ * as `"<number>n"`, nesting below six levels as `"[Object]"`, and the text cut
+ * at 4096 characters. It never throws: when a value cannot be printed, for
+ * example because a getter or a Proxy trap throws, it falls back to
+ * `String(value)` and then to `"[unprintable cause]"`.
+ *
+ * @param value - The value to describe.
+ * @returns A string of at most 4096 characters plus an ellipsis.
+ */
+export function describeUnknown(value: unknown): string {
+  let text: string;
+  try {
+    if (typeof value === "object" && value !== null) {
+      const depths = new WeakMap<object, number>();
+      const seen = new WeakSet<object>();
+      let nodes = 0;
+      text =
+        JSON.stringify(value, function (this: unknown, _key, item: unknown) {
+          if (typeof item === "bigint") return `${item}n`;
+          if (typeof item !== "object" || item === null) return item;
+          if (seen.has(item)) return "[Circular]";
+          const parent =
+            typeof this === "object" && this !== null
+              ? (depths.get(this) ?? -1)
+              : -1;
+          if (parent + 1 > DESCRIBE_MAX_DEPTH) return "[Object]";
+          if (++nodes > DESCRIBE_MAX_NODES) return "[...]";
+          seen.add(item);
+          depths.set(item, parent + 1);
+          return item;
+        }) ?? String(value);
+    } else {
+      text = String(value);
+    }
+  } catch {
+    try {
+      text = String(value);
+    } catch {
+      text = "[unprintable cause]";
+    }
+  }
+  return text.length > DESCRIBE_MAX_LENGTH
+    ? `${text.slice(0, DESCRIBE_MAX_LENGTH)}…`
+    : text;
+}
+
 /**
  * Schema for UnexpectedError serialization.
  */
@@ -187,17 +242,26 @@ export class UnexpectedError extends BaseError<UnexpectedErrorData> {
   constructor(options?: BaseErrorOptions) {
     super("An unexpected error has occurred", options);
     if (options?.cause) {
-      let root: unknown = options.cause;
-      while (root instanceof Error && root.cause) {
-        root = root.cause;
+      // A cause is whatever was thrown, so reading it must not throw: a
+      // getter, a Proxy or a cyclic chain would otherwise turn one failure
+      // into another before it is reported.
+      let causeMessage = "[unprintable cause]";
+      let causeStack: string | undefined;
+      try {
+        let root: unknown = options.cause;
+        for (let depth = 0; depth < 8; depth++) {
+          if (!(root instanceof Error) || !root.cause) break;
+          root = root.cause;
+        }
+        if (root instanceof Error) {
+          causeMessage = describeUnknown(root.message);
+          causeStack = typeof root.stack === "string" ? root.stack : undefined;
+        } else {
+          causeMessage = describeUnknown(root);
+        }
+      } catch {
+        causeStack = undefined;
       }
-      const causeMessage =
-        root instanceof Error
-          ? root.message
-          : typeof root === "object"
-            ? JSON.stringify(root)
-            : String(root);
-      const causeStack = root instanceof Error ? root.stack : undefined;
       this.withContext({ causeMessage, causeStack });
     }
   }

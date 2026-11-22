@@ -230,6 +230,22 @@ test("TypeScript RPC, Operation, job and event failures are each logged once und
       // The cause stays in the log: the caller's error never carries it.
       assert(!JSON.stringify(failed.error).includes(CAUSE));
 
+      // A cause that cannot be serialized still leaves the caller its error
+      // and reference, and its line a plain description of the cause. The
+      // service goes on answering.
+      const unprintable = await client.echo({ value: "unprintable" });
+      assert(unprintable.isErr());
+      const unprintableReference = references(unprintable.error);
+      const unprintableLine = JSON.parse(
+        await lineWith(runtime, () => output, unprintableReference.id),
+      ) as Record<string, unknown>;
+      assert.equal(unprintableLine.request_id, unprintableReference.requestId);
+      assert.deepEqual(unprintableLine.cause, [
+        { type: "Error", message: "echo failed" },
+        { type: "object", message: "[object Object]" },
+      ]);
+      assert((await client.echo({ value: "after" })).isOk());
+
       // A failed Operation's snapshot carries the error ID and trace; the line
       // adds the Operation ID, the caller that started it and the cause.
       const work = await client.work({ value: "fail" }).start().orThrow();
@@ -303,6 +319,36 @@ test("TypeScript RPC, Operation, job and event failures are each logged once und
           { type: "Error", message: "fixture handler failure" },
         ]);
       }
+
+      // A handler failure whose cause cannot be serialized is logged with a
+      // plain description and still retried.
+      await publishTraced(() =>
+        alpha.publishAlpha({ site: "one", value: "unprintable" }).orThrow(),
+      );
+      const otherEvent = () =>
+        [...eventOutput().matchAll(/"event_id":"([^"]+)"/g)]
+          .map((match) => match[1])
+          .find((id) => id !== eventId);
+      await runtime.waitFor(() => otherEvent() !== undefined);
+      const unprintableEventId = otherEvent()!;
+      const retried = (
+        await linesWith(
+          runtime,
+          eventOutput,
+          `"event_id":"${unprintableEventId}"`,
+          EVENT_DELIVERIES,
+        )
+      ).map((text) => JSON.parse(text) as Record<string, unknown>);
+      assert.deepEqual(
+        retried.map((delivery) => delivery.delivery),
+        [1, 2, 3],
+      );
+      for (const delivery of retried) {
+        assert.deepEqual(delivery.cause, [
+          { type: "Error", message: "fixture handler failure" },
+          { type: "object", message: "[object Object]" },
+        ]);
+      }
     } finally {
       child.kill("SIGTERM");
       events.kill("SIGTERM");
@@ -372,6 +418,25 @@ test("Rust RPC, Operation, job and event failures are each logged once under the
       assert(line.includes("caller_principal="), line);
       assert(!JSON.stringify(failed.error).includes(CAUSE));
 
+      // A handler that panics fails only its own request: the caller gets
+      // its reference, the line has the panic's message, and the next call
+      // is served.
+      const panicked = await client.echo({ value: "panic" });
+      assert(panicked.isErr());
+      const panicReference = references(panicked.error);
+      const panicLine = await lineWith(
+        runtime,
+        () => output,
+        panicReference.id,
+      );
+      assert.match(panicLine, / ERROR /);
+      assert(panicLine.includes("fixture echo panic"), panicLine);
+      assert(!JSON.stringify(panicked.error).includes("fixture echo panic"));
+      assert(
+        (await client.echo({ value: "from TypeScript" })).isOk(),
+        "the service answers after a handler panic",
+      );
+
       const work = await client.work({ value: "failure" }).start().orThrow();
       const failedWork = await work.wait().orThrow();
       assert.equal(failedWork.state, "failed");
@@ -394,6 +459,20 @@ test("Rust RPC, Operation, job and event failures are each logged once under the
       assert(workLine.includes("domain failure"), workLine);
       assert(!JSON.stringify(failedWork).includes("domain failure"));
 
+      // An Operation whose handler panics fails with a reference, like one
+      // that returns an error.
+      const panicWork = await client.work({ value: "panic" }).start().orThrow();
+      const panickedWork = await panicWork.wait().orThrow();
+      assert.equal(panickedWork.state, "failed");
+      const panicWorkError = panickedWork.error as { id?: unknown } | undefined;
+      assert.equal(typeof panicWorkError?.id, "string");
+      const panicWorkLine = await lineWith(
+        runtime,
+        () => output,
+        String(panicWorkError?.id),
+      );
+      assert(panicWorkLine.includes("fixture work panic"), panicWorkLine);
+
       const jobId = (await client.echo({ value: "job" }).orThrow()).value;
       const jobLine = await lineWith(
         runtime,
@@ -403,6 +482,17 @@ test("Rust RPC, Operation, job and event failures are each logged once under the
       assert.match(jobLine, / ERROR /);
       assert.match(rustField(jobLine, "trace_id") ?? "", TRACE_ID, jobLine);
       assert(jobLine.includes("unexpected fail"), jobLine);
+
+      // A job whose handler panics fails with the panic's message, and the
+      // worker goes on.
+      const panicJobId = (await client.echo({ value: "panic-job" }).orThrow())
+        .value;
+      const panicJobLine = await lineWith(
+        runtime,
+        () => output,
+        `job_id="${panicJobId}"`,
+      );
+      assert(panicJobLine.includes("fixture job panic"), panicJobLine);
 
       const alpha = await runtime.connectClient({
         name: "failing-alpha",
@@ -436,6 +526,30 @@ test("Rust RPC, Operation, job and event failures are each logged once under the
       for (const delivery of deliveries) {
         assert(tracedHere(rustField(delivery, "trace_id")), delivery);
         assert(delivery.includes("fixture handler failure"), delivery);
+      }
+
+      // A durable event handler that panics is retried like one that fails.
+      await publishTraced(() =>
+        alpha.publishAlpha({ site: "one", value: "panic" }).orThrow(),
+      );
+      const otherEvent = () =>
+        eventOutput()
+          .split("\n")
+          .map((text) => rustField(text, "event_id"))
+          .find((id) => id !== undefined && id !== eventId);
+      await runtime.waitFor(() => otherEvent() !== undefined);
+      const panicDeliveries = await linesWith(
+        runtime,
+        eventOutput,
+        `event_id="${otherEvent()}"`,
+        EVENT_DELIVERIES,
+      );
+      assert.deepEqual(
+        panicDeliveries.map((text) => rustField(text, "delivery")),
+        ["1", "2", "3"],
+      );
+      for (const delivery of panicDeliveries) {
+        assert(delivery.includes("fixture handler panic"), delivery);
       }
     } finally {
       child.kill("SIGTERM");

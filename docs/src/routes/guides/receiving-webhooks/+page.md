@@ -217,7 +217,8 @@ and while the newest verified request of the last 10 minutes was rejected; its
 summary says which, such as
 `the latest request was rejected: signature does not match`. It clears by
 itself once the secret is set, a later request is accepted, or 10 minutes pass
-without a rejection. The check appears in `trellis svc billing instances` and
+without a rejection. A request refused before verification, such as one over
+the size limit, still gets a record but doesn't change the check. The check appears in `trellis svc billing instances` and
 on the service's Console page.
 
 Runtime settings belong to the deployment:

@@ -103,6 +103,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let fails = event.value == "fail" || (event.value == "replay" && attempt <= 3);
                     let mut stats = stats.lock().unwrap();
                     stats.active -= 1;
+                    if event.value == "panic" {
+                        drop(stats);
+                        panic!("fixture handler panic");
+                    }
                     if fails {
                         return Err(ServerError::Internal("fixture handler failure".to_owned()));
                     }

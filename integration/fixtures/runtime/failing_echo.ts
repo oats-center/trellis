@@ -1,7 +1,8 @@
 // A TypeScript service whose Echo handler, Work Operation and keyed job fail,
 // for tests that read each failure's log line from this process's output.
 // Echo fails on "fail"; Echo "job" starts a keyed job its worker fails and
-// answers the job's ID; Work fails on "fail".
+// answers the job's ID; Echo "unprintable" fails with a cause that cannot be
+// serialized; Work fails on "fail".
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { participants } from "./packages/runtime-trellis/index.js";
@@ -11,6 +12,14 @@ if (!trellisUrl || !seed)
   throw new Error("usage: failing_echo.ts <url> <seed>");
 
 const CAUSE = "the fixture's store is unreachable";
+// A cause that refers to itself and has a getter that throws, so it can be
+// neither serialized nor walked.
+const unprintable: Record<string, unknown> = {
+  get broken(): never {
+    throw new Error("getter failed");
+  },
+};
+unprintable.self = unprintable;
 const service = await TrellisService.connect({
   trellisUrl,
   seed,
@@ -23,6 +32,9 @@ service.jobs.keyedWork.handle(() => {
 await service.handleEcho(async ({ input }) => {
   if (input.value === "fail") {
     throw new Error(`echo failed: ${CAUSE}`);
+  }
+  if (input.value === "unprintable") {
+    throw new Error("echo failed", { cause: unprintable });
   }
   if (input.value === "job") {
     const job = await service.jobs.keyedWork

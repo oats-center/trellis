@@ -27,8 +27,22 @@ async fn next<T, E: std::fmt::Debug>(
         .unwrap()
 }
 
+/// A decide failure whose `Display` panics, as a faulty application error may.
+struct Unprintable;
+
+impl std::fmt::Display for Unprintable {
+    fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        panic!("the decide error cannot be printed")
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rust_service_receives_webhook_events_and_answers_decide_calls() {
+    // A service logs, so its failure lines are formatted as in production.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("error"))
+        .with_test_writer()
+        .try_init();
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
     let identity = runtime
         .register_service::<Participant>("billing")
@@ -61,14 +75,19 @@ async fn a_rust_service_receives_webhook_events_and_answers_decide_calls() {
         .unwrap()
         .decide(|request| async move {
             // The decide request's delivery has the same body views.
+            if request
+                .delivery
+                .text()
+                .is_ok_and(|body| body == "unprintable")
+            {
+                return Err(Unprintable);
+            }
             let setup = request.delivery.text().is_ok_and(|body| body == "setup");
-            Ok::<_, String>(
-                serde_json::from_value(json!({
-                    "verdict": if setup { "ignore" } else { "accept" },
-                    "response": webhook_response(200, Some("text/plain"), b"challenge-echo"),
-                }))
-                .unwrap(),
-            )
+            Ok(serde_json::from_value(json!({
+                "verdict": if setup { "ignore" } else { "accept" },
+                "response": webhook_response(200, Some("text/plain"), b"challenge-echo"),
+            }))
+            .unwrap())
         })
         .await
         .unwrap();
@@ -152,19 +171,31 @@ async fn a_rust_service_receives_webhook_events_and_answers_decide_calls() {
     assert!(matches!(binary.form(), Err(WebhookBodyError::NotText(_))));
 
     // The decide handler's answer goes back to the sender in sync mode.
-    let signature = webhook_hmac(WebhookHmacAlgorithm::Sha256, b"signing-secret", b"setup")
+    let handshake = |body: &'static str| {
+        let signature = webhook_hmac(
+            WebhookHmacAlgorithm::Sha256,
+            b"signing-secret",
+            body.as_bytes(),
+        )
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    let handshake = http
-        .post(&urls["handshake"])
-        .header("x-body-signature", format!("sha256={signature}"))
-        .body("setup")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(handshake.status(), reqwest::StatusCode::OK);
-    assert_eq!(handshake.text().await.unwrap(), "challenge-echo");
+        http.post(&urls["handshake"])
+            .header("x-body-signature", format!("sha256={signature}"))
+            .body(body)
+            .send()
+    };
+    let answered = handshake("setup").await.unwrap();
+    assert_eq!(answered.status(), reqwest::StatusCode::OK);
+    assert_eq!(answered.text().await.unwrap(), "challenge-echo");
+    // A failed decide gets no answer, so the sender gets 503. An error whose
+    // `Display` panics is logged all the same, and the handler goes on
+    // answering.
+    let failed = handshake("unprintable").await.unwrap();
+    assert_eq!(failed.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    let answered = handshake("setup").await.unwrap();
+    assert_eq!(answered.status(), reqwest::StatusCode::OK);
+    assert_eq!(answered.text().await.unwrap(), "challenge-echo");
 
     // Each endpoint feeds the service's health with Trellis's check for it:
     // the relayed endpoint is degraded and says why, the token one is fine.

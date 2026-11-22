@@ -1942,13 +1942,23 @@ impl<C> ConnectedServiceRuntime<C> {
                 async move {
                     let active = crate::jobs::internal::typed_active_job::<D>(active)
                         .map_err(|error| JobProcessError::Failed(error.to_string()))?;
-                    let result = handler(active).await.map_err(|error| match error {
-                        JobProcessError::Retryable(error) => {
-                            JobProcessError::Retryable(error.to_string())
-                        }
-                        JobProcessError::Failed(error) => {
-                            JobProcessError::Failed(error.to_string())
-                        }
+                    // A panic fails the job like an unexpected error, and the
+                    // worker goes on with the next one.
+                    let result = super::request_loop::catch_handler_panic(async {
+                        handler(active).await.map_err(|error| match error {
+                            JobProcessError::Retryable(error) => {
+                                JobProcessError::Retryable(error.to_string())
+                            }
+                            JobProcessError::Failed(error) => {
+                                JobProcessError::Failed(error.to_string())
+                            }
+                        })
+                    })
+                    .await
+                    .unwrap_or_else(|panic| {
+                        Err(JobProcessError::Failed(format!(
+                            "job handler panicked: {panic}"
+                        )))
                     })?;
                     serde_json::to_value(result)
                         .map_err(|error| JobProcessError::Failed(error.to_string()))
@@ -3033,10 +3043,16 @@ where
                         attempt_span.context().span().span_context().clone(),
                     );
                     drop(attempt_span);
-                    if let Err(source) = async { handler(event, context.clone()).await }
-                        .with_context(attempt_context)
-                        .await
-                    {
+                    // A panic is this event's failure, as an error is.
+                    let handled = super::request_loop::catch_handler_panic(
+                        async { handler(event, context.clone()).await }
+                            .with_context(attempt_context),
+                    )
+                    .await
+                    .unwrap_or_else(|panic| {
+                        Err(ServerError::Internal(format!("event handler panicked: {panic}")))
+                    });
+                    if let Err(source) = handled {
                         observation.finish("error");
                         return Err(ServiceRuntimeError::EventHandler {
                             source: Box::new(source),
@@ -3083,11 +3099,21 @@ where
             .map_err(TrellisClientError::from)
             .map_err(ServiceRuntimeError::from);
         Box::pin(async move {
-            handler(event?, context.clone()).await.map_err(|source| {
-                ServiceRuntimeError::EventHandler {
-                    source: Box::new(source),
-                    context: Box::new(context),
-                }
+            let event = event?;
+            // A panic is this delivery's failure, as an error is: it is
+            // logged and the delivery is tried again.
+            super::request_loop::catch_handler_panic(async {
+                handler(event, context.clone()).await
+            })
+            .await
+            .unwrap_or_else(|panic| {
+                Err(ServerError::Internal(format!(
+                    "event handler panicked: {panic}"
+                )))
+            })
+            .map_err(|source| ServiceRuntimeError::EventHandler {
+                source: Box::new(source),
+                context: Box::new(context),
             })
         })
     });

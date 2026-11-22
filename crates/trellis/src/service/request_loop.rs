@@ -1333,12 +1333,31 @@ async fn publish_handler_response<H: RequestHandler>(
 }
 
 fn panic_to_server_error(panic: Box<dyn Any + Send>) -> ServerError {
-    let message = panic
+    ServerError::Internal(format!(
+        "request handler panicked: {}",
+        panic_message(&*panic)
+    ))
+}
+
+/// The message a panic was raised with, when it has one.
+pub(crate) fn panic_message(panic: &(dyn Any + Send)) -> String {
+    panic
         .downcast_ref::<&str>()
         .map(|value| (*value).to_string())
         .or_else(|| panic.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "request handler panicked".to_string());
-    ServerError::Internal(format!("request handler panicked: {message}"))
+        .unwrap_or_else(|| "no panic message".to_string())
+}
+
+/// Await one application handler future. A panic inside it is returned as
+/// `Err` with the panic's message, so the loop that called the handler goes
+/// on and treats the panic as that handler's failure.
+pub(crate) async fn catch_handler_panic<F: std::future::Future>(
+    future: F,
+) -> Result<F::Output, String> {
+    AssertUnwindSafe(future)
+        .catch_unwind()
+        .await
+        .map_err(|panic| panic_message(&*panic))
 }
 
 /// Run an inbound NATS request loop until every subscription ends or `retire`

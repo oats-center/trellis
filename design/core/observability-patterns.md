@@ -285,6 +285,30 @@ refusal at `warn`; a declared outcome or invalid input at `info`. A Rust
 `DeclaredRpcError` that stands in for an internal failure carries its cause
 with `with_cause`, which only the log line repeats.
 
+Writing the line never fails the request it describes. The reply, the event's
+redelivery and a background task's result go ahead even when a cause cannot be
+printed. In TypeScript each cause's message is at most 4096 characters, and an
+object cause prints as JSON with cycles marked `"[Circular]"`, BigInts as
+`"<digits>n"` and nesting past six levels cut. A cause that JSON cannot print,
+for example because a getter throws, falls back to `String(cause)`, and to
+`"[unprintable cause]"` when that throws too.
+
+In Rust, a panic in an application handler is that call's failure and never
+ends the loop that called it. The panic's message goes into the failure line
+in place of an error's text:
+
+- An RPC caller gets an `UnexpectedError` with its reference.
+- An Operation fails with a reference in its snapshot.
+- A job fails.
+- A durable event delivery is tried again, as after an error. An ephemeral
+  listener stops with the failure, as it does after an error.
+- A Live session ends with `SourceFailed` and the text
+  `An unexpected error has occurred. Reference: <error_id>`.
+- A webhook decide request goes unanswered, as after an error.
+
+A panic in a webhook decide error's `Display` is handled the same way. Health
+checks already report a panic as a failed check.
+
 Console shows an unexpected failure as `Something went wrong on the server.
 Reference: <error_id>`; the CLI and Rust callers end the error text with
 `Reference: <error_id>`.

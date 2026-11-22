@@ -823,14 +823,29 @@ impl Router {
                             let handler = Arc::clone(&handler);
                             let request = ctx.clone();
                             move || {
-                                let stream = handler(
-                                    LiveRequestContext {
-                                        request,
-                                        cancellation: factory_cancellation.clone(),
-                                    },
-                                    input,
-                                );
-                                live_router::source_from_handler::<D::Event, S>(stream)
+                                // Calling the handler can panic before it
+                                // returns its stream.
+                                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    handler(
+                                        LiveRequestContext {
+                                            request,
+                                            cancellation: factory_cancellation.clone(),
+                                        },
+                                        input,
+                                    )
+                                })) {
+                                    Ok(stream) => {
+                                        live_router::source_from_handler::<D::Event, S>(stream)
+                                    }
+                                    Err(panic) => {
+                                        let end = live_router::live_handler_panicked(
+                                            &super::request_loop::panic_message(&*panic),
+                                        );
+                                        Box::pin(futures_util::stream::once(
+                                            async move { Err(end) },
+                                        ))
+                                    }
+                                }
                             }
                         };
                         let lease = accepted_generation(&owner, &ctx).await?;

@@ -74,12 +74,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "echo failed: the fixture's store is unreachable".to_owned(),
                     ));
                 }
-                // A keyed job its worker fails; the caller gets the job's ID.
-                if input.value == "job" {
+                if input.value == "panic" {
+                    panic!("fixture echo panic");
+                }
+                // A keyed job its worker fails, or panics in; the caller gets
+                // the job's ID.
+                if input.value == "job" || input.value == "panic-job" {
+                    let (key, value) = if input.value == "job" {
+                        ("failing", "fail")
+                    } else {
+                        ("panicking", "panic")
+                    };
                     let job = jobs
                         .create_keyed_work(KeyedValue {
-                            key: "failing".to_owned(),
-                            value: "fail".to_owned(),
+                            key: key.to_owned(),
+                            value: value.to_owned(),
                             extra: Default::default(),
                         })
                         .await
@@ -126,6 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             return Err(JobProcessError::retryable("expected retry".to_owned()));
                         }
                         "retry" => {}
+                        "panic" => panic!("fixture job panic"),
                         value => {
                             return Err(JobProcessError::failed(format!("unexpected {value}")))
                         }
@@ -162,6 +172,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(trellis_rs::service::ServerError::Internal(
                     "domain failure".to_owned(),
                 ));
+            }
+            if input.value == "panic" {
+                panic!("fixture work panic");
             }
             if !context.resuming {
                 op.progress(Update {

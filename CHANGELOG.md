@@ -50,6 +50,15 @@ and this project adheres to
 
 ### Fixed
 
+- Logging a failure can no longer break the reply or a retry: causes that
+  can't be printed (circular, throwing getters, BigInt, Proxy) are written in
+  bounded form or as "[unprintable cause]". `@oatscenter/result` exports
+  `describeUnknown`, and `UnexpectedError` no longer throws or loops on such a
+  cause. A Rust webhook decide error whose `Display` panics no longer ends the
+  endpoint's decide loop.
+- Webhook health counts only requests that reached a verification verdict, so
+  an intake refusal such as an oversized body doesn't mark the endpoint
+  degraded.
 - The Portal consent page no longer shows optional access the user can't be
   granted, says "Signed in as" with the user's name and username or email
   instead of an ID, and heads choices by API when a request spans several. A

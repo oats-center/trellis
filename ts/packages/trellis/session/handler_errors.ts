@@ -2,6 +2,7 @@ import {
   BaseError,
   type BaseErrorSchema,
   Result,
+  describeUnknown,
   isErr,
 } from "@oatscenter/result";
 import { RemoteError, TrellisErrorDataSchema } from "../errors/RemoteError.ts";
@@ -159,29 +160,37 @@ export type FailureLogFields = {
   extra?: Record<string, unknown>;
 };
 
-/** The cause chain of an error, outermost first, and the root's stack. */
+/**
+ * The cause chain of an error, outermost first, and the root's stack. It
+ * never throws: a cause that cannot be read, such as one with a throwing
+ * getter, ends the chain with `"[unprintable cause]"`.
+ */
 function failureCauseChain(error: unknown): {
   causes: { type: string; message: string }[];
   stack?: string;
 } {
   const causes: { type: string; message: string }[] = [];
-  let current: unknown = error instanceof Error ? error.cause : undefined;
   let stack: string | undefined;
-  for (let depth = 0; current !== undefined && depth < 8; depth++) {
-    if (current instanceof Error) {
-      causes.push({ type: current.name, message: current.message });
-      stack = current.stack;
-      current = current.cause;
-    } else {
-      causes.push({
-        type: typeof current,
-        message:
-          typeof current === "object"
-            ? JSON.stringify(current)
-            : String(current),
-      });
-      current = undefined;
+  try {
+    let current: unknown = error instanceof Error ? error.cause : undefined;
+    for (let depth = 0; current !== undefined && depth < 8; depth++) {
+      if (current instanceof Error) {
+        causes.push({
+          type: describeUnknown(current.name),
+          message: describeUnknown(current.message),
+        });
+        stack = typeof current.stack === "string" ? current.stack : undefined;
+        current = current.cause;
+      } else {
+        causes.push({
+          type: typeof current,
+          message: describeUnknown(current),
+        });
+        current = undefined;
+      }
     }
+  } catch {
+    causes.push({ type: "unknown", message: "[unprintable cause]" });
   }
   return stack === undefined ? { causes } : { causes, stack };
 }

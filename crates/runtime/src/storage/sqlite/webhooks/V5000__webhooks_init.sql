@@ -14,6 +14,10 @@ CREATE TABLE webhook_attempts (
     reason TEXT,
     matched_key TEXT CHECK (matched_key IN ('current', 'previous')),
     verdict TEXT CHECK (verdict IN ('accept', 'ignore', 'reject')),
+    -- 1 once the request's verifiers reached a verdict on it; 0 for a request
+    -- refused before verification (method, size, encoding, rate limits) or
+    -- still waiting for it. Endpoint health reads only verdicts.
+    reached_verification INTEGER NOT NULL CHECK (reached_verification IN (0, 1)),
     status INTEGER,
     delivery_id TEXT,
     -- The request's sequence in its deployment's intake stream, when stored there.

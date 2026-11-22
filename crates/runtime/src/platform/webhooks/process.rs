@@ -128,6 +128,7 @@ impl Verdict {
                 ..
             } => Outcome {
                 outcome: "accepted",
+                reached_verification: true,
                 matched_key: key(matched),
                 verdict: decided.clone(),
                 status: Some(*status),
@@ -138,6 +139,7 @@ impl Verdict {
                 matched, status, ..
             } => Outcome {
                 outcome: "ignored",
+                reached_verification: true,
                 matched_key: key(matched),
                 verdict: Some("ignore".into()),
                 status: Some(*status),
@@ -147,6 +149,7 @@ impl Verdict {
                 matched, status, ..
             } => Outcome {
                 outcome: "duplicate",
+                reached_verification: true,
                 matched_key: key(matched),
                 status: Some(*status),
                 ..Outcome::default()
@@ -157,6 +160,7 @@ impl Verdict {
                 decided,
             } => Outcome {
                 outcome: "rejected",
+                reached_verification: true,
                 reason: Some(reason.clone()),
                 matched_key: key(matched),
                 verdict: decided.clone(),
