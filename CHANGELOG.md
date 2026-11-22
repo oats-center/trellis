@@ -55,7 +55,7 @@ and this project adheres to
 
 ### Added
 
-- `trellis roles assign ROLE USER --revision N` renews an existing assignment,
+- `trellis roles assign ROLE --user USER --revision N` renews an existing assignment,
   and the Console shows expired roles and permissions with a Renew button.
 
 ### Fixed
