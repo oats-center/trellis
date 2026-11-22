@@ -21,6 +21,8 @@ and this project adheres to
 
 ### Changed
 
+- Optional administration on the consent page starts checked unless declined
+  before, and still asks for its separate "Allow management" confirmation.
 - Consent answers are always kept; the "Remember my choices" option is gone. A
   stored decline doesn't bring the consent page back at sign-in; the page asks
   again only when an app asks for that item at the moment it's used
@@ -60,6 +62,11 @@ and this project adheres to
 
 ### Fixed
 
+- The Portal consent page groups choices by API, showing each API's ID beneath
+  its title when two APIs share one.
+- TypeScript requests and events are never sent once signing runs past the
+  caller's deadline; the caller gets `trellis.request.timeout` and nothing is
+  published.
 - A failing Rust ephemeral event handler is logged and the listener goes on,
   as in TypeScript, instead of ending the service run. A failing Live handler
   ends the session with only a reference in both SDKs, and the text goes to
