@@ -1709,6 +1709,10 @@ pub(super) fn remove_claim(
                 "DELETE FROM auth_config_revisions WHERE claim_id=?1",
                 [&claim],
             )?;
+            connection.execute(
+                "DELETE FROM auth_config_secret_generations WHERE claim_id=?1",
+                [&claim],
+            )?;
             SqliteAuthorizationStore::policy_changed(
                 connection,
                 &EnforcementScope::Principal(principal),

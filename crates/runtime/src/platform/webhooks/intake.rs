@@ -364,6 +364,9 @@ async fn intake(
             .collect(),
         body,
         checks: Vec::new(),
+        policy: endpoint.policy.clone(),
+        generations: endpoint.generations(),
+        matched: std::collections::BTreeMap::new(),
     };
     let size = stored.body.len();
     let sha = stored.body_sha256();
@@ -376,27 +379,7 @@ async fn intake(
     for verifier in &definition.verifiers {
         match verifier {
             WebhookVerifier::Address { ranges } => {
-                let allowed = endpoint
-                    .record
-                    .values
-                    .get(ranges)
-                    .and_then(|value| value.current.as_ref())
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|ranges| {
-                        ranges
-                            .iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .any(|range| {
-                                range
-                                    .parse::<ipnet::IpNet>()
-                                    .map(|network| network.contains(&client))
-                                    .or_else(|_| {
-                                        range.parse::<std::net::IpAddr>().map(|ip| ip == client)
-                                    })
-                                    .unwrap_or(false)
-                            })
-                    });
-                if !allowed {
+                if !endpoint.allows(ranges, client) {
                     return Err(fail(refuse(
                         StatusCode::FORBIDDEN,
                         "rejected",
@@ -448,13 +431,17 @@ async fn intake(
                         "token does not match",
                     )));
                 };
-                if let Some(rotation) = endpoint.match_rotation(secret, matched, received_at_ms) {
+                stored
+                    .matched
+                    .insert(secret.clone(), endpoint.matched_generation(secret, matched));
+                let captured = stored.generations.get(secret).copied();
+                if let Some(generation) = endpoint.match_generation(secret, captured) {
                     let _ = records
                         .note_match(
                             deployment,
                             endpoint_name,
                             secret,
-                            rotation,
+                            generation,
                             matched,
                             received_at_ms,
                         )
@@ -495,13 +482,18 @@ async fn intake(
                         "basic credentials do not match",
                     )));
                 };
-                if let Some(rotation) = endpoint.match_rotation(password, matched, received_at_ms) {
+                stored.matched.insert(
+                    password.clone(),
+                    endpoint.matched_generation(password, matched),
+                );
+                let captured = stored.generations.get(password).copied();
+                if let Some(generation) = endpoint.match_generation(password, captured) {
                     let _ = records
                         .note_match(
                             deployment,
                             endpoint_name,
                             password,
-                            rotation,
+                            generation,
                             matched,
                             received_at_ms,
                         )

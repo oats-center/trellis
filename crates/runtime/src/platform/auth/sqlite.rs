@@ -549,7 +549,8 @@ impl SqliteAuthorizationStore {
                 | "auth_webhook_settings"
                 | "auth_deployments"
                 | "auth_deployment_bindings"
-                | "auth_config_revisions" => {
+                | "auth_config_revisions"
+                | "auth_config_secret_generations" => {
                     webhooks.store(true, std::sync::atomic::Ordering::Release);
                 }
                 "auth_enforcement_work" | "auth_post_commit_actions"

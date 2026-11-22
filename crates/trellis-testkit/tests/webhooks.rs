@@ -18,7 +18,7 @@ async fn a_rust_service_receives_webhook_events_and_answers_decide_calls() {
     runtime
         .set_config(
             &identity,
-            json!({ "partnerUser": "partner" }),
+            json!({ "partnerUser": "partner", "relayRanges": ["127.0.0.0/8", "::1/128"] }),
             json!({
                 "signing": "signing-secret",
                 "hookToken": "right-token-value",

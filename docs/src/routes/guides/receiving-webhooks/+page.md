@@ -86,6 +86,14 @@ never shows up as use after it. Deleting the previous settings revision
 with `trellis svc billing config delete-revision <revision>` ends the overlap
 at once.
 
+An `async` request is checked under the policy it was accepted with. Its token
+or password, checked on arrival, keeps counting only while the value it
+matched is still accepted and the endpoint's verifiers and the settings they
+read (address ranges, the Basic username) are unchanged. Otherwise the request
+is rejected, and its record says why. A signed request is checked again under
+the secrets and address ranges in force when it is processed or verified
+again.
+
 ## Handle requests in TypeScript
 
 Each endpoint is a handle on `service.webhooks`. The event carries the body

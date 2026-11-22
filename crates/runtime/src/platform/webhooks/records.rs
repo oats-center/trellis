@@ -265,14 +265,14 @@ impl Records {
     }
 
     /// Note that a request to `endpoint` received at `matched_at_ms` matched
-    /// the `key` value of secret `field` while settings revision `rotation`
-    /// set its current value.
+    /// the `key` value of secret `field`, counted toward the field's
+    /// `generation`.
     pub(crate) async fn note_match(
         &self,
         deployment_id: &str,
         endpoint: &str,
         field: &str,
-        rotation: u32,
+        generation: i64,
         key: KeyMatch,
         matched_at_ms: i64,
     ) -> Result<()> {
@@ -284,15 +284,15 @@ impl Records {
         self.with(move |connection| {
             connection.execute(
                 "INSERT INTO webhook_secret_matches\
-                (deployment_id,endpoint,field,rotation,matched_key,matched_at) \
+                (deployment_id,endpoint,field,generation,matched_key,matched_at) \
                 VALUES(?1,?2,?3,?4,?5,?6) \
-                ON CONFLICT(deployment_id,endpoint,field,rotation,matched_key) \
+                ON CONFLICT(deployment_id,endpoint,field,generation,matched_key) \
                 DO UPDATE SET matched_at=max(matched_at,excluded.matched_at)",
                 params![
                     deployment_id,
                     endpoint,
                     field,
-                    rotation,
+                    generation,
                     key.as_str(),
                     matched_at_ms
                 ],
@@ -303,16 +303,16 @@ impl Records {
     }
 
     /// When a request to `endpoint` last matched each value of its secrets,
-    /// by field, rotation, and `current` or `previous`.
+    /// by field, generation, and `current` or `previous`.
     pub(crate) async fn matches(
         &self,
         deployment_id: &str,
         endpoint: &str,
-    ) -> Result<BTreeMap<(String, u32, String), i64>> {
+    ) -> Result<BTreeMap<(String, i64, String), i64>> {
         let (deployment_id, endpoint) = (deployment_id.to_owned(), endpoint.to_owned());
         self.with(move |connection| {
             let mut statement = connection.prepare(
-                "SELECT field,rotation,matched_key,matched_at FROM webhook_secret_matches \
+                "SELECT field,generation,matched_key,matched_at FROM webhook_secret_matches \
                 WHERE deployment_id=?1 AND endpoint=?2",
             )?;
             let rows = statement

@@ -933,6 +933,8 @@ struct Layer {
     /// For each declared field, the value this build uses from here, and why
     /// the newest value stored here doesn't fit it.
     fields: BTreeMap<String, (Option<Value>, Option<String>)>,
+    /// For each declared field with a value here, the revision it was read from.
+    sources: BTreeMap<String, u32>,
     /// The revision's settings and secrets, for what the build doesn't declare.
     values: Map<String, Value>,
     secrets: Map<String, Value>,
@@ -967,6 +969,7 @@ fn layer(
         source,
         revision: None,
         fields: BTreeMap::new(),
+        sources: BTreeMap::new(),
         values: Map::new(),
         secrets: Map::new(),
     };
@@ -995,6 +998,7 @@ fn layer(
                         result
                             .fields
                             .insert(name.clone(), (Some(value.clone()), problem));
+                        result.sources.insert(name.clone(), revision);
                         continue;
                     }
                     Some(problem) => problem,
@@ -1327,6 +1331,34 @@ fn write_revision(
             now,
         ],
     )?;
+    // Each change of a secret is a new generation, replacing the target's
+    // newest one, whose value the revision before this one holds.
+    for field in changed_secrets {
+        let predecessor: Option<i64> = connection
+            .query_row(
+                "SELECT generation FROM auth_config_secret_generations \
+                WHERE target_key=?1 AND field=?2 ORDER BY revision DESC LIMIT 1",
+                params![key, field],
+                |row| row.get(0),
+            )
+            .optional()?;
+        connection.execute(
+            "INSERT INTO auth_config_secret_generations(target_key,field,revision,\
+            deployment_id,instance_id,claim_id,predecessor,predecessor_revision,changed_at) \
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                key,
+                field,
+                revision,
+                target.deployment(),
+                target.instance(),
+                target.claim(),
+                predecessor,
+                predecessor.map(|_| revision - 1),
+                now,
+            ],
+        )?;
+    }
     // Nothing runs as a claim yet: its service reads the settings when it
     // connects as the deployment's instance.
     if target.claim().is_some() {
@@ -1693,6 +1725,11 @@ pub(super) fn adopt_claim(
             ],
         )?;
     }
+    connection.execute(
+        "UPDATE auth_config_secret_generations SET target_key=?2,deployment_id=?3,\
+        claim_id=NULL WHERE target_key=?1",
+        params![from, to, deployment],
+    )?;
     Ok(())
 }
 
@@ -1826,20 +1863,28 @@ fn own_config(
 pub(crate) struct WebhookSettingValue {
     /// The deployment's effective value, `None` while unset.
     pub(crate) current: Option<Value>,
-    /// The value the newest change replaced, and when that change was made,
-    /// while the revision just before the change still exists.
-    pub(crate) previous: Option<(Value, i64)>,
-    /// For a secret, the settings revision that set its current value, so
-    /// matches are kept per change; `None` when unset or when that revision
-    /// is gone.
-    pub(crate) rotation: Option<u32>,
+    /// For a secret with a stored value, the generation that value belongs
+    /// to: the change that set it, never inferred from the value itself.
+    pub(crate) generation: Option<i64>,
+    /// The value that generation replaced, while the revision that held it
+    /// when the change was made still exists.
+    pub(crate) previous: Option<PreviousSecret>,
+}
+
+/// The value a secret's current generation replaced.
+#[derive(Clone, Debug)]
+pub(crate) struct PreviousSecret {
+    pub(crate) value: Value,
+    pub(crate) generation: i64,
+    /// When the change was made, in seconds; the overlap runs from here.
+    pub(crate) changed_at: i64,
 }
 
 /// The deployment's own values of `fields`, secrets decrypted, for webhook
 /// verification. Per-instance overrides never apply: an endpoint belongs to
-/// the whole service. A secret's value before its newest change comes with
-/// the change time, so the caller can accept it during an overlap; deleting
-/// the revision that holds it ends the overlap.
+/// the whole service. A secret comes with its generation and, while the
+/// revision holding it still exists, the value that generation replaced and
+/// when, so the caller can accept it during an overlap.
 pub(crate) fn webhook_settings(
     connection: &Connection,
     storage: &OAuthStorage,
@@ -1849,6 +1894,7 @@ pub(crate) fn webhook_settings(
     let declared = Declared::installed(connection, deployment)?;
     let key = format!("deployment:{deployment}");
     let current = layer(connection, storage, &declared, &key, None, "deployment")?;
+    let sources = current.sources.clone();
     let current_values = effective(&declared, &[current]);
     let mut result = BTreeMap::new();
     for field in fields {
@@ -1857,63 +1903,48 @@ pub(crate) fn webhook_settings(
                 .get(field)
                 .and_then(|effective| effective.value.clone())
                 .filter(|value| !value.is_null()),
+            generation: None,
             previous: None,
-            rotation: None,
         };
-        if declared
+        let secret = declared
             .fields
             .get(field)
-            .is_some_and(|declared| declared.secret)
-        {
-            // The newest revision that changed this secret. The overlap is
-            // with the value that change replaced, held only by the revision
-            // just before it: once that revision is deleted the overlap
-            // ends, and no older revision stands in for it.
-            let changed: Option<(u32, i64)> = connection
+            .is_some_and(|declared| declared.secret);
+        // A stored value belongs to the newest change at or before the
+        // revision it was read from.
+        let source = sources
+            .get(field)
+            .filter(|_| secret && value.current.is_some());
+        if let Some(source) = source {
+            let generation: Option<(i64, Option<i64>, Option<u32>, i64)> = connection
                 .query_row(
-                    "SELECT revision,created_at FROM auth_config_revisions \
-                    WHERE target_key=?1 AND EXISTS (SELECT 1 FROM \
-                    json_each(changed_secrets_json) WHERE value=?2) \
+                    "SELECT generation,predecessor,predecessor_revision,changed_at \
+                    FROM auth_config_secret_generations \
+                    WHERE target_key=?1 AND field=?2 AND revision<=?3 \
                     ORDER BY revision DESC LIMIT 1",
-                    params![key, field],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    params![key, field, source],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()?;
-            if let Some((revision, changed_at)) = changed {
-                let replaced = revision.saturating_sub(1);
-                let kept: bool = connection.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM auth_config_revisions \
-                    WHERE target_key=?1 AND revision=?2)",
-                    params![key, replaced],
-                    |row| row.get(0),
-                )?;
-                let at = |upto: u32| -> Result<Option<Value>, AuthError> {
-                    Ok(effective(
-                        &declared,
-                        &[layer(
-                            connection,
-                            storage,
-                            &declared,
-                            &key,
-                            Some(upto),
-                            "deployment",
-                        )?],
-                    )
-                    .remove(field)
-                    .and_then(|effective| effective.value)
-                    .filter(|value| !value.is_null()))
-                };
-                // When the revision that set the current value is gone, a
-                // later revision carries it and that change's time is lost;
-                // the change found is an older one, and its value is not
-                // the current one.
-                if value.current.is_some() && at(revision)? == value.current {
-                    value.rotation = Some(revision);
-                }
-                if kept && value.rotation.is_some() {
-                    value.previous = at(replaced)?
-                        .filter(|previous| Some(previous) != value.current.as_ref())
-                        .map(|previous| (previous, changed_at));
+            if let Some((generation, predecessor, held_in, changed_at)) = generation {
+                value.generation = Some(generation);
+                // Only the exact revision that held the replaced value when
+                // the change was made: once it is deleted the overlap is
+                // over, and no older revision stands in.
+                if let (Some(predecessor), Some(held_in)) = (predecessor, held_in) {
+                    if let Some(stored) = stored(connection, &key, Some(held_in))? {
+                        let secrets = open_secrets(storage, &key, stored.sealed.as_deref())?;
+                        if let Some(replaced) = secrets.get(field).filter(|value| !value.is_null())
+                        {
+                            if declared.problem(field, replaced)?.is_none() {
+                                value.previous = Some(PreviousSecret {
+                                    value: replaced.clone(),
+                                    generation: predecessor,
+                                    changed_at,
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }

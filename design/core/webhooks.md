@@ -241,6 +241,32 @@ fixed, because its credential is gone. Only the sender's retry can get it in.
 request. A signature proves only that one message and cannot be reused for
 another, so storing the signature header is safe.
 
+Queued requests are checked under the policy they were accepted with. With
+the intake verdicts, a stored request keeps the endpoint's verifier policy (a
+digest of its verifiers and the plain settings they read: the `address`
+ranges and the `basic` username) and, for each secret an intake check matched,
+the generation of the value it matched. When the worker or verifying again
+processes the request:
+
+- Under the same policy, the intake verdicts stand while each secret still
+  accepts the generation it matched: the current one, or the one the newest
+  change replaced while its overlap lasts. A change of secret alone is not a
+  change of policy. Once the matched value is no longer accepted, because a
+  later change replaced it or its overlap ended or the revision holding it was
+  deleted, the request is rejected with the reason `secret <field> changed
+after intake and no longer accepts the value the request matched; the
+credential check can't be rerun`.
+- Under a different policy, the intake verdicts count for nothing. Every
+  verifier runs again where the stored request allows it: `address` against
+  the stored client address, `hmac` against the stored bytes. A `token` or
+  `basic` credential was removed at intake and cannot be checked again, so the
+  request is rejected with the reason `verifier policy changed after intake;
+credential checks can't be rerun`.
+
+`hmac` always runs under the secrets in force when the request is processed:
+the current secret, and the one the newest change replaced while the overlap
+lasts at that moment.
+
 ### `address`
 
 ```trellis
@@ -289,26 +315,33 @@ previous one for an overlap period, 24 hours by default and changeable at
 [runtime](#runtime-settings). The `hmac`, `token`, and `basic` verifiers all
 honor it, and the endpoint reports until when the previous value is accepted.
 
-The previous secret is the one the newest change replaced, which the settings
-revision just before that change holds. Nothing older is ever accepted.
-Deleting that revision with `trellis svc <name> config delete-revision
-<revision>` ends the overlap at once and destroys the old secret. Deleting
-any other revision never brings an older secret back.
+Each change of a secret has its own identity, a generation, which Trellis
+stores when the change is made. Two changes to an equal value are two
+generations, and deleting settings revisions never changes which generation a
+value belongs to. A generation names the generation it replaced and the
+settings revision that held the replaced value when the change was made. That
+revision is the only place the previous secret is read from, so nothing older
+is ever accepted. Deleting it with `trellis svc <name> config delete-revision
+<revision>` ends the overlap at once and destroys the old secret; no older
+revision stands in. Deleting any other revision never brings an older secret
+back. The overlap runs from the time of the change for the endpoint's
+`rotation_overlap`.
 
 Trellis records when a request last matched each secret, so the administrator
-can see when the sender has switched. A match belongs to the secret field it
-used, to the settings revision that set that field's current value, and to
-whether it matched the current value or the previous one. The time is when
+can see when the sender has switched. Each request notes, when it arrives, the
+generation each secret it is checked against has then. A match belongs to the
+secret field it used, to that generation, and to whether it matched the
+generation's value or the one the generation replaced. A match counts only
+while the generation the request arrived under is still the secret's newest: a
+request that arrived before a change used the value it matched while that value
+was current, so it counts toward no generation, however close the change came
+after it and even when it is verified after the change. The time is when
 Trellis received the request, also when an `async` request is verified later
 or again. An endpoint reports, for each of its secrets, when the current value
-and the previous value last matched under the newest change only. Another
-secret's matches, and matches under an earlier change, never stand in: right
-after a change both times are empty, even if the value that is now previous
-matched before the change. A request received before the change that matches
-the previous value used it while it was current, so it counts toward neither
-time. While the revision that set the current value is gone, Trellis cannot
-tell which change it belongs to and reports and records no matches for that
-secret.
+and the previous value last matched under the newest generation only. Another
+secret's matches, and matches under an earlier generation, never stand in:
+right after a change both times are empty, even if the value that is now
+previous matched before the change.
 
 ## The two modes step by step
 
@@ -694,7 +727,8 @@ status, and the event's `deliveryId`. Requests to unknown URLs are only counted
 in metrics, so they cannot fill storage.
 
 An administrator can verify a stored request again. Trellis runs the current
-verifiers over the original bytes and receive time, so a request rejected
+verifiers over the original bytes and receive time, under the same rules as the
+worker for [queued requests](#token-and-basic), so a request rejected
 because of a wrong secret is recovered once the secret is fixed. Once the
 request has left the intake stream, its record can still be read but not
 verified again. Opening or verifying a record names its service and endpoint
@@ -845,7 +879,7 @@ webhooks <endpoint> set` stores them for the deployment whichever endpoint
   archived request is never published after a switch to `async`, so a request
   the sender was refused never becomes an event. A queued request is verified
   with the verifiers and decide handler the endpoint has when the worker runs,
-  as verifying again does; the decide call still says `async` and uses the
+  as verifying again does, under the rules for [queued requests](#token-and-basic); the decide call still says `async` and uses the
   `async` deadline. Disabling the endpoint or its deployment stops new
   requests only: queued ones are still verified and published, and their
   events wait for the service. While the endpoint is detached, its queued
