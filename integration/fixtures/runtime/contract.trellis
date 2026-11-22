@@ -227,6 +227,8 @@ service WebhookService {
   config hookToken { title "Hook token"; description "The token senders present."; type string; secret; }
   config partnerUser { title "Partner user"; description "The partner's Basic username."; type string; }
   config partnerPassword { title "Partner password"; description "The partner's Basic password."; type string; secret; }
+  config relaySigning { title "Relay signing secret"; description "HMAC key of the relay that forwards to the relayed endpoints, once it has one."; type string | null; secret; }
+  config relayRanges { title "Relay addresses"; description "Where the relay sends from."; type list<string>; }
   webhook signed {
     title "Signed";
     description "Stripe-style HMAC over the timestamp and body.";
@@ -290,6 +292,35 @@ service WebhookService {
       algorithm sha256;
       signed "{body}";
       signature { header "X-Body-Signature"; prefix "sha256="; encoding hex; }
+    }
+  }
+  webhook relayed {
+    title "Relayed";
+    description "A relay's address, the relay's HMAC, and the sender's HMAC, checked after the answer.";
+    verify address { ranges config relayRanges; }
+    verify hmac {
+      key config relaySigning;
+      algorithm sha256;
+      signed "{body}";
+      signature { header "X-Relay-Signature"; prefix "sha256="; encoding hex; }
+    }
+    verify hmac {
+      key config signing;
+      algorithm sha256;
+      signed "{body}";
+      signature { header "X-Body-Signature"; prefix "sha256="; encoding hex; }
+    }
+  }
+  webhook relayedToken {
+    title "Relayed token";
+    description "A relay's address, the sender's token, and the relay's HMAC, checked after the answer.";
+    verify address { ranges config relayRanges; }
+    verify token { secret config hookToken; header "X-Hook-Token"; }
+    verify hmac {
+      key config relaySigning;
+      algorithm sha256;
+      signed "{body}";
+      signature { header "X-Relay-Signature"; prefix "sha256="; encoding hex; }
     }
   }
 }

@@ -132,9 +132,47 @@ impl Settings {
 pub(crate) struct Endpoint {
     pub(crate) record: WebhookEndpointRecord,
     pub(crate) settings: Settings,
+    /// Digest of the verifier policy: the verifiers and the plain settings
+    /// they read. A queued request keeps its intake checks only while this
+    /// is unchanged.
+    pub(crate) policy: String,
 }
 
 impl Endpoint {
+    fn new(record: WebhookEndpointRecord) -> Self {
+        use sha2::Digest as _;
+        let mut read = BTreeMap::new();
+        for verifier in &record.definition.verifiers {
+            if let trellis_idl::WebhookVerifier::Address { ranges: field }
+            | trellis_idl::WebhookVerifier::Basic {
+                username: field, ..
+            } = verifier
+            {
+                read.insert(
+                    field.clone(),
+                    record
+                        .values
+                        .get(field)
+                        .and_then(|value| value.current.clone()),
+                );
+            }
+        }
+        let policy = serde_json::to_vec(&serde_json::json!({
+            "verifiers": record.definition.verifiers,
+            "settings": read,
+        }))
+        .unwrap_or_default();
+        let policy = sha2::Sha256::digest(policy)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Self {
+            settings: Settings::resolve(&record),
+            record,
+            policy,
+        }
+    }
+
     /// A setting's current value as text, when set.
     pub(crate) fn text(&self, field: &str) -> Option<String> {
         self.record
@@ -145,57 +183,119 @@ impl Endpoint {
             .map(str::to_owned)
     }
 
-    /// The secrets a verifier may use for a request received at `received_at_ms`:
-    /// the current one, and the one before the newest change while the
-    /// overlap after that change lasts.
-    pub(crate) fn secrets(&self, field: &str, received_at_ms: i64) -> verify::Secrets {
-        let value = self.record.values.get(field);
+    /// When the value secret `field`'s newest change replaced stops being
+    /// accepted, in milliseconds, while that value is still held.
+    fn overlap_until(&self, field: &str) -> Option<i64> {
+        let previous = self.record.values.get(field)?.previous.as_ref()?;
+        Some(
+            previous.changed_at.saturating_mul(1000).saturating_add(
+                i64::try_from(self.settings.rotation_overlap_ms).unwrap_or(i64::MAX),
+            ),
+        )
+    }
+
+    /// The secrets a verifier may use at `now_ms`: the current one, and the
+    /// one the newest change replaced while the overlap after that change
+    /// lasts.
+    pub(crate) fn secrets(&self, field: &str, now_ms: i64) -> verify::Secrets {
         verify::Secrets {
             current: self.text(field),
-            previous: value
-                .and_then(|value| value.previous.as_ref())
-                .filter(|(_, changed_at)| {
-                    let until = changed_at.saturating_mul(1000).saturating_add(
-                        i64::try_from(self.settings.rotation_overlap_ms).unwrap_or(i64::MAX),
-                    );
-                    received_at_ms < until
-                })
-                .and_then(|(previous, _)| previous.as_str().map(str::to_owned)),
+            previous: self
+                .overlap_until(field)
+                .filter(|until| now_ms < *until)
+                .and_then(|_| self.record.values.get(field)?.previous.as_ref())
+                .and_then(|previous| previous.value.as_str().map(str::to_owned)),
         }
     }
 
     /// When the previous secret stops being accepted, while it still is.
     pub(crate) fn previous_accepted_until(&self, field: &str) -> Option<i64> {
-        let (_, changed_at) = self.record.values.get(field)?.previous.as_ref()?;
-        let until = changed_at
-            .saturating_mul(1000)
-            .saturating_add(i64::try_from(self.settings.rotation_overlap_ms).unwrap_or(i64::MAX));
-        (now_ms() < until).then_some(until)
+        self.overlap_until(field).filter(|until| now_ms() < *until)
     }
 
-    /// The rotation a request received at `received_at_ms` that matched the
-    /// `key` value of secret `field` counts toward: the settings revision
-    /// that set the current value. A match of the previous value by a
-    /// request received before that change used it while it was current,
-    /// so it counts toward no rotation, and neither does a match while the
-    /// revision that set the current value is gone.
-    pub(crate) fn match_rotation(
-        &self,
-        field: &str,
-        key: verify::KeyMatch,
-        received_at_ms: i64,
-    ) -> Option<u32> {
+    /// The generation of secret `field` whose `key` value a match used.
+    pub(crate) fn matched_generation(&self, field: &str, key: verify::KeyMatch) -> Option<i64> {
         let value = self.record.values.get(field)?;
-        let rotation = value.rotation?;
-        match (key, &value.previous) {
-            (verify::KeyMatch::Current, _) => Some(rotation),
-            (verify::KeyMatch::Previous, Some((_, changed_at)))
-                if received_at_ms >= changed_at.saturating_mul(1000) =>
-            {
-                Some(rotation)
+        match key {
+            verify::KeyMatch::Current => value.generation,
+            verify::KeyMatch::Previous => {
+                value.previous.as_ref().map(|previous| previous.generation)
             }
-            (verify::KeyMatch::Previous, _) => None,
         }
+    }
+
+    /// The generation a match of secret `field` by a request that arrived
+    /// while the field was at generation `captured` counts toward: the
+    /// field's current generation, when the request arrived under it. A
+    /// request that arrived before the newest change used the value it
+    /// matched while that value was current, so it counts toward none.
+    pub(crate) fn match_generation(&self, field: &str, captured: Option<i64>) -> Option<i64> {
+        let generation = self.record.values.get(field)?.generation?;
+        (captured == Some(generation)).then_some(generation)
+    }
+
+    /// Whether secret `field` still accepts the value of `generation` at
+    /// `now_ms`: it is the current generation, or the one the newest change
+    /// replaced while the overlap lasts. `None` is a value no change set,
+    /// such as a default, accepted while the field has no generation.
+    pub(crate) fn accepts(&self, field: &str, generation: Option<i64>, now_ms: i64) -> bool {
+        let Some(value) = self.record.values.get(field) else {
+            return false;
+        };
+        match generation {
+            None => value.generation.is_none() && value.current.is_some(),
+            Some(generation) => {
+                value.generation == Some(generation)
+                    || (value
+                        .previous
+                        .as_ref()
+                        .is_some_and(|previous| previous.generation == generation)
+                        && self
+                            .overlap_until(field)
+                            .is_some_and(|until| now_ms < until))
+            }
+        }
+    }
+
+    /// Whether `client` is within the CIDR ranges of setting `ranges`.
+    pub(crate) fn allows(&self, ranges: &str, client: std::net::IpAddr) -> bool {
+        self.record
+            .values
+            .get(ranges)
+            .and_then(|value| value.current.as_ref())
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|ranges| {
+                ranges
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .any(|range| {
+                        range
+                            .parse::<ipnet::IpNet>()
+                            .map(|network| network.contains(&client))
+                            .or_else(|_| range.parse::<std::net::IpAddr>().map(|ip| ip == client))
+                            .unwrap_or(false)
+                    })
+            })
+    }
+
+    /// The generation each secret a verifier checks has now, for a request
+    /// arriving now.
+    pub(crate) fn generations(&self) -> BTreeMap<String, i64> {
+        self.record
+            .definition
+            .verifiers
+            .iter()
+            .filter_map(|verifier| match verifier {
+                trellis_idl::WebhookVerifier::Hmac(hmac) => Some(&hmac.key),
+                trellis_idl::WebhookVerifier::Token { secret, .. } => Some(secret),
+                trellis_idl::WebhookVerifier::Basic { password, .. } => Some(password),
+                _ => None,
+            })
+            .filter_map(|field| {
+                let generation = self.record.values.get(field)?.generation?;
+                Some((field.clone(), generation))
+            })
+            .collect()
     }
 
     pub(crate) fn key(&self) -> (String, String) {
@@ -217,8 +317,7 @@ impl Directory {
     fn build(records: Vec<WebhookEndpointRecord>) -> Self {
         let mut directory = Self::default();
         for record in records {
-            let settings = Settings::resolve(&record);
-            let endpoint = Arc::new(Endpoint { record, settings });
+            let endpoint = Arc::new(Endpoint::new(record));
             directory
                 .by_url
                 .insert(endpoint.record.current_url.clone(), Arc::clone(&endpoint));

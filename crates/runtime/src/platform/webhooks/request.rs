@@ -1,6 +1,8 @@
 //! A received request as Trellis keeps it: in the intake stream, for the
 //! decide handler, and in the `Received` event.
 
+use std::collections::BTreeMap;
+
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +75,16 @@ pub(crate) struct StoredRequest {
     pub(crate) body: Vec<u8>,
     /// Checks that passed at intake.
     pub(crate) checks: Vec<Check>,
+    /// The endpoint's verifier policy when the intake checks ran. Verifying
+    /// later under a different one never relies on those checks.
+    pub(crate) policy: String,
+    /// The generation each secret a verifier checks had when the request
+    /// arrived, so a match counts only toward the change it arrived under.
+    pub(crate) generations: BTreeMap<String, i64>,
+    /// For each secret an intake check matched, the generation of the value
+    /// it matched; `None` for a value no change set. The check stands only
+    /// while the secret still accepts that generation.
+    pub(crate) matched: BTreeMap<String, Option<i64>>,
 }
 
 mod body {

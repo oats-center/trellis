@@ -298,47 +298,96 @@ impl Webhooks {
         attempt: u32,
     ) -> Verdict {
         let definition = &endpoint.record.definition;
-        let mut checks = request.checks.clone();
+        let now = super::now_ms();
+        // Intake checks stand only under the policy they ran under, and only
+        // while each secret they matched still accepts the value matched.
+        // Under another policy every verifier runs again where the stored
+        // request allows it; a credential removed at intake cannot be checked
+        // again, so the request is refused.
+        let same_policy = request.policy == endpoint.policy;
+        let rejected = |reason: String| Verdict::Rejected {
+            reason,
+            matched: None,
+            decided: None,
+        };
+        let mut checks = Vec::new();
+        if same_policy {
+            for (field, generation) in &request.matched {
+                if !endpoint.accepts(field, *generation, now) {
+                    return rejected(format!(
+                        "secret {field} changed after intake and no longer accepts the value \
+                        the request matched; the credential check can't be rerun"
+                    ));
+                }
+            }
+            checks.clone_from(&request.checks);
+        }
         let mut matched = None;
         for verifier in &definition.verifiers {
-            if let WebhookVerifier::Hmac(hmac) = verifier {
-                let secrets = endpoint.secrets(&hmac.key, request.received_at_ms);
-                match verify::hmac(request, hmac, &secrets) {
-                    Ok(key) => {
-                        if let Some(rotation) =
-                            endpoint.match_rotation(&hmac.key, key, request.received_at_ms)
-                        {
-                            let (deployment, name) = endpoint.key();
-                            let _ = self
-                                .inner
-                                .records
-                                .note_match(
-                                    &deployment,
-                                    &name,
-                                    &hmac.key,
-                                    rotation,
-                                    key,
-                                    request.received_at_ms,
-                                )
-                                .await;
+            match verifier {
+                WebhookVerifier::Hmac(hmac) => {
+                    let secrets = endpoint.secrets(&hmac.key, now);
+                    match verify::hmac(request, hmac, &secrets) {
+                        Ok(key) => {
+                            let captured = request.generations.get(&hmac.key).copied();
+                            if let Some(generation) = endpoint.match_generation(&hmac.key, captured)
+                            {
+                                let (deployment, name) = endpoint.key();
+                                let _ = self
+                                    .inner
+                                    .records
+                                    .note_match(
+                                        &deployment,
+                                        &name,
+                                        &hmac.key,
+                                        generation,
+                                        key,
+                                        request.received_at_ms,
+                                    )
+                                    .await;
+                            }
+                            matched = matched.or(Some(key));
+                            checks.push(Check {
+                                kind: "hmac".into(),
+                                key: Some(key.as_str().into()),
+                            });
                         }
-                        matched = matched.or(Some(key));
-                        checks.push(Check {
-                            kind: "hmac".into(),
-                            key: Some(key.as_str().into()),
-                        });
-                    }
-                    Err(Failure::Unset(name)) => {
-                        return Verdict::Unset(format!("secret {name} not set"))
-                    }
-                    Err(Failure::Rejected(reason)) => {
-                        return Verdict::Rejected {
-                            reason,
-                            matched,
-                            decided: None,
+                        Err(Failure::Unset(name)) => {
+                            return Verdict::Unset(format!("secret {name} not set"))
+                        }
+                        Err(Failure::Rejected(reason)) => {
+                            return Verdict::Rejected {
+                                reason,
+                                matched,
+                                decided: None,
+                            }
                         }
                     }
                 }
+                _ if same_policy => {}
+                WebhookVerifier::Address { ranges } => {
+                    let allowed = request
+                        .client_address
+                        .parse()
+                        .is_ok_and(|client| endpoint.allows(ranges, client));
+                    if !allowed {
+                        return rejected("client address outside the allowed ranges".into());
+                    }
+                    checks.push(Check {
+                        kind: "address".into(),
+                        key: None,
+                    });
+                }
+                WebhookVerifier::Token { .. } | WebhookVerifier::Basic { .. } => {
+                    return rejected(
+                        "verifier policy changed after intake; credential checks can't be rerun"
+                            .into(),
+                    );
+                }
+                WebhookVerifier::None => checks.push(Check {
+                    kind: "none".into(),
+                    key: None,
+                }),
             }
         }
         let mut dedupe_key = definition

@@ -1216,6 +1216,29 @@ CREATE TABLE auth_config_revisions (
             AND claim_id IS NOT NULL AND target_key = 'claim:' || claim_id)
     )
 );
+-- Each change to a secret's stored value, with an identity of its own: two
+-- changes to an equal value are two generations. A generation names the one
+-- it replaced and the revision that held the replaced value when the change
+-- was made, the only place that value is read from during the change
+-- overlap; once that revision is deleted the overlap is over, and no older
+-- revision stands in. Rows outlive the revisions they came from, so
+-- deleting revisions never changes which generation a value belongs to.
+CREATE TABLE auth_config_secret_generations (
+    generation INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_key TEXT NOT NULL CHECK (length(target_key) > 0),
+    field TEXT NOT NULL CHECK (length(field) > 0),
+    -- The revision that made the change.
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 4294967295),
+    deployment_id TEXT REFERENCES auth_deployments(deployment_id) ON DELETE CASCADE,
+    instance_id TEXT REFERENCES auth_instances(instance_id) ON DELETE CASCADE,
+    claim_id TEXT REFERENCES auth_service_claims(claim_id) ON DELETE CASCADE,
+    predecessor INTEGER,
+    predecessor_revision INTEGER
+        CHECK (predecessor_revision BETWEEN 1 AND 4294967295),
+    changed_at INTEGER NOT NULL CHECK (changed_at BETWEEN 0 AND 9007199254740991),
+    UNIQUE (target_key, field, revision),
+    CHECK ((predecessor IS NULL) = (predecessor_revision IS NULL))
+);
 -- What each instance loaded when it last connected, so administrators see
 -- which instances still run settings that only apply after a restart.
 CREATE TABLE auth_config_connections (

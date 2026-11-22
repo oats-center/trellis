@@ -56,12 +56,13 @@ impl Webhooks {
             .matches(&deployment, &name)
             .await
             .map_err(unexpected)?;
-        // When this field's current rotation last matched `key`; matches of
-        // other fields and earlier rotations never stand in.
+        // When a request that arrived under this field's current generation
+        // last matched `key`; matches of other fields and earlier generations
+        // never stand in.
         let last_matched = |field: &str, key: super::verify::KeyMatch| {
-            let rotation = endpoint.record.values.get(field)?.rotation?;
+            let generation = endpoint.record.values.get(field)?.generation?;
             matches
-                .get(&(field.to_owned(), rotation, key.as_str().to_owned()))
+                .get(&(field.to_owned(), generation, key.as_str().to_owned()))
                 .copied()
                 .map(super::rfc3339)
         };
@@ -142,7 +143,7 @@ impl Webhooks {
 
     /// Verify a stored request of `service`'s `endpoint` again with the
     /// current verifiers and secrets, against its original bytes and receive
-    /// time.
+    /// time, under the same rules as the worker.
     async fn reverify(
         &self,
         service: &str,

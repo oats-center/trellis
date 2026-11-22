@@ -25,15 +25,15 @@ CREATE INDEX webhook_attempts_by_endpoint
 CREATE INDEX webhook_attempts_by_outcome ON webhook_attempts(outcome, received_at);
 -- When a request last matched each value of a secret, so administrators see
 -- when a sender has switched. A match belongs to the secret it used, the
--- settings revision that set that secret's current value, and whether it
--- matched that value or the one the change replaced; a later change starts
--- afresh.
+-- generation of that secret the request arrived under, and whether it
+-- matched that generation's value or the one it replaced; a later change
+-- starts afresh.
 CREATE TABLE webhook_secret_matches (
     deployment_id TEXT NOT NULL,
     endpoint TEXT NOT NULL,
     field TEXT NOT NULL,
-    rotation INTEGER NOT NULL CHECK (rotation >= 0),
+    generation INTEGER NOT NULL CHECK (generation >= 0),
     matched_key TEXT NOT NULL CHECK (matched_key IN ('current', 'previous')),
     matched_at INTEGER NOT NULL CHECK (matched_at >= 0),
-    PRIMARY KEY (deployment_id, endpoint, field, rotation, matched_key)
+    PRIMARY KEY (deployment_id, endpoint, field, generation, matched_key)
 );

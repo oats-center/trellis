@@ -881,6 +881,8 @@ async fn webhook_endpoints_and_their_requests_are_shown_and_managed() {
             "partner",
             "query",
             "receipt",
+            "relayed",
+            "relayedToken",
             "signed",
             "token"
         ]
