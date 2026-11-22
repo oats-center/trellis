@@ -284,23 +284,34 @@ deliveries are not on the page it has loaded.
 
 ```text
 trellis users list|show|find|create|edit|delete ...
-trellis users create [--username <name>] [--name <name>] [--provider <id> --subject <sub>]
+trellis users create [--username <name>] [--name <name>] [--email <address>] [--provider <id> --subject <sub>]
+trellis users show|edit|delete <user>
 trellis users link|unlink <user> --provider <id> --subject <sub>
-trellis roles list|show|create|edit|delete|assign|revoke ...
+trellis roles list|create ...
+trellis roles show|edit|delete <role>
+trellis roles assign|revoke <role> --user <user>
 trellis sign-in show|set [--[no-]local-users] [--[no-]local-sign-up] [--password-min-length <8-128>]
 trellis sign-in providers list|show|add|edit|enable|disable|remove ...
 trellis clients sign-up <client> [--[no-]password] [--[no-]providers]
 ```
 
-User commands use generated Auth account operations. `users create
+A `<user>` is a username, an email address or a user ID, and a `<role>` is a
+role's name (any case) or its ID. A name that fits more than one user or role
+is refused with their IDs, and the command changes nothing; give an ID then.
+The CLI resolves names with `Auth.Users.List` and `Auth.Roles.List` and sends
+IDs to Auth. User commands use generated Auth account operations. `users create
 --provider --subject` links that OIDC sign-in in the creating call and prints
-no password setup code; `users link|unlink` read the account's current revision
+no password setup link. Otherwise it prints the one-time setup link,
+`/account/reset?token=...` on the Trellis origin, and says when password
+sign-in is off, since the password chosen there signs in only while it is on;
+the Console's New user page shows the same link and offers to turn password
+sign-in on. `users link|unlink` read the account's current revision
 and call `Auth.Users.Identities.Link|Unlink`. Naming either `--provider` or
 `--subject` makes the other required input, asked for on a terminal (the
 provider from a list) and reported as missing without one. Role commands use
 `Auth.Roles.*`; `--capability` names each capability a role gives, and
 `--new-users`/`--no-new-users` sets whether users created afterwards get the
-role. `roles show` lists who has the role; `roles assign|revoke <role> <user>`
+role. `roles show` lists who has the role; `roles assign|revoke <role> --user <user>`
 gives or takes it from one user, and `roles assign --revision <n>` renews an
 expired assignment at the revision Auth names when it refuses a new one.
 `sign-in` turns username-and-password sign-in and self sign-up on or off and sets the minimum password length, at once

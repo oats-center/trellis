@@ -1927,15 +1927,9 @@ fn print_user(user: &Value) -> output::Details {
 
 async fn users_show_command(format: OutputFormat, args: &UserRefArgs) -> miette::Result<()> {
     let (_selection, connected) = connect_authenticated_cli_client().await?;
-    let user = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
-        .trellis_auth_v1()
-        .users_get(&auth_types::AuthUserGetRequest {
-            user_id: wire(&args.user_id)?,
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?
-        .user;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let user = resolve_user(&auth, &args.user).await?;
     output::emit(format, &user, |user| {
         print_user(user).print();
         Ok(())
@@ -2044,14 +2038,7 @@ async fn users_identity_command(
         .trellis_auth_v1();
     let (provider, subject) = oidc_sign_in(&mut form, &auth, &args.identity).await?;
     form.finish()?;
-    let current = auth
-        .users_get(&auth_types::AuthUserGetRequest {
-            user_id: wire(&args.user_id)?,
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?
-        .user;
+    let current = resolve_user(&auth, &args.user).await?;
     let account = current
         .account
         .ok_or_else(|| miette::miette!("account management authority is required"))?;
@@ -2127,13 +2114,12 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
         |_| Ok(()),
     )?;
     let connection = if linking {
-        let (_selection, connected) = connect_authenticated_cli_client().await?;
-        Some(connected)
+        Some(connect_authenticated_cli_client().await?)
     } else {
         None
     };
     let identity = match &connection {
-        Some(connected) => {
+        Some((_, connected)) => {
             let auth =
                 trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
                     .trellis_auth_v1();
@@ -2152,9 +2138,9 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
         summary.push(("Subject", subject.clone()));
     }
     form.confirm(&format!("Create user {username}"), &summary)?;
-    let connected = match connection {
-        Some(connected) => connected,
-        None => connect_authenticated_cli_client().await?.1,
+    let (selection, connected) = match connection {
+        Some(connection) => connection,
+        None => connect_authenticated_cli_client().await?,
     };
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
@@ -2162,7 +2148,7 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
         .users_create(&auth_types::AuthUserCreateRequest {
             given_name: None,
             family_name: None,
-            email: None,
+            email: trimmed_optional(&args.email).map(wire).transpose()?,
             display_name: wire(name)?,
             username: wire(username)?,
             password: None,
@@ -2186,19 +2172,32 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
     let setup_flow = if identity.is_some() {
         None
     } else {
-        Some(
-            auth.users_password_reset_create(&auth_types::AuthPasswordResetCreateRequest {
+        let flow = auth
+            .users_password_reset_create(&auth_types::AuthPasswordResetCreateRequest {
                 user_id: user.principal_id,
                 idempotency_key: wire(cli_idempotency_key())?,
                 extra: Default::default(),
             })
             .await
-            .into_diagnostic()?,
-        )
+            .into_diagnostic()?;
+        let mut link = url::Url::parse(&selection.scope.issuer)
+            .and_then(|issuer| issuer.join("/account/reset"))
+            .into_diagnostic()?;
+        link.query_pairs_mut().append_pair("token", &flow.token);
+        Some(json!({ "token": flow.token, "expiresAt": flow.expires_at, "url": link.as_str() }))
     };
+    // The password chosen from the link signs in only while password sign-in
+    // is on. Without the authority to read that setting, say nothing.
+    let passwords_off = setup_flow.is_some()
+        && auth
+            .sign_in_settings_get(&auth_types::AuthEmpty {
+                extra: Default::default(),
+            })
+            .await
+            .is_ok_and(|response| !response.settings.local_users);
     output::emit(
         format,
-        &json!({ "user": user, "setupFlow": setup_flow }),
+        &json!({ "user": user, "setupFlow": setup_flow, "passwordSignInOff": passwords_off }),
         |value| {
             output::success(format!(
                 "Created user {}",
@@ -2213,15 +2212,21 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
             }
             output::Details::untitled()
                 .field("ID", output::field(&value["user"], "principalId"))
-                .field("Setup code", output::field(setup, "token"))
+                .field("Setup link", output::field(setup, "url"))
                 .print();
             output::not_kept(
-                "setup code",
+                "setup link",
                 &format!(
                     "Send it to the person; it lets them choose a password until {}.",
                     output::absolute_time(&output::field(setup, "expiresAt"))
                 ),
             );
+            if value["passwordSignInOff"] == json!(true) {
+                output::hint(
+                    "Password sign-in is off, so they can't sign in until you turn it on: \
+                    `trellis sign-in set --local-users`.",
+                );
+            }
             Ok(())
         },
     )
@@ -2231,14 +2236,7 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
-    let current = auth
-        .users_get(&auth_types::AuthUserGetRequest {
-            user_id: wire(&args.user_id)?,
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?
-        .user;
+    let current = resolve_user(&auth, &args.user).await?;
     let account = current
         .account
         .ok_or_else(|| miette::miette!("account management authority is required"))?;
@@ -2267,7 +2265,7 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
         .user;
     output::emit(
         format,
-        &json!({ "user": user, "userId": args.user_id }),
+        &json!({ "userId": user.principal_id, "user": user }),
         |value| {
             output::success(format!(
                 "Updated user {}",
@@ -2283,14 +2281,7 @@ async fn users_delete_command(format: OutputFormat, args: &UserRefArgs) -> miett
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
-    let current = auth
-        .users_get(&auth_types::AuthUserGetRequest {
-            user_id: wire(&args.user_id)?,
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?
-        .user;
+    let current = resolve_user(&auth, &args.user).await?;
     let account = current
         .account
         .ok_or_else(|| miette::miette!("account management authority is required"))?;
@@ -2304,7 +2295,7 @@ async fn users_delete_command(format: OutputFormat, args: &UserRefArgs) -> miett
     .into_diagnostic()?;
     output::emit(
         format,
-        &json!({ "deleted": true, "userId": args.user_id }),
+        &json!({ "deleted": true, "userId": current.principal_id }),
         |_| {
             output::success(format!(
                 "Deleted user {} and signed them out everywhere",
@@ -2342,10 +2333,10 @@ fn print_role(role: &Value, members: Option<&[Value]>) {
     details.print();
 }
 
-async fn roles_list_command(format: OutputFormat) -> miette::Result<()> {
-    let (_selection, connected) = connect_authenticated_cli_client().await?;
-    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
-        .trellis_auth_v1();
+/// Every role, on every page.
+async fn all_roles(
+    auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
+) -> miette::Result<Vec<auth_types::AuthRole>> {
     let mut roles = Vec::new();
     let mut cursor = None;
     loop {
@@ -2363,9 +2354,126 @@ async fn roles_list_command(format: OutputFormat) -> miette::Result<()> {
         roles.extend(page.items);
         match page.page.next_cursor {
             Some(next) => cursor = Some(next),
+            None => return Ok(roles),
+        }
+    }
+}
+
+/// The one role `typed` names, by its ID or its name. A name several roles
+/// share is refused with each of them, so the caller can give an ID instead.
+async fn resolve_role(
+    auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
+    typed: &str,
+) -> miette::Result<auth_types::AuthRole> {
+    let roles = all_roles(auth).await?;
+    let typed = typed.trim();
+    if let Some(role) = roles
+        .iter()
+        .find(|role| role.role_id.to_string().eq_ignore_ascii_case(typed))
+    {
+        return Ok(role.clone());
+    }
+    let name = typed.to_lowercase();
+    let mut named = roles
+        .into_iter()
+        .filter(|role| role.title.trim().to_lowercase() == name)
+        .collect::<Vec<_>>();
+    match named.len() {
+        0 => Err(miette::miette!(
+            help = "`trellis roles list` shows every role.",
+            "no role is named {typed}"
+        )),
+        1 => Ok(named.remove(0)),
+        _ => Err(miette::miette!(
+            help = "Name the role by its ID instead.",
+            "{} roles are named {typed}: {}",
+            named.len(),
+            named
+                .iter()
+                .map(|role| role.role_id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// The one user `typed` names, by their ID, username or email address. An
+/// email address several users share is refused with each of them, so the
+/// caller can give an ID instead.
+async fn resolve_user(
+    auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
+    typed: &str,
+) -> miette::Result<auth_types::AuthUser> {
+    let typed = typed.trim();
+    if typed.parse::<Ulid>().is_ok() {
+        if let Ok(found) = auth
+            .users_get(&auth_types::AuthUserGetRequest {
+                user_id: wire(typed)?,
+                extra: Default::default(),
+            })
+            .await
+        {
+            return Ok(found.user);
+        }
+    }
+    let name = typed.to_lowercase();
+    let mut named = Vec::new();
+    let mut cursor = None;
+    loop {
+        // The search finds usernames and email addresses that contain what
+        // was typed; only an exact one names a user.
+        let page = auth
+            .users_list(&auth_types::AuthPageRequest {
+                search: Some(wire(typed)?),
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?;
+        named.extend(page.items.into_iter().filter(|user| {
+            user.account
+                .as_ref()
+                .is_some_and(|account| account.username.to_lowercase() == name)
+                || user
+                    .email
+                    .as_ref()
+                    .is_some_and(|email| email.to_lowercase() == name)
+        }));
+        match page.page.next_cursor {
+            Some(next) => cursor = Some(next),
             None => break,
         }
     }
+    match named.len() {
+        0 => Err(miette::miette!(
+            help = "`trellis users list` shows every user.",
+            "no user has the ID, username or email {typed}"
+        )),
+        1 => Ok(named.remove(0)),
+        _ => Err(miette::miette!(
+            help = "Name the user by their ID instead.",
+            "{} users have the email {typed}: {}",
+            named.len(),
+            named
+                .iter()
+                .map(|user| match &user.account {
+                    Some(account) => format!("{} ({})", user.principal_id, account.username),
+                    None => user.principal_id.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+async fn roles_list_command(format: OutputFormat) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let roles = all_roles(&auth).await?;
     output::emit(format, &json!({ "items": roles }), |value| {
         let rows = output::list(value, "items")
             .iter()
@@ -2395,15 +2503,7 @@ async fn roles_show_command(format: OutputFormat, args: &RoleRefArgs) -> miette:
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
-    let role_id = wire(&args.role_id)?;
-    let role = auth
-        .roles_get(&auth_types::AuthRoleGetRequest {
-            role_id,
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?
-        .role;
+    let role = resolve_role(&auth, &args.role).await?;
     let members = current_assignments(&auth, &role, None)
         .await?
         .into_iter()
@@ -2589,14 +2689,7 @@ async fn roles_edit_command(format: OutputFormat, args: &RoleEditArgs) -> miette
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
-    let current = auth
-        .roles_get(&auth_types::AuthRoleGetRequest {
-            role_id: wire(&args.role_id)?,
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?
-        .role;
+    let current = resolve_role(&auth, &args.role).await?;
     let capability_ids = match &args.capabilities {
         Some(capabilities) => wire(full_capability_ids(&auth, capabilities).await?)?,
         None => current
@@ -2632,14 +2725,7 @@ async fn roles_delete_command(format: OutputFormat, args: &RoleRefArgs) -> miett
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
-    let current = auth
-        .roles_get(&auth_types::AuthRoleGetRequest {
-            role_id: wire(&args.role_id)?,
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?
-        .role;
+    let current = resolve_role(&auth, &args.role).await?;
     auth.roles_delete(&auth_types::AuthRoleDeleteRequest {
         role_id: current.role_id,
         expected_revision: current.revision,
@@ -2657,15 +2743,25 @@ async fn roles_delete_command(format: OutputFormat, args: &RoleRefArgs) -> miett
     })
 }
 
+/// How the CLI names a user in what it prints: their username when it can
+/// see it, otherwise their display name.
+fn user_label(user: &auth_types::AuthUser) -> String {
+    user.account.as_ref().map_or_else(
+        || user.display_name.to_string(),
+        |account| account.username.to_string(),
+    )
+}
+
 async fn roles_assign_command(format: OutputFormat, args: &RoleAssignArgs) -> miette::Result<()> {
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
-    let member = &args.member;
+    let role = resolve_role(&auth, &args.member.role).await?;
+    let user = resolve_user(&auth, &args.member.user).await?;
     let assignment = auth
         .role_assignments_assign(&auth_types::AuthRoleAssignRequest {
-            principal_id: wire(&member.user_id)?,
-            role_id: wire(&member.role_id)?,
+            principal_id: user.principal_id,
+            role_id: role.role_id,
             expected_revision: args.revision.unwrap_or(0).into(),
             idempotency_key: wire(cli_idempotency_key())?,
             expires_at: None,
@@ -2674,44 +2770,36 @@ async fn roles_assign_command(format: OutputFormat, args: &RoleAssignArgs) -> mi
         .await
         .into_diagnostic()?
         .assignment;
-    if output::is_json(format) {
-        return output::print_json(&json!({ "assignment": assignment }));
-    }
-    let role = auth
-        .roles_get(&auth_types::AuthRoleGetRequest {
-            role_id: assignment.role_id,
-            extra: Default::default(),
-        })
-        .await
-        .map(|response| response.role.title)
-        .unwrap_or_else(|_| member.role_id.clone());
-    let (role, user) = (output::strong(role), output::strong(&member.user_id));
-    output::success(if args.revision.is_some() {
-        format!("Renewed role {role} for user {user}")
-    } else {
-        format!("Gave role {role} to user {user}")
-    });
-    Ok(())
+    output::emit(format, &json!({ "assignment": assignment }), |_| {
+        let (role, user) = (
+            output::strong(&role.title),
+            output::strong(user_label(&user)),
+        );
+        output::success(if args.revision.is_some() {
+            format!("Renewed role {role} for user {user}")
+        } else {
+            format!("Gave role {role} to user {user}")
+        });
+        Ok(())
+    })
 }
 
 async fn roles_revoke_command(format: OutputFormat, args: &RoleMemberArgs) -> miette::Result<()> {
     let (_selection, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1();
-    let role = auth
-        .roles_get(&auth_types::AuthRoleGetRequest {
-            role_id: wire(&args.role_id)?,
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?
-        .role;
-    let assignment = current_assignments(&auth, &role, Some(wire(&args.user_id)?))
+    let role = resolve_role(&auth, &args.role).await?;
+    let user = resolve_user(&auth, &args.user).await?;
+    let assignment = current_assignments(&auth, &role, Some(user.principal_id))
         .await?
         .into_iter()
         .next()
         .ok_or_else(|| {
-            miette::miette!("user {} does not have role {}", args.user_id, args.role_id)
+            miette::miette!(
+                "user {} does not have role {}",
+                user_label(&user),
+                role.title
+            )
         })?;
     auth.role_assignments_revoke(&auth_types::AuthRoleRevokeRequest {
         assignment_id: assignment.assignment_id,
@@ -2728,7 +2816,7 @@ async fn roles_revoke_command(format: OutputFormat, args: &RoleMemberArgs) -> mi
             output::success(format!(
                 "Took role {} away from user {}",
                 output::strong(&role.title),
-                output::strong(&args.user_id)
+                output::strong(user_label(&user))
             ));
             Ok(())
         },

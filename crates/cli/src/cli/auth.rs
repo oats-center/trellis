@@ -485,7 +485,7 @@ pub struct UsersCommand {
 pub enum UsersSubcommand {
     /// List users.
     List,
-    /// Show one user by Trellis user ID.
+    /// Show one user.
     Show(UserRefArgs),
     /// Find the user an OIDC sign-in belongs to, by provider ID and exact subject.
     Find(UserIdentityArgs),
@@ -530,11 +530,13 @@ pub enum RolesSubcommand {
 #[derive(Debug, Args)]
 /// Reference one role and one user.
 pub struct RoleMemberArgs {
-    #[arg(value_name = "ROLE_ID")]
-    pub role_id: String,
+    /// The role, by its name or ID.
+    #[arg(value_name = "ROLE")]
+    pub role: String,
 
-    #[arg(value_name = "USER_ID")]
-    pub user_id: String,
+    /// The user, by username, email or ID.
+    #[arg(long, value_name = "USER")]
+    pub user: String,
 }
 
 #[derive(Debug, Args)]
@@ -551,10 +553,11 @@ pub struct RoleAssignArgs {
 }
 
 #[derive(Debug, Args)]
-/// Reference one role by role ID.
+/// Reference one role.
 pub struct RoleRefArgs {
-    #[arg(value_name = "ROLE_ID")]
-    pub role_id: String,
+    /// The role, by its name or ID.
+    #[arg(value_name = "ROLE")]
+    pub role: String,
 }
 
 #[derive(Debug, Args)]
@@ -593,8 +596,9 @@ pub struct RoleCreateArgs {
 ))]
 /// Edit one role.
 pub struct RoleEditArgs {
-    #[arg(value_name = "ROLE_ID")]
-    pub role_id: String,
+    /// The role, by its name or ID.
+    #[arg(value_name = "ROLE")]
+    pub role: String,
 
     #[arg(long)]
     pub title: Option<String>,
@@ -616,10 +620,11 @@ pub struct RoleEditArgs {
 }
 
 #[derive(Debug, Args)]
-/// Reference one user by Trellis user ID.
+/// Reference one user.
 pub struct UserRefArgs {
-    #[arg(value_name = "USER_ID")]
-    pub user_id: String,
+    /// The user, by username, email or ID.
+    #[arg(value_name = "USER")]
+    pub user: String,
 }
 
 #[derive(Debug, Args)]
@@ -637,8 +642,9 @@ pub struct UserIdentityArgs {
 #[derive(Debug, Args)]
 /// Link or unlink one OIDC sign-in for one user.
 pub struct UserIdentityChangeArgs {
-    #[arg(value_name = "USER_ID")]
-    pub user_id: String,
+    /// The user, by username, email or ID.
+    #[arg(value_name = "USER")]
+    pub user: String,
 
     #[command(flatten)]
     pub identity: UserIdentityArgs,
@@ -654,8 +660,12 @@ pub struct UserCreateArgs {
     #[arg(long)]
     pub username: Option<String>,
 
+    /// The user's email address, by which commands can also name them.
+    #[arg(long)]
+    pub email: Option<String>,
+
     /// Link this OIDC sign-in to the new user. A user created with one gets no
-    /// password setup code.
+    /// password setup link.
     #[command(flatten)]
     pub identity: UserIdentityArgs,
 }
@@ -668,8 +678,9 @@ pub struct UserCreateArgs {
 ))]
 /// Edit one Trellis user.
 pub struct UserEditArgs {
-    #[arg(value_name = "USER_ID")]
-    pub user_id: String,
+    /// The user, by username, email or ID.
+    #[arg(value_name = "USER")]
+    pub user: String,
 
     #[arg(long)]
     pub active: bool,

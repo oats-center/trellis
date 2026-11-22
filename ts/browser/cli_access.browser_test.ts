@@ -66,12 +66,14 @@ test(
         assert.equal(readers.role.assignToNewUsers, false);
         assert.deepEqual(readers.members, [before]);
         // An administrator can still give the role to anyone, or take it away.
-        await run("roles", "assign", role.roleId, after);
-        await run("roles", "revoke", role.roleId, before);
+        await run("roles", "assign", role.roleId, "--user", after);
+        await run("roles", "revoke", role.roleId, "--user", before);
         assert.deepEqual((await run("roles", "show", role.roleId)).members, [
           after,
         ]);
-        await assert.rejects(run("roles", "revoke", role.roleId, before));
+        await assert.rejects(
+          run("roles", "revoke", role.roleId, "--user", before),
+        );
         await run("roles", "delete", role.roleId);
         await assert.rejects(run("roles", "show", role.roleId));
         // Recreated under the same ID, the role keeps the earlier assignment,
@@ -105,7 +107,7 @@ test(
         assert.deepEqual((await run("roles", "show", role.roleId)).members, [
           after,
         ]);
-        await run("roles", "revoke", role.roleId, after);
+        await run("roles", "revoke", role.roleId, "--user", after);
         assert.deepEqual((await run("roles", "show", role.roleId)).members, []);
         // Listing follows every page rather than stopping at the first 100.
         const extra = Array.from(

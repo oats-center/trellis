@@ -1154,8 +1154,10 @@ async fn role_changes_say_why_they_are_refused() {
         .unwrap()
         .to_owned();
 
-    cli.json(&["roles", "assign", &role, &user]).await;
-    let twice = cli.script(&["roles", "assign", &role, &user]).await;
+    cli.json(&["roles", "assign", &role, "--user", &user]).await;
+    let twice = cli
+        .script(&["roles", "assign", &role, "--user", &user])
+        .await;
     assert!(
         refused_with(&twice, &format!("{user} already has role {role}")),
         "{}",
@@ -1164,7 +1166,7 @@ async fn role_changes_say_why_they_are_refused() {
     // Naming the saved revision updates that assignment instead, which is how
     // an expired one is renewed.
     let renewed = cli
-        .json(&["roles", "assign", &role, &user, "--revision", "1"])
+        .json(&["roles", "assign", &role, "--user", &user, "--revision", "1"])
         .await;
     assert_eq!(
         renewed["assignment"]["revision"]
@@ -1176,9 +1178,133 @@ async fn role_changes_say_why_they_are_refused() {
     let missing = ulid::Ulid::generate().to_string();
     let unknown = cli.script(&["roles", "delete", &missing]).await;
     assert!(
-        refused_with(&unknown, &format!("no role {missing}")),
+        refused_with(&unknown, &format!("no role is named {missing}")),
         "{}",
         String::from_utf8_lossy(&unknown.stderr)
+    );
+    runtime.shutdown().await.unwrap();
+}
+
+/// Role and user commands take the names people use: a role by its name and a
+/// user by username or email, as well as either by ID. A name that fits
+/// several is refused with their IDs, and nothing changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn role_and_user_commands_take_names() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime, None).await;
+    let suffix = ulid::Ulid::generate().to_string().to_lowercase();
+    let title = format!("Auditors {suffix}");
+    let role = cli
+        .json(&["roles", "create", "--title", &title, "--no-new-users"])
+        .await["role"]["roleId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let username = format!("ada-{suffix}");
+    let email = format!("shared-{suffix}@example.test");
+    let created = cli
+        .json(&[
+            "users",
+            "create",
+            "--username",
+            &username,
+            "--email",
+            &email,
+        ])
+        .await;
+    let ada = created["user"]["principalId"].as_str().unwrap().to_owned();
+    // The person chooses a password at the setup link, on this Trellis.
+    let link = created["setupFlow"]["url"].as_str().unwrap();
+    assert!(
+        link.starts_with(&format!(
+            "{}/account/reset?token=",
+            runtime.trellis_url().trim_end_matches('/')
+        )),
+        "{link}"
+    );
+    assert_eq!(created["passwordSignInOff"], serde_json::json!(false));
+    let members = |shown: Value| shown["members"].clone();
+
+    // By the role's name, in any case, and the user's username.
+    cli.json(&[
+        "roles",
+        "assign",
+        &title.to_uppercase(),
+        "--user",
+        &username,
+    ])
+    .await;
+    assert_eq!(
+        members(cli.json(&["roles", "show", &title]).await),
+        serde_json::json!([ada])
+    );
+    // By email, then by ID.
+    cli.json(&["roles", "revoke", &title, "--user", &email])
+        .await;
+    assert_eq!(
+        members(cli.json(&["roles", "show", &role]).await),
+        serde_json::json!([])
+    );
+    cli.json(&["roles", "assign", &role, "--user", &ada]).await;
+    assert_eq!(
+        cli.json(&["users", "show", &email]).await["principalId"],
+        serde_json::json!(ada)
+    );
+
+    // A second user with the same email, and a second role with the same
+    // name, make each name ambiguous.
+    let grace = cli
+        .json(&[
+            "users",
+            "create",
+            "--username",
+            &format!("grace-{suffix}"),
+            "--email",
+            &email,
+        ])
+        .await["user"]["principalId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other = cli
+        .json(&["roles", "create", "--title", &title, "--no-new-users"])
+        .await["role"]["roleId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let user_refused = cli.script(&["users", "edit", &email, "--inactive"]).await;
+    assert!(
+        refused_with(&user_refused, &format!("2 users have the email {email}"))
+            && refused_with(&user_refused, &ada)
+            && refused_with(&user_refused, &grace),
+        "{}",
+        String::from_utf8_lossy(&user_refused.stderr)
+    );
+    let role_refused = cli.script(&["roles", "delete", &title]).await;
+    assert!(
+        refused_with(&role_refused, &format!("2 roles are named {title}"))
+            && refused_with(&role_refused, &role)
+            && refused_with(&role_refused, &other),
+        "{}",
+        String::from_utf8_lossy(&role_refused.stderr)
+    );
+    // The refusals changed nothing.
+    assert_eq!(
+        cli.json(&["users", "show", &grace]).await["account"]["principal"]["enabled"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        members(cli.json(&["roles", "show", &role]).await),
+        serde_json::json!([ada])
+    );
+    let missing = cli.script(&["users", "show", "nobody-by-this-name"]).await;
+    assert!(
+        refused_with(
+            &missing,
+            "no user has the ID, username or email nobody-by-this-name"
+        ),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
     );
     runtime.shutdown().await.unwrap();
 }

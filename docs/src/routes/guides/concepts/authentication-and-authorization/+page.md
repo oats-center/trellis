@@ -93,11 +93,14 @@ On the command line:
 
 ```sh
 trellis users create --username ada --provider <provider id> --subject 'auth0|1234'
-trellis users link <user id> --provider <provider id> --subject 'auth0|1234'
-trellis users unlink <user id> --provider <provider id> --subject 'auth0|1234'
+trellis users link ada --provider <provider id> --subject 'auth0|1234'
+trellis users unlink ada --provider <provider id> --subject 'auth0|1234'
 ```
 
-An account created with `--provider` gets no password setup code. In the
+Commands that take a user accept a username, an email address or a user ID,
+and role commands take a role's name or ID (`trellis roles assign Auditors
+--user ada`). A name that fits several users or roles is refused with their
+IDs. An account created with `--provider` gets no password setup link. In the
 Console, the **OIDC sign-ins** panel of a user's page lists their sign-ins and
 links or unlinks one.
 
