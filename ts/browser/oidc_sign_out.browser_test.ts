@@ -198,9 +198,6 @@ test(
           });
         });
         await submitAtDex();
-        // The Console's retry finds the Portal login and asks before it
-        // continues as that person; continuing fails the same way.
-        await user.getByRole("link", { name: /^Continue as / }).click();
         await user
           .getByText("Sign-in could not be completed", { exact: false })
           .waitFor();

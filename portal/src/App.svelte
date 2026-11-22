@@ -33,6 +33,10 @@
     registered: boolean;
     redirectUri: string | null;
     deviceUserCode: string | null;
+    /** When the device asked, in epoch milliseconds. */
+    deviceRequestedAt: number | null;
+    /** The network address the device asked from. */
+    deviceRequestedFrom: string | null;
     capabilities: Capability[];
     /** Administration needs a separate confirmation step. */
     confirmAdministration: boolean;
@@ -129,7 +133,9 @@
       .slice(0, 8);
     return code.length > 4 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
   }
-  let deviceCode = $state(formatDeviceCode(query.get("user_code") ?? ""));
+  // Always typed from the device itself, never taken from the link: a link
+  // someone else sent would otherwise carry the code of their device.
+  let deviceCode = $state("");
   const transaction = query.get("transaction") ?? "";
   const login = path === "/login";
   const device = path === "/device";
@@ -1092,6 +1098,20 @@
           <span class="muted">Code</span>
           <code>{view.deviceUserCode}</code>
         </div>
+        {#if view.deviceRequestedAt}
+          {@const minutes = Math.max(
+            0,
+            Math.round((Date.now() - view.deviceRequestedAt) / 60_000),
+          )}
+          <p class="muted device-request">
+            Requested {minutes === 0
+              ? "just now"
+              : minutes === 1
+                ? "1 minute ago"
+                : `${minutes} minutes ago`}{#if view.deviceRequestedFrom}{" "}from
+              <code>{view.deviceRequestedFrom}</code>{/if}
+          </p>
+        {/if}
         <p class="alert warn">
           Make sure this code matches the one on your device. If someone sent
           you this code or link, stop here: approving gives them access as you.

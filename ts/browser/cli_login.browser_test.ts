@@ -133,22 +133,26 @@ test("CLI login keeps one durable login that later commands connect with", async
         );
         const loginUrl = new URL(challenge.loginUrl);
         assert.equal(loginUrl.origin, runtime.trellisUrl);
-        // The printed link and QR code carry the code, so nothing is typed.
-        assert.equal(
-          loginUrl.searchParams.get("user_code"),
-          challenge.userCode,
-        );
+        // The printed link and QR code open the code entry page only: the
+        // code is typed from the device, never carried by a link.
+        assert.equal(loginUrl.searchParams.get("user_code"), null);
 
         const context = await launchProfile(runtime);
         try {
           const page = await context.newPage();
           const pageErrors: string[] = [];
           page.on("pageerror", (error) => pageErrors.push(String(error)));
-          await page.goto(loginUrl.href, { waitUntil: "domcontentloaded" });
+          // A link that does carry a code, as one someone sent might, still
+          // leaves the field empty for the person to type their own.
+          const forged = new URL(loginUrl);
+          forged.searchParams.set("user_code", challenge.userCode);
+          await page.goto(forged.href, { waitUntil: "domcontentloaded" });
           const code = page.getByLabel("Code", { exact: true });
-          assert.equal(await code.inputValue(), challenge.userCode);
+          await page
+            .getByRole("heading", { name: "Connect a device" })
+            .waitFor();
+          assert.equal(await code.inputValue(), "");
           // A code typed by hand is grouped and uppercased as it is entered.
-          await code.clear();
           await code.pressSequentially(
             challenge.userCode.replace("-", "").toLowerCase(),
           );

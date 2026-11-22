@@ -261,25 +261,16 @@ test("the consent page offers only what the person can have, names them and each
             .waitFor();
         await allow(page);
 
-        // Signing in again with the same request skips the choices: the
-        // person signed in already only confirms who continues.
-        const continueAsSignedIn = async () => {
-          await page
-            .getByRole("heading", { name: "Continue to Field notes" })
-            .waitFor();
-          assert.equal(await consent.getByRole("checkbox").count(), 0);
-          await page
-            .getByRole("link", { name: "Continue as Asha Rao", exact: true })
-            .click();
-          await returnedToApp();
-        };
+        // Signing in again with the same request skips the page.
         await signIn(returning, withoutPlans);
-        await continueAsSignedIn();
+        await returnedToApp();
+        assert(!shown.includes("/consent"), shown.join(" "));
 
         // So does a request whose only addition is optional access the
         // person can't be granted.
         await signIn(returning, ordinary);
-        await continueAsSignedIn();
+        await returnedToApp();
+        assert(!shown.includes("/consent"), shown.join(" "));
 
         // Another app asking for the same never offers what the person
         // can't have, not even as a disabled choice.

@@ -684,10 +684,21 @@ async fn authorize(
     let client_id = validated.client_id.as_str().to_owned();
     let transaction = super::super::sqlite::id();
     let flow_transaction = transaction.clone();
+    // OpenID prompts: `login` signs in afresh, `select_account` asks the
+    // person signed in whether to continue as themselves.
+    let prompted = |wanted: &str| {
+        pairs
+            .iter()
+            .any(|(key, value)| key == "prompt" && value.split(' ').any(|prompt| prompt == wanted))
+    };
+    let (fresh, choose) = (prompted("login"), prompted("select_account"));
     let started = blocking(move || {
         let authority = &store.authority;
-        let authenticated =
-            cookies.and_then(|(cookie, csrf)| authority.portal_login(&cookie, &csrf, now).ok());
+        // A fresh sign-in starts this browser on a new Portal session; the
+        // earlier login stays, like after "Use a different account".
+        let authenticated = cookies
+            .filter(|_| !fresh)
+            .and_then(|(cookie, csrf)| authority.portal_login(&cookie, &csrf, now).ok());
         let guest = if authenticated.is_none() {
             Some(
                 authority
@@ -724,11 +735,12 @@ async fn authorize(
         Ok(started) => started,
         Err(code) => return error(code),
     };
-    // Someone already signed in sees who before anything happens as them.
-    let (page, ask) = if authenticated.is_some() {
-        ("consent", "&account=confirm")
-    } else {
-        ("login", "")
+    // A consent page always names who is signed in; an app that would sign
+    // in without one shows them only when it asks to (`select_account`).
+    let (page, ask) = match (authenticated.is_some(), choose) {
+        (true, true) => ("consent", "&account=confirm"),
+        (true, false) => ("consent", ""),
+        (false, _) => ("login", ""),
     };
     let mut response =
         Redirect::to(&format!("/{page}?transaction={transaction}{ask}")).into_response();
@@ -1329,6 +1341,8 @@ async fn consent_data(
                 "email":signed_in["email"],
                 "redirectUri":validated.redirect_uri,
                 "deviceUserCode":validated.device_user_code,
+                "deviceRequestedAt":validated.device_requested.as_ref().map(|(at, _)| at),
+                "deviceRequestedFrom":validated.device_requested.as_ref().and_then(|(_, from)| from.as_deref()),
                 "browser":browser,
                 "capabilities":capabilities,
                 "confirmAdministration":administration.confirm_on_consent

@@ -14,8 +14,9 @@ import {
 } from "./browser_test_support.ts";
 
 /** Submits the device code page and returns the answer the browser showed. */
-async function enterCode(page: Page, url: string) {
+async function enterCode(page: Page, url: string, code: string) {
   await page.goto(url);
+  await page.getByLabel("Code", { exact: true }).fill(code);
   const answer = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -57,19 +58,21 @@ test("expired, used and unknown Portal links answer a browser with a page, and A
     const progress = createInterface({ input: login.stderr });
     // Read the link before anything else is awaited: lines the CLI prints
     // before iteration starts would be lost.
-    let loginUrl: string | undefined;
+    let challenge: { loginUrl: string; userCode: string } | undefined;
     for await (const line of progress) {
       if (line.startsWith("{")) {
-        loginUrl = JSON.parse(line).loginUrl;
+        challenge = JSON.parse(line);
         break;
       }
     }
     const context = await launchProfile(runtime);
     try {
-      assert.ok(loginUrl);
+      assert.ok(challenge);
+      const { loginUrl, userCode } = challenge;
       const page = await context.newPage();
       page.setDefaultTimeout(30_000);
       await page.goto(loginUrl);
+      await page.getByLabel("Code", { exact: true }).fill(userCode);
       await page.getByRole("button", { name: "Continue", exact: true }).click();
       await page
         .getByLabel("Username", { exact: true })
@@ -95,7 +98,7 @@ test("expired, used and unknown Portal links answer a browser with a page, and A
       assert.equal((await exited)[0], 0);
 
       // The used CLI link and a code that never existed get the same page.
-      const used = await enterCode(page, loginUrl);
+      const used = await enterCode(page, loginUrl, userCode);
       assert.match(used.type ?? "", /^text\/html/);
       assert.match(
         used.main,
@@ -103,7 +106,8 @@ test("expired, used and unknown Portal links answer a browser with a page, and A
       );
       const unknown = await enterCode(
         page,
-        `${runtime.trellisUrl}/device?user_code=ZZZZ-ZZZZ`,
+        `${runtime.trellisUrl}/device`,
+        "ZZZZ-ZZZZ",
       );
       assert.deepEqual(unknown, used);
       await page.getByRole("link", { name: "Enter a code" }).click();

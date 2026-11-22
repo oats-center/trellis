@@ -94,6 +94,9 @@ pub(super) struct ConsentIntent {
     pub(super) client_id: oauth_as::client::ClientId,
     pub(super) redirect_uri: Option<String>,
     pub(super) device_user_code: Option<String>,
+    /// When a device sign-in was requested (epoch milliseconds) and from what
+    /// network address, shown beside its code.
+    pub(super) device_requested: Option<(u128, Option<String>)>,
     pub(super) dpop_jkt: String,
     pub(super) authorization_details: String,
 }
@@ -127,6 +130,7 @@ impl super::OAuthEngine {
                     client_id: validated.client_id,
                     redirect_uri: Some(validated.redirect_uri),
                     device_user_code: None,
+                    device_requested: None,
                     dpop_jkt: validated.dpop_jkt.ok_or_else(invalid)?.into_string(),
                     authorization_details: request
                         .authorization_details
@@ -156,6 +160,13 @@ impl super::OAuthEngine {
                     client_id: device.client_id,
                     redirect_uri: None,
                     device_user_code: Some(device.user_code),
+                    device_requested: Some((
+                        device
+                            .created_at
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |at| at.as_millis()),
+                        selection.requested_from,
+                    )),
                     dpop_jkt: selection.persistent_dpop_jkt,
                     authorization_details: selection.authorization_details,
                 })

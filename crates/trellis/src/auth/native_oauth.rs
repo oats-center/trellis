@@ -420,7 +420,6 @@ pub struct NativeDeviceAuthorization {
     device_code: String,
     user_code: String,
     verification_uri: String,
-    verification_uri_complete: Option<String>,
     interval: Duration,
     deadline: Instant,
 }
@@ -430,8 +429,6 @@ struct DeviceResponse {
     device_code: String,
     user_code: String,
     verification_uri: String,
-    #[serde(default)]
-    verification_uri_complete: Option<String>,
     expires_in: u64,
     #[serde(default = "default_interval")]
     interval: u64,
@@ -534,15 +531,6 @@ impl NativeOAuthClient {
             })
         };
         if on_issuer(&response.verification_uri).is_none()
-            || response
-                .verification_uri_complete
-                .as_deref()
-                .is_some_and(|value| {
-                    !on_issuer(value).is_some_and(|uri| {
-                        uri.query_pairs()
-                            .any(|(name, code)| name == "user_code" && code == response.user_code)
-                    })
-                })
             || response.device_code.is_empty()
             || response.user_code.is_empty()
             || response.expires_in == 0
@@ -557,7 +545,6 @@ impl NativeOAuthClient {
             device_code: response.device_code,
             user_code: response.user_code,
             verification_uri: response.verification_uri,
-            verification_uri_complete: response.verification_uri_complete,
             interval: Duration::from_secs(response.interval),
             deadline: Instant::now() + Duration::from_secs(response.expires_in),
         })
@@ -1018,7 +1005,8 @@ fn exchange_error(error: ExchangeError) -> NativeOAuthError {
 }
 
 impl NativeDeviceAuthorization {
-    /// Compare this user code with the actual portal before approving.
+    /// The code the person types on the portal page; show it beside
+    /// [`Self::verification_uri`]. No link carries it.
     pub fn user_code(&self) -> &str {
         &self.user_code
     }
@@ -1026,13 +1014,6 @@ impl NativeDeviceAuthorization {
     /// Open this selected-issuer portal URI and enter the displayed code manually.
     pub fn verification_uri(&self) -> &str {
         &self.verification_uri
-    }
-
-    /// The selected-issuer portal URI with the code already filled in, when
-    /// the issuer offers one. Show it as a link or QR code; the page still
-    /// displays the code to compare with [`Self::user_code`].
-    pub fn verification_uri_complete(&self) -> Option<&str> {
-        self.verification_uri_complete.as_deref()
     }
 
     /// Poll according to RFC 8628, respecting pending/slow-down and the original

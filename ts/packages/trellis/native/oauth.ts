@@ -36,7 +36,6 @@ const deviceSchema = z.object({
   device_code: z.string().min(1),
   user_code: z.string().min(1),
   verification_uri: z.string().url(),
-  verification_uri_complete: z.string().url().optional(),
   expires_in: z
     .number()
     .int()
@@ -177,22 +176,13 @@ export class NativeOAuthClient {
           ? uri
           : undefined;
       };
-      const complete =
-        data.verification_uri_complete === undefined
-          ? undefined
-          : onIssuer(data.verification_uri_complete);
-      if (
-        !onIssuer(data.verification_uri) ||
-        (data.verification_uri_complete !== undefined &&
-          complete?.searchParams.get("user_code") !== data.user_code)
-      )
+      if (!onIssuer(data.verification_uri))
         throw new AuthError({ reason: "InvalidOAuthResponse" });
       return new NativeDeviceAuthorization(
         this,
         data.device_code,
         data.user_code,
         data.verification_uri,
-        data.verification_uri_complete,
         data.interval,
         performance.now() + data.expires_in * 1000,
       );
@@ -478,13 +468,10 @@ export class NativeOAuthClient {
 
 /** User-facing Device Code metadata; device credential and private key remain inaccessible. */
 export class NativeDeviceAuthorization {
+  /** The code the person types on the portal page; no link carries it. */
   readonly userCode: string;
+  /** The issuer's portal page where the person types {@link userCode}. */
   readonly verificationUri: string;
-  /**
-   * The issuer's portal URI with the code already filled in, when offered.
-   * Show it as a link or QR code; the page still displays the code to compare.
-   */
-  readonly verificationUriComplete: string | undefined;
   readonly #client: NativeOAuthClient;
   readonly #code: string;
   readonly #deadline: number;
@@ -496,7 +483,6 @@ export class NativeDeviceAuthorization {
     code: string,
     userCode: string,
     verificationUri: string,
-    verificationUriComplete: string | undefined,
     interval: number,
     deadline: number,
   ) {
@@ -504,7 +490,6 @@ export class NativeDeviceAuthorization {
     this.#code = code;
     this.userCode = userCode;
     this.verificationUri = verificationUri;
-    this.verificationUriComplete = verificationUriComplete;
     this.#interval = interval;
     this.#deadline = deadline;
   }

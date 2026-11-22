@@ -371,11 +371,14 @@ portal per installation or per client from the Appearance tab of the Console's
 headings and a footer, plus an installation-only stylesheet); changes apply at
 once, and apps cannot replace the portal or change what consent shows.
 
-A sign-in that finds someone already signed in to the portal shows who it is
-and offers "Use a different account", which signs in again for the same
-request (client, capabilities, PKCE, `state`), so the app receives whoever
-finishes it. A registered web app that needs no new consent costs that person
-one "Continue as" click instead of signing them in unseen. The portal answers
+A consent page shown to someone already signed in to the portal names them and
+offers "Use a different account", which signs in again for the same request
+(client, capabilities, PKCE, `state`), so the app receives whoever finishes it.
+A web app whose consent is settled signs the person straight in; it can ask for
+the choice with `prompt=select_account` ("Continue as" or "Use a different
+account") or for a fresh sign-in with `prompt=login`. Device Code sign-ins
+never carry the code in a link: show the plain verification URL and the code,
+which the person types. The portal answers
 browsers with pages, never raw JSON, when a sign-in, device code or account link
 has expired or was used; unknown, expired and used device codes all get the
 same answer. API callers still get OAuth JSON errors.
@@ -1875,9 +1878,8 @@ generated request of an `agent` (native app) declaration. `startDevice` and
 browser-kind OAuth client fails with `OAuthUnauthorizedClient` and the server's
 message naming both kinds. `NativeOAuthClient.open` reports a malformed scope,
 such as a `credentialHandle` that is not a ULID, as `InvalidScope` with a
-message naming the field. For Device Code, show `verificationUriComplete` (the link with
-the code filled in; fall back to `verificationUri`) and `userCode` for
-comparison. The entrypoint is Node/npm-only and defaults to process-local
+message naming the field. For Device Code, show `verificationUri` and `userCode`: the
+person opens the page and types the code; no link carries it. The entrypoint is Node/npm-only and defaults to process-local
 memory, with no credential files or SQLite requirement. Retain an explicit
 `MemoryNativeOAuthCustody` object to resume the same family across connections
 within one process. For remembered login across process restarts, supply an
@@ -2478,9 +2480,8 @@ authorization origin; an `agent` request's generated `Request::KIND` is
 `AppKind::Native`. Pass the verified `NativeOAuthSession` and explicit broker
 endpoints to `UserConnectOptions::new(nats_servers, timeout_ms, session)`. Use
 Authorization Code with PKCE or Device Code according to the registered native
-client's flow. For Device Code, show `verification_uri_complete()` (the link
-with the code filled in; fall back to `verification_uri()`) and `user_code()`
-for comparison. Do not persist a bare session seed as a substitute for OAuth
+client's flow. For Device Code, show `verification_uri()` and `user_code()`:
+the person opens the page and types the code; no link carries it. Do not persist a bare session seed as a substitute for OAuth
 custody. The SDK retains credential custody and renews admission with the same
 runtime identity and key, using its owner's authenticated issuer pin. Recovery
 failure closes application transport without deleting the durable credential

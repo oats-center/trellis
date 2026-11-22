@@ -446,18 +446,25 @@ Portal CSP allows same-origin images for the logo.
 
 #### Who is signed in, and using a different account
 
-A Portal flow never continues as an existing Portal login without saying who
-that is. The consent page (app, CLI, native and Device Code sign-ins alike),
-the device approval page and the identity-link page show the signed-in person
-by name with their username or email, and offer "Use a different account".
-When `/authorize` finds a Portal login, it sends the browser to
-`/consent?...&account=confirm`; if nothing is left to decide there, so the
-sign-in would otherwise finish without a page, the Portal shows "Continue to
-{app}" with "Continue as {name}" (the same consent page without
-`account=confirm`, which then finishes as before) and "Use a different
-account". A sign-in made within the flow itself, by password or OIDC, does not
-ask again. An identity link opened while signed in as someone other than its
-target says so and offers only the switch.
+Every Portal page that continues as an existing Portal login says who that is:
+the consent page (app, CLI, native and Device Code sign-ins alike), the device
+approval page and the identity-link page show the signed-in person by name with
+their username or email, and offer "Use a different account". An identity link
+opened while signed in as someone other than its target says so and offers only
+the switch.
+
+A browser sign-in with nothing left to decide (see the consent page rules
+below) still finishes without a page, so a registered web app such as the
+Console signs the person straight in, and its reconnects never stop on a page.
+An app that wants the choice asks for it with OpenID's `prompt`:
+
+- `prompt=select_account`, with a Portal login present, sends `/authorize` to
+  `/consent?...&account=confirm`. When nothing is left to decide, that page
+  shows only "Continue to {app}" with "Continue as {name}" (the same consent
+  page without `account=confirm`, which then finishes) and "Use a different
+  account"; otherwise it is the ordinary consent page.
+- `prompt=login` starts the browser on a fresh Portal session and the sign-in
+  page, as "Use a different account" does, so the person signs in again.
 
 "Use a different account" posts `/portal/switch-account` with the CSRF token and
 the flow: a `transaction`, a device `review`, or a `link` token. It rotates the
@@ -543,8 +550,13 @@ configured subset, the requested selection and the user's current entitlement.
 It never substitutes for native approval. Device Code consent shows the user
 code beside a warning to compare it with the device and to stop if someone else
 sent the code or link; it is not a separate required confirmation. Device codes
-last 15 minutes, and the issuer returns `verification_uri_complete` so native
-clients print and QR-encode a link with the code filled in.
+last 15 minutes. The code is always typed: the issuer does not return
+`verification_uri_complete`, `/device` never fills its field from `?user_code=`,
+and native clients print (and may QR-encode) only the plain `/device` link
+beside the code. A link someone else sends therefore can't carry the code of
+their device. The consent page shows, beside the code, when the device asked
+and the network address its `/device_authorization` request came from (the
+trusted proxy's forwarded client, as for request budgets).
 
 Code and device consent presentations are retained in their encrypted,
 expiring authorization artifacts. Approval submits the presentation identity and

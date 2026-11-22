@@ -7,7 +7,8 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { ulid } from "ulid";
-import type { Page } from "playwright";
+import { chromium, type Frame, type Page } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
@@ -42,15 +43,16 @@ async function openCliLogin(runtime: TrellisTestRuntime, page: Page) {
   );
   const exited = once(login, "exit");
   const progress = createInterface({ input: login.stderr });
-  let loginUrl: string | undefined;
+  let challenge: { loginUrl: string; userCode: string } | undefined;
   for await (const line of progress) {
     if (line.startsWith("{")) {
-      loginUrl = JSON.parse(line).loginUrl;
+      challenge = JSON.parse(line);
       break;
     }
   }
-  assert.ok(loginUrl);
-  await page.goto(loginUrl);
+  assert.ok(challenge);
+  await page.goto(challenge.loginUrl);
+  await page.getByLabel("Code", { exact: true }).fill(challenge.userCode);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   return {
     /** The principal the CLI signed in as, once it finishes. */
@@ -107,14 +109,57 @@ test("someone already signed in to the Portal sees who, and can sign a CLI in as
       const first = await loginCliAsAdministrator(runtime, page);
       const adminId = (await first.run("whoami")).principal.principalId;
 
-      // A registered app that needs nothing new asks before it continues as
-      // the signed-in person, then signs them in without the consent page.
+      // A registered app with nothing left to decide signs the signed-in
+      // person straight in: no Portal page shows on the way.
+      const shown: string[] = [];
+      const record = (frame: Frame) => {
+        if (frame === page.mainFrame()) shown.push(new URL(frame.url()).href);
+      };
+      page.on("framenavigated", record);
       await page.goto(`${runtime.consoleUrl}/console`);
-      await page
-        .getByRole("heading", { name: /^Continue to / })
-        .waitFor({ state: "visible" });
-      await page.getByRole("link", { name: /^Continue as / }).click();
       await waitForConsoleConnected(page);
+      page.off("framenavigated", record);
+      assert(
+        !shown.some(
+          (url) =>
+            new URL(url).origin === runtime.trellisUrl &&
+            ["/consent", "/login"].includes(new URL(url).pathname),
+        ),
+        shown.join(" "),
+      );
+
+      // Unless it asks to choose (`prompt=select_account`): then it asks
+      // whether to continue as the signed-in person, and does on request.
+      const browser = await chromium.launch({
+        headless: true,
+        env: browserTrustEnvironment(),
+      });
+      try {
+        const asking = await browser.newContext();
+        await asking.addCookies(
+          (await context.cookies()).filter((cookie) =>
+            cookie.name.startsWith("__Host-trellis-portal"),
+          ),
+        );
+        const choosing = await asking.newPage();
+        choosing.setDefaultTimeout(30_000);
+        await choosing.route(
+          (url) => url.pathname === "/authorize",
+          (route) => {
+            const url = new URL(route.request().url());
+            url.searchParams.set("prompt", "select_account");
+            return route.continue({ url: url.href });
+          },
+        );
+        await choosing.goto(`${runtime.consoleUrl}/console`);
+        await choosing
+          .getByRole("heading", { name: /^Continue to / })
+          .waitFor();
+        await choosing.getByRole("link", { name: /^Continue as / }).click();
+        await waitForConsoleConnected(choosing);
+      } finally {
+        await browser.close();
+      }
 
       // Another CLI link shows the signed-in administrator. Choosing another
       // account signs in again for the same request, which the CLI receives.
