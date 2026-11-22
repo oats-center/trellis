@@ -1180,13 +1180,18 @@ async fn run_owned_group(
     // A role other than the platform waits out Auth that cannot admit its
     // built-in provider, as when Auth stops serving or moves to another
     // server, and stands by until it can. Any other bootstrap failure fails the
-    // group, never a dispatch-time fallback. The platform's provider connects
-    // to its own Auth, which serves until this group stops.
+    // group, never a dispatch-time fallback. The platform connects no live
+    // provider of its own: its service runtime, which the subsystem started,
+    // already serves the platform's APIs, and nothing would hold a second
+    // connection, whose session would only linger in Auth.
     let bootstrap = async {
+        if group == OwnerGroup::Platform {
+            return Ok(());
+        }
         let mut delay = PROVIDER_RETRY_INITIAL;
         loop {
             match bootstrap_live_provider(context, role).await {
-                Err(RuntimeError::AuthUnavailable(reason)) if group != OwnerGroup::Platform => {
+                Err(RuntimeError::AuthUnavailable(reason)) => {
                     // Equal jitter keeps roles that failed together from
                     // retrying together.
                     let wait = delay - delay.mul_f64(rand::random_range(0.0..0.5));
@@ -1323,9 +1328,7 @@ async fn bootstrap_live_provider(
                 .and_then(|value| value.runtime_servers.as_deref()),
         )
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    if role != crate::platform::LiveProviderRole::Platform
-        && context.mode.subsystems().contains(&SubsystemName::Platform)
-    {
+    if context.mode.subsystems().contains(&SubsystemName::Platform) {
         context.groups.settled(OwnerGroup::Platform).await;
     }
     let store = context

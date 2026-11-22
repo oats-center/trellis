@@ -1278,7 +1278,10 @@ generates through ordinary API acceptance and deployment approval, using
 independently keyed initialization mutations per installation and participant:
 its own platform provider when it starts, and a Jobs, Health or Events provider
 when that role starts, whether in the same process or apart from it (see split
-roles below).
+roles below). Jobs, Health and Events each connect that provider as their live
+provider. The platform connects only its service runtime, which serves the
+platform's APIs; a second platform connection would have no owner, and its
+session would linger in Auth without ever renewing.
 Replay retains the actual ULID deployment and instance; disabled, expired,
 retired, or mismatched identities are rejected rather than re-enabled.
 Declaration-derived resources are materialized before native admission; an
