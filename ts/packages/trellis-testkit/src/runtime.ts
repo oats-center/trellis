@@ -530,8 +530,17 @@ export class TrellisTestRuntime implements AsyncDisposable {
   readonly natsUrl: string;
   /** NATS WebSocket endpoint for exercising the same broker with browser clients. */
   readonly natsWebsocketUrl: string;
-  /** PEM certificate of this runtime's generated installation CA. */
+  /**
+   * PEM text of the CA that signs this runtime's HTTPS and NATS certificates,
+   * ready for a TLS client's `ca` option: a client that trusts only this
+   * reaches the runtime's URLs, webhook URLs included.
+   */
   readonly caCertificate: string;
+  /**
+   * Path of the PEM file holding {@link caCertificate}, for programs that take
+   * a CA file, such as `NODE_EXTRA_CA_CERTS` or `trellis --ca-certificate`.
+   */
+  readonly caCertificatePath: string;
   readonly workdir: string;
   /** Local test-admin username used by the harness bootstrap. */
   readonly adminUsername = ADMIN_USERNAME;
@@ -651,7 +660,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
   private constructor(args: {
     trellisUrl: string;
     consoleUrl: string;
-    caCertificate: string;
+    caCertificatePath: string;
     workdir: string;
     deployment: string;
     keepWorkdir: boolean;
@@ -671,7 +680,8 @@ export class TrellisTestRuntime implements AsyncDisposable {
   }) {
     this.trellisUrl = args.trellisUrl;
     this.consoleUrl = args.consoleUrl;
-    this.caCertificate = args.caCertificate;
+    this.caCertificatePath = args.caCertificatePath;
+    this.caCertificate = readFileSync(args.caCertificatePath, "utf8");
     this.natsUrl = args.natsUrl;
     this.natsWebsocketUrl = args.websocketProxy?.url ?? args.websocketUrl;
     this.workdir = args.workdir;
@@ -941,10 +951,10 @@ export class TrellisTestRuntime implements AsyncDisposable {
       });
       // Development TLS is created with the installation's keys, which
       // seeding the administrator does first.
-      const caCertificate = options.development
+      const caCertificatePath = options.development
         ? join(configDir, "var", "tls", "ca.crt")
         : join(certificates, "ca.crt");
-      if (!options.development) trustInstallationCa(caCertificate);
+      if (!options.development) trustInstallationCa(caCertificatePath);
       const adminPassword =
         options.adminPassword ?? `trellis-testkit-${crypto.randomUUID()}`;
       const seeded = (options.firstAdmin ?? "seeded") === "seeded";
@@ -971,7 +981,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
           throw new Error(
             "a development runtime needs a seeded administrator, which creates its certificate",
           );
-        trustInstallationCa(caCertificate);
+        trustInstallationCa(caCertificatePath);
       }
       const launch: LaunchPlan = {
         server: native.server,
@@ -1029,7 +1039,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
       return new TrellisTestRuntime({
         trellisUrl: startedControlPlane.trellisUrl,
         consoleUrl,
-        caCertificate,
+        caCertificatePath,
         workdir,
         deployment,
         keepWorkdir: options.keepWorkdir ?? false,

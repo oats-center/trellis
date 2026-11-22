@@ -241,7 +241,7 @@ test("a Rust service waits for its update's approval, then connects under it", a
       env: {
         ...process.env,
         TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
         TRELLIS_IDENTITY_SEED: instance.seed,
       },
     });
@@ -853,7 +853,7 @@ test("a Rust service connecting to a claim waits for approval, then runs as the 
       env: {
         ...process.env,
         TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
         TRELLIS_IDENTITY_SEED: seed.toString("base64url"),
       },
     });

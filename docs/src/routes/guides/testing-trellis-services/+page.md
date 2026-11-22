@@ -136,9 +136,11 @@ pass `trellis: { source: { kind: "path", server } }`, or set `TRELLIS_TEST_SERVE
 and broker; `firstAdmin: "browser-flow"` opts into the first-admin browser flow.
 
 Each test runtime serves Trellis-generated TLS, as a default installation does.
-The testkit trusts that runtime's CA (`runtime.caCertificate`) explicitly for the
-test process, so SDK clients connect without extra options. For a spawned Node
-process, set `NODE_EXTRA_CA_CERTS` to `runtime.caCertificate`. For Playwright,
+The testkit trusts that runtime's CA explicitly for the test process, so SDK
+clients connect without extra options. `runtime.caCertificate` is the CA's PEM
+text, for a TLS client's `ca` option, such as a plain HTTPS request to a webhook
+URL; `runtime.caCertificatePath` is its file. For a spawned Node process, set
+`NODE_EXTRA_CA_CERTS` to `runtime.caCertificatePath`. For Playwright,
 launch Chromium with `env: browserTrustEnvironment()` from the testkit. It
 creates a private NSS trust store holding the runtime CA, just as a user would
 import it, and requires NSS `certutil` (`nss-tools` on Fedora, `libnss3-tools`

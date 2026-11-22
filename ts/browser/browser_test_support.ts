@@ -393,7 +393,7 @@ export async function loginCliAsAdministrator(
       "login",
       runtime.trellisUrl,
       "--ca-certificate",
-      runtime.caCertificate,
+      runtime.caCertificatePath,
     ],
     { env, stdio: ["ignore", "pipe", "pipe"] },
   );

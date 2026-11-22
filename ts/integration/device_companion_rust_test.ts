@@ -69,7 +69,7 @@ test("Rust device companion renews admitted authority and resumes after restart 
           env: {
             ...process.env,
             TRELLIS_URL: runtime.trellisUrl,
-            TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+            TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
             DEVICE_ROOT_SECRET: base64urlEncode(rootSecret),
             XDG_CONFIG_HOME: join(runtime.workdir, "rust-companion-config"),
             ...(leg === 0

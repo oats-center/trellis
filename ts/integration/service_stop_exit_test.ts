@@ -61,7 +61,7 @@ test("a service that stops while it owns an operation lets its process exit", as
       ],
       {
         stdio: ["ignore", "pipe", "inherit"],
-        env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificate },
+        env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificatePath },
       },
     );
     let output = "";

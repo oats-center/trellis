@@ -103,7 +103,7 @@ test("native Rust worker starts on a provisioned queue and retries cleanup beyon
       env: {
         ...process.env,
         TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
         TRELLIS_IDENTITY_SEED: identity.seed,
       },
     });
@@ -284,7 +284,7 @@ test("native worker killed after key persistence but before Started recovers exp
           env: {
             ...process.env,
             TRELLIS_URL: runtime.trellisUrl,
-            TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+            TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
             TRELLIS_IDENTITY_SEED: identity.seed,
             TRELLIS_PRE_STARTED_WORK: "1",
           },
@@ -458,7 +458,7 @@ test("native failed retry and dead-letter replay execute again while historical 
       env: {
         ...process.env,
         TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
         TRELLIS_IDENTITY_SEED: identity.seed,
         TRELLIS_REPLAY_WORK: "1",
       },
@@ -1218,7 +1218,7 @@ test("jobs rerun automatically after a handler failure and after their worker di
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: seed,
           TRELLIS_RESTART_WORK: role,
         },

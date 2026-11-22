@@ -53,9 +53,8 @@ if (accepted.isErr()) {
 test("a program accepts a development installation's certificate by its fingerprint", async () => {
   await withTrellisRuntime(
     async (runtime) => {
-      const fingerprint = new X509Certificate(
-        await readFile(runtime.caCertificate),
-      ).fingerprint256;
+      const fingerprint = new X509Certificate(runtime.caCertificate)
+        .fingerprint256;
       const run = async (
         directory: string,
         env: Record<string, string> = {},
@@ -133,9 +132,8 @@ console.log(JSON.stringify(result.isErr() ? { reason: result.error.reason } : { 
 test("a certificate accepted for one address doesn't stand in for another's pin", async () => {
   await withTrellisRuntime(
     async (runtime) => {
-      const fingerprint = new X509Certificate(
-        await readFile(runtime.caCertificate),
-      ).fingerprint256;
+      const fingerprint = new X509Certificate(runtime.caCertificate)
+        .fingerprint256;
       // The installation's certificate names both addresses.
       const first = new URL(runtime.trellisUrl);
       first.hostname = "127.0.0.1";
@@ -192,9 +190,8 @@ for (const websocketOnly of [false, true])
   test(`a service connects to a development installation it accepted by fingerprint${websocketOnly ? ", over the WebSocket" : ""}`, async () => {
     await withTrellisRuntime(
       async (runtime) => {
-        const fingerprint = new X509Certificate(
-          await readFile(runtime.caCertificate),
-        ).fingerprint256;
+        const fingerprint = new X509Certificate(runtime.caCertificate)
+          .fingerprint256;
         const identity = await runtime.registerService({
           name: "accepting-provider",
           contract: participants.Provider.participant,
@@ -305,9 +302,8 @@ for (const websocketOnly of [false, true])
   test(`a device on a development installation it accepted by fingerprint is approved, then connects${websocketOnly ? ", over the WebSocket" : ""}`, async () => {
     await withTrellisRuntime(
       async (runtime) => {
-        const fingerprint = new X509Certificate(
-          await readFile(runtime.caCertificate),
-        ).fingerprint256;
+        const fingerprint = new X509Certificate(runtime.caCertificate)
+          .fingerprint256;
         const participant = participants.StateDevice.participant;
         const deployment = await runtime.contracts.apply({
           deployment: "accepting-device",
@@ -476,9 +472,8 @@ test("an installation can't make another's address trust its certificate", async
           assert(address && typeof address === "object");
           const claimingUrl = `https://localhost:${address.port}`;
           try {
-            const fingerprintOf = async (runtime: { caCertificate: string }) =>
-              new X509Certificate(await readFile(runtime.caCertificate))
-                .fingerprint256;
+            const fingerprintOf = (runtime: { caCertificate: string }) =>
+              new X509Certificate(runtime.caCertificate).fingerprint256;
             const { NODE_EXTRA_CA_CERTS: _, ...inherited } = process.env;
             const { stdout } = await promisify(execFile)(
               process.execPath,
@@ -490,8 +485,8 @@ test("an installation can't make another's address trust its certificate", async
                 first.trellisUrl,
                 claimingUrl,
                 await mkdtemp(join(tmpdir(), "trellis-accepted-")),
-                await fingerprintOf(first),
-                await fingerprintOf(other),
+                fingerprintOf(first),
+                fingerprintOf(other),
               ],
               { env: inherited },
             );

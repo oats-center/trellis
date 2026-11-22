@@ -42,3 +42,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 runtime-trellis = { path = "../../integration/fixtures/runtime/crates/runtime-trellis" }
 time = { workspace = true, features = ["formatting", "parsing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+rcgen.workspace = true

@@ -135,7 +135,7 @@ test("Rust maintains the accepted Jobs receipt during stalled lifecycle prefligh
             env: {
               ...process.env,
               TRELLIS_URL: runtime.trellisUrl,
-              TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+              TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
               TRELLIS_IDENTITY_SEED: instance.seed,
             },
             stdio: ["pipe", "pipe", "inherit"],

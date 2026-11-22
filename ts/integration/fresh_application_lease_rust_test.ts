@@ -42,7 +42,7 @@ test("Rust fresh Jobs leases reject suspended own coverage and resume on the sam
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: instance.seed,
           TRELLIS_TEST_HEALTH_HEARTBEAT_MS: "2000",
         },
@@ -330,7 +330,7 @@ test("Rust fresh RPC is fenced during loss and resumes only after broker-ready i
         env: {
           ...process.env,
           TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: instance.seed,
         },
       });

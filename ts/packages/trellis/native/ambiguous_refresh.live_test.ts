@@ -140,7 +140,7 @@ test(
             TRELLIS_NATIVE_TEST_ISSUER: runtime.trellisUrl,
             TRELLIS_NATIVE_TEST_USERNAME: runtime.adminUsername,
             TRELLIS_NATIVE_TEST_PASSWORD: runtime.adminPassword,
-            NODE_EXTRA_CA_CERTS: runtime.caCertificate,
+            NODE_EXTRA_CA_CERTS: runtime.caCertificatePath,
             NODE_USE_ENV_PROXY: "1",
             HTTP_PROXY: `http://127.0.0.1:${address.port}`,
             HTTPS_PROXY: `http://127.0.0.1:${address.port}`,

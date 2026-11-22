@@ -81,6 +81,33 @@ async fn a_rust_service_receives_webhook_events_and_answers_decide_calls() {
             .send()
     };
 
+    // A sender's client that trusts only the runtime's CA reaches the
+    // endpoint (405: it takes POST); one that trusts another CA does not.
+    let only = |pem: &[u8]| {
+        reqwest::Client::builder()
+            .tls_certs_only([reqwest::Certificate::from_pem(pem).unwrap()])
+            .build()
+            .unwrap()
+    };
+    let runtime_ca = std::fs::read(&runtime.trust_roots()[0]).unwrap();
+    let reached = only(&runtime_ca).get(&urls["token"]).send().await.unwrap();
+    assert_eq!(reached.status(), reqwest::StatusCode::METHOD_NOT_ALLOWED);
+    let mut other = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    other.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let other = other
+        .self_signed(&rcgen::KeyPair::generate().unwrap())
+        .unwrap();
+    let refused = only(other.pem().as_bytes())
+        .get(&urls["token"])
+        .send()
+        .await
+        .unwrap_err();
+    assert!(refused.is_connect(), "{refused:?}");
+    assert!(
+        format!("{refused:?}").contains("UnknownIssuer"),
+        "{refused:?}"
+    );
+
     // An accepted request arrives with its body byte for byte, and the views
     // read those bytes as text and JSON.
     let body = b"{\"id\": 1,  \"kept\": \"as sent\"}";

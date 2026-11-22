@@ -130,7 +130,7 @@ test("Rust terminates accepted work on shared coverage loss before replacement r
                 ),
               ),
               TRELLIS_URL: runtime.trellisUrl,
-              TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+              TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
               TRELLIS_IDENTITY_SEED: identity.seed,
               OTEL_SDK_DISABLED: "false",
               OTEL_TRACES_EXPORTER: "none",
