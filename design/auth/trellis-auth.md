@@ -449,12 +449,26 @@ Interactive OAuth approval initially selects only required access and
 capabilities the user previously remembered for the client; optional
 capabilities and groups start unselected. Select all and Clear all are
 explicit actions over all optional access the user may grant, administration
-included; required access stays selected and unavailable access stays
-disabled. Administrative choices are never remembered and take a separate
-confirmation step. A requested group is shown with the capabilities it
-includes. Selection is presentation, not authorization: the user must still
-submit approval, and the server rechecks the submitted selection against current
-authority.
+included; required access stays selected. Optional access the user can't be
+granted (through their roles, grants, or sign-in provider, or administration
+for an unregistered app) is not offered at all; required access they lack is
+shown, disabled, with a note to ask an administrator. Administrative choices
+are never remembered and take a separate confirmation step. A requested group
+is shown with the capabilities it includes. Each choice reads its own title,
+grouped by area, and a request across several APIs heads each API's choices
+with the API's title. The page names who is signed in by display name with
+their username or email, never by principal ID. Selection is presentation, not
+authorization: the user must still submit approval, and the server rechecks the
+submitted selection against current authority.
+
+The page is skipped when nothing is left to decide: every capability or group
+the app asks for that the user can have is either allowed without asking (see
+below) or approved before and remembered at its current identity generation
+and consent revision, so an unchanged `grants` text. Remembered approvals
+reused this way keep their remembered expiry. Optional access the user can't
+have doesn't count, so it never forces the page. Only browser sign-ins skip
+it: native and Device Code sign-ins always ask. A remembered decline does not
+skip the page, and an app asking for nothing skips it only when registered.
 
 Registered-client implied capability consent is browser-only and limited to the
 configured subset, the requested selection and the user's current entitlement.
@@ -493,8 +507,8 @@ covers changing such a client's callbacks too. A client saved that way is
 marked in its metadata; sign-in asks for the administrative capabilities of a
 client without the mark, such as one saved before this rule. The user's own
 holdings remain the limit; when
-they lack something the client requires, or it asks for anything not implied,
-the ordinary consent page is shown. Administrators edit the Console's list like
+they lack something the client requires, or it asks for anything neither
+implied nor remembered, the ordinary consent page is shown. Administrators edit the Console's list like
 any other app's.
 Production administrator seeding initializes the administrator and registers
 `trellis.console` and `trellis.cli` in one idempotent aggregate transaction. CLI

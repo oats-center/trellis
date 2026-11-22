@@ -5,6 +5,9 @@
 
   interface Capability {
     capabilityId: string;
+    apiId: string;
+    /** The title of the API the capability belongs to. */
+    apiTitle: string | null;
     title: string;
     description: string;
     grants: string;
@@ -21,8 +24,10 @@
   interface Consent {
     transaction: string;
     presentationId: string;
-    principalId: string;
+    /** The person's display name, when it is more than their username. */
+    name: string | null;
     username: string | null;
+    email: string | null;
     clientId: string;
     clientName: string | null;
     registered: boolean;
@@ -83,6 +88,8 @@
 
   interface Group {
     key: string;
+    /** The API's title, or `null` for administration. */
+    api: string | null;
     label: string;
     description: string;
     admin: boolean;
@@ -330,6 +337,7 @@
       if (!group) {
         group = {
           key,
+          api: capability.apiTitle ?? capability.apiId ?? api,
           label:
             capability.kind === "group"
               ? capability.title
@@ -343,8 +351,12 @@
       }
       group.choices.push(toChoice(capability));
     }
-    const result = [...byKey.values()].sort((left, right) =>
-      left.label.localeCompare(right.label),
+    // Each API's choices sit together, so the same area in two APIs reads
+    // apart under each API's heading.
+    const result = [...byKey.values()].sort(
+      (left, right) =>
+        (left.api ?? "").localeCompare(right.api ?? "") ||
+        left.label.localeCompare(right.label),
     );
     const administration = view.capabilities.filter(
       (capability) => capability.administrative,
@@ -352,6 +364,7 @@
     if (administration.length) {
       result.push({
         key: "administration",
+        api: null,
         label: "Manage this Trellis",
         description: "Change how this Trellis installation itself is run.",
         admin: true,
@@ -387,6 +400,28 @@
     optional.every((choice) => selected.includes(choice.id)),
   );
   let appName = $derived(view ? (view.clientName ?? view.clientId) : "");
+  // Consecutive groups of one API, headed by its title when the app asks
+  // across APIs. Administration has a section of its own.
+  let sections = $derived.by(() => {
+    const result: { api: string | null; groups: Group[] }[] = [];
+    for (const group of groups) {
+      const last = result.at(-1);
+      if (last && last.api === group.api) last.groups.push(group);
+      else result.push({ api: group.api, groups: [group] });
+    }
+    return result;
+  });
+  let headedByApi = $derived(
+    sections.filter((section) => section.api !== null).length > 1,
+  );
+  // Who is signed in, as they know themselves: a name, a username, an email.
+  let signedInAs = $derived(
+    view
+      ? [...new Set([view.name, view.username, view.email])].filter(
+          (part): part is string => !!part,
+        )
+      : [],
+  );
 
   function setGroup(group: Group, on: boolean): void {
     const ids = group.choices
@@ -923,9 +958,10 @@
       >
       <div>
         <h1>{appName} wants to use your account</h1>
-        <p class="muted">
-          Signed in as <strong>{view.username ?? view.principalId}</strong>
-        </p>
+        {#if signedInAs.length}<p class="muted">
+            Signed in as <strong>{signedInAs[0]}</strong
+            >{#if signedInAs[1]}{" "}({signedInAs[1]}){/if}
+          </p>{/if}
       </div>
     </div>
 
@@ -987,94 +1023,103 @@
           {/if}
         </div>
 
-        <ul class="groups">
-          {#each groups as group (group.key)}
-            {@const state = groupState(group)}
-            {@const open = expanded.includes(group.key)}
-            {@const choosable = group.choices.some(
-              (choice) => !choice.required && choice.available,
-            )}
-            {@const granted = group.choices.filter(
-              (choice) => choice.available && selected.includes(choice.id),
-            ).length}
-            <li
-              class={["group", group.admin && "admin"]}
-              role="group"
-              aria-label={group.label}
-            >
-              <div class="group-head">
-                <input
-                  type="checkbox"
-                  aria-label={`Allow all: ${group.label}`}
-                  checked={granted > 0 && state === "all"}
-                  use:indeterminate={state === "some" ||
-                    (!choosable &&
-                      granted > 0 &&
-                      granted < group.choices.length)}
-                  disabled={!choosable}
-                  onchange={(event) =>
-                    setGroup(group, event.currentTarget.checked)}
-                />
-                <button
-                  type="button"
-                  class="group-toggle"
-                  aria-expanded={open}
-                  onclick={() =>
-                    (expanded = open
-                      ? expanded.filter((key) => key !== group.key)
-                      : [...expanded, group.key])}
-                >
-                  <span class="group-name"
-                    >{group.label}{#if group.description}<span
-                        class="group-desc">{group.description}</span
-                      >{/if}</span
+        {#each sections as section, index (index)}
+          {#if headedByApi && section.api !== null}<h3 class="api-name">
+              {section.api}
+            </h3>{/if}
+          <ul class="groups">
+            {#each section.groups as group (group.key)}
+              {@const state = groupState(group)}
+              {@const open = expanded.includes(group.key)}
+              {@const choosable = group.choices.some(
+                (choice) => !choice.required && choice.available,
+              )}
+              {@const granted = group.choices.filter(
+                (choice) => choice.available && selected.includes(choice.id),
+              ).length}
+              <li
+                class={["group", group.admin && "admin"]}
+                role="group"
+                aria-label={group.label}
+              >
+                <div class="group-head">
+                  <input
+                    type="checkbox"
+                    aria-label={`Allow all: ${group.label}`}
+                    checked={granted > 0 && state === "all"}
+                    use:indeterminate={state === "some" ||
+                      (!choosable &&
+                        granted > 0 &&
+                        granted < group.choices.length)}
+                    disabled={!choosable}
+                    onchange={(event) =>
+                      setGroup(group, event.currentTarget.checked)}
+                  />
+                  <button
+                    type="button"
+                    class="group-toggle"
+                    aria-expanded={open}
+                    onclick={() =>
+                      (expanded = open
+                        ? expanded.filter((key) => key !== group.key)
+                        : [...expanded, group.key])}
                   >
-                  <span class="count">{granted} of {group.choices.length}</span>
-                  <span class="chevron" aria-hidden="true"></span>
-                </button>
-              </div>
-              {#if open}
-                <ul class="choices">
-                  {#each group.choices as choice (choice.id)}
-                    <li class={["choice", !choice.available && "unavailable"]}>
-                      <input
-                        id={`choice-${choice.id}`}
-                        type="checkbox"
-                        checked={choice.available &&
-                          selected.includes(choice.id)}
-                        disabled={choice.required || !choice.available}
-                        onchange={(event) => {
-                          selected = event.currentTarget.checked
-                            ? [...selected, choice.id]
-                            : selected.filter((id) => id !== choice.id);
-                        }}
-                      />
-                      <label for={`choice-${choice.id}`}>
-                        <span class="choice-title"
-                          >{choice.title}
-                          {#if !choice.available}<span class="tag"
-                              >Not available to you</span
-                            >{:else if choice.required}<span class="tag"
-                              >Required</span
-                            >{/if}</span
-                        >
-                        <span class="choice-desc">{choice.description}</span>
-                        {#if choice.members.length}<span class="choice-desc"
-                            >Includes {choice.members.join(", ")}</span
-                          >{/if}
-                        {#if !choice.available && choice.administrative && !view.registered}<span
-                            class="choice-desc"
-                            >Only apps your administrator registered can manage
-                            Trellis.</span
-                          >{/if}
-                      </label>
-                    </li>
-                  {/each}
-                </ul>
-              {/if}
-            </li>
-          {/each}
-        </ul>
+                    <span class="group-name"
+                      >{group.label}{#if group.description}<span
+                          class="group-desc">{group.description}</span
+                        >{/if}</span
+                    >
+                    <span class="count"
+                      >{granted} of {group.choices.length}</span
+                    >
+                    <span class="chevron" aria-hidden="true"></span>
+                  </button>
+                </div>
+                {#if open}
+                  <ul class="choices">
+                    {#each group.choices as choice (choice.id)}
+                      <li
+                        class={["choice", !choice.available && "unavailable"]}
+                      >
+                        <input
+                          id={`choice-${choice.id}`}
+                          type="checkbox"
+                          checked={choice.available &&
+                            selected.includes(choice.id)}
+                          disabled={choice.required || !choice.available}
+                          onchange={(event) => {
+                            selected = event.currentTarget.checked
+                              ? [...selected, choice.id]
+                              : selected.filter((id) => id !== choice.id);
+                          }}
+                        />
+                        <label for={`choice-${choice.id}`}>
+                          <span class="choice-title"
+                            >{choice.title}
+                            {#if !choice.available}<span class="tag"
+                                >Not available to you</span
+                              >{:else if choice.required}<span class="tag"
+                                >Required</span
+                              >{/if}</span
+                          >
+                          <span class="choice-desc">{choice.description}</span>
+                          {#if choice.members.length}<span class="choice-desc"
+                              >Includes {choice.members.join(", ")}</span
+                            >{/if}
+                          {#if !choice.available && choice.administrative && !view.registered}<span
+                              class="choice-desc"
+                              >Only apps your administrator registered can
+                              manage Trellis.</span
+                            >{/if}
+                        </label>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/each}
 
         <label class="check remember"
           ><input type="checkbox" name="remember" value="true" checked /><span

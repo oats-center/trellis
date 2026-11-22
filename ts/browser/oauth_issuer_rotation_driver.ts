@@ -14,6 +14,7 @@ import { z } from "zod";
 import { issuerChainSchema } from "../packages/trellis/auth/protocol_wasm.ts";
 import { apps } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/native_auth.ts";
+import { signInIfPrompted } from "./browser_test_support.ts";
 import {
   MemoryNativeOAuthCustody,
   NativeOAuthClient,
@@ -382,19 +383,13 @@ async function browser() {
     const authorization = await call(page, handle, "authorize");
     assert.equal(typeof authorization, "string");
     await page.goto(authorization as string);
-    const signIn = page.getByRole("heading", { name: "Sign in", exact: true });
-    const allow = page.getByRole("button", { name: "Allow", exact: true });
-    // The Portal shows sign-in, or the approval when already signed in. Wait
-    // for whichever it is; a guessed delay misreads a slow sign-in page.
-    await signIn.or(allow).first().waitFor();
-    if (await signIn.isVisible()) {
-      await page.getByLabel("Username", { exact: true }).fill("admin");
-      await page
-        .getByLabel("Password", { exact: true })
-        .fill("a strong bootstrap password");
-      await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    }
-    await allow.click();
+    // The Portal shows sign-in, the approval, or, for an app already
+    // approved, neither.
+    await signInIfPrompted(
+      page,
+      { username: "admin", password: "a strong bootstrap password" },
+      10_000,
+    );
     await page.waitForURL(
       (url) => url.origin === appOrigin && url.pathname === "/callback",
     );

@@ -1,0 +1,12 @@
+[package]
+name = "consent-review-fixture"
+version = "0.100.0"
+
+[sources]
+review = "contract.trellis"
+
+[generate.typescript]
+output = "packages/consent-review"
+
+[dependencies]
+trellis = { package = "trellis", path = "../../../crates/builtin-contracts" }
