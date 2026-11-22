@@ -2564,129 +2564,136 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
     /// administrator; meanwhile the review link is logged and printed as a QR
     /// code on standard error.
     pub async fn connect(options: ServiceConnectOptions<'_>) -> Result<Self, ServiceRuntimeError> {
-        let lifecycle = super::lifecycle::ServiceLifecycle::start(
-            options.lifecycle.clone(),
-            options.owns_process,
-        )
-        .await
-        .map_err(ServiceRuntimeError::ReadinessProbe)?;
-        let connect_with = |seed: String| {
-            let options = &options;
-            async move {
-                TrellisClient::connect_service_with_contract_with_health_interval(
-                    ServiceConnectWithContractOptions {
-                        nats_servers: options.nats_servers.clone(),
-                        trust: options.trust.clone(),
-                        participant_id: C::ID,
-                        name: options.name,
-                        provisioned_identity_seed_base64url: &seed,
-                        timeout_ms: options.timeout_ms,
-                    },
-                    options.health_heartbeat_interval_ms,
-                )
-                .await
-            }
-        };
-        let (seed, retire_on_stop, mut first) = match &options.identity {
-            ServiceIdentity::Seed(seed) => ((*seed).to_owned(), false, None),
-            #[cfg(feature = "http")]
-            ServiceIdentity::Enroll(enrollment) => {
-                Self::enrolled_identity(
-                    enrollment,
-                    &options.trust.root_certificates,
-                    (C::ID, C::DIGEST),
-                    &connect_with,
-                )
-                .await?
-            }
-        };
-        let (client, binding) = loop {
-            let client = match first.take() {
-                Some(client) => client,
-                None => connect_with(seed.clone()).await?,
+        // Connecting is a large state machine; on the heap it leaves the
+        // caller's future and stack frames small.
+        Box::pin(async move {
+            let lifecycle = super::lifecycle::ServiceLifecycle::start(
+                options.lifecycle.clone(),
+                options.owns_process,
+            )
+            .await
+            .map_err(ServiceRuntimeError::ReadinessProbe)?;
+            let connect_with = |seed: String| {
+                let options = &options;
+                async move {
+                    TrellisClient::connect_service_with_contract_with_health_interval(
+                        ServiceConnectWithContractOptions {
+                            nats_servers: options.nats_servers.clone(),
+                            trust: options.trust.clone(),
+                            participant_id: C::ID,
+                            name: options.name,
+                            provisioned_identity_seed_base64url: &seed,
+                            timeout_ms: options.timeout_ms,
+                        },
+                        options.health_heartbeat_interval_ms,
+                    )
+                    .await
+                }
             };
-            let binding = parse_bootstrap_binding(&client)?;
-            if BootstrapBindingInfo::bootstrap_binding(&binding).digest == C::DIGEST {
-                break (client, binding);
+            let (seed, retire_on_stop, mut first) = match &options.identity {
+                ServiceIdentity::Seed(seed) => ((*seed).to_owned(), false, None),
+                #[cfg(feature = "http")]
+                ServiceIdentity::Enroll(enrollment) => {
+                    Self::enrolled_identity(
+                        enrollment,
+                        &options.trust.root_certificates,
+                        (C::ID, C::DIGEST),
+                        &connect_with,
+                    )
+                    .await?
+                }
+            };
+            let (client, binding) = loop {
+                let client = match first.take() {
+                    Some(client) => client,
+                    None => connect_with(seed.clone()).await?,
+                };
+                let binding = parse_bootstrap_binding(&client)?;
+                if BootstrapBindingInfo::bootstrap_binding(&binding).digest == C::DIGEST {
+                    break (client, binding);
+                }
+                await_service_update::<C>(&client, &lifecycle).await?;
+                client.shutdown_native_runtime().await?;
+            };
+            // Resource-only services have no default inbound API. Explicit generated
+            // routes still supply their real API identity to the shared verifier.
+            let api_id = C::IMPLEMENTED_API_IDS.first().copied().unwrap_or_default();
+            let mut runtime = Self::from_parts(
+                options.name.unwrap_or(C::ID),
+                Arc::new(client),
+                binding,
+                api_id,
+                lifecycle.clone(),
+            );
+            runtime.handle_signals = options.owns_process;
+            runtime.retire_on_stop = retire_on_stop;
+            #[cfg(feature = "http")]
+            if let ServiceIdentity::Enroll(enrollment) = &options.identity {
+                runtime.enrolled_key = Some((
+                    enrollment.origin.clone(),
+                    options.trust.root_certificates.clone(),
+                    seed.clone(),
+                ));
             }
-            await_service_update::<C>(&client, &lifecycle).await?;
-            client.shutdown_native_runtime().await?;
-        };
-        // Resource-only services have no default inbound API. Explicit generated
-        // routes still supply their real API identity to the shared verifier.
-        let api_id = C::IMPLEMENTED_API_IDS.first().copied().unwrap_or_default();
-        let mut runtime = Self::from_parts(
-            options.name.unwrap_or(C::ID),
-            Arc::new(client),
-            binding,
-            api_id,
-            lifecycle.clone(),
-        );
-        runtime.handle_signals = options.owns_process;
-        runtime.retire_on_stop = retire_on_stop;
-        #[cfg(feature = "http")]
-        if let ServiceIdentity::Enroll(enrollment) = &options.identity {
-            runtime.enrolled_key = Some((
-                enrollment.origin.clone(),
-                options.trust.root_certificates.clone(),
-                seed.clone(),
-            ));
-        }
-        runtime.event_subscribe_needs = C::EVENT_SUBSCRIBE_NEEDS;
-        if !C::CONFIG_FIELDS.is_empty() {
-            let loaded = super::config::load(&runtime.client, C::ID, &|missing| {
-                lifecycle.status(&format!("Waiting for settings: {missing}"));
-            })
-            .await?;
-            let instance = runtime.client.own_instance_id()?;
-            runtime.config = Some(super::config::follow(
-                Arc::clone(&runtime.client),
-                C::CONFIG_FIELDS,
-                loaded,
-                runtime.provider_deployment_id.clone(),
-                instance,
-            ));
-        }
-        let owner = runtime.client.authorization_owner();
-        let authority = owner.own_authority()?;
-        let mut implements_operations = false;
-        for api_id in C::IMPLEMENTED_API_IDS {
-            let certificate = owner
-                .provider_certificate(&runtime.client.nats(), &authority, api_id)
+            runtime.event_subscribe_needs = C::EVENT_SUBSCRIBE_NEEDS;
+            if !C::CONFIG_FIELDS.is_empty() {
+                let loaded = super::config::load(&runtime.client, C::ID, &|missing| {
+                    lifecycle.status(&format!("Waiting for settings: {missing}"));
+                })
                 .await?;
-            implements_operations |= certificate
-                .implemented_actions
-                .iter()
-                .any(|action| action.kind == trellis_protocol::ApiSurfaceKind::Operation);
-        }
-        if implements_operations {
-            runtime.operation_repository = Some(runtime.operation_repository().await?);
-            let staging_bucket = format!(
-                "trellis_operation_staging_{}",
-                runtime.provider_deployment_id
-            );
-            // Validate the runtime-provisioned staging bucket on the initial
-            // generation, then acquire a suitable generation per staging call so
-            // staging follows cutover instead of pinning one.
-            async_nats::jetstream::new(runtime.client.nats().clone())
-                .get_object_store(&staging_bucket)
-                .await
-                .map_err(|error| {
-                    ServiceRuntimeError::Server(Box::new(ServerError::Internal(error.to_string())))
-                })?;
-            runtime.operation_staging = Some(
-                super::resources::backend::BoundStoreResourceClient::managed_current(
-                    runtime.client.transport_generations(),
-                    staging_bucket,
-                    runtime.client.timeout_ms(),
-                ),
-            );
-        }
-        for name in runtime.resources.store.keys().cloned().collect::<Vec<_>>() {
-            let handle = runtime.store_client(&name).await?;
-            runtime.store_handles.insert(name, handle);
-        }
-        Ok(runtime)
+                let instance = runtime.client.own_instance_id()?;
+                runtime.config = Some(super::config::follow(
+                    Arc::clone(&runtime.client),
+                    C::CONFIG_FIELDS,
+                    loaded,
+                    runtime.provider_deployment_id.clone(),
+                    instance,
+                ));
+            }
+            let owner = runtime.client.authorization_owner();
+            let authority = owner.own_authority()?;
+            let mut implements_operations = false;
+            for api_id in C::IMPLEMENTED_API_IDS {
+                let certificate = owner
+                    .provider_certificate(&runtime.client.nats(), &authority, api_id)
+                    .await?;
+                implements_operations |= certificate
+                    .implemented_actions
+                    .iter()
+                    .any(|action| action.kind == trellis_protocol::ApiSurfaceKind::Operation);
+            }
+            if implements_operations {
+                runtime.operation_repository = Some(runtime.operation_repository().await?);
+                let staging_bucket = format!(
+                    "trellis_operation_staging_{}",
+                    runtime.provider_deployment_id
+                );
+                // Validate the runtime-provisioned staging bucket on the initial
+                // generation, then acquire a suitable generation per staging call so
+                // staging follows cutover instead of pinning one.
+                async_nats::jetstream::new(runtime.client.nats().clone())
+                    .get_object_store(&staging_bucket)
+                    .await
+                    .map_err(|error| {
+                        ServiceRuntimeError::Server(Box::new(ServerError::Internal(
+                            error.to_string(),
+                        )))
+                    })?;
+                runtime.operation_staging = Some(
+                    super::resources::backend::BoundStoreResourceClient::managed_current(
+                        runtime.client.transport_generations(),
+                        staging_bucket,
+                        runtime.client.timeout_ms(),
+                    ),
+                );
+            }
+            for name in runtime.resources.store.keys().cloned().collect::<Vec<_>>() {
+                let handle = runtime.store_client(&name).await?;
+                runtime.store_handles.insert(name, handle);
+            }
+            Ok(runtime)
+        })
+        .await
     }
 }
 
