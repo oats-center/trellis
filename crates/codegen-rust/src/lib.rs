@@ -3498,33 +3498,30 @@ mod tests {
     }
 
     #[test]
-    fn app_module_collisions_preserve_existing_output() {
-        for (source, module) in [
-            ("app FooBar {} app Foo_Bar {}", "fixture_foo_bar"),
-            ("app FooBar {} agent Foo_Bar {}", "fixture_foo_bar"),
-            (
-                "app Sensor_Operator {} device Sensor { app optional Operator {} }",
-                "fixture_sensor_operator",
-            ),
+    fn colliding_app_names_generate_distinct_declared_modules() {
+        for source in [
+            "app FooBar {} app Foo_Bar {}",
+            "app FooBar {} agent Foo_Bar {}",
+            "app Sensor_Operator {} device Sensor { app optional Operator {} }",
         ] {
             let graph = graph(source);
             let directory = tempfile::tempdir().unwrap();
             let output = directory.path().join("generated");
-            let existing = output.join("src/apps").join(module).join("mod.rs");
-            fs::create_dir_all(existing.parent().unwrap()).unwrap();
-            fs::write(&existing, "// Last-good generated output.\n").unwrap();
-            assert!(
-                matches!(
-                    generate_rust_package(&graph, &output, "fixture", &[]),
-                    Err(CodegenRustError::IdentifierCollision { .. })
-                ),
-                "colliding requests must be rejected: {source}"
-            );
-            assert_eq!(
-                fs::read_to_string(existing).unwrap(),
-                "// Last-good generated output.\n",
-                "failed generation must preserve the previous app module"
-            );
+            generate_rust_package(&graph, &output, "fixture", &[]).unwrap();
+            let modules = fs::read_dir(output.join("src/apps"))
+                .unwrap()
+                .map(|entry| entry.unwrap())
+                .filter(|entry| entry.path().join("mod.rs").is_file())
+                .map(|entry| entry.file_name().into_string().unwrap())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(modules.len(), 2, "{source}: {modules:?}");
+            let declared = fs::read_to_string(output.join("src/apps/mod.rs")).unwrap();
+            for module in &modules {
+                assert!(
+                    declared.contains(&format!("pub mod {module};")),
+                    "{source}: {module} is generated but not declared:\n{declared}"
+                );
+            }
         }
     }
 
