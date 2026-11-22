@@ -398,13 +398,17 @@ values, secrets } })` stores initial values through `Auth.Config.Set`, and
 
 Each declared webhook endpoint is `service.webhooks.NAME`.
 `onReceived(({ event }) => ...)` handles accepted requests; `event.body` is a
-`Uint8Array`, and serving starts with `service.wait()`. `decide((request) =>
-({ verdict: "accept" | "ignore" | "reject", response?, dedupeKey? }))`
-answers an endpoint that declares `decide`. `@oatscenter/trellis/service`
+`Uint8Array` of the bytes as received, and serving starts with
+`service.wait()`. `event.text()`, `event.json()`, and `event.form()` (a
+`URLSearchParams`) return a `Result` that is a `ValidationError` when the body
+is not UTF-8 text or not JSON; verify signatures over `event.body`.
+`decide((request) => ({ verdict: "accept" | "ignore" | "reject", response?,
+dedupeKey? }))` answers an endpoint that declares `decide`;
+`request.delivery` has the same views. `@oatscenter/trellis/service`
 exports `webhookHmac`, `verifyWebhookHmac`, `webhookEqual`,
 `withinWebhookWindow`, and `webhookResponse({ status, contentType, body })`,
-and the `WebhookDelivery`, `WebhookDecideRequest`, and `WebhookDecision`
-types. In the testkit, `runtime.callAdminRpc("webhooksEndpointsList", {
+and the `WebhookDelivery`, `WebhookRequestDelivery`, `WebhookDecideCall`,
+`WebhookDecideRequest`, and `WebhookDecision` types. In the testkit, `runtime.callAdminRpc("webhooksEndpointsList", {
 service: deploymentId })` returns each endpoint's URL.
 
 ### SQL outbox

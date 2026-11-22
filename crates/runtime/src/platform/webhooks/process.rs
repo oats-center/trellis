@@ -742,7 +742,7 @@ impl Webhooks {
             return;
         };
         if request.disposition == Disposition::Archived {
-            // A rejected sync request stored for verifying again later.
+            // A request refused at intake, stored for verifying again later.
             let _ = message.ack().await;
             return;
         }

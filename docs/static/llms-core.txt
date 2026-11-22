@@ -1450,18 +1450,30 @@ tolerance 5m; } }`, `verify token`, `verify basic`, `verify address`, or an
 explicit `verify none;`), and delivers accepted requests as `Received` events
 (`WebhookDelivery`, body byte for byte) through the endpoint's own durable
 consumer. Keys, tokens, and passwords name `secret` settings of the same
-service; set them with `trellis svc <name> config set-secret`. `mode async`
-(the default) stores, answers 2xx at once, and verifies afterwards; `mode
-sync` verifies first and can return the service's decide-handler response,
+service; set them with `trellis svc <name> config set-secret`. Every verifier,
+`hmac` included, runs before Trellis answers in both modes: a wrong
+credential or signature gets 401 and an unset secret 503, so a wrong secret
+shows at the sender. `mode async` (the default) then stores the request,
+answers 2xx, and runs the decide handler and delivery afterwards; `mode sync`
+also waits for those and can return the service's decide-handler response,
 for handshakes. `decide { deadline 2s; }` lets the service accept, ignore, or
-reject after the standard verifiers. `dedupe "{header:...}"` drops the
-sender's retries, including simultaneous ones, on a best-effort basis;
-handlers must still be idempotent. After a secret, token, or password changes,
+reject after the standard verifiers. `dedupe "<template>"` names the sender's
+delivery ID with `{header:Name}`, `{json:/pointer}` (an RFC 6901 JSON Pointer
+into the body, such as `{json:/id}` for Stripe), or `{form:field}`; a request
+whose template has no value, such as a body that is not JSON, is delivered
+without deduplication, never refused. Dedupe drops the sender's retries,
+including simultaneous ones, on a best-effort basis; handlers must still be
+idempotent. Each endpoint adds a Trellis-provided `webhook:<endpoint>` check
+to the service's health: degraded while the endpoint is disabled, while a
+setting its verifiers read is unset, or while its newest verified request in
+the last 10 minutes was rejected, with the reason in the summary; it clears on
+its own. After a secret, token, or password changes,
 `hmac`, `token`, and `basic` also accept the value it replaced for the
 endpoint's rotation overlap (24 h by default); deleting the settings revision
 that holds it ends the overlap, and no older value is ever accepted.
-Each change of a secret is its own generation, even to an equal value. A queued
-request keeps its intake `token`/`basic` verdict while the verifiers and the
+Each change of a secret is its own generation, even to an equal value. A stored
+request, when queued or verified again, keeps its intake `token`/`basic`
+verdict while the verifiers and the
 settings they read are unchanged and the value it matched is current, or was
 the replaced value within the overlap at receipt; an overlap ending while it
 waits does not refuse it, but deleting the revision holding that value does,

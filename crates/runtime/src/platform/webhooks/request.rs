@@ -50,7 +50,8 @@ pub(crate) struct Check {
 pub(crate) enum Disposition {
     /// An `async` request answered 2xx, waiting for the worker to verify it.
     Queued,
-    /// A `sync` request refused at once, kept only to inspect and verify again.
+    /// A request refused before Trellis answered, in either mode, kept only
+    /// to inspect and verify again.
     Archived,
 }
 

@@ -74,6 +74,8 @@ import {
   type ServiceReadinessOpts,
 } from "./lifecycle.ts";
 import { createHealthHeartbeatPublisher } from "../../health_transport.ts";
+import { API as WEBHOOKS_API } from "../../internal_sdk/generated/apis/webhooks/mod.js";
+import { webhookHealthCheck } from "../../webhooks.ts";
 import type { EventDesc } from "../../participant.ts";
 import type {
   ActiveEventFacade,
@@ -1565,6 +1567,25 @@ export function createConnectedService<
       ? { summary: "NATS connection closed" }
       : {}),
   }));
+
+  // Each webhook endpoint feeds the service's health with the check Trellis
+  // keeps for it, so a wrong or missing secret shows on the service.
+  if (args.healthIdentity) {
+    for (const [name, consumer] of Object.entries(
+      args.contractEventConsumers ?? {},
+    )) {
+      if (!consumer.uses?.[WEBHOOKS_API.identity]) continue;
+      health.add(
+        `webhook:${name}`,
+        webhookHealthCheck(
+          serviceTransport,
+          args.inboxPrefix,
+          args.healthIdentity.deploymentId,
+          name,
+        ),
+      );
+    }
+  }
 
   const heartbeatEnabled = args.healthIdentity !== undefined;
   let healthPublishTimer: ReturnType<typeof setInterval> | undefined;

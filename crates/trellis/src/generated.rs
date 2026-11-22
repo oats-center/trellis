@@ -263,6 +263,13 @@ impl AvailabilitySnapshot {
         self.resources.event_consumers.get(name)
     }
 
+    /// Every durable Consumer binding, by declared name.
+    pub(crate) fn consumer_bindings(
+        &self,
+    ) -> impl Iterator<Item = (&String, &crate::service::EventConsumerResourceBinding)> {
+        self.resources.event_consumers.iter()
+    }
+
     /// Test projected whole-capability membership for an API action.
     #[doc(hidden)]
     pub fn allows_action(&self, action: OptionalAction) -> bool {

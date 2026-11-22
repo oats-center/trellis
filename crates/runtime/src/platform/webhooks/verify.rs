@@ -133,8 +133,9 @@ pub(crate) fn header<'a>(request: &'a StoredRequest, name: &str) -> Option<&'a s
 ///
 /// # Errors
 ///
-/// Returns the failed check when the template names a missing header or a
-/// timestamp the request did not send.
+/// Returns the failed check when the template names a missing header, a
+/// timestamp the request did not send, a JSON value a body that is not JSON
+/// or lacks the pointer cannot give, or a form field the body lacks.
 pub(crate) fn render(
     template: &str,
     request: &StoredRequest,
@@ -142,6 +143,8 @@ pub(crate) fn render(
 ) -> Result<Vec<u8>, Failure> {
     let parts = parse_template(template).map_err(Failure::Rejected)?;
     let mut bytes = Vec::new();
+    // The body is parsed once, and only when a placeholder reads it.
+    let mut json: Option<Option<serde_json::Value>> = None;
     for part in parts {
         match part {
             TemplatePart::Literal(text) => bytes.extend_from_slice(text.as_bytes()),
@@ -169,6 +172,27 @@ pub(crate) fn render(
                     bytes.extend_from_slice(name.as_bytes());
                     bytes.extend_from_slice(value.as_bytes());
                 }
+            }
+            // A string gives its text and a number its JSON text; any other
+            // value, like a missing one, gives no key.
+            TemplatePart::Json(pointer) => {
+                let value = json
+                    .get_or_insert_with(|| serde_json::from_slice(&request.body).ok())
+                    .as_ref()
+                    .and_then(|body| body.pointer(&pointer))
+                    .and_then(|value| match value {
+                        serde_json::Value::String(text) => Some(text.clone()),
+                        serde_json::Value::Number(number) => Some(number.to_string()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| Failure::Rejected(format!("JSON value {pointer} missing")))?;
+                bytes.extend_from_slice(value.as_bytes());
+            }
+            TemplatePart::Form(field) => {
+                let (_, value) = url::form_urlencoded::parse(&request.body)
+                    .find(|(name, _)| *name == field)
+                    .ok_or_else(|| Failure::Rejected(format!("form field {field} missing")))?;
+                bytes.extend_from_slice(value.as_bytes());
             }
         }
     }

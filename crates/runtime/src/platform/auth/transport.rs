@@ -448,7 +448,8 @@ impl SqliteAuthorizationStore {
                 }
             }
             // An instance whose build declares a webhook endpoint answers
-            // that endpoint's decide calls. Only Trellis publishes them.
+            // that endpoint's decide calls, which only Trellis publishes, and
+            // asks Trellis for that endpoint's health check.
             if let SessionBinding::Service { deployment_id, .. } = &authority.binding {
                 let received =
                     trellis_protocol::derive_event_subject("trellis.webhooks@v1", "Received")?;
@@ -459,6 +460,11 @@ impl SqliteAuthorizationStore {
                         .any(|subject| subject.starts_with(&format!("{received}.")))
                     {
                         subscribe.insert(crate::platform::webhooks::decide_subject(
+                            deployment_id,
+                            name,
+                        ));
+                        // The endpoint's health check, which Trellis answers.
+                        publish.insert(crate::platform::webhooks::health_subject(
                             deployment_id,
                             name,
                         ));

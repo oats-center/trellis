@@ -239,7 +239,7 @@ service WebhookService {
       signature { header "Test-Signature"; separator ","; prefix "v1="; encoding hex; }
       timestamp { header "Test-Signature"; separator ","; prefix "t="; format unix_seconds; tolerance 5m; }
     }
-    dedupe "{header:X-Delivery-Id}";
+    dedupe "{json:/id}";
     max_body 4KiB;
   }
   webhook token {
@@ -334,6 +334,23 @@ service WebhookService {
       signed "{body}";
       signature { header "X-Relay-Signature"; prefix "sha256="; encoding hex; }
     }
+  }
+  webhook queued {
+    title "Queued";
+    description "A signed endpoint whose service decides after Trellis answers.";
+    verify hmac {
+      key config signing;
+      algorithm sha256;
+      signed "{body}";
+      signature { header "X-Body-Signature"; prefix "sha256="; encoding hex; }
+    }
+    decide { deadline 5s; }
+  }
+  webhook formed {
+    title "Form";
+    description "A form-encoded body, deduplicated by one of its fields.";
+    verify token { secret config hookToken; header "X-Hook-Token"; }
+    dedupe "{form:MessageSid}";
   }
 }
 service ConfiguredService {

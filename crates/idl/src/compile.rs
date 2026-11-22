@@ -1958,8 +1958,8 @@ fn resolve_webhook(
                 )
             }) {
                 return Err(fail(
-                    "a dedupe template may use {header:Name}, {method}, {url}, {path}, and \
-                    {query}"
+                    "a dedupe template may use {header:Name}, {json:/pointer}, {form:name}, \
+                    {method}, {url}, {path}, and {query}"
                         .into(),
                 ));
             }
@@ -2117,6 +2117,17 @@ fn resolve_webhook(
                     .ok_or_else(|| fail("verify hmac needs signed \"<template>\"".into()))?;
                 let parts = crate::webhook::parse_template(&signed)
                     .map_err(|error| fail(format!("signed template: {error}")))?;
+                // A signature covers bytes as sent, never a value parsed out of them.
+                if parts
+                    .iter()
+                    .any(|part| matches!(part, TemplatePart::Json(_) | TemplatePart::Form(_)))
+                {
+                    return Err(fail(
+                        "{json:...} and {form:...} are for dedupe templates; sign {body} or \
+                        {form_sorted}"
+                            .into(),
+                    ));
+                }
                 let Some(VerifierValue::Block(signature)) = members.get("signature") else {
                     return Err(fail("verify hmac needs a signature { ... } block".into()));
                 };

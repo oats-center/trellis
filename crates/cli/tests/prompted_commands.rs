@@ -904,10 +904,12 @@ async fn webhook_endpoints_and_their_requests_are_shown_and_managed() {
     assert_eq!(
         names,
         [
+            "formed",
             "handshake",
             "layered",
             "partner",
             "query",
+            "queued",
             "receipt",
             "relayed",
             "relayedToken",

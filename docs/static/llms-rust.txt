@@ -361,9 +361,13 @@ stores values through `Auth.Config.Set`.
 
 The generated provider has one method per webhook endpoint returning
 `trellis_rs::client::WebhookHandle`. `subscribe()` streams accepted
-`WebhookDelivery` values from the endpoint's durable consumer;
-`decide(|request| async { Ok::<_, E>(decision) })` answers decide calls until
-the returned `WebhookDecideHandle` is dropped. `webhook_hmac`,
+`WebhookDelivery` values from the endpoint's durable consumer; `body.0`
+holds the bytes as received. With `trellis_rs::client::WebhookBody` in scope,
+`delivery.text()`, `delivery.json::<T>()`, and `delivery.form()` read them,
+returning `WebhookBodyError::NotText` or `NotJson`; verify signatures over the
+bytes. `decide(|request| async { Ok::<_, E>(decision) })` answers decide calls
+until the returned `WebhookDecideHandle` is dropped; `request.delivery` has the
+same views. `webhook_hmac`,
 `verify_webhook_hmac`, `webhook_equal`, `within_webhook_window`, and
 `webhook_response` help decide handlers; the Rust helpers cover SHA-256 and
 SHA-512. In the testkit, `runtime.webhook_urls(&identity)` returns each

@@ -134,6 +134,8 @@ export type {
 export { type ProviderWebhooks } from "../provider.ts";
 export {
   verifyWebhookHmac,
+  type WebhookBodyViews,
+  type WebhookDecideCall,
   type WebhookDecideRequest,
   type WebhookDecision,
   type WebhookDelivery,
@@ -144,6 +146,7 @@ export {
   type WebhookHmacAlgorithm,
   type WebhookReceivedArgs,
   type WebhookReceivedOptions,
+  type WebhookRequestDelivery,
   type WebhookResponse,
   webhookResponse,
   type WebhookSignatureEncoding,
