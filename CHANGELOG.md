@@ -72,6 +72,11 @@ and this project adheres to
 
 ### Fixed
 
+- Auth startup waits out a locked database instead of stopping, the
+  configured `busy_timeout_ms` applies to every runtime database (5 s when
+  unset), and background work sets aside an item that fails permanently, such
+  as one breaking a constraint, logging it once, instead of retrying it
+  forever.
 - Expired, used or unknown Portal links open a real page instead of raw JSON,
   with "Start again" where the sign-in can be restarted. Every invalid device
   code gets the same page.
