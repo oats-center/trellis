@@ -50,6 +50,10 @@ and this project adheres to
 
 ### Fixed
 
+- A panic in a Rust application handler no longer ends the loop running it:
+  Operations fail with a reference, jobs fail and the worker goes on, durable
+  events are retried, Live sessions end with a reference, and webhook decide
+  keeps answering.
 - Logging a failure can no longer break the reply or a retry: causes that
   can't be printed (circular, throwing getters, BigInt, Proxy) are written in
   bounded form or as "[unprintable cause]". `@oatscenter/result` exports
