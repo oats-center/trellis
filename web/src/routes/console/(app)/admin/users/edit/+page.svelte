@@ -9,7 +9,11 @@
   import { resolve } from "$lib/console_paths";
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
-  import { captureIntent, MutationController } from "$lib/console/mutation.ts";
+  import {
+    captureIntent,
+    classifyMutationError,
+    MutationController,
+  } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { canPerform } from "$lib/console/operations.ts";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
@@ -165,7 +169,13 @@
         .orThrow();
       if (scope.key === key) await goto(resolve("/admin/users"));
     } catch (cause) {
-      if (scope.key === key) error = projectConsoleError(cause).message;
+      if (scope.key !== key) return;
+      const message = projectConsoleError(cause).message;
+      // A refused delete means the account changed since it was read; show it
+      // as it is now. A refused save keeps the edits instead.
+      if (classifyMutationError(cause).kind !== "unknown")
+        await load(target.principalId);
+      if (scope.key === key) error = message;
     } finally {
       saving = false;
     }

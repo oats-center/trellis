@@ -385,9 +385,13 @@
     } catch (cause) {
       if (scope.disposed || scope.key !== route) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
-      error = uncertain
+      const message = uncertain
         ? "Provisioning outcome unknown. Inspect service instances; a one-time secret cannot be recovered."
         : projectConsoleError(cause).message;
+      // A refusal means the service changed since it was read, such as one
+      // turned off; show it as it is now. The typed name and key stay.
+      if (!uncertain) await load(target.deploymentId);
+      if (!scope.disposed && scope.key === route) error = message;
     } finally {
       busy = false;
     }
@@ -714,6 +718,7 @@
         onapplied={(applied) => {
           deployment = applied;
         }}
+        onrefused={() => void load(deploymentId)}
       />{/if}
     <section class="trellis-section" aria-labelledby="instances-title">
       <div

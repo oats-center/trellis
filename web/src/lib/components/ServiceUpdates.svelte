@@ -177,12 +177,15 @@
       await load();
       if (decided.state === "applied") onapplied?.();
     } catch (cause) {
-      error =
-        classifyMutationError(cause).kind === "unknown"
-          ? "We couldn't confirm the decision. Refresh before trying again."
-          : projectConsoleError(cause).message;
+      const uncertain = classifyMutationError(cause).kind === "unknown";
+      error = uncertain
+        ? "We couldn't confirm the decision. Refresh before trying again."
+        : projectConsoleError(cause).message;
+      // A refusal means the update changed since it was read, such as one
+      // another administrator already decided; show it as it is now. An
+      // approval is reread either way to learn whether it installed.
+      if (approve || !uncertain) await load();
       if (approve) {
-        await load();
         const current = updates.find(
           (item) => item.updateId === update.updateId,
         );

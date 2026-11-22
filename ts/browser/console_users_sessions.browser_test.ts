@@ -373,6 +373,84 @@ test("B27 a disabled user stays disabled after a metadata edit", async () => {
   }, browserRuntimeOptions());
 });
 
+test("an expired role shows when it ended, and Renew gives its access back", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const username = `ct-renew-${ulid()}`.toLowerCase();
+    const created = await runtime.callAdminRpc("authUsersCreate", {
+      email: "ct-renew@example.com",
+      idempotencyKey: codecs.ulid.decode(ulid()),
+      image: null,
+      displayName: "Console renew",
+      username,
+    });
+    const userId = created.user.principalId;
+    const capability = "trellis.auth.v1:users.read";
+    const { role } = await runtime.callAdminRpc(
+      "authRolesPut",
+      authApi.actions["rpc:Roles.Put"].input.decode({
+        expectedRevision: "0",
+        title: `Renewed readers ${ulid()}`,
+        description: "",
+        capabilityIds: [capability],
+        assignToNewUsers: false,
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      }),
+    );
+    // The role lasts a moment, then gives nothing.
+    const endsAt = new Date(Date.now() + 2_000);
+    await runtime.callAdminRpc(
+      "authRoleAssignmentsAssign",
+      authApi.actions["rpc:RoleAssignments.Assign"].input.decode({
+        principalId: userId,
+        roleId: role.roleId,
+        expiresAt: endsAt.toISOString(),
+        expectedRevision: "0",
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      }),
+    );
+    const holds = async () =>
+      (
+        await runtime.callAdminRpc(
+          "authPrincipalsEffectiveAccess",
+          authApi.actions["rpc:Principals.EffectiveAccess"].input.decode({
+            principalId: userId,
+          }),
+        )
+      ).capabilities.some(
+        (item) => item.definition.identity.capabilityId === capability,
+      );
+    await runtime.waitFor(async () => ((await holds()) ? undefined : true));
+
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(
+        `${runtime.consoleUrl}/console/admin/users/edit?userId=${userId}`,
+        { waitUntil: "domcontentloaded" },
+      );
+      await waitForConsoleShell(page);
+      const main = page.locator("main");
+      const row = main.getByRole("listitem").filter({ hasText: role.title });
+      await row.getByText(/· ended\s/).waitFor({ timeout: 30_000 });
+      page.once("dialog", (dialog) => void dialog.accept());
+      await row.getByRole("button", { name: "Renew", exact: true }).click();
+      // Renewed with no end, the row shows the role as held.
+      await row
+        .filter({
+          hasNot: page.getByRole("button", { name: "Renew", exact: true }),
+        })
+        .getByRole("button", { name: "Remove", exact: true })
+        .waitFor({ timeout: 30_000 });
+      assert.equal(await row.getByText(/· (ended|until)\s/).count(), 0);
+      assert.equal(await holds(), true);
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
 test("a permission batch that partly fails finishes after Refresh without regranting", async () => {
   await withTrellisRuntime(async (runtime) => {
     await runtime.ensureAdmin();

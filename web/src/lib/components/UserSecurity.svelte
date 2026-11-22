@@ -8,6 +8,7 @@
   import { canPerform } from "$lib/console/operations.ts";
   import { catalogPage, traverseAll } from "$lib/console/paging.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
+  import { classifyMutationError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { formatDate, humanizeName } from "$lib/format";
   import CopyButton from "./CopyButton.svelte";
@@ -84,7 +85,15 @@
         .orThrow();
       if (scope.key === key) await load();
     } catch (cause) {
-      if (scope.key === key) error = projectConsoleError(cause).message;
+      if (scope.key !== key) return;
+      const refused = classifyMutationError(cause).kind !== "unknown";
+      const message = refused
+        ? projectConsoleError(cause).message
+        : "We couldn't confirm the change. Refresh before trying again.";
+      // A refusal means the sign-in changed since it was read, such as one
+      // that already ended; show the sign-ins as they are now.
+      if (refused) await load();
+      if (scope.key === key) error = message;
     } finally {
       busy = false;
     }

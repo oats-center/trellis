@@ -95,6 +95,7 @@
   async function usePicture(providerId: string | null) {
     if (!user?.account || picturePending) return;
     picturePending = true;
+    profileError = null;
     try {
       const response = await trellis
         .usersProfileUpdate({
@@ -117,7 +118,17 @@
       notifications.success("Your picture was changed.", "Profile updated");
       await authority.reload();
     } catch (cause) {
-      notifications.error(errorMessage(cause), "Picture not changed");
+      if (classifyMutationError(cause).kind === "unknown") {
+        notifications.error(
+          "We couldn't confirm the change. Refresh before trying again.",
+          "Picture not changed",
+        );
+        return;
+      }
+      // A refusal means the profile changed since it was read; show it as it
+      // is now, and keep saying why.
+      profileError = errorMessage(cause);
+      await rereadAccount();
     } finally {
       picturePending = false;
     }
@@ -132,6 +143,8 @@
     });
     if (!confirmed) return;
     unlinkPending = identity.identityId;
+    linkError = null;
+    linkUncertain = false;
     try {
       await trellis
         .userIdentitiesUnlink({
@@ -142,7 +155,13 @@
       notifications.success(`${title} disconnected`);
       await loadProfile();
     } catch (e) {
-      notifications.error(errorMessage(e), "Disconnect failed");
+      linkUncertain = classifyMutationError(e).kind === "unknown";
+      linkError = linkUncertain
+        ? "We couldn't confirm the disconnect. Refresh before trying again."
+        : errorMessage(e);
+      // A refusal means the sign-in methods changed since they were read;
+      // show them as they are now.
+      if (!linkUncertain) await loadSignIn();
     } finally {
       unlinkPending = null;
     }
@@ -251,17 +270,26 @@
       profileError = profileUncertain
         ? "The outcome is unknown. Refresh your profile before saving again."
         : errorMessage(cause);
+      // A refusal means the profile changed since it was read, such as a
+      // save from another session; reread it and keep what was typed.
+      if (!profileUncertain) await rereadAccount();
     } finally {
       profilePending = false;
     }
   }
 
-  async function loadProfile() {
-    loading = true;
-    error = null;
-    // The account and how it signs in load together. The sign-in panel
-    // reports its own failure: it must not erase the account information.
-    const signIn = Promise.all([
+  // Rereads the account after a refused change, such as one saved from
+  // another session, without replacing what was typed into the form. A failed
+  // reread leaves the account as shown; the refusal's message stays.
+  async function rereadAccount(): Promise<void> {
+    const me = await getAuthenticatedUser(trellis).catch(() => null);
+    if (me) user = me.user;
+  }
+
+  // Reads how the account signs in. The sign-in panel reports its own
+  // failure: it must not erase the account information.
+  function loadSignIn(): Promise<void> {
+    return Promise.all([
       trellis.usersIdentityLinkProviders({}).take(),
       traverseAll<IdentityRecord>(async (pageRequest) => {
         const response = await trellis
@@ -290,6 +318,13 @@
         identitiesPanelError = errorMessage(cause);
       },
     );
+  }
+
+  async function loadProfile() {
+    loading = true;
+    error = null;
+    // The account and how it signs in load together.
+    const signIn = loadSignIn();
     try {
       const me = await getAuthenticatedUser(trellis);
       user = me.user;

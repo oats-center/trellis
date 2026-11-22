@@ -65,9 +65,13 @@
       await work();
       await load();
     } catch (cause) {
-      error = isUncertainError(cause)
+      const uncertain = isUncertainError(cause);
+      error = uncertain
         ? "We couldn't confirm the change. Reload before trying again."
         : projectConsoleError(cause).message;
+      // A refusal means the mappings changed since they were read; show them
+      // as they are now. The group and roles typed stay.
+      if (!uncertain) await load().catch(() => {});
     } finally {
       busy = false;
     }

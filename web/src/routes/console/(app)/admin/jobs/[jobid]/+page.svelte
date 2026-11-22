@@ -46,6 +46,8 @@
   let loading = $state(true);
   let actionBusy = $state<string | null>(null);
   let error = $state<string | null>(null);
+  // Why the last cancel, retry or dismiss failed; rereads keep it.
+  let actionError = $state<string | null>(null);
   let unavailableMessage = $state<string | null>(null);
   let inspection = $state.raw<Inspection | undefined>(undefined);
   let loadedJobId = $state<string | null>(null);
@@ -211,6 +213,7 @@
   function loadCurrentJobIfNeeded() {
     if (!currentJobId || currentJobId === loadedJobId) return;
     activeAttemptIndex = 0;
+    actionError = null;
     void load(currentJobId);
   }
 
@@ -218,7 +221,7 @@
     const actionJobId = job?.id ?? currentJobId;
     if (disposed || actionJobId !== currentJobId) return;
     actionBusy = name;
-    error = null;
+    actionError = null;
     try {
       if (name === "cancel") {
         await cancelJob({ action: (input) => trellis.cancel(input) }, actionJobId);
@@ -231,9 +234,14 @@
       }
       if (!disposed && currentJobId === actionJobId) await load(actionJobId);
     } catch (e) {
-      if (!disposed && currentJobId === actionJobId) error = classifyMutationError(e).kind === "unknown"
+      if (disposed || currentJobId !== actionJobId) return;
+      const uncertain = classifyMutationError(e).kind === "unknown";
+      actionError = uncertain
         ? "It isn't known whether that worked. Refresh and check the job before trying again."
         : errorMessage(e);
+      // A refusal means the job changed since it was read, such as one that
+      // already finished; show it as it is now, and keep saying why.
+      if (!uncertain) await load(actionJobId, false);
     } finally {
       if (!disposed) actionBusy = null;
     }
@@ -483,6 +491,9 @@
     </PageToolbar>
   {/if}
 
+  {#if actionError}
+    <Notice variant="error" role="alert">{actionError}</Notice>
+  {/if}
   {#if error}
     <Notice variant="error" role="alert">{error}</Notice>
   {:else if unavailableMessage}

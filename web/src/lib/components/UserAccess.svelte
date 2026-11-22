@@ -416,7 +416,11 @@
       disabled={loading || busy}
       onclick={async () => {
         await load();
-        if (!error) uncertain = false;
+        // Refreshing by hand settles what the last change left on screen.
+        if (!error) {
+          uncertain = false;
+          actionError = null;
+        }
       }}>Refresh</button
     >
   </div>

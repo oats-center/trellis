@@ -182,10 +182,16 @@
               : "App deleted.";
       await load();
     } catch (cause) {
-      if (scope.isCurrent(token))
-        error = isUncertainError(cause)
-          ? "We couldn't confirm the change. Reload before trying again."
-          : projectConsoleError(cause).message;
+      if (!scope.isCurrent(token)) return;
+      const uncertain = isUncertainError(cause);
+      error = uncertain
+        ? "We couldn't confirm the change. Reload before trying again."
+        : projectConsoleError(cause).message;
+      if (uncertain) return;
+      // A refusal means the app changed since it was read; show the apps as
+      // they are now. The form keeps what was typed and the revision it was
+      // made from, so saving it again can't undo the other change.
+      await load();
     } finally {
       saving = false;
     }

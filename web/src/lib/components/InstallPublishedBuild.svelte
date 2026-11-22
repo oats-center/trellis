@@ -13,10 +13,13 @@
   let {
     deployment,
     onapplied,
+    onrefused,
   }: {
     deployment: Deployment;
     /** Called with the deployment once its new build is installed. */
     onapplied: (deployment: Deployment) => void;
+    /** Called when Auth refuses the install, so the service is reread. */
+    onrefused: () => void;
   } = $props();
 
   // Installing a build ahead of rolling it out lets instances that run it
@@ -101,6 +104,9 @@
       error = uncertain
         ? "Couldn't tell whether the build was installed. Refresh before trying again."
         : message;
+      // A refusal means the service changed since it was read; the page
+      // rereads it. The chosen build stays.
+      if (!uncertain) onrefused();
     } finally {
       if (!disposed) busy = false;
     }

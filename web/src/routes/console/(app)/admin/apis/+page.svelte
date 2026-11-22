@@ -195,10 +195,14 @@
       review = null;
       await load();
     } catch (cause) {
-      if (reviewScope.isCurrent(token))
-        error = isUncertainError(cause)
-          ? "We couldn't confirm the change. Check the API before trying again."
-          : projectConsoleError(cause).message;
+      if (!reviewScope.isCurrent(token)) return;
+      const uncertain = isUncertainError(cause);
+      error = uncertain
+        ? "We couldn't confirm the change. Check the API before trying again."
+        : projectConsoleError(cause).message;
+      // A refusal means the API changed since it was reviewed; show the APIs
+      // as they are now. The review and edits stay.
+      if (!uncertain) await load();
     } finally {
       if (reviewScope.settle(token)) busy = false;
     }

@@ -134,7 +134,20 @@
       selectedReviewId = "";
       await Promise.all([loadReviews(), load()]);
     } catch (cause) {
-      decisionError = projectConsoleError(cause).message;
+      const uncertain = classifyMutationError(cause).kind === "unknown";
+      decisionError = uncertain
+        ? "We couldn't confirm the decision. Refresh before trying again."
+        : projectConsoleError(cause).message;
+      // A refusal means the request changed since it was read, such as one
+      // another administrator already decided; show the requests as they are
+      // now. The typed code belongs to this request only.
+      if (!uncertain) {
+        await Promise.all([loadReviews(), load()]);
+        if (!pending.some((item) => item.reviewId === review.reviewId)) {
+          code = "";
+          selectedReviewId = "";
+        }
+      }
     } finally {
       deciding = null;
     }
@@ -301,6 +314,7 @@
 
   {#if view === "requests"}
     {#if reviewsError}<Notice variant="error">{reviewsError}</Notice>{/if}
+    {#if decisionError}<Notice variant="error">{decisionError}</Notice>{/if}
     {#if !pending.length}
       <EmptyState
         title="No requests waiting"
@@ -408,9 +422,6 @@
                   match.</span
                 >
               </label>
-              {#if decisionError}<Notice variant="error" class="mt-3"
-                  >{decisionError}</Notice
-                >{/if}
               <div class="mt-5 flex gap-3">
                 <button
                   type="button"

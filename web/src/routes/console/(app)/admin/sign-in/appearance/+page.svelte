@@ -9,6 +9,7 @@
   import { canPerform } from "$lib/console/operations.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
+  import { classifyMutationError } from "$lib/console/mutation.ts";
   import { traverseAll } from "$lib/console/paging.ts";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
@@ -210,8 +211,13 @@
         idempotencyKey: codecs.ulid.decode(ulid()),
       })
       .take();
-    if (isErr(result)) error = projectConsoleError(result).message;
-    else {
+    if (isErr(result)) {
+      const message = projectConsoleError(result).message;
+      // A refused removal means the look changed since it was read; show it
+      // as it is now. A refused save keeps the edits instead.
+      if (classifyMutationError(result.error).kind !== "unknown") await load();
+      error = message;
+    } else {
       show(undefined);
       notice = installation
         ? "Removed. The sign-in page uses the Trellis look again."

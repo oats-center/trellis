@@ -7,6 +7,7 @@
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
+  import { classifyMutationError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { formatDate } from "$lib/format";
   import ConfirmationModal from "./ConfirmationModal.svelte";
@@ -97,7 +98,15 @@
       onchange(result.user);
       return true;
     } catch (cause) {
-      if (scope.key === key) error = projectConsoleError(cause).message;
+      if (scope.key !== key) return false;
+      const refused = classifyMutationError(cause).kind !== "unknown";
+      const message = refused
+        ? projectConsoleError(cause).message
+        : "We couldn't confirm the change. Refresh before trying again.";
+      // A refusal means the account changed since it was read; show its
+      // sign-in methods as they are now. What was typed stays.
+      if (refused) await load();
+      if (scope.key === key) error = message;
       return false;
     } finally {
       busy = false;

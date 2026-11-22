@@ -275,10 +275,13 @@
       await load();
     } catch (cause) {
       if (key !== intentKey) return;
-      error =
-        classifyMutationError(cause).kind === "unknown"
-          ? "We couldn't confirm the change. Refresh before trying again."
-          : projectConsoleError(cause).message;
+      const refused = classifyMutationError(cause).kind !== "unknown";
+      error = refused
+        ? projectConsoleError(cause).message
+        : "We couldn't confirm the change. Refresh before trying again.";
+      // A refusal means the settings changed since they were read; show them
+      // as they are now. The drafts stay, so nothing typed is lost.
+      if (refused) await load();
     } finally {
       busy = false;
     }

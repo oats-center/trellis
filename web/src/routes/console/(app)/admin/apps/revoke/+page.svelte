@@ -30,6 +30,8 @@
   let completed = $state(false);
   let uncertain = $state(false);
   let error = $state<string | null>(null);
+  // Why the last revoke was refused or couldn't be confirmed; rereads keep it.
+  let actionError = $state<string | null>(null);
   let confirmationModal: ConfirmationModal | undefined = $state();
   const target = $derived(
     records.find((item) => item.delegationId === (requestedId || selectedId)),
@@ -39,6 +41,7 @@
     if (scope.setKey(id)) {
       completed = false;
       uncertain = false;
+      actionError = null;
       selectedId = "";
     }
     untrack(() => {
@@ -107,6 +110,7 @@
     )
       return;
     busy = true;
+    actionError = null;
     try {
       await trellis
         .delegationsRevoke({
@@ -119,9 +123,15 @@
     } catch (cause) {
       if (!scope.isCurrent(token)) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
-      error = uncertain
+      actionError = uncertain
         ? "Outcome unknown. Inspect this exact delegation before another action."
         : projectConsoleError(cause).message;
+      // A refusal means the delegation changed since it was read, such as
+      // one already revoked; show it as it is now.
+      if (!uncertain) {
+        busy = false;
+        await load(requestedId);
+      }
     } finally {
       if (scope.settle(token)) busy = false;
     }
@@ -138,8 +148,10 @@
         href={resolve("/admin/apps")}>Back to app delegations</a
       >{/snippet}</PageToolbar
   >
-  {#if error}<Notice variant={uncertain ? "warning" : "error"}>{error}</Notice
+  {#if actionError}<Notice variant={uncertain ? "warning" : "error"}
+      >{actionError}</Notice
     >{/if}
+  {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if completed}<Notice variant="success">Delegation revoked.</Notice>{/if}
   <Panel title="App" class="max-w-3xl">
     {#if loading}<LoadingState

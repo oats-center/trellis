@@ -151,9 +151,14 @@
     try {
       notice = await work();
     } catch (cause) {
-      error = isUncertainError(cause)
+      const uncertain = isUncertainError(cause);
+      error = uncertain
         ? "We couldn't confirm the change. Reload before trying again."
         : projectConsoleError(cause).message;
+      // A refusal means a provider changed since it was read; show them as
+      // they are now. An open form keeps what was typed and the revision it
+      // was made from, so saving it again can't undo the other change.
+      if (!uncertain) await load();
     } finally {
       saving = false;
     }
@@ -191,13 +196,9 @@
         expectedRevision: provider.revision,
         idempotencyKey: codecs.ulid.decode(ulid()),
       };
-      try {
-        if (on) await trellis.oidcProvidersEnable(target).orThrow();
-        else await trellis.oidcProvidersDisable(target).orThrow();
-      } finally {
-        // Shows the provider's saved state, also when the change was refused.
-        await load();
-      }
+      if (on) await trellis.oidcProvidersEnable(target).orThrow();
+      else await trellis.oidcProvidersDisable(target).orThrow();
+      await load();
       return `${provider.title} turned ${on ? "on" : "off"}.`;
     });
   }

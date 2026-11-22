@@ -31,6 +31,8 @@
 
   let loading = $state(true);
   let error = $state<string | null>(null);
+  // Why the last disable was refused; rereads keep it.
+  let actionError = $state<string | null>(null);
   let pending = $state(false);
   let deployments = $state<Deployment[]>([]);
   const requestedDeploymentId = $derived(
@@ -150,6 +152,7 @@
       mutation.cancel();
       return;
     }
+    actionError = null;
     const outcome = await mutation.send({
       isStillValid: () =>
         scope.key === intent.scope.routeKey &&
@@ -177,7 +180,12 @@
     } else if (outcome.kind === "unknown") {
       error =
         "Outcome unknown; the disable may have completed. Check the deployment before trying again.";
-    } else error = projectConsoleError(outcome.error).message;
+    } else {
+      // A refusal means the deployment changed since it was read, such as one
+      // already turned off; show it as it is now, and keep saying why.
+      actionError = projectConsoleError(outcome.error).message;
+      await load(requestedDeploymentId);
+    }
   }
 
   $effect(() => {
@@ -185,6 +193,7 @@
     scope.setKey(`device-deployment-disable:${id}`);
     untrack(() => confirmationModal?.cancel());
     mutation.cancel();
+    actionError = null;
     untrack(() => void load(id));
     return () => scope.invalidate();
   });
@@ -203,6 +212,9 @@
     {/snippet}
   </PageToolbar>
 
+  {#if actionError}
+    <Notice variant="error">{actionError}</Notice>
+  {/if}
   {#if error}
     <Notice variant="error">{error}</Notice>
   {/if}

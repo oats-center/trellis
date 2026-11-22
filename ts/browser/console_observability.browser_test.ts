@@ -1348,6 +1348,156 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
   }, browserRuntimeOptions());
 });
 
+test("dismissing a delivery another administrator retried meanwhile is refused and shows it gone", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const displayName = fixtureName("raced-dead-letter");
+    const key = await runtime.registerService({
+      name: displayName,
+      contract: participants.EventService.participant,
+      deployment: displayName,
+      acknowledgeSharedApis: true,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: participants.EventService.participant,
+      name: displayName,
+      seed: key.seed,
+    }).orThrow();
+    // The handler fails "fail" until the retry, which then succeeds.
+    let failing = true;
+    const successes: string[] = [];
+    await service
+      .onAlpha(
+        async ({ event }) => {
+          if (event.value === "fail" && failing) {
+            throw new Error("fixture handler failure");
+          }
+          successes.push(event.value);
+        },
+        {},
+        { mode: "durable", group: "events" },
+      )
+      .orThrow();
+    await service
+      .onBeta(() => {}, {}, { mode: "durable", group: "events" })
+      .orThrow();
+    await service.handleDeliveryStats(() =>
+      Result.ok({
+        active: 0n,
+        attempts: [],
+        maxActive: 0n,
+        successes: [...successes],
+      }),
+    );
+    void service.wait().catch(() => {});
+    try {
+      const alpha = await runtime.connectClient({
+        name: fixtureName("raced-alpha"),
+        contract: apps.Alpha.request,
+      });
+      // The consumer only receives events published after it is attached.
+      await runtime.waitFor(
+        async () => {
+          const stats = await alpha.deliveryStats({}, { timeout: 1_000 });
+          return stats.isOk();
+        },
+        { timeoutMs: 60_000 },
+      );
+      const consumer = await runtime.waitFor(
+        async () =>
+          (await runtime.events.consumersQuery({})).items.find(
+            (item) => item.deploymentId === key.deploymentId,
+          ) ?? false,
+        { timeoutMs: 60_000 },
+      );
+      await alpha.publishAlpha({ site: "raced", value: "ready" }).orThrow();
+      await runtime.waitFor(
+        async () => {
+          const stats = await alpha.deliveryStats({}, { timeout: 1_000 });
+          return stats.isOk() && stats.orThrow().successes.includes("ready");
+        },
+        { timeoutMs: 30_000 },
+      );
+      await alpha.publishAlpha({ site: "raced", value: "fail" }).orThrow();
+      const deadLetter = await runtime.waitFor(
+        async () =>
+          (
+            await runtime.events.deadLettersQuery({
+              resourceId: consumer.resourceId,
+              state: ["dead"],
+            })
+          ).items[0] ?? false,
+        { timeoutMs: 60_000 },
+      );
+
+      const context = await launchProfile(runtime);
+      try {
+        const page = await context.newPage();
+        const wired = await wireNatsGate(page);
+        try {
+          await openConsoleAsRuntimeAdmin(page, runtime);
+          await page.goto(`${runtime.consoleUrl}/console/admin/events`, {
+            waitUntil: "domcontentloaded",
+          });
+          await waitForConsoleShell(page);
+          const main = page.locator("main");
+          const row = main.locator(
+            `[data-dead-letter="${deadLetter.deadLetterId}"]`,
+          );
+          await row
+            .getByRole("button", { name: "Dismiss", exact: true })
+            .waitFor({ state: "visible", timeout: 30_000 });
+          // A second administrator retries the delivery, which succeeds,
+          // while this page still shows it failed. Live updates are held, so
+          // only the page's own reread can show what changed.
+          wired.gate.pauseLive();
+          failing = false;
+          await runtime.events.deadLettersReplay({
+            resourceId: deadLetter.resourceId,
+            deadLetterId: deadLetter.deadLetterId,
+            expectedRevision: deadLetter.revision,
+            requestId: crypto.randomUUID(),
+          });
+          await runtime.waitFor(
+            async () =>
+              (
+                await runtime.events.deadLettersQuery({
+                  resourceId: consumer.resourceId,
+                  state: ["resolved"],
+                })
+              ).items.some(
+                (item) => item.deadLetterId === deadLetter.deadLetterId,
+              ),
+            { timeoutMs: 60_000 },
+          );
+          // The stale dismissal is refused, says why, and the page shows the
+          // delivery as it is now: no longer waiting for a decision.
+          await row
+            .getByRole("button", { name: "Dismiss", exact: true })
+            .click();
+          await page
+            .getByRole("button", { name: "Dismiss", exact: true })
+            .last()
+            .click();
+          await main.getByText("not dismissible").waitFor({ timeout: 15_000 });
+          await row.waitFor({ state: "detached", timeout: 15_000 });
+          assert.equal(
+            await main.getByText("not dismissible").isVisible(),
+            true,
+          );
+          wired.resumeLiveToPage();
+        } finally {
+          wired.gate.dispose();
+        }
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await service.stop();
+    }
+  }, browserRuntimeOptions());
+});
+
 test("Z11 Events renders before its delivery panels, which load one page at a time", async () => {
   await withTrellisRuntime(async (runtime) => {
     const displayName = fixtureName("z11-events");

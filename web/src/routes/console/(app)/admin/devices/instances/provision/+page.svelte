@@ -261,7 +261,11 @@
         return;
       }
       if (outcome.kind !== "succeeded") {
-        error = errorMessage(outcome.error);
+        // A refusal means the device type changed since it was read, such as
+        // one turned off; show it as it is now. The typed name and key stay.
+        const message = errorMessage(outcome.error);
+        await load();
+        error = message;
         return;
       }
       const response = outcome.value;

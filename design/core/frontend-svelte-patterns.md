@@ -91,7 +91,10 @@ A refused action on a listed record, such as a delete of storage someone else
 already put back to use, usually means the record changed. Reread the list
 right away, keep the refusal's message on screen, and never send the action
 again on the operator's behalf. Show that message apart from read errors, so
-the other rows stay usable.
+the other rows stay usable, and outside the record's own row, which the reread
+may remove. A page with a form rereads what it shows but keeps what was typed;
+a form that replaces the whole record also keeps the revision it was made from,
+so saving it again can't undo the other change.
 
 ### Live views schedule coalesced refreshes
 

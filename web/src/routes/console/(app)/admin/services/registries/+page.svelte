@@ -9,6 +9,7 @@
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
+  import { classifyMutationError } from "$lib/console/mutation.ts";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
@@ -102,7 +103,11 @@
         .orThrow();
       if (!disposed) await load();
     } catch (cause) {
-      if (!disposed) error = projectConsoleError(cause).message;
+      if (disposed) return;
+      error = projectConsoleError(cause).message;
+      // A refusal means the registries changed since they were read, such as
+      // one already removed; show them as they are now.
+      if (classifyMutationError(cause).kind !== "unknown") await load();
     } finally {
       if (!disposed) busy = false;
     }

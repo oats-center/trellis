@@ -158,6 +158,9 @@
   let deadLetterDetail = $state.raw<DeadLetterDetail | null>(null);
   let deadLetterError = $state<Record<string, string>>({});
   let deadLetterBusy = $state<string | null>(null);
+  // Why the last retry or dismiss was refused. It stays when the list is
+  // reread, even once that delivery has left it.
+  let deadLetterActionError = $state<string | null>(null);
   let confirmationModal: ConfirmationModal | undefined = $state();
   let selectedEvent = $state.raw<EventInspect | null>(null);
   /** The event row whose details are open beneath it. */
@@ -766,6 +769,7 @@
     detailError = null;
     detailLoading = false;
     deadLetterError = {};
+    deadLetterActionError = null;
   }
 
   function resetAndLoad() {
@@ -927,6 +931,7 @@
     const mutationToken = ++deadLetterBusyGeneration;
     deadLetterBusy = input.deadLetterId;
     deadLetterError = { ...deadLetterError, [deadLetter.deadLetterId]: "" };
+    deadLetterActionError = null;
     try {
       await runDeadLetterMutation({
         mounted: owned,
@@ -940,12 +945,18 @@
         },
         onError: (cause) => {
           if (!owned()) return;
-          deadLetterError = {
-            ...deadLetterError,
-            [deadLetter.deadLetterId]: classifyMutationError(cause).kind === "unknown"
-              ? "Outcome unknown. Refresh and check this delivery before trying again."
-              : errorMessage(cause),
-          };
+          if (classifyMutationError(cause).kind === "unknown") {
+            deadLetterError = {
+              ...deadLetterError,
+              [deadLetter.deadLetterId]: "Outcome unknown. Refresh and check this delivery before trying again.",
+            };
+            return;
+          }
+          // A refusal means the delivery changed since it was read, such as one
+          // another administrator already retried or dismissed; show the
+          // deliveries as they are now. Nothing is sent again.
+          deadLetterActionError = errorMessage(cause);
+          void requestSnapshot(false);
         },
       });
     } finally {
@@ -1255,6 +1266,7 @@
               <button type="button" class="trellis-chip" onclick={() => selectConsumer(null)}>For {consumerName(selectedConsumer)} <span aria-hidden="true">×</span><span class="sr-only">Show all services</span></button>
             {/if}
           {/snippet}
+          {#if deadLetterActionError}<Notice variant="error" class="mb-3">{deadLetterActionError}</Notice>{/if}
           {#if deadLetterPages.state === "unavailable"}
             <Notice variant="warning" role="status">Failed deliveries can't be shown: {deadLetterPages.error}</Notice>
           {:else if deadLetterPages.state === "pending"}
