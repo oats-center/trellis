@@ -15,6 +15,14 @@ and this project adheres to
 
 ### Fixed
 
+- Console forms keep what you typed when the saved record changes underneath
+  them: a "Changed while you were editing" panel shows yours next to the saved
+  value, and Save waits until each conflict is settled. A refused deletion keeps
+  unsaved edits, and a late reply for one service never lands on another.
+- "Delete account" on the user page can be confirmed again.
+- The `url` and `time` crates are updated past RUSTSEC-2026-0592 and
+  RUSTSEC-2026-0009.
+- Debug builds of the server start with half the thread stack they needed.
 - The Console no longer loses what you are typing every few minutes. Each
   renewal of its session's authority, an issuer rotation or a reconnect made it
   briefly treat the user as having no permissions, which unmounted forms and
