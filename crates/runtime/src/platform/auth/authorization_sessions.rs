@@ -578,7 +578,7 @@ pub(super) fn session_credential(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no session {session}")))?;
     match (kind.as_str(), grant, identity) {
         ("oauthGrant", Some(grant), None) => Ok(Credential::OAuthGrant(grant)),
         ("provisionedIdentity", None, Some(identity)) => {
@@ -789,14 +789,16 @@ impl SqliteAuthorizationStore {
         };
         let current = match evaluate(connection, &admission.credential, now) {
             Ok(current) => current,
-            Err(error @ (AuthError::Denied | AuthError::RequiredMissing | AuthError::NotFound)) => {
+            Err(
+                error @ (AuthError::Denied | AuthError::RequiredMissing | AuthError::NotFound(_)),
+            ) => {
                 if let Some(session) = renew_session {
                     retire_session(
                         self,
                         connection,
                         session,
                         "credential_unavailable",
-                        matches!(&error, AuthError::Denied | AuthError::NotFound),
+                        matches!(&error, AuthError::Denied | AuthError::NotFound(_)),
                         None,
                         now,
                     )?;
@@ -1240,7 +1242,7 @@ impl SqliteAuthorizationStore {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| AuthError::NotFound(format!("no session {session}")))?;
         Ok(trellis_protocol::AuthorizationSessionStatus {
             authorization_session_id: session.into(),
             state: match state.as_str() {
@@ -1277,7 +1279,7 @@ impl SqliteAuthorizationStore {
             connection
                 .query_row(query, [key], |row| row.get(0))
                 .optional()?
-                .ok_or(AuthError::NotFound)
+                .ok_or_else(|| AuthError::NotFound(format!("no {kind} material {key}")))
         })
     }
 
@@ -1445,7 +1447,7 @@ impl SqliteAuthorizationStore {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| AuthError::NotFound(format!("no issuer key {key_id}")))?;
         Ok(AuthorityIssuerKey {
             key_id: key_id.into(),
             public_key: public,

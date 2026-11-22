@@ -94,6 +94,27 @@ the exact request, response, and error types.
 | Users                 | `Users.Create/Delete/Find/Get/List/Resolve/Update`, `Users.Identities.Link/Unlink`, `Users.Profile.Update`, `Users.Password.Change`, `Users.PasswordReset.Create`, `Users.IdentityLink.Providers/Create`, `UserIdentities.List/Unlink` |
 | Runtime               | `Runtime.Version`                                                                                                                                                                                                                      |
 
+### Errors
+
+A mutation that can't be done says why, in a message the CLI and Console show
+as it is:
+
+- An unknown target is `AuthError` `not_found`, naming its kind and ID: "no
+  user <id>", "no issuer key <id>", "deployment <id> has no webhook endpoint
+  <url>".
+- A target in the wrong state is a validation error saying what state it is in
+  and, where it helps, what to do instead: "issuer key <id> is already
+  revoked", "session <id> has already ended", "service update <id> is already
+  rejected", "role <id> already exists; edit it instead".
+- A real conflict is `AuthError` `revision_conflict`, saying what changed:
+  "user <id> changed since revision 3; reload and try again". Someone else
+  changed the target after the caller read it, or a retry reused an
+  idempotency key for a different request ("idempotency key <key> was already
+  used for a different request"). A taken username is a conflict too.
+
+Repeating a request with the same idempotency key returns its first result,
+never one of these errors.
+
 ### Issuers
 
 Fresh initialization provisions the initial private issuer seed. Authorized

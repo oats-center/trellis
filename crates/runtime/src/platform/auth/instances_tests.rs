@@ -277,11 +277,20 @@ fn a_cap_lowered_below_the_roster_admits_no_new_key_until_the_roster_drains_to_i
         })
         .unwrap();
     enroll_as(&f, &secret, &key(5), &deployment, NOW + 702).unwrap();
-    assert_eq!(
+    // The two left enrolled at the same moment and never connected, so either
+    // may be the one replaced, but only one is.
+    let mut left = [
         instance_state(&f, &instances[2]),
-        ("retired".into(), Some("replaced".into()))
+        instance_state(&f, &instances[3]),
+    ];
+    left.sort();
+    assert_eq!(
+        left,
+        [
+            ("active".into(), None),
+            ("retired".into(), Some("replaced".into()))
+        ]
     );
-    assert_eq!(instance_state(&f, &instances[3]).0, "active");
 }
 
 #[test]

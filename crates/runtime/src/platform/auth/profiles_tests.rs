@@ -92,7 +92,7 @@ fn owner_profile_updates_are_replayable_revision_checked_and_durable_without_cha
     );
     assert!(matches!(
         rpc_users::update_profile(&store, &mutation(&actor, &input), &input, NOW + 3),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let other = store
         .transaction(|connection| {

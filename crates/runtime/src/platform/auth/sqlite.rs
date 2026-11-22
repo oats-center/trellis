@@ -61,13 +61,15 @@ impl std::ops::Deref for Connection {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AuthError {
-    #[error("not found")]
-    NotFound,
-    /// Not found, saying what the caller named that doesn't exist.
+    /// The caller named something that doesn't exist; the detail names its
+    /// kind and ID, as in "no user <id>".
     #[error("not found: {0}")]
-    Missing(String),
-    #[error("revision conflict")]
-    Conflict,
+    NotFound(String),
+    /// Someone else changed the target since the caller read it, or a retry
+    /// reused an idempotency key for a different request. The detail says
+    /// what changed and that the caller should reload and try again.
+    #[error("conflict: {0}")]
+    Conflict(String),
     /// An administrator linked an OIDC sign-in that another account has.
     #[error("identity linked to another user")]
     IdentityTaken,
@@ -190,6 +192,41 @@ pub(crate) struct Mutation {
     /// reply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) session: Option<String>,
+}
+
+/// `target`, such as "user <id>", changed after the caller read it at
+/// `revision`.
+pub(super) fn changed_since(target: &str, revision: impl std::fmt::Display) -> AuthError {
+    AuthError::Conflict(format!(
+        "{target} changed since revision {revision}; reload and try again"
+    ))
+}
+
+/// Check a write against `target`'s stored revision, `None` when it doesn't
+/// exist yet. An `expected` revision of 0 creates it.
+pub(super) fn expect_revision(
+    target: &str,
+    current: Option<u64>,
+    expected: u64,
+) -> Result<(), AuthError> {
+    match (current, expected) {
+        (None, 0) => Ok(()),
+        (Some(current), expected) if current == expected => Ok(()),
+        (None, _) => Err(AuthError::NotFound(format!("no {target}"))),
+        (Some(_), 0) => Err(AuthError::Invalid(format!(
+            "{target} already exists; edit it instead"
+        ))),
+        (Some(_), expected) => Err(changed_since(target, expected)),
+    }
+}
+
+/// A retry that reused `identity`'s idempotency key for a different request.
+fn reused_idempotency_key(identity: &Mutation) -> AuthError {
+    AuthError::Conflict(format!(
+        "idempotency key {} was already used for a different request; send this one with a \
+        new key",
+        identity.request_id
+    ))
 }
 
 pub(super) fn json(value: &impl Serialize) -> Result<String, AuthError> {
@@ -881,7 +918,7 @@ impl SqliteAuthorizationStore {
             previous
                 .map(|(previous_digest, result)| {
                     if previous_digest != identity.request_digest {
-                        return Err(AuthError::Conflict);
+                        return Err(reused_idempotency_key(identity));
                     }
                     decode(&result)
                 })
@@ -934,7 +971,7 @@ impl SqliteAuthorizationStore {
             .optional()?;
         if let Some((previous_digest, result)) = previous {
             if previous_digest != identity.request_digest {
-                return Err(AuthError::Conflict);
+                return Err(reused_idempotency_key(identity));
             }
             return decode(&result);
         }
@@ -991,7 +1028,9 @@ impl SqliteAuthorizationStore {
                         |row| row.get(0),
                     )?;
                     if count != 0 {
-                        return Err(AuthError::Conflict);
+                        return Err(AuthError::Conflict(
+                            "Auth has issuer keys but none is current".into(),
+                        ));
                     }
                     connection.execute(
                         "INSERT INTO auth_authorization_issuers(key_id,public_key,is_current,\

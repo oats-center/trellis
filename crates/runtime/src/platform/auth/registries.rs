@@ -267,7 +267,10 @@ pub(super) fn register_rpc<P: ParticipantDescriptor>(
                             [input.name.0.as_str()],
                         )?;
                         if removed == 0 {
-                            return Err(AuthError::NotFound);
+                            return Err(AuthError::NotFound(format!(
+                                "no package registry {}",
+                                input.name.0
+                            )));
                         }
                         Ok(AuthEmpty {
                             extra: Default::default(),

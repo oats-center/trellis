@@ -17,6 +17,13 @@ use trellis_rs::service::{
 use super::sqlite::{decode, digest, json, AuthError, SqliteAuthorizationStore};
 
 /// Detach omitted allocations without deleting any provider data.
+/// NATS state named `what` that Trellis did not make, or not as it now is.
+fn foreign(what: &str) -> AuthError {
+    AuthError::Invalid(format!(
+        "{what} in NATS has settings Trellis did not give it, so Trellis leaves it as it is"
+    ))
+}
+
 pub(super) fn detach_deployment_resources(
     connection: &crate::platform::auth::sqlite::Connection,
     deployment: &str,
@@ -45,7 +52,9 @@ pub(super) fn detach_deployment_resources(
         }
         // A provider allocation in flight must finish before deployment changes.
         if state == "pending" {
-            return Err(AuthError::Conflict);
+            return Err(AuthError::Conflict(format!(
+                "resource {resource} is still being created; try again once it is ready"
+            )));
         }
         connection.execute(
             "UPDATE auth_resources \
@@ -146,7 +155,9 @@ pub(crate) async fn materialize_native_kv(
                 .participants()
                 .values()
                 .find(|definition| definition.identity().as_str() == participant)
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| {
+                    AuthError::NotFound(format!("the package has no participant {participant}"))
+                })?;
             let mut kv = BTreeMap::new();
             for (name, declaration) in definition.resources() {
                 let (kind, history, ttl_ms) = match declaration {
@@ -436,7 +447,10 @@ pub(crate) async fn materialize_native_kv(
                     .optional()?;
                 if let Some((state, incarnation, previously_materialized)) = current {
                     if state == "destroying" {
-                        return Err(AuthError::Conflict);
+                        return Err(AuthError::Conflict(format!(
+                            "resource {} is being removed; try again once it is gone",
+                            allocation.resource_id
+                        )));
                     }
                     allocation.allocation_id = incarnation;
                     if previously_materialized {
@@ -549,7 +563,7 @@ pub(crate) async fn materialize_native_kv(
                         || config.ack_wait != ack_wait
                         || config.backoff != backoff
                     {
-                        return Err(AuthError::Conflict);
+                        return Err(foreign(&format!("consumer {}", binding.consumer_name)));
                     }
                 }
                 Err(error)
@@ -596,7 +610,7 @@ pub(crate) async fn materialize_native_kv(
                             || config.max_age != Duration::ZERO
                             || config.subjects != vec![format!("$KV.{key_bucket}.>")]
                         {
-                            return Err(AuthError::Conflict);
+                            return Err(foreign(&format!("bucket {key_bucket}")));
                         }
                     }
                     Err(error)
@@ -676,7 +690,7 @@ pub(crate) async fn materialize_native_kv(
                                 != async_nats::jetstream::consumer::AckPolicy::Explicit
                             || config.max_deliver != binding.max_deliver
                         {
-                            return Err(AuthError::Conflict);
+                            return Err(foreign(&format!("consumer {consumer_name}")));
                         }
                     }
                     Err(error)
@@ -756,7 +770,7 @@ pub(crate) async fn materialize_native_kv(
                         .iter()
                         .collect()
             {
-                return Err(AuthError::Conflict);
+                return Err(foreign(&format!("bucket {bucket}")));
             }
             let ttl = Duration::from_millis(allocation.ttl_ms as u64);
             if ttl != Duration::ZERO && (config.max_age == Duration::ZERO || ttl < config.max_age) {
@@ -826,7 +840,7 @@ pub(crate) async fn materialize_native_kv(
             || status.info.config.storage != async_nats::jetstream::stream::StorageType::File
             || status.info.config.subjects != vec![format!("$KV.{bucket}.>")]
         {
-            return Err(AuthError::Conflict);
+            return Err(foreign(&format!("bucket {bucket}")));
         }
         let desired_ttl = Duration::from_millis(allocation.ttl_ms as u64);
         if allocation.history < status.history()
@@ -912,7 +926,10 @@ pub(crate) async fn materialize_native_kv(
             )
             .optional()?;
         if current != Some((plan.installed_revision, plan.binding_revision)) {
-            return Err(AuthError::Conflict);
+            return Err(AuthError::Conflict(format!(
+                "deployment {} changed while Trellis was preparing its resources; try again",
+                plan.deployment
+            )));
         }
         for (name, allocation) in &plan.kv {
             let (physical, actual, evidence_kind) = if let Some(declaration) = &allocation.state {
@@ -974,7 +991,10 @@ pub(crate) async fn materialize_native_kv(
                 ],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "resource {} changed while Trellis was preparing it; try again",
+                    allocation.resource_id
+                )));
             }
             connection.execute(
                 "INSERT INTO auth_resource_history SELECT resource_id,revision,\

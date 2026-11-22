@@ -199,7 +199,7 @@ fn require_issuer(connection: &Connection, actor: &str, deployment: &str) -> Res
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no deployment {deployment}")))?;
     if kind != "service" {
         return Err(AuthError::Invalid(
             "enrollment secrets are for service deployments".into(),
@@ -300,15 +300,21 @@ fn update_secret(
         now,
         |connection| {
             let secret = input.secret_id.to_string();
-            let deployment: String = connection
+            let (deployment, revoked): (String, Option<i64>) = connection
                 .query_row(
-                    "SELECT deployment_id FROM auth_enrollment_secrets WHERE secret_id=?1",
+                    "SELECT deployment_id,revoked_at FROM auth_enrollment_secrets \
+                    WHERE secret_id=?1",
                     [&secret],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| AuthError::NotFound(format!("no enrollment secret {secret}")))?;
             require_issuer(connection, &identity.actor, &deployment)?;
+            if revoked.is_some() {
+                return Err(AuthError::Invalid(format!(
+                    "enrollment secret {secret} is revoked and can't be changed"
+                )));
+            }
             let expires = input.expires_at.as_ref().map(unix).transpose()?;
             if connection.execute(
                 "UPDATE auth_enrollment_secrets SET title=?2,expires_at=?3,max_instances=?4,\
@@ -326,7 +332,10 @@ fn update_secret(
                 ],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                return Err(super::sqlite::changed_since(
+                    &format!("enrollment secret {secret}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             audit(
                 connection,
@@ -357,22 +366,31 @@ fn revoke_secret(
         now,
         |connection| {
             let secret = input.secret_id.to_string();
-            let deployment: String = connection
+            let (deployment, revoked): (String, Option<i64>) = connection
                 .query_row(
-                    "SELECT deployment_id FROM auth_enrollment_secrets WHERE secret_id=?1",
+                    "SELECT deployment_id,revoked_at FROM auth_enrollment_secrets \
+                    WHERE secret_id=?1",
                     [&secret],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| AuthError::NotFound(format!("no enrollment secret {secret}")))?;
             require_issuer(connection, &identity.actor, &deployment)?;
+            if revoked.is_some() {
+                return Err(AuthError::Invalid(format!(
+                    "enrollment secret {secret} is already revoked"
+                )));
+            }
             if connection.execute(
                 "UPDATE auth_enrollment_secrets SET revoked_at=?2,updated_at=?2,\
                 revision=revision+1 WHERE secret_id=?1 AND revision=?3 AND revoked_at IS NULL",
                 params![secret, now, input.expected_revision.0 .0],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                return Err(super::sqlite::changed_since(
+                    &format!("enrollment secret {secret}"),
+                    input.expected_revision.0 .0,
+                ));
             }
             let (mut retired, mut closing) = (0u64, 0u64);
             if input.retire_instances == Some(true) {
@@ -428,7 +446,7 @@ pub(super) fn retire_in(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
-        .ok_or(AuthError::Conflict)?;
+        .ok_or_else(|| AuthError::Invalid(format!("instance {instance} is already retired")))?;
     connection.execute(
         "UPDATE auth_instances SET state='retired',retired_at=?2,retired_reason=?3,\
         updated_at=?2,version=version+1 WHERE instance_id=?1",
@@ -529,7 +547,7 @@ pub(super) fn read_secret(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no enrollment secret {secret}")))?;
     let instances: u64 = connection.query_row(
         "SELECT count(*) FROM auth_instances \
         WHERE enrollment_secret_id=?1 AND state IN ('active','disabled')",
@@ -662,7 +680,7 @@ fn read_policy(
         |row| row.get(0),
     )?;
     if !exists {
-        return Err(AuthError::NotFound);
+        return Err(AuthError::NotFound(format!("no deployment {deployment}")));
     }
     let own: (Option<bool>, Option<u32>, Option<bool>) = connection
         .query_row(

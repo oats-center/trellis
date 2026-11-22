@@ -121,7 +121,9 @@ impl SqliteAuthorizationStore {
             |row| row.get(0),
         )?;
         if exists {
-            return Err(AuthError::Conflict);
+            return Err(AuthError::Conflict(
+                "Trellis already has its first administrator".into(),
+            ));
         }
         connection.execute(
             "INSERT INTO auth_principals(principal_id,kind,state,created_at,\
@@ -284,11 +286,11 @@ impl SqliteAuthorizationStore {
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()?;
-                if current.as_ref().map_or(0, |(revision, _)| *revision)
-                    != registration.expected_revision
-                {
-                    return Err(AuthError::Conflict);
-                }
+                super::sqlite::expect_revision(
+                    &format!("app {}", registration.client_id),
+                    current.as_ref().map(|(revision, _)| *revision),
+                    registration.expected_revision,
+                )?;
                 if current
                     .as_ref()
                     .is_some_and(|(_, kind)| kind != &registration.kind)
@@ -484,9 +486,11 @@ impl SqliteAuthorizationStore {
                         |row| row.get(0),
                     )
                     .optional()?;
-                if current.unwrap_or(0) != registration.expected_revision {
-                    return Err(AuthError::Conflict);
-                }
+                super::sqlite::expect_revision(
+                    &format!("OIDC provider {}", registration.provider_id),
+                    current,
+                    registration.expected_revision,
+                )?;
                 let old_issuer: Option<String> = connection
                     .query_row(
                         "SELECT issuer FROM auth_oidc_providers WHERE provider_id=?1",
@@ -581,7 +585,7 @@ impl SqliteAuthorizationStore {
             )
             .optional()?;
         if existing.as_ref().is_some_and(|owner| owner != principal) {
-            return Err(AuthError::Conflict);
+            return Err(AuthError::IdentityTaken);
         }
         if existing.is_some() {
             return Ok(true);
@@ -662,7 +666,7 @@ impl SqliteAuthorizationStore {
                 for (name, displayed) in &presentation.capabilities {
                     let current = match capability(connection, name) {
                         Ok(value) => Some(value),
-                        Err(AuthError::NotFound) => None,
+                        Err(AuthError::NotFound(_)) => None,
                         Err(error) => return Err(error),
                     };
                     if &current != displayed {
@@ -802,7 +806,7 @@ impl SqliteAuthorizationStore {
                 }
                 let cap = match capability(connection, name) {
                     Ok(cap) => cap,
-                    Err(AuthError::NotFound) if !approval.selection.required.contains(name) => {
+                    Err(AuthError::NotFound(_)) if !approval.selection.required.contains(name) => {
                         continue
                     }
                     Err(error) => return Err(error),

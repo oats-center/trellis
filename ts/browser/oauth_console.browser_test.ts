@@ -81,8 +81,9 @@ test("the Console signs in without asking for access and uses the real authentic
         .getByRole("cell", { name: username, exact: true })
         .first()
         .waitFor();
-      // Reusing an existing username reaches Users.Create's declared conflict;
-      // it must leave the protected account unchanged and the client usable.
+      // Reusing an existing username reaches Users.Create's declared conflict,
+      // which the Console shows as Auth says it; it must leave the protected
+      // account unchanged and the client usable.
       await page.getByRole("link", { name: "New user", exact: true }).click();
       await page.getByLabel(/Username/).fill(username);
       await page
@@ -91,7 +92,11 @@ test("the Console signs in without asking for access and uses the real authentic
       await page
         .getByRole("button", { name: "Create user", exact: true })
         .click();
-      await page.getByText("Revision conflict", { exact: false }).waitFor();
+      await page
+        .getByText(`username ${username.toLowerCase()} is already taken`, {
+          exact: false,
+        })
+        .waitFor();
       strictEqual(
         await page.getByText("Account created", { exact: true }).count(),
         0,

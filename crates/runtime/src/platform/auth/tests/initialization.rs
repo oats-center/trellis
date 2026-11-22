@@ -36,7 +36,7 @@ fn administrator_without_a_password_cannot_log_in_or_be_seeded_with_a_password_l
             None,
             NOW
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     assert_eq!(
         store

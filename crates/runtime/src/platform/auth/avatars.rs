@@ -239,7 +239,9 @@ impl Avatars {
                     |row| row.get(0),
                 )?;
                 if !current {
-                    return Err(AuthError::NotFound);
+                    return Err(AuthError::NotFound(format!(
+                        "no profile image for revision {revision} of user {principal}"
+                    )));
                 }
                 Ok(connection
                     .query_row(
@@ -280,7 +282,9 @@ impl Avatars {
                     |row| row.get(0),
                 )?;
                 if !current {
-                    return Err(AuthError::NotFound);
+                    return Err(AuthError::NotFound(format!(
+                        "no profile image for revision {revision} of user {principal}"
+                    )));
                 }
                 let (status, bytes, ttl) = match result {
                     Ok(Some(bytes)) => ("ok", Some(bytes), 7 * 86400),
@@ -384,14 +388,14 @@ impl Avatars {
     pub(super) async fn get(&self, encoded: &str, now: i64) -> Result<Option<Vec<u8>>, AuthError> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         if !self.store.settings.avatar_external_fetch_enabled {
-            return Err(AuthError::NotFound);
+            return Err(AuthError::NotFound("profile images are turned off".into()));
         }
         let token = self
             .store
             .avatar_signer
             .get()
             .and_then(|signer| signer.verify(encoded))
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| AuthError::NotFound("no such profile image".into()))?;
         let store = self.store.clone();
         let principal = token.principal.clone();
         let profile = blocking(move || {
@@ -399,7 +403,7 @@ impl Avatars {
         })
         .await?;
         if profile.revision != token.revision {
-            return Err(AuthError::NotFound);
+            return Err(AuthError::NotFound("no such profile image".into()));
         }
         for source in sources(&profile) {
             match self.cached(&token, &source, now).await? {

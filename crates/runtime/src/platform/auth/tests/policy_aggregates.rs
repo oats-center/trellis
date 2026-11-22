@@ -70,7 +70,7 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
     assert_eq!(updated.mapping.role_ids, update.role_ids);
     assert!(matches!(
         put_mapping(&f.store, &mutation(&f.admin, &update), &update, NOW + 1),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let invalid = AuthOIDCRoleMappingPutRequest {
         role_ids: vec![roles[0].parse().unwrap(), id().parse().unwrap()],
@@ -80,7 +80,7 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
     };
     assert!(matches!(
         put_mapping(&f.store, &mutation(&f.admin, &invalid), &invalid, NOW + 2),
-        Err(AuthError::NotFound)
+        Err(AuthError::NotFound(_))
     ));
     assert_eq!(
         f.store
@@ -110,6 +110,6 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
     assert!(matches!(
         f.store
             .transaction(|connection| read_mapping(connection, &delete.mapping_id.to_string())),
-        Err(AuthError::NotFound)
+        Err(AuthError::NotFound(_))
     ));
 }

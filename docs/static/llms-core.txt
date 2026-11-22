@@ -1617,6 +1617,12 @@ Declare these dependencies only when the application uses them:
   with the same key and input returns the stored result, the same key with a
   different input is a conflict, and a key that is not a ULID is refused with
   an error naming `idempotencyKey`.
+- Auth mutation errors say why, in a message fit to show a person. An unknown
+  target is `AuthError` `not_found` naming its kind and ID ("no user <id>"). A
+  target in the wrong state is a validation error saying which state ("session
+  <id> has already ended"). `AuthError` `revision_conflict` means the target
+  changed since it was read ("... changed since revision 3; reload and try
+  again") or the idempotency key was reused; reread before deciding again.
 
 ## Test And Troubleshoot
 

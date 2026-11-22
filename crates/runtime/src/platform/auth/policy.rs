@@ -9,7 +9,10 @@ use trellis_protocol::{
 
 use super::authorization_sessions::Credential;
 use super::revocation::EnforcementScope;
-use super::sqlite::{decode, json, AuthError, Connection, Mutation, SqliteAuthorizationStore};
+use super::sqlite::{
+    changed_since, decode, expect_revision, json, AuthError, Connection, Mutation,
+    SqliteAuthorizationStore,
+};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct CapabilitySelection {
@@ -118,7 +121,7 @@ pub(super) fn capability(
             |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no capability {capability_id}")))?;
     Ok(CapabilityAuthority {
         capability_id: capability_id.into(),
         identity_generation: U64s::new(row.0),
@@ -136,7 +139,7 @@ pub(super) fn role(connection: &Connection, role_id: &str) -> Result<(u64, u64),
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .ok_or(AuthError::NotFound)
+        .ok_or_else(|| AuthError::NotFound(format!("no role {role_id}")))
 }
 
 #[derive(Debug)]
@@ -386,7 +389,7 @@ pub(super) fn evaluate(
     for selected in selected {
         let current = match capability(connection, &selected) {
             Ok(value) => Some(value),
-            Err(AuthError::NotFound) => None,
+            Err(AuthError::NotFound(_)) => None,
             Err(error) => return Err(error),
         };
         let is_required = required.contains(&selected);
@@ -554,7 +557,7 @@ pub(super) fn apply_policy_in_transaction(
                     |row| row.get(0),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| AuthError::NotFound(format!("no user or service {principal_id}")))?;
             if kind == "user" {
                 SqliteAuthorizationStore::require_account_access(
                     connection,
@@ -617,7 +620,7 @@ pub(super) fn apply_policy(
                     )?;
                     generation
                 }
-                Err(AuthError::NotFound) if *expected_revision == 0 => {
+                Err(AuthError::NotFound(_)) if *expected_revision == 0 => {
                     let generation: u64 = connection.query_row(
                         "SELECT coalesce(max(identity_generation),0)+1 \
                         FROM auth_roles WHERE role_id=?1",
@@ -632,8 +635,13 @@ pub(super) fn apply_policy(
                     )?;
                     generation
                 }
-                Err(error) if !matches!(error, AuthError::NotFound) => return Err(error),
-                _ => return Err(AuthError::Conflict),
+                Ok(_) if *expected_revision == 0 => {
+                    return Err(AuthError::Invalid(format!(
+                        "role {role_id} already exists; edit it instead"
+                    )))
+                }
+                Ok(_) => return Err(changed_since(&format!("role {role_id}"), expected_revision)),
+                Err(error) => return Err(error),
             };
             connection.execute(
                 "DELETE FROM auth_role_capabilities WHERE role_id=?1 AND role_generation=?2",
@@ -657,7 +665,7 @@ pub(super) fn apply_policy(
         } => {
             let (generation, revision) = role(connection, role_id)?;
             if revision != *expected_revision {
-                return Err(AuthError::Conflict);
+                return Err(changed_since(&format!("role {role_id}"), expected_revision));
             }
             connection.execute(
                 "UPDATE auth_roles SET \
@@ -686,9 +694,16 @@ pub(super) fn apply_policy(
                     |row| row.get(0),
                 )
                 .optional()?;
-            if current.unwrap_or(0) != *expected_revision {
-                return Err(AuthError::Conflict);
+            if current.is_some() && *expected_revision == 0 {
+                return Err(AuthError::Invalid(format!(
+                    "{principal_id} already has role {role_id}"
+                )));
             }
+            expect_revision(
+                &format!("assignment of role {role_id} to {principal_id}"),
+                current,
+                *expected_revision,
+            )?;
             connection.execute(
                 "INSERT INTO auth_role_assignments (assignment_id,principal_id,role_id,\
                 role_generation,revision,expires_at,created_at) \
@@ -725,7 +740,19 @@ pub(super) fn apply_policy(
                 params![principal_id, role_id, generation, expected_revision],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                let assigned: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM auth_role_assignments \
+                    WHERE principal_id=?1 \
+                    AND role_id=?2 AND role_generation=?3)",
+                    params![principal_id, role_id, generation],
+                    |row| row.get(0),
+                )?;
+                let target = format!("assignment of role {role_id} to {principal_id}");
+                return Err(if assigned {
+                    changed_since(&target, expected_revision)
+                } else {
+                    AuthError::NotFound(format!("no {target}"))
+                });
             }
             Ok((
                 EnforcementScope::Principal(principal_id.clone()),
@@ -766,9 +793,16 @@ pub(super) fn apply_policy(
                     |row| row.get(0),
                 )
                 .optional()?;
-            if current.unwrap_or(0) != *expected_revision {
-                return Err(AuthError::Conflict);
+            if current.is_some() && *expected_revision == 0 {
+                return Err(AuthError::Invalid(format!(
+                    "{principal_id} already has capability {capability_id}"
+                )));
             }
+            expect_revision(
+                &format!("grant of capability {capability_id} to {principal_id}"),
+                current,
+                *expected_revision,
+            )?;
             connection.execute(
                 "INSERT INTO auth_direct_capabilities (grant_id,principal_id,\
                 capability_id,capability_generation,revision,expires_at,created_at) \
@@ -811,7 +845,20 @@ pub(super) fn apply_policy(
                 ],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                let granted: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM auth_direct_capabilities \
+                    WHERE principal_id=?1 \
+                    AND capability_id=?2 \
+                    AND capability_generation=?3)",
+                    params![principal_id, capability_id, cap.identity_generation.get()],
+                    |row| row.get(0),
+                )?;
+                let target = format!("grant of capability {capability_id} to {principal_id}");
+                return Err(if granted {
+                    changed_since(&target, expected_revision)
+                } else {
+                    AuthError::NotFound(format!("no {target}"))
+                });
             }
             Ok((
                 EnforcementScope::Principal(principal_id.clone()),
@@ -834,7 +881,20 @@ pub(super) fn apply_policy(
                 params![state, now, client_id, expected_revision],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                let current: Option<String> = connection
+                    .query_row(
+                        "SELECT state FROM auth_oauth_clients WHERE client_id=?1",
+                        [client_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                return Err(match current.as_deref() {
+                    None => AuthError::NotFound(format!("no app {client_id}")),
+                    Some("deleted") => {
+                        AuthError::Invalid(format!("app {client_id} is already deleted"))
+                    }
+                    Some(_) => changed_since(&format!("app {client_id}"), expected_revision),
+                });
             }
             Ok((
                 EnforcementScope::Client(client_id.clone()),
@@ -869,7 +929,22 @@ pub(super) fn apply_policy(
                 params![state, now, principal_id, expected_revision],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                let current: Option<(String, String)> = connection
+                    .query_row(
+                        "SELECT kind,state FROM auth_principals WHERE principal_id=?1",
+                        [principal_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                return Err(match current {
+                    None => AuthError::NotFound(format!("no user or service {principal_id}")),
+                    Some((kind, state)) if state == "revoked" => {
+                        AuthError::Invalid(format!("{kind} {principal_id} is already deleted"))
+                    }
+                    Some((kind, _)) => {
+                        changed_since(&format!("{kind} {principal_id}"), expected_revision)
+                    }
+                });
             }
             Ok((
                 EnforcementScope::Principal(principal_id.clone()),
@@ -950,9 +1025,11 @@ pub(super) fn apply_policy(
                     |row| row.get(0),
                 )
                 .optional()?;
-            if current.unwrap_or(0) != *expected_revision {
-                return Err(AuthError::Conflict);
-            }
+            expect_revision(
+                &format!("OIDC role mapping {mapping_id}"),
+                current,
+                *expected_revision,
+            )?;
             connection.execute(
                 "INSERT INTO auth_oidc_role_mappings \
                 VALUES(?1,?2,?3,?4,?5) \
@@ -990,7 +1067,19 @@ pub(super) fn apply_policy(
                 params![mapping_id, expected_revision],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                let exists: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM auth_oidc_role_mappings WHERE mapping_id=?1)",
+                    [mapping_id],
+                    |row| row.get(0),
+                )?;
+                return Err(if exists {
+                    changed_since(
+                        &format!("OIDC role mapping {mapping_id}"),
+                        expected_revision,
+                    )
+                } else {
+                    AuthError::NotFound(format!("no OIDC role mapping {mapping_id}"))
+                });
             }
             Ok((EnforcementScope::All, expected_revision + 1))
         }

@@ -296,7 +296,10 @@ pub(super) fn revoke_assignment(
             let assignment = read_assignment(connection, &input.assignment_id.to_string())?;
             let (generation, _) = super::policy::role(connection, &assignment.role_id.to_string())?;
             if generation != assignment.role_identity_generation.0 .0 {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "role {} was replaced since this assignment was made; reload and try again",
+                    assignment.role_id
+                )));
             }
             let command = PolicyMutation::RoleRevoke {
                 principal_id: assignment.principal_id.to_string(),
@@ -384,7 +387,10 @@ pub(super) fn revoke_grant(
             let capability =
                 super::policy::capability(connection, &grant.capability.capability_id)?;
             if capability.identity_generation.get() != grant.capability.identity_generation.0 .0 {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "capability {} was replaced since this grant was made; reload and try again",
+                    grant.capability.capability_id
+                )));
             }
             let command = PolicyMutation::CapabilityRevoke {
                 principal_id: grant.principal_id.to_string(),
@@ -423,7 +429,7 @@ fn read_assignment(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no role assignment {assignment_id}")))?;
     Ok(AuthRoleAssignment {
         assignment_id: assignment_id.parse().map_err(|_| AuthError::Unavailable)?,
         principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
@@ -454,7 +460,7 @@ fn read_grant(connection: &Connection, grant_id: &str) -> Result<AuthCapabilityG
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no capability grant {grant_id}")))?;
     Ok(AuthCapabilityGrant {
         grant_id: grant_id.parse().map_err(|_| AuthError::Unavailable)?,
         principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
@@ -603,7 +609,7 @@ pub(super) fn read_role(connection: &Connection, role_id: &str) -> Result<AuthRo
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no role {role_id}")))?;
     let mut statement = connection.prepare(
         "SELECT capability_id,capability_generation \
         FROM auth_role_capabilities \
@@ -700,7 +706,7 @@ pub(super) fn read_capability(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no capability {capability_id}")))?;
     let members = super::policy::current_members(connection, capability_id)?.unwrap_or_default();
     // A group allows what its current members allow.
     let mut allows = Vec::new();
@@ -770,7 +776,7 @@ pub(super) fn read_effective_access(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no user or service {principal_id}")))?;
     let principal = AuthPrincipal {
         principal_id: principal_id.parse().map_err(|_| AuthError::Unavailable)?,
         kind: kind.into(),

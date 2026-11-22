@@ -34,7 +34,7 @@ fn issuer_revocation_uses_only_issuer_privilege_and_preserves_other_scope_gates(
             &current_scope,
             NOW + 2
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Invalid(message)) if message.contains("is the current signing key")
     ));
     let scope = EnforcementScope::Issuer(previous.key_id.clone());
     revoke_root(&store, &mutation(&delegate, &scope), &scope, NOW + 2).unwrap();
@@ -154,7 +154,7 @@ fn issuer_rotation_replay_does_not_rotate_again_and_stale_requests_do_not_change
     assert!(matches!(
         f.store
             .rotate_issuer(&mutation(&f.admin, &input), &input, NOW + 1),
-        Err(AuthError::Conflict)
+        Err(AuthError::Invalid(message)) if message.contains("is not the current signing key")
     ));
     let issued = issue_authority(&f.store, &f.admission, None, NOW + 1).unwrap();
     let successor = rotation

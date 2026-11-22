@@ -3,7 +3,7 @@
 use super::Administration;
 use super::{
     rpc::{caller, mutation, rpc_error},
-    sqlite::{digest, AuthError, Mutation, SqliteAuthorizationStore},
+    sqlite::{changed_since, digest, AuthError, Mutation, SqliteAuthorizationStore},
 };
 use crate::platform::auth::blocking;
 use crate::platform::auth::sqlite::Connection;
@@ -116,7 +116,7 @@ pub(super) fn read_resource(
         )
         .optional()?;
     let (owner, owner_id, participant, name, kind, revision, state, namespace) =
-        row.ok_or(AuthError::NotFound)?;
+        row.ok_or_else(|| AuthError::NotFound(format!("no resource {id}")))?;
     let namespace: serde_json::Value = namespace
         .as_deref()
         .map(serde_json::from_str)
@@ -228,10 +228,22 @@ pub(super) async fn remove_resource(
                 |connection| {
                     let id = input_copy.resource_id.to_string();
                     let resource = read_resource(connection, &id)?;
-                    if resource.state != AuthResourceState::Detached
-                        || resource.revision != input_copy.expected_revision
-                    {
-                        return Err(AuthError::Conflict);
+                    if resource.state == AuthResourceState::Destroying {
+                        return Err(AuthError::Invalid(format!(
+                            "resource {id} is already being removed"
+                        )));
+                    }
+                    if resource.state != AuthResourceState::Detached {
+                        return Err(AuthError::Invalid(format!(
+                            "resource {id} is {}; only a detached resource can be removed",
+                            resource.state.as_str()
+                        )));
+                    }
+                    if resource.revision != input_copy.expected_revision {
+                        return Err(changed_since(
+                            &format!("resource {id}"),
+                            input_copy.expected_revision.0 .0,
+                        ));
                     }
                     let kind = if resource.kind == AuthResourceKind::EventConsumer {
                         "consumer"
@@ -261,10 +273,14 @@ pub(super) async fn remove_resource(
                             &resource.local_name,
                         ))?
                     } else {
-                        return Err(AuthError::Conflict);
+                        return Err(AuthError::Invalid(format!(
+                            "resource {id} can't be removed here; only deployment resources and                             user state can"
+                        )));
                     };
                     if expected_id != id {
-                        return Err(AuthError::Conflict);
+                        return Err(AuthError::Invalid(format!(
+                            "resource {id} does not match the allocation Trellis made for it, so                             Trellis leaves it in place"
+                        )));
                     }
                     let (physical, allocation): (String, String) = connection.query_row(
                         "SELECT physical_id,allocation_id \
@@ -301,7 +317,9 @@ pub(super) async fn remove_resource(
                         AuthResourceKind::Unknown(_) => false,
                     };
                     if !physical_matches {
-                        return Err(AuthError::Conflict);
+                        return Err(AuthError::Invalid(format!(
+                            "resource {id} does not match the allocation Trellis made for it, so                             Trellis leaves it in place"
+                        )));
                     }
                     let revision = resource.revision.0 .0 + 1;
                     if connection.execute(
@@ -313,7 +331,10 @@ pub(super) async fn remove_resource(
                         params![id, revision, now, input_copy.expected_revision.0 .0],
                     )? != 1
                     {
-                        return Err(AuthError::Conflict);
+                        return Err(changed_since(
+                            &format!("resource {id}"),
+                            input_copy.expected_revision.0 .0,
+                        ));
                     }
                     connection.execute(
                         "INSERT INTO auth_resource_history SELECT resource_id,revision,\
@@ -367,7 +388,10 @@ pub(super) async fn remove_resource(
                     params![command.0, command.1, command.4],
                     |row| row.get::<_, bool>(0),
                 )? {
-                    return Err(AuthError::Conflict);
+                    return Err(AuthError::Conflict(format!(
+                        "resource {} changed while it was being removed; reload and try again",
+                        command.0
+                    )));
                 }
                 // Only an explicit retry of this command can recover an interrupted
                 // execution. A new request cannot adopt its durable removal intent.
@@ -387,7 +411,10 @@ pub(super) async fn remove_resource(
                     ],
                 )? != 1
                 {
-                    return Err(AuthError::Conflict);
+                    return Err(AuthError::Conflict(format!(
+                        "resource {} is already being removed; try again in a moment",
+                        command.0
+                    )));
                 }
             }
             Ok((result, command))
@@ -399,6 +426,18 @@ pub(super) async fn remove_resource(
         return Ok(result);
     }
     let jetstream = async_nats::jetstream::new(operational.clone());
+    let named = id.clone();
+    let incomplete = || {
+        AuthError::Invalid(format!(
+            "Trellis's record of resource {named} is incomplete"
+        ))
+    };
+    let foreign = |what: &str| {
+        AuthError::Invalid(format!(
+            "{what} is not the one Trellis made for resource {named}, so Trellis leaves it in \
+            place"
+        ))
+    };
     let deletion: Result<(), AuthError> = async {
         let (selected, selected_allocation) = (id.clone(), allocation.clone());
         let (kind, local_name, owner_id, owner_kind): (String, String, String, String) = store
@@ -435,7 +474,7 @@ pub(super) async fn remove_resource(
                 .as_deref()
                 != Some(crate::platform::state::OWNERSHIP_MARKER)
             {
-                return Err(AuthError::Conflict);
+                return Err(foreign("the trellis_state bucket"));
             }
             if owner_kind == "deployment" {
                 jetstream
@@ -455,7 +494,7 @@ pub(super) async fn remove_resource(
         } else if kind == "job" || kind == "consumer" || kind == "webhook" {
             let mut value: serde_json::Value = serde_json::from_str(&physical)?;
             let owned = value.get("owned").unwrap_or(&value).clone();
-            let consumer = owned["consumer"].as_str().ok_or(AuthError::Conflict)?;
+            let consumer = owned["consumer"].as_str().ok_or_else(incomplete)?;
             let mut targets = vec![(
                 if kind == "job" {
                     crate::resources::JOBS_WORK_STREAM
@@ -469,7 +508,7 @@ pub(super) async fn remove_resource(
                     trellis_events_runtime::REPLAY_STREAM,
                     owned["replay_consumer"]
                         .as_str()
-                        .ok_or(AuthError::Conflict)?
+                        .ok_or_else(incomplete)?
                         .to_owned(),
                 ));
             }
@@ -481,7 +520,7 @@ pub(super) async fn remove_resource(
                     .map_err(|error| AuthError::Broker(error.to_string()))?;
                 match stream.consumer_info(name).await {
                     Ok(info) if info.config.description.as_deref() == Some(&marker) => (),
-                    Ok(_) => return Err(AuthError::Conflict),
+                    Ok(_) => return Err(foreign(&format!("consumer {name} on {stream_name}"))),
                     Err(error)
                         if error.kind()
                             == async_nats::jetstream::context::ConsumerInfoErrorKind::NotFound => {}
@@ -489,23 +528,21 @@ pub(super) async fn remove_resource(
                 }
             }
             if kind == "job" && value.get("purges").is_none() {
-                let namespace = owned["namespace"].as_str().ok_or(AuthError::Conflict)?;
+                let namespace = owned["namespace"].as_str().ok_or_else(incomplete)?;
                 let mut purges = Vec::new();
                 for (stream_name, filter) in [
                     (
                         crate::resources::JOBS_STREAM.to_owned(),
                         format!(
                             "{}.>",
-                            owned["publish_prefix"]
-                                .as_str()
-                                .ok_or(AuthError::Conflict)?
+                            owned["publish_prefix"].as_str().ok_or_else(incomplete)?
                         ),
                     ),
                     (
                         crate::resources::JOBS_WORK_STREAM.to_owned(),
                         owned["work_subject"]
                             .as_str()
-                            .ok_or(AuthError::Conflict)?
+                            .ok_or_else(incomplete)?
                             .to_owned(),
                     ),
                     (
@@ -520,7 +557,7 @@ pub(super) async fn remove_resource(
                                 && info.config.description.as_deref()
                                     != Some(format!("trellis.jobs.keys.v1:{owner_id}").as_str())
                             {
-                                return Err(AuthError::Conflict);
+                                return Err(foreign(&format!("stream {stream_name}")));
                             }
                             purges.push(serde_json::json!({
                                 "stream":stream_name,
@@ -551,6 +588,9 @@ pub(super) async fn remove_resource(
                     serde_json::to_string(&value)?,
                     physical.clone(),
                 );
+                let taken_over = AuthError::Conflict(format!(
+                    "another attempt took over removing resource {id}; try again"
+                ));
                 store
                     .transaction_blocking(move |connection| {
                         if connection.execute(
@@ -562,7 +602,7 @@ pub(super) async fn remove_resource(
                             params![actor, request_id, owner, encoded, previous],
                         )? != 1
                         {
-                            return Err(AuthError::Conflict);
+                            return Err(taken_over);
                         }
                         Ok(())
                     })
@@ -587,13 +627,13 @@ pub(super) async fn remove_resource(
             if let Some(purges) = value.get("purges").and_then(serde_json::Value::as_array) {
                 for purge in purges {
                     let stream = jetstream
-                        .get_stream(purge["stream"].as_str().ok_or(AuthError::Conflict)?)
+                        .get_stream(purge["stream"].as_str().ok_or_else(incomplete)?)
                         .await
                         .map_err(|error| AuthError::Broker(error.to_string()))?;
                     stream
                         .purge()
-                        .filter(purge["filter"].as_str().ok_or(AuthError::Conflict)?)
-                        .sequence(purge["before"].as_u64().ok_or(AuthError::Conflict)?)
+                        .filter(purge["filter"].as_str().ok_or_else(incomplete)?)
+                        .sequence(purge["before"].as_u64().ok_or_else(incomplete)?)
                         .await
                         .map_err(|error| AuthError::Broker(error.to_string()))?;
                 }
@@ -616,7 +656,7 @@ pub(super) async fn remove_resource(
                         .as_deref()
                         != Some(format!("trellis.resource.v1:{id}:{allocation}").as_str())
                     {
-                        return Err(AuthError::Conflict);
+                        return Err(foreign(&format!("bucket {physical}")));
                     }
                     if kind == "store" {
                         jetstream
@@ -684,7 +724,9 @@ pub(super) async fn remove_resource(
                 ],
             )? != 1
             {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "another attempt took over removing resource {id}; try again"
+                )));
             }
             if !connection.query_row(
                 "SELECT EXISTS(SELECT 1 \
@@ -695,7 +737,9 @@ pub(super) async fn remove_resource(
                 params![id, allocation, revision],
                 |row| row.get::<_, bool>(0),
             )? {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "resource {id} changed while it was being removed; reload and try again"
+                )));
             }
             connection.execute(
                 "DELETE FROM auth_resource_binding_evidence WHERE binding_id=?1",

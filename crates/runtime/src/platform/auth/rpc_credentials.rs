@@ -23,7 +23,7 @@ use super::{
     lifecycle::ClientRegistration,
     revocation::{enqueue_effect, enqueue_scope, EnforcementScope},
     rpc::{caller, mutation, rpc_error},
-    sqlite::{decode, digest, json as canonical_json},
+    sqlite::{changed_since, decode, digest, json as canonical_json},
     AuthError, Mutation, SqliteAuthorizationStore,
 };
 
@@ -661,7 +661,7 @@ pub(super) fn read_client(connection: &Connection, id: &str) -> Result<AuthOAuth
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no app {id}")))?;
     let metadata: serde_json::Value = decode(&metadata)?;
     Ok(AuthOAuthClient {
         client_id: id.to_owned().into(),
@@ -727,8 +727,22 @@ pub(super) fn update_client_sign_up(
             ],
         )?;
         if changed != 1 {
-            read_client(connection, &input.client_id)?;
-            return Err(AuthError::Conflict);
+            let state: String = connection
+                .query_row(
+                    "SELECT state FROM auth_oauth_clients WHERE client_id=?1",
+                    [input.client_id.as_ref()],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| AuthError::NotFound(format!("no app {}", input.client_id)))?;
+            return Err(if state == "deleted" {
+                AuthError::Invalid(format!("app {} is deleted", input.client_id))
+            } else {
+                changed_since(
+                    &format!("app {}", input.client_id),
+                    input.expected_revision.0 .0,
+                )
+            });
         }
         Ok(AuthOAuthClientGetResponse {
             client: read_client(connection, &input.client_id)?,
@@ -757,7 +771,10 @@ pub(super) fn put_client(
             |row| row.get(0),
         )?;
         if deleted {
-            return Err(AuthError::Conflict);
+            return Err(AuthError::Invalid(format!(
+                "app {} is deleted; register the app under a new client ID",
+                input.client_id
+            )));
         }
         let existing: Option<String> = connection
             .query_row(
@@ -887,7 +904,7 @@ fn read_login(connection: &Connection, id: &str) -> Result<AuthLoginSession, Aut
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no sign-in {id}")))?;
     Ok(AuthLoginSession {
         claim_fresh_until: fresh.map(timestamp).transpose()?,
         created_at: timestamp(created)?,
@@ -923,7 +940,7 @@ pub(super) fn revoke_login(
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| AuthError::NotFound(format!("no sign-in {login}")))?;
         if owner != identity.actor {
             if !verified.holds(Administration::ManagePrincipals.capability_id()) {
                 return Err(AuthError::Denied);
@@ -981,7 +998,7 @@ fn read_attachment(connection: &Connection, id: &str) -> Result<AuthAttachment, 
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no connection {id}")))?;
     Ok(AuthAttachment {
         admitted_at: admitted.map(timestamp).transpose()?,
         admitted_transport_policy_digest: policy.into(),
@@ -1039,7 +1056,7 @@ fn read_authorization_session(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no session {id}")))?;
     let (state, latest, cutoff, reason): (String, i64, Option<i64>, Option<String>) = connection
         .query_row(
             "SELECT s.state,s.latest_context_expiry,r.effective_cutoff,r.reason \
@@ -1145,9 +1162,12 @@ pub(super) fn kick_connection(
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| AuthError::NotFound(format!("no connection {}", input.attachment_id)))?;
         if state == "closed" {
-            return Err(AuthError::Conflict);
+            return Err(AuthError::Invalid(format!(
+                "connection {} is already closed",
+                input.attachment_id
+            )));
         }
         let work = enqueue_scope(connection, &EnforcementScope::Session(session.clone()), now)?;
         // A physical kick is not logical-session retirement or policy reduction.
@@ -1196,7 +1216,7 @@ pub(super) fn read_authority(
             |row| row.get(0),
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no authority {id}")))?;
     let authority = trellis_protocol::parse_session_authority(
         &bytes,
         trellis_protocol::MAX_SESSION_AUTHORITY_BYTES,
@@ -1400,7 +1420,7 @@ pub(super) fn read_delegation(
             },
         )
         .optional()?
-        .ok_or(AuthError::NotFound)?;
+        .ok_or_else(|| AuthError::NotFound(format!("no app grant {id}")))?;
     let approved: Vec<trellis_protocol::CapabilityAuthority> = decode(&approved)?;
     let choices = approved
         .into_iter()
@@ -1457,7 +1477,10 @@ pub(super) fn revoke_delegation(
                 )?;
             }
             if delegation.revision != input.expected_revision {
-                return Err(AuthError::Conflict);
+                return Err(changed_since(
+                    &format!("app grant {}", input.delegation_id),
+                    input.expected_revision.0 .0,
+                ));
             }
             let binding: (String, String, String) = connection.query_row(
                 "SELECT client_id,binding_kind,binding_value \
@@ -1525,7 +1548,7 @@ pub(super) fn read_chain(
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?
-            .ok_or(AuthError::NotFound)?;
+            .ok_or_else(|| AuthError::NotFound(format!("no rotation from issuer key {key}")))?;
         rotations.push(super::authorization_sessions::signed_text(bytes)?);
         key = next;
     }

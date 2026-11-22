@@ -274,7 +274,7 @@ fn stale_review_and_force_without_privilege_are_atomic_failures() {
     assert!(matches!(
         f.store
             .accept_api(&mutation(&f.admin, &forced), &forced, NOW + 2),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     assert_eq!(f.store.current_catalog(&f.api).unwrap().generation.get(), 1);
     let manager = create_user(&f.store, &f.admin, NOW);

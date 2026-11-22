@@ -72,7 +72,9 @@ pub(super) fn put_mapping(
                     |row| row.get(0),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)?;
+                .ok_or_else(|| {
+                    AuthError::NotFound(format!("no active OIDC provider {}", input.provider_id))
+                })?;
             let config: serde_json::Value = decode(&config)?;
             let claim_name = config
                 .get("roleClaim")

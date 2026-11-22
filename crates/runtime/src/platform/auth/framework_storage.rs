@@ -167,7 +167,11 @@ pub(super) async fn materialize_operations(
                 .collect::<std::collections::BTreeSet<_>>()
                 != subjects.iter().collect()
         {
-            return Err(AuthError::Conflict);
+            return Err(AuthError::Invalid(format!(
+                "stream {} is not the one Trellis made for this deployment, so Trellis leaves it \
+                in place",
+                config.name
+            )));
         }
     }
     let selected = deployment.to_owned();
@@ -186,7 +190,10 @@ pub(super) async fn materialize_operations(
                 )
                 .optional()?;
             if current != Some((installed_revision, binding_revision)) {
-                return Err(AuthError::Conflict);
+                return Err(AuthError::Conflict(format!(
+                    "deployment {deployment} changed while Trellis was preparing its storage; try \
+                    again"
+                )));
             }
             connection.execute(
                 "INSERT INTO auth_resource_binding_evidence(owner_kind,owner_id,\

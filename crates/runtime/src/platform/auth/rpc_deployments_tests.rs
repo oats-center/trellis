@@ -92,7 +92,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
             &unchanged,
             NOW + 1
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let changed = source.replace(
         "required capability documents.read; capability documents.write;",
@@ -158,7 +158,8 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
             "active",
             NOW + 3
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Invalid(message))
+            if message.contains("is not on its deployment's current version")
     ));
     let remove = AuthDeploymentMutationRequest {
         deployment_id: created.deployment.deployment_id,
@@ -190,7 +191,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
             "active",
             NOW + 4
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Invalid(message)) if message.ends_with("is removed")
     ));
 }
 
@@ -413,7 +414,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
             "service",
             NOW
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     assert_eq!(
         crate::platform::auth::tests::issue_provisioned_authority(
@@ -468,7 +469,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
             "active",
             NOW + 1
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let enable_command = AuthInstanceMutationRequest {
         expected_revision: disabled.instance.revision,
@@ -529,7 +530,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
             "active",
             NOW + 4
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Invalid(message)) if message.ends_with("is already removed")
     ));
     let deployment_command = AuthDeploymentMutationRequest {
         deployment_id: created.deployment.deployment_id,
@@ -630,7 +631,7 @@ fn catalog_acceptance_replays_typed_result_after_later_replacement() {
     };
     assert!(matches!(
         accept_api(&f.store, &mutation(&f.admin, &stale), &stale, NOW),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let accepted = accept_api(&f.store, &identity, &input, NOW).unwrap();
     let review = review_api(&f.store, &f.admin, &request, NOW + 1)
@@ -678,7 +679,7 @@ fn catalog_acceptance_replays_typed_result_after_later_replacement() {
     };
     assert!(matches!(
         accept_api(&f.store, &changed_identity, &changed, NOW + 2),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
 }
 

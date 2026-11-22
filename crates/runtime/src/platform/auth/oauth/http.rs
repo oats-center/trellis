@@ -944,7 +944,7 @@ async fn consent_data(
             {
                 let meaning = match super::super::policy::capability(connection, capability) {
                     Ok(value) => Some(value),
-                    Err(super::super::AuthError::NotFound) => None,
+                    Err(super::super::AuthError::NotFound(_)) => None,
                     Err(error) => return Err(error),
                 };
                 meanings.insert(capability.clone(), meaning);
@@ -1562,7 +1562,7 @@ async fn portal_sign_up(
                 response.into_response(),
             );
         }
-        Err(super::super::AuthError::Conflict) => "sign_up_taken",
+        Err(super::super::AuthError::Conflict(_)) => "sign_up_taken",
         Err(super::super::AuthError::Invalid(_)) => "sign_up_invalid",
         Err(super::super::AuthError::Denied) => "sign_up_failed",
         Err(_) => return error(ErrorCode::ServerError),

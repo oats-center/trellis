@@ -509,7 +509,7 @@ impl OAuthEngine {
             .await
             .map_err(|error| {
                 ErrorResponse::new(match error {
-                    AuthError::ResourceLimit | AuthError::Conflict => {
+                    AuthError::ResourceLimit | AuthError::Conflict(_) => {
                         ErrorCode::TemporarilyUnavailable
                     }
                     _ => ErrorCode::ServerError,

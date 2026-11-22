@@ -48,7 +48,7 @@ fn builtin_provider_replay_preserves_independent_roles_and_refuses_disabled_or_r
                 &URL_SAFE_NO_PAD.encode([61; 32]),
                 NOW
             ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let disabled = PolicyMutation::PrincipalState {
         principal_id: health.principal_id.clone(),
@@ -230,7 +230,8 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
             NOW + 2
         )
         .await,
-        Err(AuthError::Conflict)
+        Err(AuthError::Invalid(message))
+            if message.ends_with("so Trellis leaves it as it is")
     ));
     assert_eq!(
         bucket.get("presence").await.unwrap().unwrap().as_ref(),
@@ -441,7 +442,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
     jetstream.update_stream(config).await.unwrap();
     assert!(matches!(
         super::super::resources::materialize_native_kv(&store, &nats, &deployment, NOW + 3).await,
-        Err(AuthError::Conflict)
+        Err(AuthError::Invalid(message)) if message.ends_with("so Trellis leaves it as it is")
     ));
     assert!(
         objects.get("retained").await.is_ok(),
@@ -512,7 +513,8 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
                     NOW + 6
                 )
                 .await,
-                Err(AuthError::Conflict)
+                Err(AuthError::Invalid(message))
+                    if message.ends_with("so Trellis leaves it in place")
             ));
             assert!(objects.get("retained").await.is_ok());
             jetstream.update_stream(original).await.unwrap();

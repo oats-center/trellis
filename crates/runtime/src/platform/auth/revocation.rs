@@ -190,7 +190,7 @@ pub(super) fn retire_session(
         )
         .optional()?;
     let Some((state, latest, enforce_not_before)) = row else {
-        return Err(AuthError::NotFound);
+        return Err(AuthError::NotFound(format!("no session {session}")));
     };
     if state != "active" {
         return Ok(false);
@@ -560,8 +560,8 @@ impl SqliteAuthorizationStore {
             let mut retired = 0;
             for session in &sessions {
                 let current = evaluate(connection, &session_credential(connection, session)?, now);
-                let hard =
-                    scope_hard || matches!(&current, Err(AuthError::Denied | AuthError::NotFound));
+                let hard = scope_hard
+                    || matches!(&current, Err(AuthError::Denied | AuthError::NotFound(_)));
                 let should_retire = if hard {
                     true
                 } else {
@@ -571,7 +571,7 @@ impl SqliteAuthorizationStore {
                                 || loses_authority(connection, session, &current, now)?
                         }
                         Err(
-                            AuthError::Denied | AuthError::RequiredMissing | AuthError::NotFound,
+                            AuthError::Denied | AuthError::RequiredMissing | AuthError::NotFound(_),
                         ) => true,
                         Err(error) => return Err(error),
                     }
@@ -955,7 +955,7 @@ impl SqliteAuthorizationStore {
                             .optional()?;
                         match key {
                             None => {
-                                return Err(AuthError::Missing(format!("no issuer key {issuer}")));
+                                return Err(AuthError::NotFound(format!("no issuer key {issuer}")));
                             }
                             // Trellis must always have a key to sign with.
                             // Rotation moves signing to a new key and leaves
@@ -995,7 +995,52 @@ impl SqliteAuthorizationStore {
                     _ => return Err(AuthError::Invalid("unsupported hard root".into())),
                 };
                 if changed == 0 {
-                    return Err(AuthError::Conflict);
+                    // Name what the caller asked to end and why nothing changed.
+                    let (table, column, kind, ended, target) = match scope {
+                        EnforcementScope::Grant(target) => (
+                            "auth_oauth_grants",
+                            "oauth_grant_id",
+                            "app grant",
+                            "is already revoked",
+                            target,
+                        ),
+                        EnforcementScope::Login(target) => (
+                            "auth_login_sessions",
+                            "login_session_id",
+                            "sign-in",
+                            "has already ended",
+                            target,
+                        ),
+                        EnforcementScope::Identity(target) => (
+                            "auth_provisioned_identities",
+                            "identity_key_id",
+                            "identity key",
+                            "is already revoked",
+                            target,
+                        ),
+                        EnforcementScope::Session(target) => (
+                            "auth_authorization_sessions",
+                            "authorization_session_id",
+                            "session",
+                            "has already ended",
+                            target,
+                        ),
+                        _ => {
+                            return Err(AuthError::Conflict(
+                                "the revocation changed nothing; reload and try again".into(),
+                            ))
+                        }
+                    };
+                    let exists: bool = connection.query_row(
+                        &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE {column}=?1)"),
+                        [target],
+                        |row| row.get(0),
+                    )?;
+                    return Err(if exists {
+                        AuthError::Invalid(format!("{kind} {target} {ended}"))
+                    } else {
+                        AuthError::NotFound(format!("no {kind} {target}"))
+                    });
                 }
                 enqueue_scope(connection, scope, now)
             },

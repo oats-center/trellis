@@ -77,7 +77,7 @@ fn omitted_role_id_is_generated_once_and_replay_does_not_overwrite_an_update() {
     assert!(matches!(
         f.store
             .transaction(|connection| read_role(connection, &role_id)),
-        Err(AuthError::NotFound)
+        Err(AuthError::NotFound(_))
     ));
 }
 
@@ -169,7 +169,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
     };
     assert!(matches!(
         revoke_assignment(&f.store, &mutation(&f.admin, &stale), &stale, NOW + 4),
-        Err(AuthError::NotFound)
+        Err(AuthError::NotFound(_))
     ));
     let listed = f
         .store
@@ -235,7 +235,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
             &old_generation,
             NOW + 7
         ),
-        Err(AuthError::Conflict)
+        Err(AuthError::Conflict(_))
     ));
     let remaining = f
         .store
@@ -468,7 +468,7 @@ fn grant_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids() {
     };
     assert!(matches!(
         revoke_grant(&f.store, &mutation(&f.admin, &stale), &stale, NOW + 4),
-        Err(AuthError::NotFound)
+        Err(AuthError::NotFound(_))
     ));
     let listed = f
         .store
@@ -588,7 +588,7 @@ fn role_queries_follow_updates_paginate_and_hide_deleted_definitions() {
     assert!(matches!(
         f.store
             .transaction(|connection| read_role(connection, &ids[0])),
-        Err(AuthError::NotFound)
+        Err(AuthError::NotFound(_))
     ));
     let listed = f
         .store

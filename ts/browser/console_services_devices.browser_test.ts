@@ -771,19 +771,23 @@ test("B03 same-document service navigation replaces A with B", async () => {
   }, browserRuntimeOptions());
 });
 
-test("B04 a missing service ID renders unavailable, not a fallback", async () => {
+test("B04 a missing service ID says no such deployment, not a fallback", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
 
+      const missing = ulid();
       await page.goto(
-        `${runtime.consoleUrl}/console/admin/services/${ulid()}`,
-        { waitUntil: "domcontentloaded" },
+        `${runtime.consoleUrl}/console/admin/services/${missing}`,
+        {
+          waitUntil: "domcontentloaded",
+        },
       );
       await waitForConsoleShell(page);
-      await page.getByText("Not found", { exact: false }).first().waitFor({
+      // Auth names what it couldn't find, and the Console shows that.
+      await page.getByText(`no deployment ${missing}`).first().waitFor({
         state: "visible",
         timeout: 30_000,
       });
