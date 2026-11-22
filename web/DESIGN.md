@@ -132,6 +132,9 @@ nothing else.
 
 - People choose what an app may do. Ask at the level they understand: groups
   such as "Users" or "Jobs", with detail available on expansion.
+- When an app asks across APIs, each API's choices sit under its title. Two
+  APIs can share a title, so choices are grouped by API ID, and a shared title
+  shows each API's ID beneath it.
 - When something isn't allowed, show a calm "Not allowed yet" state with a
   **Change access** action — not an error banner.
 - Hide navigation for areas the user cannot use at all.

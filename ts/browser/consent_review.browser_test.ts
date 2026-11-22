@@ -198,11 +198,38 @@ test("the consent page offers only what the person can have, names them and each
           .getByText(/^Signed in as /)
           .textContent();
         assert.equal(signedIn?.trim(), "Signed in as Asha Rao (asha)");
-        // Both APIs have a "records" area, so each API heads its own.
-        for (const api of ["Fields", "Crops"])
-          await consent
-            .getByRole("heading", { name: api, exact: true })
-            .waitFor();
+        // The APIs share a "records" area, so each API heads its own.
+        await consent
+          .getByRole("heading", { name: "Crops", exact: true })
+          .waitFor();
+        // Two APIs are titled "Fields": each keeps its own section, told
+        // apart by its API ID, holding only its own choices.
+        const fieldsHeadings = consent.getByRole("heading", {
+          name: /^Fields\b/,
+        });
+        await fieldsHeadings.nth(1).waitFor();
+        assert.equal(await fieldsHeadings.count(), 2);
+        const sections: { name: string; choices: string }[] = [];
+        for (const heading of await fieldsHeadings.all())
+          sections.push({
+            name: (await heading.innerText()).replace(/\s+/g, " ").trim(),
+            choices: await heading
+              .locator("xpath=following-sibling::ul[1]")
+              .innerText(),
+          });
+        // Each heading names the API's ID beneath the shared title.
+        assert.notEqual(sections[0]?.name, sections[1]?.name);
+        for (const section of sections)
+          assert.match(section.name, /^Fields \S+$/, section.name);
+        const holding = (title: string) =>
+          sections
+            .filter((section) => section.choices.includes(title))
+            .map((section) => section.name);
+        const fieldRecords = holding("Change field records");
+        const mappedFields = holding("See mapped fields");
+        assert.equal(fieldRecords.length, 1, JSON.stringify(sections));
+        assert.equal(mappedFields.length, 1, JSON.stringify(sections));
+        assert.notEqual(fieldRecords[0], mappedFields[0]);
         // What the app requires is listed as what approving grants, with no
         // checkbox; each optional choice has one.
         await consent.getByText("See field records", { exact: true }).waitFor();

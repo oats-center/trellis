@@ -88,7 +88,9 @@
 
   interface Group {
     key: string;
-    /** The API's title, or `null` for administration. */
+    /** The API's ID, or `null` for administration. */
+    apiId: string | null;
+    /** The API's title, or its ID when it has none. */
     api: string | null;
     label: string;
     description: string;
@@ -328,16 +330,19 @@
     const byKey = new Map<string, Group>();
     for (const capability of view.capabilities) {
       if (capability.administrative || capability.required) continue;
-      const api = capability.capabilityId.split(":")[0] ?? "";
+      // Titles need not be unique, so choices are grouped by the API's ID.
+      const apiId =
+        capability.apiId || (capability.capabilityId.split(":")[0] ?? "");
       const key =
         capability.kind === "group"
           ? capability.capabilityId
-          : `${api}:${areaOf(capability.capabilityId)}`;
+          : `${apiId}:${areaOf(capability.capabilityId)}`;
       let group = byKey.get(key);
       if (!group) {
         group = {
           key,
-          api: capability.apiTitle ?? capability.apiId ?? api,
+          apiId,
+          api: capability.apiTitle ?? apiId,
           label:
             capability.kind === "group"
               ? capability.title
@@ -356,6 +361,7 @@
     const result = [...byKey.values()].sort(
       (left, right) =>
         (left.api ?? "").localeCompare(right.api ?? "") ||
+        (left.apiId ?? "").localeCompare(right.apiId ?? "") ||
         left.label.localeCompare(right.label),
     );
     const administration = view.capabilities.filter(
@@ -364,6 +370,7 @@
     if (administration.length) {
       result.push({
         key: "administration",
+        apiId: null,
         api: null,
         label: "Manage this Trellis",
         description: "Change how this Trellis installation itself is run.",
@@ -402,18 +409,38 @@
   );
   let appName = $derived(view ? (view.clientName ?? view.clientId) : "");
   // Consecutive groups of one API, headed by its title when the app asks
-  // across APIs. Administration has a section of its own.
+  // across APIs. Two APIs may share a title, so a shared title also shows
+  // each API's ID. Administration has a section of its own.
   let sections = $derived.by(() => {
-    const result: { api: string | null; groups: Group[] }[] = [];
+    const result: {
+      apiId: string | null;
+      api: string | null;
+      groups: Group[];
+    }[] = [];
     for (const group of groups) {
       const last = result.at(-1);
-      if (last && last.api === group.api) last.groups.push(group);
-      else result.push({ api: group.api, groups: [group] });
+      if (last && last.apiId === group.apiId) last.groups.push(group);
+      else result.push({ apiId: group.apiId, api: group.api, groups: [group] });
     }
     return result;
   });
   let headedByApi = $derived(
-    sections.filter((section) => section.api !== null).length > 1,
+    sections.filter((section) => section.apiId !== null).length > 1,
+  );
+  let sharedTitles = $derived(
+    new Set(
+      sections
+        .filter((section, index) =>
+          sections.some(
+            (other, at) =>
+              at !== index &&
+              other.apiId !== null &&
+              section.apiId !== null &&
+              other.api === section.api,
+          ),
+        )
+        .map((section) => section.api),
+    ),
   );
   // Who is signed in, as they know themselves: a name, a username, an email.
   let signedInAs = $derived(
@@ -1045,8 +1072,9 @@
         {/if}
 
         {#each sections as section, index (index)}
-          {#if headedByApi && section.api !== null}<h3 class="api-name">
-              {section.api}
+          {#if headedByApi && section.apiId !== null}<h3 class="api-name">
+              {section.api}{#if sharedTitles.has(section.api)}
+                <code class="api-id">{section.apiId}</code>{/if}
             </h3>{/if}
           <ul class="groups">
             {#each section.groups as group (group.key)}
