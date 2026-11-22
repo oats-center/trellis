@@ -8,6 +8,19 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Revocation is eventually consistent. A client whose revocation mirror is
+  down or catching up keeps sending and serving on its last known state;
+  Auth and the broker still enforce revocation, and a revoked session's
+  authority stops verifying within one authority lifetime. The mirror is used
+  only to check other parties' requests, messages and replies.
+- `Issuers.Rotate` announces the new key at once and Auth starts signing with
+  it after `auth.authorization.issuer_activation_delay_seconds` (default 60),
+  so every client has the key before it is used. `trellis issuers rotate`
+  prints when it activates; another rotation or a revoke of the current or
+  announced key is refused until then.
+
 ### Added
 
 - `trellis roles assign ROLE USER --revision N` renews an existing assignment,
