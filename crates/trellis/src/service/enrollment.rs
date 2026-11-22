@@ -152,6 +152,7 @@ async fn signed_post(
         return Err(TrellisClientError::BootstrapHttp {
             status: error.status,
             code: error.code,
+            reference: error.reference,
         });
     }
     unreachable!("the retry loop returns")

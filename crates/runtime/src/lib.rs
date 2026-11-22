@@ -35,6 +35,7 @@ pub mod events;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 /// Health subsystem scaffold.
 pub mod health;
+mod http_failure;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 /// Jobs subsystem scaffold.
 pub mod jobs;

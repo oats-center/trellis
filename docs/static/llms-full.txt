@@ -1665,6 +1665,11 @@ the error the caller received, which Console and the CLI show as
 `service`, `caller_principal`, `caller_session`, `error_type`, `code`, `error`
 and `cause`; both SDKs and `trellis-server` use these names. To investigate a
 reference, search the failing process's log for it; the cause is only there.
+When `trellis-server` fails an HTTP request itself (sign-in, the Portal,
+OAuth, service or device enrollment), the reference is that request's ID: an
+OAuth `server_error` gives it in `error_description` as `Reference: <id>`, an
+enrollment error envelope as `error.reference`, the Portal shows it, and every
+such response carries it in the `Trellis-Reference` header.
 
 ## Trellis For TypeScript Consumers
 

@@ -109,7 +109,9 @@ pub async fn serve_http_listener(
         .await
         .map_err(ServerError::Transport)?
         .forwarded_by(trusted_proxies);
-    let router = health_router(mode, ready).merge(application_router);
+    let router = health_router(mode, ready)
+        .merge(application_router)
+        .layer(axum::middleware::from_fn(crate::http_failure::assign));
 
     listener
         .serve(router, shutdown)

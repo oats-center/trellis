@@ -1,3 +1,4 @@
+import { type Msg } from "@nats-io/nats-core";
 import { type Span } from "../telemetry/mod.ts";
 import { type RuntimeApi } from "../participant_runtime/api.ts";
 import { TransportError, machineErrorCode } from "../errors/index.ts";
@@ -77,13 +78,14 @@ export function causeLogData(cause: unknown): unknown {
     : cause;
 }
 
-/** An event's own `header.id`, the reference a dead letter shows. */
-export function eventHeaderId(event: unknown): string | undefined {
-  if (typeof event !== "object" || event === null) return undefined;
-  const header = (event as { header?: unknown }).header;
-  if (typeof header !== "object" || header === null) return undefined;
-  const id = (header as { id?: unknown }).id;
-  return typeof id === "string" ? id : undefined;
+/**
+ * An event's ID, its `header.id`: publishers send it as the `Nats-Msg-Id`
+ * header, which JetStream also deduplicates on.
+ */
+export function eventHeaderId(
+  headers: Pick<NonNullable<Msg["headers"]>, "get"> | undefined,
+): string | undefined {
+  return headers?.get("Nats-Msg-Id") || undefined;
 }
 
 export async function sleep(ms: number): Promise<void> {

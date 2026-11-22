@@ -2,12 +2,17 @@ use serde::Deserialize;
 
 /// Exact machine-readable failure returned by a Trellis HTTP endpoint.
 #[derive(Debug, thiserror::Error)]
-#[error("Trellis HTTP request failed with status {status}: {code}")]
+#[error(
+    "Trellis HTTP request failed with status {status}: {code}{}",
+    super::error::reference_suffix(reference.as_deref())
+)]
 pub struct TrellisHttpError {
     /// HTTP response status.
     pub status: u16,
     /// Trellis machine error code.
     pub code: String,
+    /// For a server failure, the reference its line in the Trellis log has.
+    pub reference: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -20,19 +25,31 @@ struct ErrorEnvelope {
 #[serde(deny_unknown_fields)]
 struct ErrorCode {
     code: String,
+    #[serde(default)]
+    reference: Option<String>,
 }
 
 /// Decode one failed Trellis HTTP response without retaining its body text.
 pub async fn decode_trellis_http_error(response: reqwest::Response) -> TrellisHttpError {
     let status = response.status().as_u16();
-    let code = read_bounded_http_body(response, 4096)
+    let error = read_bounded_http_body(response, 4096)
         .await
         .ok()
         .and_then(|body| serde_json::from_slice::<ErrorEnvelope>(&body).ok())
-        .map(|envelope| envelope.error.code)
-        .filter(|code| !code.is_empty())
-        .unwrap_or_else(|| "invalid_http_error_envelope".to_owned());
-    TrellisHttpError { status, code }
+        .map(|envelope| envelope.error)
+        .filter(|error| !error.code.is_empty());
+    match error {
+        Some(error) => TrellisHttpError {
+            status,
+            code: error.code,
+            reference: error.reference,
+        },
+        None => TrellisHttpError {
+            status,
+            code: "invalid_http_error_envelope".to_owned(),
+            reference: None,
+        },
+    }
 }
 
 pub(crate) async fn read_bounded_http_body(
