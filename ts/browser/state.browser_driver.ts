@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { chromium, type Page } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { build } from "vite";
+import { approveConsentIfRequired } from "./browser_test_support.ts";
 
 /** `State.Register`'s subject: `rpc.v1.<token of trellis.state@v1>.Register`. */
 const REGISTER_SUBJECT = `rpc.v1.${Buffer.from("trellis.state@v1").toString("base64url")}.Register`;
@@ -141,12 +142,8 @@ test(
         await page
           .getByRole("button", { name: "Sign in", exact: true })
           .click();
-        await page
-          .getByRole("heading", { name: /wants to use your account/ })
-          .waitFor();
-        for (const box of await page.getByRole("checkbox").all())
-          if (await box.isEnabled()) await box.check();
-        await page.getByRole("button", { name: "Allow", exact: true }).click();
+        // An app this user already approved signs in without asking again.
+        await approveConsentIfRequired(page, 20_000);
         await page.waitForURL(
           (url) => url.origin === origin && url.pathname === "/callback",
         );
