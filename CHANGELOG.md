@@ -8,8 +8,23 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Webhook dedupe templates read the body: `{json:/pointer}` (RFC 6901) and
+  `{form:name}`. A body without the value is delivered with no dedupe key. The
+  Stripe examples dedupe on `{json:/id}`.
+- Each webhook endpoint adds a `webhook:<endpoint>` health check to its
+  service: degraded while the endpoint is disabled, a secret it needs is
+  unset, or its latest request in the last 10 minutes was rejected.
+- Webhook deliveries and decide requests have `text()`, `json()` and `form()`
+  views in TypeScript, and a `WebhookBody` trait in Rust.
+
 ### Changed
 
+- Async webhook endpoints check HMAC before answering, so a wrong secret gets
+  401 and the sender sees the failure; an unset secret gets 503.
+- The TypeScript testkit's `runtime.caCertificate` is the CA's PEM text, as
+  documented, and `runtime.caCertificatePath` is its file.
 - Revocation is eventually consistent. A client whose revocation mirror is
   down or catching up keeps sending and serving on its last known state;
   Auth and the broker still enforce revocation, and a revoked session's

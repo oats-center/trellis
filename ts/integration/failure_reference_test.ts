@@ -116,7 +116,9 @@ test("a TypeScript handler failure is logged once under the reference its caller
         runtime.trellisUrl,
         identity.seed,
       ],
-      { env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificatePath } },
+      {
+        env: { ...process.env, NODE_EXTRA_CA_CERTS: runtime.caCertificatePath },
+      },
     );
     child.stdout.on("data", (chunk: Buffer) => (output += chunk.toString()));
     child.stderr.on("data", (chunk: Buffer) => (output += chunk.toString()));
