@@ -624,7 +624,7 @@ async fn login_page(
         let session = store
             .authority
             .portal_session_identity(&cookie, &csrf, now)
-            .map_err(|_| ErrorCode::AccessDenied)?;
+            .map_err(|cause| denied_or_failed("could not read the Portal session", cause))?;
         let flow = store
             .authorization(&pending_transaction, &session, now)
             .map_err(|_| ErrorCode::InvalidRequest)?;
@@ -872,7 +872,7 @@ async fn login_and_flow(
         let login = store
             .authority
             .portal_login(&cookie, &csrf, now)
-            .map_err(|_| ErrorCode::AccessDenied)?;
+            .map_err(|cause| denied_or_failed("could not read the Portal login", cause))?;
         let flow = store
             .authorization(&transaction, &login.session_id, now)
             .map_err(|_| ErrorCode::InvalidRequest)?;
@@ -1710,6 +1710,24 @@ async fn portal_logout(
     match logged_out {
         Ok(()) => cookie_response("", Some(""), 0, Json(serde_json::json!({})).into_response()),
         Err(code) => error(code),
+    }
+}
+
+/// The answer to a Portal step the store refused: `access_denied` when the
+/// person's login, link or flow is not one that permits it, which the Portal
+/// shows as such, and otherwise the server's own failure with its reference,
+/// as [`failed`] gives it. A store that could not answer never reads as a
+/// denial.
+pub(super) fn denied_or_failed(error: &str, cause: super::super::AuthError) -> ErrorCode {
+    use super::super::AuthError;
+    match cause {
+        AuthError::Denied
+        | AuthError::DeniedNeeding(_)
+        | AuthError::NotFound(_)
+        | AuthError::Hidden(..)
+        | AuthError::IdentityTaken
+        | AuthError::Conflict(_) => ErrorCode::AccessDenied,
+        cause => failed(error, cause),
     }
 }
 

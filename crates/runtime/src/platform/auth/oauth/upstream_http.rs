@@ -215,7 +215,12 @@ pub(super) async fn start(
     .await
     {
         Ok(session) => session,
-        Err(_) => return error(ErrorCode::AccessDenied),
+        Err(cause) => {
+            return error(super::http::denied_or_failed(
+                "could not read the Portal session",
+                cause,
+            ))
+        }
     };
     let review = form.get("review").cloned();
     let (transaction, deadline, client_id, account_token) = if let Some(review) = &review {
@@ -244,7 +249,12 @@ pub(super) async fn start(
         .await
         {
             Ok(action) => action,
-            Err(_) => return error(ErrorCode::AccessDenied),
+            Err(cause) => {
+                return error(super::http::denied_or_failed(
+                    "could not read the account link",
+                    cause,
+                ))
+            }
         };
         // Identity links always expire; only the setup reset may not.
         let Some(expires) = action.expires else {
@@ -326,6 +336,13 @@ pub(super) async fn start(
     .await
     {
         Ok(provider) => provider,
+        Err(cause) if !matches!(cause, super::super::AuthError::Denied) => {
+            return failed(
+                "provider_unreadable",
+                format!("could not read OIDC provider {provider}"),
+                cause.to_string(),
+            )
+        }
         Err(cause) => {
             tracing::warn!(
                 provider_id = %provider,
@@ -497,7 +514,9 @@ pub(super) async fn callback(
         let session = store
             .authority
             .portal_session_identity(&session_cookie, &session_csrf, now)
-            .map_err(|_| ErrorCode::AccessDenied)?;
+            .map_err(|cause| {
+                super::http::denied_or_failed("could not read the Portal session", cause)
+            })?;
         let flow = store
             .take_upstream(&state, &session, now)
             .map_err(|_| ErrorCode::InvalidRequest)?;
@@ -850,7 +869,10 @@ pub(super) async fn callback(
                 "<p class=\"muted\">You can now sign in with your OIDC account. You can \
                 close this window.</p>",
             ),
-            Err(_) => error(ErrorCode::AccessDenied),
+            Err(cause) => error(super::http::denied_or_failed(
+                "could not link the OIDC sign-in",
+                cause,
+            )),
         };
     }
     let mut replacement = [0; 32];

@@ -285,3 +285,72 @@ test(
     }, browserRuntimeOptions());
   },
 );
+
+// The Trellis database can't answer while the Portal looks up the sign-in
+// page's login (another process renamed the table it reads). The page must
+// answer the server's own failure with a reference to its one log line, not
+// `access_denied`, which tells the person their sign-in was refused. This
+// catches a store failure reported as a denial with nothing an operator can
+// find.
+test(
+  "a sign-in page the server cannot read answers with a reference, not a denial",
+  { timeout: 300_000 },
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const browser = await chromium.launch({
+        headless: true,
+        env: browserTrustEnvironment(),
+      });
+      try {
+        const page = await (await browser.newContext()).newPage();
+        page.setDefaultTimeout(30_000);
+        await page.goto(`${runtime.consoleUrl}/console`, {
+          waitUntil: "domcontentloaded",
+        });
+        await page.waitForURL(/\/login\?transaction=/);
+
+        const files = await readdir(runtime.workdir, { recursive: true });
+        const path = files.find((file) => basename(file) === "platform.sqlite");
+        assert(path, files.join("\n"));
+        const database = new DatabaseSync(join(runtime.workdir, path), {
+          timeout: 10_000,
+        });
+        database.exec(
+          "ALTER TABLE auth_portal_sessions RENAME TO auth_portal_sessions_away",
+        );
+        let response;
+        try {
+          response = await page.reload({ waitUntil: "domcontentloaded" });
+        } finally {
+          database.exec(
+            "ALTER TABLE auth_portal_sessions_away RENAME TO auth_portal_sessions",
+          );
+          database.close();
+        }
+        assert(response);
+        assert.equal(response.status(), 500);
+        const body = await response.text();
+        assert(!body.includes("access_denied"), body);
+        const reference = response.headers()["trellis-reference"];
+        assert(reference, body);
+        assert(body.includes(reference), body);
+        await runtime.waitFor(() =>
+          runtime.controlPlaneOutput().includes(reference),
+        );
+        const lines = runtime
+          .controlPlaneOutput()
+          .split("\n")
+          .filter((line) => line.includes(reference));
+        assert.equal(lines.length, 1, lines.join("\n"));
+        const line = JSON.parse(lines[0]!) as {
+          fields: Record<string, unknown>;
+        };
+        assert.equal(line.fields.route, "GET /login");
+        assert.equal(line.fields.code, "server_error");
+        assert.match(String(line.fields.cause), /auth_portal_sessions/);
+      } finally {
+        await browser.close();
+      }
+    }, browserRuntimeOptions());
+  },
+);
