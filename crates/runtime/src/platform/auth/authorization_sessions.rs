@@ -1305,7 +1305,11 @@ impl SqliteAuthorizationStore {
                     let signer = self.current_signer(connection)?;
                     let previous_key_id = self.current_issuer(connection)?.key_id;
                     if previous_key_id != input.expected_current_key_id.as_ref() {
-                        return Err(AuthError::Conflict);
+                        return Err(AuthError::Invalid(format!(
+                            "issuer key {} is not the current signing key; the current key is \
+                            {previous_key_id}",
+                            input.expected_current_key_id
+                        )));
                     }
                     let mut seed = [0u8; 32];
                     getrandom::fill(&mut seed).map_err(|_| AuthError::Unavailable)?;

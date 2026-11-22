@@ -103,6 +103,13 @@ current key; it never rotates or recreates missing keys. No private key crosses
 an RPC, and no offline root or manifest RPC exists. Historical contexts remain
 stored after ordinary rotation; explicit issuer revocation remains separate.
 
+`Issuers.Rotate` refuses a stale `expectedCurrentKeyId` with a validation error
+naming the current key. `Issuers.Revoke` revokes only a key that isn't current:
+an unknown key ID is `AuthError` `not_found` ("no issuer key <id>"), the current
+signing key is a validation error that says to rotate first, and a key already
+revoked is a validation error saying so. A retried request with the same
+idempotency key still returns the original result.
+
 ### Upstream Identity Providers
 
 `SignInSettings` holds `localUsers`, `localSignUp` and `passwordMinLength`.

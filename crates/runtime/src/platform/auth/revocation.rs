@@ -944,15 +944,35 @@ impl SqliteAuthorizationStore {
                         }
                     }
                     EnforcementScope::Issuer(issuer) => {
-                        let current: bool = connection.query_row(
-                            "SELECT EXISTS(SELECT 1 \
-                            FROM auth_authorization_issuers \
-                            WHERE key_id=?1 AND is_current=1)",
-                            [issuer],
-                            |row| row.get(0),
-                        )?;
-                        if current {
-                            return Err(AuthError::Conflict);
+                        let key: Option<(bool, Option<i64>)> = connection
+                            .query_row(
+                                "SELECT is_current,revoked_at \
+                                FROM auth_authorization_issuers \
+                                WHERE key_id=?1",
+                                [issuer],
+                                |row| Ok((row.get(0)?, row.get(1)?)),
+                            )
+                            .optional()?;
+                        match key {
+                            None => {
+                                return Err(AuthError::Missing(format!("no issuer key {issuer}")));
+                            }
+                            // Trellis must always have a key to sign with.
+                            // Rotation moves signing to a new key and leaves
+                            // this one retired, and so revocable.
+                            Some((true, _)) => {
+                                return Err(AuthError::Invalid(format!(
+                                    "issuer key {issuer} is the current signing key and cannot \
+                                    be revoked; rotate to a new key first with `trellis issuers \
+                                    rotate {issuer}`, then revoke it"
+                                )));
+                            }
+                            Some((false, Some(_))) => {
+                                return Err(AuthError::Invalid(format!(
+                                    "issuer key {issuer} is already revoked"
+                                )));
+                            }
+                            Some((false, None)) => {}
                         }
                         let changed = connection.execute(
                             "UPDATE auth_authorization_issuers \

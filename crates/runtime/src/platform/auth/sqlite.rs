@@ -63,6 +63,9 @@ impl std::ops::Deref for Connection {
 pub(crate) enum AuthError {
     #[error("not found")]
     NotFound,
+    /// Not found, saying what the caller named that doesn't exist.
+    #[error("not found: {0}")]
+    Missing(String),
     #[error("revision conflict")]
     Conflict,
     /// An administrator linked an OIDC sign-in that another account has.

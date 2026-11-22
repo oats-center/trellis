@@ -46,6 +46,7 @@ pub(super) async fn whoami(format: OutputFormat) -> miette::Result<()> {
 
 pub(super) async fn issuers(format: OutputFormat, command: IssuersCommand) -> miette::Result<()> {
     match command.command {
+        IssuersSubcommand::Rotate(args) => issuers_rotate_command(format, &args).await,
         IssuersSubcommand::Revoke(args) => issuers_revoke_command(format, &args).await,
     }
 }
@@ -2911,6 +2912,34 @@ async fn status_command(format: OutputFormat) -> miette::Result<()> {
             .time("Since", &output::field(login, "createdAt"))
             .time("Expires", &output::field(login, "expiresAt"))
             .print();
+        Ok(())
+    })
+}
+
+async fn issuers_rotate_command(
+    format: OutputFormat,
+    args: &IssuersRotateArgs,
+) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let response = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1()
+        .issuers_rotate(&auth_types::AuthIssuerRotateRequest {
+            expected_current_key_id: wire(&args.current_key_id)?,
+            idempotency_key: wire(cli_idempotency_key())?,
+            extra: Default::default(),
+        })
+        .await
+        .into_diagnostic()?;
+    output::emit(format, &response, |response| {
+        output::success(format!(
+            "Signing with new issuer key {}",
+            output::strong(output::field(response, "keyId"))
+        ));
+        output::hint(format!(
+            "Issuer key {} is retired. Authority it signed works until it expires; \
+            `trellis issuers revoke {}` ends that authority now.",
+            args.current_key_id, args.current_key_id
+        ));
         Ok(())
     })
 }

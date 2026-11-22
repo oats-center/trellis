@@ -346,11 +346,18 @@ valid after ordinary expiry, but never after an applicable explicit revocation.
 
 ### Rotating issuer keys
 
-An administrator with `privileges.manage` calls `Issuers.Rotate` with the
-expected current key ID and an idempotency key. Auth generates the successor
+An administrator with `platform.manage` calls `Issuers.Rotate` with the
+expected current key ID and an idempotency key, or runs
+`trellis issuers rotate <current-key-id>`. Auth generates the successor
 locally and signs its public key with the current issuer, allowing clients to
 verify the chain without trusting an unrelated key. A repeated request returns
-the original result; a stale expected key conflicts.
+the original result. A stale expected key is refused with a validation error
+that names the current key.
+
+`Issuers.Revoke` (`trellis issuers revoke <key-id>`) revokes a retired key. It
+can't revoke the current signing key, since Trellis would have nothing left to
+sign with; the refusal says to rotate first. An unknown key ID is `not_found`
+("no issuer key ..."), and a key revoked once is refused as already revoked.
 
 Successor keys are private files in a sibling directory obtained by replacing
 the configured issuer seed file's extension with `.keys`. Back up that directory,

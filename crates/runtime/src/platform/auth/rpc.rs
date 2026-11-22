@@ -236,6 +236,7 @@ pub(super) fn rpc_error(error: AuthError) -> ServerError {
     let needed;
     let (error_type, code, message) = match &error {
         AuthError::NotFound => (errors::AuthError::TYPE, "not_found", "Not found"),
+        AuthError::Missing(detail) => (errors::AuthError::TYPE, "not_found", detail.as_str()),
         AuthError::Conflict => (
             errors::AuthError::TYPE,
             "revision_conflict",

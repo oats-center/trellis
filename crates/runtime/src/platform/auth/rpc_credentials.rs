@@ -500,17 +500,36 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
             // Auth signs this reply with its own authority. If the key being
             // revoked still signs that authority, renew under the current key
             // first, or the revocation commits and the reply cannot be sent.
-            context
-                .handle()
-                .release_own_issuer(input.key_id.as_ref(), std::time::Duration::from_secs(10))
-                .await
-                .map_err(|_| {
-                    rpc_error(AuthError::Invalid(
-                        "Trellis is still moving to its current signing key; try again in a \
-                        moment"
-                            .into(),
-                    ))
-                })?;
+            // The current key is refused below. No renewal moves off it, so
+            // waiting for one would only run out the caller's request timeout.
+            let key_id = input.key_id.to_string();
+            let reader = store.clone();
+            let current = blocking(move || {
+                reader.read(|connection| {
+                    Ok(connection.query_row(
+                        "SELECT EXISTS(SELECT 1 \
+                        FROM auth_authorization_issuers \
+                        WHERE key_id=?1 AND is_current=1)",
+                        [&key_id],
+                        |row| row.get::<_, bool>(0),
+                    )?)
+                })
+            })
+            .await
+            .map_err(rpc_error)?;
+            if !current {
+                context
+                    .handle()
+                    .release_own_issuer(input.key_id.as_ref(), std::time::Duration::from_secs(10))
+                    .await
+                    .map_err(|_| {
+                        rpc_error(AuthError::Invalid(
+                            "Trellis is still moving to its current signing key; try again in \
+                            a moment"
+                                .into(),
+                        ))
+                    })?;
+            }
             blocking(move || {
                 let now = crate::clock::unix_now();
                 store.mutate(&identity, "rpc.issuer.revoke", &input, now, |connection| {

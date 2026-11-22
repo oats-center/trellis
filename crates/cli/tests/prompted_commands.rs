@@ -116,6 +116,21 @@ impl Cli {
     }
 }
 
+/// `text` without whitespace or the report box's borders. The report wraps
+/// long lines, even inside an ID at a hyphen, so a refusal is compared as
+/// squashed text.
+fn squashed(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace() && *c != '│')
+        .collect()
+}
+
+/// Whether the failed run `output` reported `message`.
+fn refused_with(output: &std::process::Output, message: &str) -> bool {
+    !output.status.success()
+        && squashed(&String::from_utf8_lossy(&output.stderr)).contains(&squashed(message))
+}
+
 /// Press one key, such as `y` for a yes-or-no question.
 fn press(session: &mut rexpect::session::PtySession, key: &str) {
     session.send(key).unwrap();
@@ -970,9 +985,8 @@ async fn generated_values_starting_with_a_hyphen_are_arguments() {
     let cli = Cli::login(&mut runtime, None).await;
 
     // An issuer key ID is the runtime's to choose, so this fixed one names no
-    // key, and Auth itself refuses to revoke it: the ID reached Auth instead
-    // of being read as options. A real revocation is in
-    // ts/browser/cli_access.browser_test.ts.
+    // key, and Auth itself says so: the ID reached Auth instead of being read
+    // as options.
     let refused = cli
         .script(&[
             "issuers",
@@ -980,9 +994,14 @@ async fn generated_values_starting_with_a_hyphen_are_arguments() {
             "-q9TkWbQ1d0pZ_3vXo8yRk2eLmA7cHnB4sUfJ6gYtVw",
         ])
         .await;
-    let said = String::from_utf8_lossy(&refused.stderr);
-    assert!(!refused.status.success(), "{said}");
-    assert!(said.contains("Revision conflict"), "{said}");
+    assert!(
+        refused_with(
+            &refused,
+            "no issuer key -q9TkWbQ1d0pZ_3vXo8yRk2eLmA7cHnB4sUfJ6gYtVw"
+        ),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
     let help = cli.script(&["issuers", "revoke", "--help"]).await;
     let usage = String::from_utf8_lossy(&help.stdout);
     assert!(help.status.success(), "{usage}");
@@ -1001,5 +1020,72 @@ async fn generated_values_starting_with_a_hyphen_are_arguments() {
         .unwrap()
         .iter()
         .any(|instance| instance["identityPublicKey"] == public_key));
+    runtime.shutdown().await.unwrap();
+}
+
+/// The current signing key can't be revoked, and the refusal says how to get
+/// there: rotate, then revoke the retired key. A key revoked once says so on
+/// a second try.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issuer_keys_rotate_and_revoke_from_the_cli() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime, None).await;
+    let metadata: Value = runtime
+        .https_client_builder()
+        .build()
+        .unwrap()
+        .get(format!(
+            "{}/.well-known/oauth-authorization-server",
+            runtime.trellis_url().trim_end_matches('/')
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let first = metadata["trellis"]["issuers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|key| key["state"] == "active")
+        .and_then(|key| key["keyId"].as_str())
+        .expect("one key signs")
+        .to_owned();
+
+    let refused = cli.script(&["issuers", "revoke", &first]).await;
+    assert!(
+        refused_with(
+            &refused,
+            &format!(
+                "issuer key {first} is the current signing key and cannot be revoked; rotate \
+                to a new key first with `trellis issuers rotate {first}`"
+            )
+        ),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+
+    let rotated = cli.json(&["issuers", "rotate", &first]).await;
+    let second = rotated["keyId"].as_str().unwrap().to_owned();
+    assert_ne!(second, first);
+    // Rotating from a key that is no longer current names the one that is.
+    let stale = cli.script(&["issuers", "rotate", &first]).await;
+    assert!(
+        refused_with(&stale, &format!("the current key is {second}")),
+        "{}",
+        String::from_utf8_lossy(&stale.stderr)
+    );
+
+    let revoked = cli.json(&["issuers", "revoke", &first]).await;
+    assert_eq!(revoked["keyId"], first.as_str());
+    let again = cli.script(&["issuers", "revoke", &first]).await;
+    assert!(
+        refused_with(&again, &format!("issuer key {first} is already revoked")),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    // The new key still signs: commands keep working.
+    assert_eq!(cli.json(&["whoami"]).await["loggedIn"], true);
     runtime.shutdown().await.unwrap();
 }

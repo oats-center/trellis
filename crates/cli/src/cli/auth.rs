@@ -446,8 +446,23 @@ pub struct IssuersCommand {
 #[derive(Debug, Subcommand)]
 /// Issuer operations.
 pub enum IssuersSubcommand {
+    /// Start signing with a new issuer key, retiring the current one.
+    Rotate(IssuersRotateArgs),
     /// Revoke one issuer key.
     Revoke(IssuersRevokeArgs),
+}
+
+#[derive(Debug, Args)]
+/// Start signing with a new issuer key, retiring the current one.
+///
+/// Sessions keep working: authority the retired key signed stays valid until
+/// it expires, and sessions renew onto the new key. Revoke the retired key to
+/// end its authority at once.
+pub struct IssuersRotateArgs {
+    /// ID of the current signing key. Auth refuses the rotation if another
+    /// key has become current since.
+    #[arg(allow_hyphen_values = true)]
+    pub current_key_id: String,
 }
 
 #[derive(Debug, Args)]

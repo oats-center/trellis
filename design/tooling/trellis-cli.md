@@ -95,8 +95,16 @@ application refresh family and clears the selected native credentials.
 ```text
 trellis clients list|get|add|edit|put|disable|enable|delete ...
 trellis apis list|get|review|accept|force-replace ...
-trellis issuers revoke <issuer-key-id> ...
+trellis issuers rotate <current-key-id>
+trellis issuers revoke <issuer-key-id>
 ```
+
+`issuers rotate` calls `Auth.Issuers.Rotate` with the named key as the expected
+current key, and `issuers revoke` calls `Auth.Issuers.Revoke`. Auth's refusals
+print as they come: an unknown key is "no issuer key ...", the current signing
+key is refused with the advice to rotate first, a key revoked once is "already
+revoked", and a rotation from a key that is no longer current names the one
+that is.
 
 Client registration and catalog operations call the generated `Auth.OAuthClients`
 and `Auth.Apis` families. `clients add [<client>]` registers an app and
