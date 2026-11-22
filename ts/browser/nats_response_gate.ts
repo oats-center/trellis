@@ -361,7 +361,15 @@ export class NatsResponseGate {
   #pausedLive: Uint8Array[] | null = null;
   #disposed = false;
 
-  armNextReply(route: string, predicate?: ArmPredicate): Promise<HeldRequest> {
+  /**
+   * Holds the next reply to a request on `route`. `timeoutMs` bounds the wait
+   * for a request the page sends on its own schedule, such as a renewal.
+   */
+  armNextReply(
+    route: string,
+    predicate?: ArmPredicate,
+    timeoutMs = 10_000,
+  ): Promise<HeldRequest> {
     return this.#wait(
       new Promise((resolve) => {
         this.#armed.push({
@@ -372,6 +380,7 @@ export class NatsResponseGate {
         });
       }),
       `RPC reply on ${route}`,
+      timeoutMs,
     );
   }
 
@@ -394,10 +403,14 @@ export class NatsResponseGate {
     );
   }
 
-  #wait<T>(pending: Promise<T>, boundary: string): Promise<T> {
+  #wait<T>(
+    pending: Promise<T>,
+    boundary: string,
+    timeoutMs = 10_000,
+  ): Promise<T> {
     const result = Promise.race([
       pending,
-      setTimeout(10_000, undefined, { ref: false }).then(() => {
+      setTimeout(timeoutMs, undefined, { ref: false }).then(() => {
         throw new Error(`Timed out waiting for real NATS ${boundary}`);
       }),
     ]);

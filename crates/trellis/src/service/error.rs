@@ -7,6 +7,7 @@ pub struct DeclaredRpcError {
     error_type: String,
     message: String,
     fields: Map<String, Value>,
+    cause: Option<String>,
 }
 
 impl DeclaredRpcError {
@@ -26,7 +27,29 @@ impl DeclaredRpcError {
                 .into_iter()
                 .map(|(key, value)| (key.into(), value))
                 .collect(),
+            cause: None,
         }
+    }
+
+    /// Attach the underlying failure for the service's log.
+    ///
+    /// The cause goes into the one log line that carries this error's ID; the
+    /// caller's reply never includes it. Use it when a declared error, such as
+    /// a contract's `UnexpectedError`, stands in for an internal failure.
+    #[must_use]
+    pub fn with_cause(mut self, cause: impl std::fmt::Display) -> Self {
+        self.cause = Some(cause.to_string());
+        self
+    }
+
+    /// Return the log-only cause, when one was attached.
+    pub fn cause(&self) -> Option<&str> {
+        self.cause.as_deref()
+    }
+
+    /// Return the declared `code` field, when the error has one.
+    pub fn code(&self) -> Option<&str> {
+        self.fields.get("code").and_then(Value::as_str)
     }
 
     /// Return the declared RPC error type discriminator.

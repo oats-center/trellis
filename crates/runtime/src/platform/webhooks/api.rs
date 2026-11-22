@@ -28,9 +28,19 @@ fn invalid(what: &str) -> ServerError {
     declared("trellis.webhooks@v1::ValidationError", what)
 }
 
+/// The request loop logs the cause under the error ID the caller receives.
 fn unexpected(error: impl std::fmt::Display) -> ServerError {
-    tracing::error!(%error, "webhooks RPC failed");
-    declared("trellis.webhooks@v1::UnexpectedError", "Request failed")
+    ServerError::DeclaredRpc(
+        DeclaredRpcError::new(
+            "trellis.webhooks@v1::UnexpectedError",
+            "Request failed",
+            [(
+                "message",
+                serde_json::Value::String("Request failed".to_owned()),
+            )],
+        )
+        .with_cause(error),
+    )
 }
 
 fn wire<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, ServerError> {

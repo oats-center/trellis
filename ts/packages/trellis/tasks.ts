@@ -1,5 +1,6 @@
 import { AsyncResult, type BaseError, Result } from "@oatscenter/result";
 import { logger, type LoggerLike } from "./globals.ts";
+import { logFailure } from "./session/handler_errors.ts";
 
 export class TrellisTasks {
   #tasks: Record<string, Promise<Result<void, BaseError>>> = {};
@@ -21,7 +22,7 @@ export class TrellisTasks {
     this.#log.debug({ name }, "Added task");
     this.#tasks[name] = task.then((r: Result<void, E>) => {
       if (Result.isErr(r)) {
-        this.#log.error(r, "Task encountered a runtime error");
+        logFailure(this.#log, r.error, { extra: { task: name } });
       }
 
       return r;

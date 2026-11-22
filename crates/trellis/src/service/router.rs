@@ -158,6 +158,13 @@ impl PartialEq for VerifiedOpening {
 }
 impl Eq for VerifiedOpening {}
 
+impl VerifiedOpening {
+    /// The opening verified so far, if any.
+    pub(crate) fn current(&self) -> Option<crate::client::VerifiedAuthorizationRequest> {
+        self.0.read().ok()?.as_ref().cloned()
+    }
+}
+
 impl RequestContext {
     /// Admit this exact opening after the handler has checked its payload-bound resource rights.
     /// Only handler-authorized routes may call this, after—not before—their authorization check.

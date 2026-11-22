@@ -13,15 +13,27 @@ test("compactDuration preserves millisecond resolution", () => {
 
 test("errorMessage gives a service's unexpected failure its error ID", () => {
   const wire = {
-    id: "rust-server-error-1-2",
+    id: "01KAQ7Z3M4R5S6T7V8W9X0Y1Z2",
     type: "UnexpectedError",
     message: "An unexpected error has occurred",
     context: { requestId: "request-1" },
   };
   const expected =
-    "Something went wrong on the server. Look for error ID rust-server-error-1-2 in the service's log.";
+    "Something went wrong on the server. Reference: 01KAQ7Z3M4R5S6T7V8W9X0Y1Z2";
   equal(errorMessage({ error: { remoteError: wire } }), expected);
   equal(errorMessage({ remoteError: wire }), expected);
+});
+
+test("errorMessage gives Auth's own unexpected failure its reference", () => {
+  equal(
+    errorMessage({
+      id: "01KAQ7Z3M4R5S6T7V8W9X0Y1Z3",
+      type: "trellis.auth@v1::UnexpectedError",
+      message: "Request failed",
+      code: "server_error",
+    }),
+    "Something went wrong on the server. Reference: 01KAQ7Z3M4R5S6T7V8W9X0Y1Z3",
+  );
 });
 
 test("errorMessage keeps the cause of an error raised in this browser", () => {

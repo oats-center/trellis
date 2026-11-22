@@ -101,6 +101,7 @@ import type {
 import {
   annotateHandlerBoundaryError,
   createTrellisInternal,
+  logFailure,
 } from "../../session.ts";
 import type { TrellisServiceRuntimeDeps } from "./runtime.ts";
 import { type DownloadSource, ServiceTransfer } from "./transfer.ts";
@@ -2519,6 +2520,7 @@ function createJobsFacade<
   serviceName: string;
   contractId?: string;
   contractDigest?: string;
+  log: LoggerLike;
   nc: NatsConnection;
   contractJobs: TJobs;
   readHistory: (
@@ -3005,6 +3007,19 @@ function createJobsFacade<
                   contractDigest: args.contractDigest,
                   traceId: job.context().traceId,
                 };
+                // The job ID is the reference Console and the CLI show.
+                const logJobFailure = (error: BaseError) =>
+                  logFailure(args.log, error, {
+                    route: queueType,
+                    requestId: jobErrorContext.requestId,
+                    traceId: jobErrorContext.traceId,
+                    service: args.serviceName,
+                    extra: {
+                      job_id: job.job().id,
+                      tries: job.job().tries,
+                      retry: error instanceof RetryJobError,
+                    },
+                  });
 
                 let handled: unknown | Result<never, BaseError>;
                 try {
@@ -3014,6 +3029,7 @@ function createJobsFacade<
                     cause,
                     jobErrorContext,
                   );
+                  logJobFailure(annotatedError);
                   const signal =
                     annotatedError instanceof RetryJobError
                       ? InternalJobProcessError.retryable
@@ -3030,6 +3046,7 @@ function createJobsFacade<
                     handled.error,
                     jobErrorContext,
                   );
+                  logJobFailure(annotatedError);
                   const signal =
                     annotatedError instanceof RetryJobError
                       ? InternalJobProcessError.retryable
@@ -3785,6 +3802,7 @@ export class TrellisServiceSession<
       serviceName: name,
       contractId: health.contractId,
       contractDigest: health.contractDigest,
+      log,
       nc,
       contractJobs,
       transport,

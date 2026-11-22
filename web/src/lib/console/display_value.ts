@@ -206,20 +206,24 @@ export type ConsoleErrorProjection = {
 /**
  * What to tell someone about a service's unexpected failure, which arrives with
  * an ID instead of its cause. Undefined for anything else, including an error
- * raised in this browser, whose ID is in no service's log.
+ * raised in this browser, whose ID is in no service's log. A contract's own
+ * `UnexpectedError`, such as `trellis.auth@v1::UnexpectedError`, counts too.
+ * The reference is the `error_id` field of the failure's one log line.
  */
 export function unexpectedFailureCopy(
   source: Record<string, unknown>,
 ): string | undefined {
   const context = isPlainRecord(source.context) ? source.context : undefined;
   if (
-    source.type !== "UnexpectedError" ||
+    typeof source.type !== "string" ||
+    (source.type !== "UnexpectedError" &&
+      !source.type.endsWith("::UnexpectedError")) ||
     typeof source.id !== "string" ||
     context?.causeMessage !== undefined
   ) {
     return undefined;
   }
-  return `Something went wrong on the server. Look for error ID ${source.id} in the service's log.`;
+  return `Something went wrong on the server. Reference: ${source.id}`;
 }
 
 function projectionFromSource(

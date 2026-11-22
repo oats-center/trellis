@@ -15,6 +15,24 @@ and this project adheres to
 
 ### Fixed
 
+- A failed request is logged once, under the same reference the caller is
+  shown, with `error_id`, `request_id`, `trace_id`, `route`, the caller and the
+  cause, in Rust, TypeScript and trellis-server alike. The Console and CLI
+  show "Reference: <id>", and the upkeep guide explains how to find the log
+  line from it. Jobs and event handlers log their failures too.
+- Console forms keep what you typed when the saved record changes underneath
+  them: a "Changed while you were editing" panel shows yours next to the saved
+  value, and Save waits until each conflict is settled. A refused deletion keeps
+  unsaved edits, and a late reply for one service never lands on another.
+- "Delete account" on the user page can be confirmed again.
+- The `url` and `time` crates are updated past RUSTSEC-2026-0592 and
+  RUSTSEC-2026-0009.
+- Debug builds of the server start with half the thread stack they needed.
+- The Console no longer loses what you are typing every few minutes. Each
+  renewal of its session's authority, an issuer rotation or a reconnect made it
+  briefly treat the user as having no permissions, which unmounted forms and
+  emptied the navigation. The last verified authority now stays while it is
+  checked again.
 - Debug builds of Rust services and tests could overflow a 2 MiB thread stack:
   connecting, testkit startup and every generated RPC call held very large
   futures. They are boxed where they are created, so callers hold small ones.

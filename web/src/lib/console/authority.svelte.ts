@@ -63,8 +63,10 @@ function classifyFailure(error: unknown): {
  *
  * Create one per shell, publish it with `setConsoleAuthority`, and read it in
  * descendants with `getConsoleAuthority`. Reloads re-enter `checking` for every
- * validation; a stale completion can never restore a previous snapshot. The
- * snapshot is advisory shell metadata: it does not authorize routes or RPCs.
+ * validation, keeping the authority last verified for the session until the
+ * check completes; a stale completion can never restore a previous snapshot.
+ * The snapshot is advisory shell metadata: it does not authorize routes or
+ * RPCs.
  */
 export class ConsoleAuthority {
   #core: ConsoleAuthorityCore;
@@ -125,7 +127,11 @@ export class ConsoleAuthority {
     });
   }
 
-  /** Current snapshot; reactive when read in effects or markup. */
+  /**
+   * Current snapshot; reactive when read in effects or markup. Once the
+   * connection holds authority newer than the one verified here, the snapshot
+   * is `checking` until that is verified, and keeps showing the last one.
+   */
   get snapshot(): AuthoritySnapshot {
     const snapshot = this.#snapshot ?? this.#core.snapshot;
     if (
@@ -133,7 +139,7 @@ export class ConsoleAuthority {
       snapshot.authority?.authorityDigest !==
         this.#view.current?.authorityDigest
     )
-      return { ...snapshot, state: "checking", authority: null, profile: null };
+      return { ...snapshot, state: "checking" };
     return snapshot;
   }
 

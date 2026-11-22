@@ -2330,9 +2330,13 @@ impl AuthorizationOwner {
         let result = cell
             .get_or_init(|| async {
                 match tokio::time::timeout(RESOLUTION_TIMEOUT, async {
-                    let material =
-                        AuthorizationRegistryReader::material(transport, kind, digest).await?;
-                    let issuer = self.issuer(transport, material.issuer_key_id()).await?;
+                    // Registry reads are large state machines; on the heap
+                    // they keep every resolver's debug stack frames small.
+                    let material = Box::pin(AuthorizationRegistryReader::material(
+                        transport, kind, digest,
+                    ))
+                    .await?;
+                    let issuer = Box::pin(self.issuer(transport, material.issuer_key_id())).await?;
                     // Authenticate once; each use rechecks only what can change.
                     let material = match material {
                         UnverifiedMaterial::Authority(authority) => {

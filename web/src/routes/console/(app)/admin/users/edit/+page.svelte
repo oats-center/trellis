@@ -16,8 +16,14 @@
   } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { canPerform } from "$lib/console/operations.ts";
+  import {
+    draftConflicts,
+    rebaseDraft,
+    settleConflict,
+  } from "$lib/console/draft.ts";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import CopyButton from "$lib/components/CopyButton.svelte";
+  import DraftConflicts from "$lib/components/DraftConflicts.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
@@ -27,6 +33,13 @@
   import UserIdentities from "$lib/components/UserIdentities.svelte";
   import { getTrellis } from "$lib/trellis";
 
+  type User = apis.auth.UsersGetOutput["user"];
+  type Profile = { displayName: string; enabled: boolean };
+  const profileOf = (user: User): Profile => ({
+    displayName: user.displayName,
+    enabled: user.account?.principal.enabled ?? false,
+  });
+
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
   const scope = new RequestScope("user-edit");
@@ -35,14 +48,28 @@
     apis.auth.UsersUpdateOutput
   >();
   const requestedUserId = $derived(page.url.searchParams.get("userId") ?? "");
-  let user = $state.raw<apis.auth.UsersGetOutput["user"] | null>(null);
+  let user = $state.raw<User | null>(null);
   let loading = $state(true);
   let saving = $state(false);
   let displayName = $state("");
   let enabled = $state(true);
+  // The saved profile each edit above was typed over. It differs from the
+  // saved profile only for a field someone else changed meanwhile.
+  let base = $state.raw<Profile>({ displayName: "", enabled: true });
+  // A failed read, or a change whose outcome is unknown; both block saving.
   let error = $state<string | null>(null);
+  // Why Auth refused the last change. The page rereads and stays usable.
+  let refusal = $state<string | null>(null);
   let saved = $state(false);
   let confirmationModal: ConfirmationModal | undefined = $state();
+  const conflicts = $derived(
+    user
+      ? draftConflicts(
+          { draft: { displayName, enabled }, base },
+          profileOf(user),
+        )
+      : [],
+  );
   const dirty = $derived(
     user !== null &&
       (displayName !== user.displayName ||
@@ -58,11 +85,41 @@
       navigation.cancel();
   });
 
+  // Takes a newer read of the user. What was typed stays, fields left alone
+  // show what is saved now, and a field saved meanwhile becomes a conflict.
+  function take(next: User): void {
+    const merged = rebaseDraft(
+      { draft: { displayName, enabled }, base },
+      profileOf(next),
+    );
+    displayName = merged.draft.displayName;
+    enabled = merged.draft.enabled;
+    base = merged.base;
+    user = next;
+  }
+
+  function settle(field: string, choice: "keep" | "take"): void {
+    if (!user || (field !== "displayName" && field !== "enabled")) return;
+    const settled = settleConflict(
+      { draft: { displayName, enabled }, base },
+      profileOf(user),
+      field,
+      choice,
+    );
+    displayName = settled.draft.displayName;
+    enabled = settled.draft.enabled;
+    base = settled.base;
+  }
+
   async function load(userId: string): Promise<void> {
     const token = scope.begin();
-    loading = true;
+    // A reread of the shown user keeps the form and what was typed in it.
+    const reread = user?.principalId === userId;
+    if (!reread) {
+      loading = true;
+      user = null;
+    }
     error = null;
-    user = null;
     try {
       if (!userId) return;
       const input = apis.auth.API.actions["rpc:Users.Get"].input.decode({
@@ -74,9 +131,12 @@
         throw new Error("User lookup returned a different identity.");
       if (!response.user.account)
         throw new Error("Account management authority is required.");
-      user = response.user;
-      displayName = user.displayName;
-      enabled = response.user.account.principal.enabled;
+      if (reread && user?.principalId === userId) take(response.user);
+      else {
+        user = response.user;
+        ({ displayName, enabled } = profileOf(response.user));
+        base = profileOf(response.user);
+      }
     } catch (cause) {
       if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
     } finally {
@@ -90,6 +150,7 @@
       loading ||
       saving ||
       error ||
+      conflicts.length > 0 ||
       !canPerform(authority.authority, "usersUpdate")
     )
       return;
@@ -117,6 +178,7 @@
     if (!mutation.begin(intent)) return;
     saving = true;
     saved = false;
+    refusal = null;
     const outcome = await mutation.send({
       isStillValid: () =>
         scope.key === intent.scope.routeKey &&
@@ -128,14 +190,19 @@
     if (!outcome || scope.key !== intent.scope.routeKey) return;
     if (outcome.kind === "succeeded") {
       user = outcome.value.user;
-      displayName = user.displayName;
-      enabled = user.account?.principal.enabled ?? enabled;
+      ({ displayName, enabled } = profileOf(user));
+      base = profileOf(user);
       saved = true;
-    } else
+    } else if (outcome.kind === "unknown")
       error =
-        outcome.kind === "unknown"
-          ? "Outcome unknown; reload this user before submitting another change."
-          : projectConsoleError(outcome.error).message;
+        "Outcome unknown; reload this user before submitting another change.";
+    else {
+      // A refused save usually means someone changed the account meanwhile;
+      // reread it so the form shows what they saved beside what was typed.
+      const message = projectConsoleError(outcome.error).message;
+      await load(input.userId);
+      if (scope.key === intent.scope.routeKey) refusal = message;
+    }
   }
 
   async function remove(): Promise<void> {
@@ -159,6 +226,8 @@
     if (!confirmed || user !== target || !target.account) return;
     const key = scope.key;
     saving = true;
+    refusal = null;
+    saved = false;
     try {
       await trellis
         .usersDelete({
@@ -172,10 +241,12 @@
       if (scope.key !== key) return;
       const message = projectConsoleError(cause).message;
       // A refused delete means the account changed since it was read; show it
-      // as it is now. A refused save keeps the edits instead.
-      if (classifyMutationError(cause).kind !== "unknown")
+      // as it is now, keeping what was typed.
+      if (classifyMutationError(cause).kind === "unknown") error = message;
+      else {
         await load(target.principalId);
-      if (scope.key === key) error = message;
+        if (scope.key === key) refusal = message;
+      }
     } finally {
       saving = false;
     }
@@ -185,8 +256,12 @@
     const id = requestedUserId;
     scope.setKey(id);
     mutation.cancel();
-    confirmationModal?.cancel();
-    untrack(() => void load(id));
+    // Untracked: the modal's own state must not rerun this effect, or opening
+    // the delete confirmation would cancel it and reread the user.
+    untrack(() => {
+      confirmationModal?.cancel();
+      void load(id);
+    });
     return () => scope.invalidate();
   });
   onDestroy(() => scope.dispose());
@@ -205,6 +280,7 @@
         onclick={() => void load(requestedUserId)}>Reload user</button
       ></Notice
     >{/if}
+  {#if refusal}<Notice variant="error">{refusal}</Notice>{/if}
   {#if saved}<Notice variant="success">Profile updated.</Notice>{/if}
   {#if loading}<LoadingState label="Loading user" />
   {:else if !user?.account}<EmptyState
@@ -265,6 +341,27 @@
           /></label
         >
       </section>
+      {#if conflicts.length > 0}<div class="px-5 py-3">
+          <DraftConflicts
+            conflicts={conflicts.map((field) =>
+              field === "displayName"
+                ? {
+                    field,
+                    label: "Display name",
+                    mine: displayName,
+                    saved: user?.displayName ?? "",
+                  }
+                : {
+                    field,
+                    label: "Enabled",
+                    mine: enabled ? "On" : "Off",
+                    saved: user?.account?.principal.enabled ? "On" : "Off",
+                  },
+            )}
+            disabled={saving}
+            onsettle={settle}
+          />
+        </div>{/if}
       <div class="flex justify-between gap-2 px-5 py-3">
         <div>
           {#if canPerform(authority.authority, "usersDelete")}<button
@@ -282,6 +379,7 @@
             disabled={saving ||
               !!error ||
               !dirty ||
+              conflicts.length > 0 ||
               !canPerform(authority.authority, "usersUpdate")}
             >{saving ? "Saving…" : "Save profile"}</button
           >
@@ -292,13 +390,7 @@
     {#if canPerform(authority.authority, "usersFind")}<UserIdentities
         {user}
         disabled={saving || loading}
-        onchange={(next) => {
-          // Keep unsaved edits; take the rest from the newer account.
-          if (displayName === user?.displayName) displayName = next.displayName;
-          if (enabled === user?.account?.principal.enabled)
-            enabled = next.account?.principal.enabled ?? enabled;
-          user = next;
-        }}
+        onchange={take}
       />{/if}
     <UserSecurity
       userId={user.principalId}

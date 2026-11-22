@@ -1324,12 +1324,14 @@ impl TrellisClient {
                 identity,
             },
         )?);
-        let mut connected = Self::connect_context(
+        // Attaching is a large state machine; on the heap it keeps this
+        // handshake's debug stack frames small.
+        let mut connected = Box::pin(Self::connect_context(
             auth,
             contexts.clone(),
             timeout_ms,
             participant_kind_label(&kind),
-        )
+        ))
         .await?;
         let authorization: ServiceBootstrapAuthorization =
             serde_json::from_value(contexts.service_bootstrap_authorization()?)?;
@@ -1587,13 +1589,14 @@ impl TrellisClient {
         // one here, and any wider one automatic adoption opens later. The
         // baseline lease keeps the initial framework-loop attachment alive until
         // provider/live intake migrates to the current generation.
-        let (generations, baseline_lease) = crate::client::TransportGenerationManager::connect(
-            auth.clone(),
-            authorization_contexts.clone(),
-            timeout_ms,
-            live_slot.clone(),
-        )
-        .await?;
+        let (generations, baseline_lease) =
+            Box::pin(crate::client::TransportGenerationManager::connect(
+                auth.clone(),
+                authorization_contexts.clone(),
+                timeout_ms,
+                live_slot.clone(),
+            ))
+            .await?;
         let nats = baseline_lease.nats().clone();
         // The baseline attachment is not pinned for the connection lifetime: its
         // framework-loop attachment migrates to the current generation through

@@ -1666,6 +1666,14 @@ principal/login state, and the online issuer, not constructing a raw subject or
 granting access in application code. Run the consumer repository's own checks
 after generation; Trellis-repository xtask commands are not consumer commands.
 
+A failed request, Operation, job attempt or event delivery is logged once by
+the process that failed, in one structured line. Its `error_id` is the `id` of
+the error the caller received, which Console and the CLI show as
+`Reference: <id>`. The line also has `request_id`, `trace_id`, `route`,
+`service`, `caller_principal`, `caller_session`, `error_type`, `code`, `error`
+and `cause`; both SDKs and `trellis-server` use these names. To investigate a
+reference, search the failing process's log for it; the cause is only there.
+
 ## Trellis For TypeScript Consumers
 
 TypeScript-specific usage of Trellis. Read it with [the Trellis guide](llms-core.txt)
@@ -2468,7 +2476,11 @@ A handler reports a failure with no declared error as
 `ServerError::Internal(message)`. The text goes only to the service's log.
 Callers receive `UnexpectedError` with a fixed message, its `id`, `traceId` and
 `context.requestId`, and the log line carries the same IDs. A failed Operation
-carries `id` and `traceId`, and its log line also has the operation ID.
+carries `id` and `traceId`, and its log line also has the operation ID. A
+contract-declared error that stands in for an internal failure keeps its cause
+for that log line with `DeclaredRpcError::new(...).with_cause(error)`; the
+reply never includes it. A generated `UnexpectedError` displays as
+`<message> (Reference: <id>)`.
 
 Rust schema-validation issue paths use JSON Pointer: an empty path is the root,
 `/` is an empty-name property, and property names escape `~` as `~0` and `/` as

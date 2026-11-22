@@ -77,6 +77,15 @@ export function causeLogData(cause: unknown): unknown {
     : cause;
 }
 
+/** An event's own `header.id`, the reference a dead letter shows. */
+export function eventHeaderId(event: unknown): string | undefined {
+  if (typeof event !== "object" || event === null) return undefined;
+  const header = (event as { header?: unknown }).header;
+  if (typeof header !== "object" || header === null) return undefined;
+  const id = (header as { id?: unknown }).id;
+  return typeof id === "string" ? id : undefined;
+}
+
 export async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }

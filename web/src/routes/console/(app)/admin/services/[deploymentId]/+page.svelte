@@ -166,6 +166,9 @@
     void load(id);
   });
   async function load(id: string): Promise<void> {
+    // Only the service the route names is read; a reread asked for by a
+    // change made on another one is dropped.
+    if (id !== scope.key) return;
     const token = scope.begin();
     loading = true;
     error = null;
@@ -328,6 +331,10 @@
     });
     if (!confirmed || scope.disposed || claim?.claimId !== target.claimId)
       return;
+    // The outcome belongs to this service's page: once the route names
+    // another service, it is dropped.
+    const route = scope.key;
+    const onRoute = () => !scope.disposed && scope.key === route;
     busy = true;
     try {
       await trellis
@@ -337,15 +344,15 @@
           idempotencyKey: codecs.ulid.decode(ulid()),
         })
         .orThrow();
-      await goto(resolve("/admin/services"));
+      if (onRoute()) await goto(resolve("/admin/services"));
     } catch (cause) {
-      if (scope.disposed) return;
+      if (!onRoute()) return;
       const message = projectConsoleError(cause).message;
       // A refusal means the service changed since it was read, such as one
       // that has since connected; show it as it is now.
       if (classifyMutationError(cause).kind !== "unknown")
         await load(target.claimId);
-      if (!scope.disposed) error = message;
+      if (onRoute()) error = message;
     } finally {
       busy = false;
     }

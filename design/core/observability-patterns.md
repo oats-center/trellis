@@ -245,10 +245,49 @@ Library support rule:
 - `TrellisError` subclasses should include `traceId` when tracing is active
 - An unexpected failure's cause stays in the service's log. Replies and failed
   Operation snapshots carry only the error `id`, `traceId` and
-  `context.requestId`, which the log line repeats.
+  `context.requestId`, which the log line repeats; see Failure Log Lines.
 - if a runtime has not installed an OpenTelemetry tracer provider, RPC error
   responses should still attach `traceId` from a valid inbound `traceparent`
   header before the error leaves the server span boundary
+
+## Failure Log Lines
+
+Every failed request, Operation, job attempt, event delivery and webhook
+request is logged once, in one structured line, by the process that failed.
+The error ID is generated once (a ULID in both SDKs) and put into both the
+caller's error and that line, so the reference a caller shows finds the line.
+
+Both SDKs and `trellis-server` use the same field names, so one query works
+across languages:
+
+| Field              | Content                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `error_id`         | The `id` of the error the caller received                               |
+| `request_id`       | The request's `request-id`, or a job's inherited request ID             |
+| `trace_id`         | Inbound W3C trace ID, else the handling span's when traced              |
+| `route`            | RPC method, Operation, Live, event or job type                          |
+| `service`          | Service name of the failing runtime                                     |
+| `caller_principal` | Authenticated caller's principal ID, when known                         |
+| `caller_session`   | Authenticated caller's authorization session ID, when known             |
+| `error_type`       | Wire error type the caller received                                     |
+| `code`             | Declared error code, when the error has one                             |
+| `error`            | The error's message                                                     |
+| `cause`            | Cause chain (TypeScript: list of `{type, message}`, plus `cause_stack`) |
+
+Surface-specific references are logged as extra fields: `operation_id`,
+`job_id`, `event_id` (the event's `header.id`), `delivery_id` and
+`attempt_id` for webhooks. Credentials, proofs and session keys are never
+logged.
+
+Levels: a failure the service caused (`UnexpectedError`, including a
+contract's own `...::UnexpectedError`) logs at `error`; an authorization
+refusal at `warn`; a declared outcome or invalid input at `info`. A Rust
+`DeclaredRpcError` that stands in for an internal failure carries its cause
+with `with_cause`, which only the log line repeats.
+
+Console shows an unexpected failure as `Something went wrong on the server.
+Reference: <error_id>`; the CLI and Rust callers end the error text with
+`Reference: <error_id>`.
 
 ## Request Correlation
 

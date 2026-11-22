@@ -378,19 +378,20 @@
     }
   }
 
+  // Another person's access starts over. A renewed authority rereads this
+  // one's in place: what is shown and chosen stays.
   $effect(() => {
-    const targetChanged = scope.key !== `user-access:${principalId}`;
     void authority.snapshot.generation;
-    scope.setKey(`user-access:${principalId}`);
+    const targetChanged = scope.setKey(`user-access:${principalId}`);
     untrack(() => {
-      grants = [];
-      held = [];
-      assignments = [];
-      capabilities = [];
-      roles = [];
-      capabilityId = "";
-      roleId = "";
       if (targetChanged) {
+        grants = [];
+        held = [];
+        assignments = [];
+        capabilities = [];
+        roles = [];
+        capabilityId = "";
+        roleId = "";
         expiresAt = "";
         uncertain = false;
         actionError = null;

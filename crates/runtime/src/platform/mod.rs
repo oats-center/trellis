@@ -101,14 +101,15 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let jetstream = async_nats::jetstream::new(context.trellis_nats.clone());
     let mut buckets = Vec::new();
     for name in [auth::MATERIAL_BUCKET, auth::REVOCATION_BUCKET] {
-        let bucket = match jetstream
-            .create_key_value(async_nats::jetstream::kv::Config {
+        let bucket = match Box::pin(
+            jetstream.create_key_value(async_nats::jetstream::kv::Config {
                 bucket: name.into(),
                 storage: async_nats::jetstream::stream::StorageType::File,
                 history: 1,
                 ..Default::default()
-            })
-            .await
+            }),
+        )
+        .await
         {
             Ok(bucket) => bucket,
             Err(_) => jetstream.get_key_value(name).await.map_err(|error| {
@@ -145,8 +146,16 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let material = buckets.pop().expect("two Auth registries");
     let (auth_creds, system_creds) = nats.platform_creds()?;
     let stopping = || context.is_stopping();
-    let auth_nats = crate::supervisor::connect_nats(&nats, auth_creds, stopping).await?;
-    let system = crate::supervisor::connect_nats(&nats, system_creds, stopping).await?;
+    // Connections, provider preparation and the Auth services each start a
+    // large state machine; on the heap they keep the debug stack frames of
+    // this startup, which awaits all of them, small.
+    let auth_nats = Box::pin(crate::supervisor::connect_nats(&nats, auth_creds, stopping)).await?;
+    let system = Box::pin(crate::supervisor::connect_nats(
+        &nats,
+        system_creds,
+        stopping,
+    ))
+    .await?;
     // Provider notices reach sessions in the application account.
     let notices = context.trellis_nats.clone();
     // Every built-in this process starts must be one this server can install
@@ -168,34 +177,38 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         trellis_runtime_apis::participants::trellis_platform::Participant,
     >(&store, &context.trellis_nats, &provider_seed)
     .await?;
-    while store
-        .process_effects(
-            &material,
-            &revocations,
-            &system,
-            &notices,
-            crate::clock::unix_now(),
-        )
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+    while Box::pin(store.process_effects(
+        &material,
+        &revocations,
+        &system,
+        &notices,
+        crate::clock::unix_now(),
+    ))
+    .await
+    .map_err(|error| RuntimeError::Platform(error.to_string()))?
         != 0
     {}
-    let own_context = auth::OwnContextService::start(
+    let own_context = Box::pin(auth::OwnContextService::start(
         context.trellis_nats.clone(),
         material.clone(),
         store.clone(),
-    )
+    ))
     .await
     .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let callout = AuthCallout::start(auth_nats, system.clone(), store.clone(), keys)
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let callout = Box::pin(AuthCallout::start(
+        auth_nats,
+        system.clone(),
+        store.clone(),
+        keys,
+    ))
+    .await
+    .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     // Roles running apart from the platform ask it to prepare their providers.
-    let preparation = builtin_live_provider::BuiltinPreparation::start(
+    let preparation = Box::pin(builtin_live_provider::BuiltinPreparation::start(
         context.trellis_nats.clone(),
         store.clone(),
         context.config.clone(),
-    )
+    ))
     .await?;
     *context
         .authorization_store
@@ -208,7 +221,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .platform()?
         .path()
         .with_file_name(crate::storage::WEBHOOKS_DATABASE);
-    let webhooks = webhooks::Webhooks::open(
+    let webhooks = Box::pin(webhooks::Webhooks::open(
         engine.server.store().clone(),
         &records_path,
         context.trellis_nats.clone(),
@@ -218,7 +231,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             .config
             .resolve_console_origin()
             .map_err(|error| RuntimeError::Platform(error.to_string()))?,
-    )
+    ))
     .await?;
     // Sign-in, the Console, and webhook intake share the Trellis listener.
     context.register_http_router(
@@ -337,18 +350,20 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         let provider_stop = task_stop.clone();
         tasks.spawn(async move {
             let event_store = provider_store.clone();
+            // Connecting and serving the provider are large state machines; on
+            // the heap they keep this task's debug stack frames small.
             let provider = tokio::select! {
                 () = provider_stop.stopped() => return Ok(()),
-                result = bootstrap::connect_platform_provider(
+                result = Box::pin(bootstrap::connect_platform_provider(
                     provider_store, provider_oauth, provider_operational, provider_servers,
                     provider_roots, provider_server_name, &provider_seed, webhooks,
-                ) => result?,
+                )) => result?,
             };
             // Webhook intake publishes `Received` events as the platform.
             publisher.send_replace(Some(provider.event_publisher()));
             let owner = provider.runtime_native_owner();
             let publisher = provider.event_publisher();
-            let publications = async {
+            let publications = Box::pin(async {
                 let mut queued = event_store.work_signal();
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -419,9 +434,9 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
                     }
                 }
-            };
+            });
             let result = tokio::select! {
-                result = provider.run() =>
+                result = Box::pin(provider.run()) =>
                     result.map_err(|error| RuntimeError::Platform(error.to_string())),
                 result = publications => result,
             };
