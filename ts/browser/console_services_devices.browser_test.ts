@@ -1218,3 +1218,97 @@ test("B12 device back links stay inside the configured console path", async () =
     }
   }, browserRuntimeOptions());
 });
+
+// An administrator removes one waiting service and, while Auth's answer is
+// on its way, opens another one's page. Auth refuses the removal because the
+// first was already removed. This catches the late refusal rereading the
+// first service over the second one's page, or showing its message there.
+test("a late refusal to remove a waiting service never touches the next service's page", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const suffix = ulid().slice(-6);
+    const create = async (title: string) =>
+      (
+        await runtime.callAdminRpc("authServiceClaimsCreate", {
+          title,
+          instanceTitle: title,
+          identityPublicKey: Buffer.from(
+            nacl.sign.keyPair.fromSeed(randomBytes(32)).publicKey,
+          ).toString("base64url"),
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        })
+      ).claim;
+    const first = await create(`Alpha ${suffix}`);
+    const second = await create(`Bravo ${suffix}`);
+    const removeSubject = authApi.actions["rpc:ServiceClaims.Remove"].subject;
+    const reads = [
+      authApi.actions["rpc:Deployments.Get"].subject,
+      authApi.actions["rpc:ServiceClaims.List"].subject,
+    ];
+
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      const errors = await captureBrowserErrors(page);
+      const wired = await wireNatsGate(page);
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(
+        `${runtime.consoleUrl}/console/admin/services/${first.claimId}`,
+        { waitUntil: "domcontentloaded" },
+      );
+      await waitForConsoleShell(page);
+      const main = page.locator("main");
+      const heading = main.getByRole("heading", { level: 1 });
+      await main.getByText("Waiting for its service").waitFor();
+      assert.match(await heading.innerText(), /Alpha/);
+
+      // Another administrator removes it first, so Auth refuses this one.
+      await runtime.callAdminRpc("authServiceClaimsRemove", {
+        claimId: first.claimId,
+        expectedRevision: first.revision,
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      });
+      const held = wired.gate.armNextReply(removeSubject);
+      await main.getByRole("button", { name: "Remove", exact: true }).click();
+      await page
+        .getByRole("dialog", { name: "Remove this service?" })
+        .getByRole("button", { name: "Remove", exact: true })
+        .click();
+      await held;
+
+      // Following a link to the other waiting service keeps the page alive.
+      await main.evaluate((element, href) => {
+        const link = document.createElement("a");
+        link.href = href;
+        link.textContent = "Open the other service";
+        element.append(link);
+      }, `/console/admin/services/${second.claimId}`);
+      await main
+        .getByRole("link", { name: "Open the other service", exact: true })
+        .click();
+      await page.waitForURL(new RegExp(`/admin/services/${second.claimId}$`));
+      await runtime.waitFor(
+        async () => /Bravo/.test(await heading.innerText()) || undefined,
+      );
+      const remove = main.getByRole("button", { name: "Remove", exact: true });
+      await remove.waitFor();
+
+      const mark = wired.gate.requestMark();
+      wired.releaseToPage();
+      // The page is busy until the refusal arrives and is dealt with.
+      await runtime.waitFor(
+        async () => (await remove.isEnabled()) || undefined,
+      );
+      assert.equal(wired.gate.requestsSince(mark, reads), 0);
+      assert.match(await heading.innerText(), /Bravo/);
+      assert.equal(await main.locator(".alert").count(), 0);
+      assert.match(
+        page.url(),
+        new RegExp(`/admin/services/${second.claimId}$`),
+      );
+      await assertNoBrowserErrors(errors);
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
