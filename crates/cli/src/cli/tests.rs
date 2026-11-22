@@ -190,3 +190,24 @@ fn a_public_key_starting_with_a_hyphen_is_the_option_value() {
         other => panic!("unexpected command: {other:?}"),
     }
 }
+
+#[test]
+fn an_oidc_subject_starting_with_a_hyphen_is_the_option_value() {
+    let subject = "-auth0|5f7c8ec7c33c6c004bbafe82";
+    let cli = Cli::try_parse_from([
+        "trellis",
+        "users",
+        "find",
+        "--provider",
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "--subject",
+        subject,
+    ])
+    .expect("find parses");
+    match cli.command {
+        TopLevelCommand::Users(UsersCommand {
+            command: UsersSubcommand::Find(args),
+        }) => assert_eq!(args.subject.as_deref(), Some(subject)),
+        other => panic!("unexpected command: {other:?}"),
+    }
+}

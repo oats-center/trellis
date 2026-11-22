@@ -600,8 +600,9 @@ pub struct UserIdentityArgs {
     /// The sign-in provider's Trellis ID.
     #[arg(long, value_name = "PROVIDER_ID")]
     pub provider: Option<String>,
-    /// The provider's `sub` for the user, matched exactly.
-    #[arg(long, value_name = "SUBJECT")]
+    /// The provider's `sub` for the user, matched exactly. It is opaque and
+    /// may start with `-`.
+    #[arg(long, value_name = "SUBJECT", allow_hyphen_values = true)]
     pub subject: Option<String>,
 }
 
