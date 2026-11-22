@@ -65,6 +65,14 @@ pub(crate) enum HealthStoreError {
     InvalidPagination,
 }
 
+impl HealthStoreError {
+    /// Whether the Health database itself is unusable, so trying again cannot
+    /// help (see [`crate::storage::sqlite_unusable`]).
+    pub(crate) fn unusable(&self) -> bool {
+        matches!(self, Self::Sqlite(error) if crate::storage::sqlite_unusable(error))
+    }
+}
+
 #[derive(Debug)]
 struct CurrentInstance {
     participant_name: String,

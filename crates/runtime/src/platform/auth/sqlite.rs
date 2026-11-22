@@ -108,6 +108,14 @@ pub(crate) enum AuthError {
     Broker(String),
 }
 
+impl AuthError {
+    /// Whether the Auth database itself is unusable, so background work
+    /// stops instead of trying again (see [`crate::storage::sqlite_unusable`]).
+    pub(crate) fn unusable(&self) -> bool {
+        matches!(self, Self::Storage(error) if crate::storage::sqlite_unusable(error))
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct AuthSettings {
     pub(crate) avatar_external_fetch_enabled: bool,

@@ -661,9 +661,24 @@ pub async fn start_exhaustion_advisory_loop(
                             .map_err(nats)?;
                     }
                     Err(DeliveryReportError::NotFound(_)) => {
-                        events_store
-                            .record_retention_gap(advisory.stream_sequence)
-                            .map_err(|error| ServerError::Internal(error.to_string()))?;
+                        let mut failures = 0;
+                        while let Err(error) =
+                            events_store.record_retention_gap(advisory.stream_sequence)
+                        {
+                            if error.database_unusable() {
+                                return Err(ServerError::Internal(format!(
+                                    "the Events database is unusable: {error}"
+                                )));
+                            }
+                            let delay = crate::storage::retry_delay(failures);
+                            failures += 1;
+                            tracing::warn!(
+                                %error,
+                                retry_in_ms = delay.as_millis(),
+                                "Events coverage gap not recorded; it will try again"
+                            );
+                            tokio::time::sleep(delay).await;
+                        }
                         tracing::error!(
                             stream_sequence = advisory.stream_sequence,
                             "Consumer exhaustion source expired; Events coverage is incomplete"

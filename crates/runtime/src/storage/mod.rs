@@ -192,14 +192,21 @@ impl SqliteStore {
     }
 
     pub(crate) fn open_read_only(&self) -> Result<Connection, StoreError> {
-        Connection::open_with_flags(
+        let connection = Connection::open_with_flags(
             &self.config.path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .map_err(|source| StoreError::OpenSqlite {
             path: self.config.path.clone(),
             source,
-        })
+        })?;
+        connection
+            .busy_timeout(busy_timeout(&self.config))
+            .map_err(|source| StoreError::ConfigureSqlite {
+                path: self.config.path.clone(),
+                source,
+            })?;
+        Ok(connection)
     }
 
     pub(crate) fn exists(&self) -> bool {
@@ -342,6 +349,46 @@ fn create_parent_dir(path: &Path) -> Result<(), StoreError> {
     })
 }
 
+/// How long a connection waits for another connection's lock before failing
+/// with "database is locked": the configured time, or five seconds.
+fn busy_timeout(config: &SqliteStorageConfig) -> Duration {
+    Duration::from_millis(config.busy_timeout_ms.unwrap_or(5_000))
+}
+
+/// Whether a SQLite failure means the database itself is unusable, so trying
+/// again cannot help: the file is corrupt or is not a database. A lock held
+/// by another connection, a busy database or an I/O error can pass.
+pub(crate) fn sqlite_unusable(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase)
+    )
+}
+
+/// The wait between attempts of a background loop's storage work after it
+/// failed: 250 milliseconds, doubling with each further failure up to 30
+/// seconds, and back to the start once the work succeeds.
+#[derive(Debug, Default)]
+pub(crate) struct Backoff {
+    failures: u32,
+}
+
+impl Backoff {
+    /// Counts a failure and returns how long to wait before trying again.
+    pub(crate) fn failed(&mut self) -> Duration {
+        let delay = Duration::from_millis(250)
+            .saturating_mul(1 << self.failures.min(7))
+            .min(Duration::from_secs(30));
+        self.failures = self.failures.saturating_add(1);
+        delay
+    }
+
+    /// Starts the waits over after the work succeeded.
+    pub(crate) fn succeeded(&mut self) {
+        self.failures = 0;
+    }
+}
+
 fn apply_sqlite_pragmas(
     connection: &Connection,
     config: &SqliteStorageConfig,
@@ -352,14 +399,12 @@ fn apply_sqlite_pragmas(
             path: config.path.clone(),
             source,
         })?;
-    if let Some(timeout_ms) = config.busy_timeout_ms {
-        connection
-            .busy_timeout(Duration::from_millis(timeout_ms))
-            .map_err(|source| StoreError::ConfigureSqlite {
-                path: config.path.clone(),
-                source,
-            })?;
-    }
+    connection
+        .busy_timeout(busy_timeout(config))
+        .map_err(|source| StoreError::ConfigureSqlite {
+            path: config.path.clone(),
+            source,
+        })?;
     if let Some(journal_mode) = &config.journal_mode {
         connection
             .pragma_update(None, "journal_mode", journal_mode)
