@@ -697,6 +697,8 @@ test("a changed secret's overlap accepts only the secret it replaced, for every 
       "relayed:signing": true,
       "relayedToken:hookToken": true,
       "relayedToken:relaySigning": false,
+      "relayedTokens:hookToken": true,
+      "relayedTokens:relaySigning": false,
       "signed:signing": true,
       "token:hookToken": true,
     });
@@ -1123,7 +1125,7 @@ test("a queued request keeps its token check under the policy it was accepted wi
       [refused.outcome, refused.reason],
       [
         "rejected",
-        "secret hookToken changed after intake and no longer accepts the value the request matched; the credential check can't be rerun",
+        "secret hookToken changed after intake and no longer accepts the previous value check 2 (Token in the x-hook-token header) matched; the credential check can't be rerun",
       ],
     );
 
@@ -1144,6 +1146,124 @@ test("a queued request keeps its token check under the policy it was accepted wi
         "verifier policy changed after intake; credential checks can't be rerun",
       ],
     );
+    await service.stop();
+  });
+});
+
+test("a queued request whose two checks of one secret matched different values is refused once either value's revision is deleted", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const { key, service, url, attempts } = await install(runtime);
+    const received: WebhookDelivery[] = [];
+    await service.webhooks.relayedTokens
+      .onReceived(({ event }) => {
+        received.push(event);
+      })
+      .orThrow();
+    void service.wait();
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    const record = async (body: string) => {
+      const sha = createHash("sha256").update(body).digest("hex");
+      return (await attempts("relayedTokens")).find(
+        (attempt) => attempt.bodySha256 === sha,
+      );
+    };
+    const verified = (body: string) =>
+      runtime.waitFor(
+        async () => {
+          const found = await record(body);
+          return found && found.outcome !== "pending" ? found : undefined;
+        },
+        { timeoutMs: 20_000 },
+      );
+    // The header check runs first, the query check second.
+    const send = async (header: string, query: string) => {
+      const body = JSON.stringify({ id: ulid() });
+      const response = await relay(
+        `${url("relayedTokens")}?token=${encodeURIComponent(query)}`,
+        body,
+        { "x-hook-token": header },
+      );
+      assert.equal(response.status, 200);
+      return body;
+    };
+    const report = await shortOverlap(
+      runtime,
+      key.deploymentId,
+      "relayedTokens",
+    );
+    const held = (body: string) =>
+      runtime.waitFor(
+        async () =>
+          (await record(body))?.reason === "secret relaySigning not set",
+      );
+    const relaySet = async (isSet: boolean) => {
+      await configure(
+        runtime,
+        key.deploymentId,
+        isSet
+          ? { secrets: { relaySigning: RELAY } }
+          : { unset: ["relaySigning"] },
+      );
+      await runtime.waitFor(
+        async () => (await report("relaySigning")).isSet === isSet,
+      );
+    };
+    const changeToken = async (hookToken: string) => {
+      await configure(runtime, key.deploymentId, { secrets: { hookToken } });
+      await runtime.waitFor(async () => (await report("hookToken")).overlap);
+    };
+    const overlapOver = () =>
+      runtime.waitFor(async () => !(await report("hookToken")).overlap);
+
+    // The header carries the replaced token and the query the new one;
+    // both values are still held when the request is processed, so it is
+    // delivered.
+    await changeToken("next-token");
+    const kept = await send(TOKEN, "next-token");
+    await held(kept);
+    await overlapOver();
+    await relaySet(true);
+    assert.equal((await verified(kept)).outcome, "accepted");
+    await runtime.waitFor(() => (received.length === 1 ? true : undefined));
+    assert.equal(new TextDecoder().decode(received[0]!.body), kept);
+    assert.deepEqual(
+      received[0]!.checks.map((check) => [check.kind, check.key]),
+      [
+        ["token", "previous"],
+        ["token", "current"],
+        ["hmac", "current"],
+      ],
+    );
+
+    // The same, but the revision holding the token the header matched is
+    // deleted before processing. The query's later match of the current
+    // token does not stand in for it: the request is refused, naming the
+    // header check.
+    await relaySet(false);
+    await changeToken("third-token");
+    const revoked = await send("next-token", "third-token");
+    await held(revoked);
+    const { items } = await runtime.callAdminRpc("authConfigRevisionsList", {
+      target,
+    });
+    // Newest first: the change to third-token, then the revision before it,
+    // which holds next-token.
+    await runtime.callAdminRpc("authConfigRevisionsDelete", {
+      target,
+      revision: items[1]!.revision,
+      idempotencyKey: codecs.ulid.decode(ulid()),
+    });
+    await overlapOver();
+    await relaySet(true);
+    const refused = await verified(revoked);
+    assert.deepEqual(
+      [refused.outcome, refused.reason],
+      [
+        "rejected",
+        "secret hookToken changed after intake and no longer accepts the previous value check 1 (Token in the x-hook-token header) matched; the credential check can't be rerun",
+      ],
+    );
+    assert.equal(received.length, 1);
     await service.stop();
   });
 });

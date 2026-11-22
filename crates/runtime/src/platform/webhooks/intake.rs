@@ -15,7 +15,7 @@ use trellis_idl::{WebhookMode, WebhookVerifier};
 
 use super::process::{Answer, Verdict};
 use super::records::{NewAttempt, Outcome};
-use super::request::{dropped, Check, Disposition, StoredRequest};
+use super::request::{dropped, Check, Disposition, Matched, StoredRequest};
 use super::{Endpoint, Webhooks};
 
 /// Most request headers, and most header bytes, Trellis accepts.
@@ -366,7 +366,7 @@ async fn intake(
         checks: Vec::new(),
         policy: endpoint.policy.clone(),
         generations: endpoint.generations(),
-        matched: std::collections::BTreeMap::new(),
+        matched: Vec::new(),
     };
     let size = stored.body.len();
     let sha = stored.body_sha256();
@@ -376,7 +376,7 @@ async fn intake(
     // Credentials are checked as the request arrives, then removed, so they
     // never reach the intake stream, the record, or the event. The secret
     // before a change is accepted while the change overlap lasts.
-    for verifier in &definition.verifiers {
+    for (check, verifier) in definition.verifiers.iter().enumerate() {
         match verifier {
             WebhookVerifier::Address { ranges } => {
                 if !endpoint.allows(ranges, client) {
@@ -431,9 +431,12 @@ async fn intake(
                         "token does not match",
                     )));
                 };
-                stored
-                    .matched
-                    .insert(secret.clone(), endpoint.matched_generation(secret, matched));
+                stored.matched.push(Matched {
+                    check,
+                    field: secret.clone(),
+                    generation: endpoint.matched_generation(secret, matched),
+                    key: matched,
+                });
                 let captured = stored.generations.get(secret).copied();
                 if let Some(generation) = endpoint.match_generation(secret, captured) {
                     let _ = records
@@ -482,10 +485,12 @@ async fn intake(
                         "basic credentials do not match",
                     )));
                 };
-                stored.matched.insert(
-                    password.clone(),
-                    endpoint.matched_generation(password, matched),
-                );
+                stored.matched.push(Matched {
+                    check,
+                    field: password.clone(),
+                    generation: endpoint.matched_generation(password, matched),
+                    key: matched,
+                });
                 let captured = stored.generations.get(password).copied();
                 if let Some(generation) = endpoint.match_generation(password, captured) {
                     let _ = records

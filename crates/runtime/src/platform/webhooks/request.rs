@@ -81,10 +81,24 @@ pub(crate) struct StoredRequest {
     /// The generation each secret a verifier checks had when the request
     /// arrived, so a match counts only toward the change it arrived under.
     pub(crate) generations: BTreeMap<String, i64>,
-    /// For each secret an intake check matched, the generation of the value
-    /// it matched; `None` for a value no change set. The check stands only
-    /// while the secret still accepts that generation.
-    pub(crate) matched: BTreeMap<String, Option<i64>>,
+    /// One entry for each intake check that matched a secret, so several
+    /// checks of one secret are each kept. The intake checks stand only while
+    /// every entry's secret still accepts the generation it matched.
+    pub(crate) matched: Vec<Matched>,
+}
+
+/// The secret value one intake check matched.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Matched {
+    /// The check's position in the endpoint's verifiers, from 0.
+    pub(crate) check: usize,
+    pub(crate) field: String,
+    /// The generation of the value matched; `None` for a value no change set.
+    pub(crate) generation: Option<i64>,
+    /// Whether that value was the current one at receipt or the one the
+    /// newest change replaced.
+    pub(crate) key: super::verify::KeyMatch,
 }
 
 mod body {

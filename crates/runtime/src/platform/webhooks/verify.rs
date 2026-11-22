@@ -22,7 +22,8 @@ pub(crate) enum Failure {
 }
 
 /// The key that matched: the current secret or the one before a change.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) enum KeyMatch {
     Current,
     Previous,

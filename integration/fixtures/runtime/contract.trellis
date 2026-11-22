@@ -323,6 +323,18 @@ service WebhookService {
       signature { header "X-Relay-Signature"; prefix "sha256="; encoding hex; }
     }
   }
+  webhook relayedTokens {
+    title "Relayed tokens";
+    description "The sender's token in a header and again in the query, and the relay's HMAC, checked after the answer.";
+    verify token { secret config hookToken; header "X-Hook-Token"; }
+    verify token { secret config hookToken; query "token"; }
+    verify hmac {
+      key config relaySigning;
+      algorithm sha256;
+      signed "{body}";
+      signature { header "X-Relay-Signature"; prefix "sha256="; encoding hex; }
+    }
+  }
 }
 service ConfiguredService {
   config endpoint { title "Endpoint"; description "Where the service sends work."; type string; }

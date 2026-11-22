@@ -244,22 +244,31 @@ another, so storing the signature header is safe.
 Queued requests are checked under the policy they were accepted with. With
 the intake verdicts, a stored request keeps the endpoint's verifier policy (a
 digest of its verifiers and the plain settings they read: the `address`
-ranges and the `basic` username) and, for each secret an intake check matched,
-the generation of the value it matched. When the worker or verifying again
-processes the request:
+ranges and the `basic` username). Each intake check records the secret
+generation it matched: the check's position in the policy, the secret field,
+the generation of the value, and whether that value was the current one or
+the one the newest change replaced. A policy can check one secret more than
+once, for example a token in a header and again in the query, and each check
+keeps its own entry. When the worker or verifying again processes the
+request:
 
-- Under the same policy, the intake verdicts stand while each secret still
-  accepts the generation it matched: the current one, or the one the newest
-  change replaced, if the overlap was open when the request was received. An
-  overlap that ends while the request waits leaves its match standing, so a
-  request the sender was answered for is never refused only because
-  processing was late. A change of secret alone is not a change of policy.
-  Once the matched value is no longer accepted, because a later change
-  replaced it or the revision holding it was deleted, the request is rejected
-  with the reason `secret <field> changed after intake and no longer accepts
-the value the request matched; the credential check can't be rerun`.
-  Deleting that revision is how an administrator withdraws the replaced
-  value, queued requests included.
+- Under the same policy, the intake verdicts stand while every recorded
+  generation is still accepted by its secret: the current one, or the one the
+  newest change replaced, if the overlap was open when the request was
+  received. An overlap that ends while the request waits leaves its match
+  standing, so a request the sender was answered for is never refused only
+  because processing was late. A change of secret alone is not a change of
+  policy. Once any check's matched value is no longer accepted, because a
+  later change replaced it or the revision holding it was deleted, the
+  request is rejected, even when another check of the same secret matched a
+  value still accepted. The reason names the first such check, counting from
+  1: `secret <field> changed after intake and no longer accepts the <current
+or previous> value check <n> (<check description>) matched; the credential
+check can't be rerun`, for example `secret hookToken changed after intake and
+no longer accepts the previous value check 1 (Token in the x-hook-token
+header) matched; the credential check can't be rerun`. Deleting that revision
+  is how an administrator withdraws the replaced value, queued requests
+  included.
 - Under a different policy, the intake verdicts count for nothing. Every
   verifier runs again where the stored request allows it: `address` against
   the stored client address, `hmac` against the stored bytes. A `token` or

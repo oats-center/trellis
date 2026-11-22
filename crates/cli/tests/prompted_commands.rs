@@ -883,6 +883,7 @@ async fn webhook_endpoints_and_their_requests_are_shown_and_managed() {
             "receipt",
             "relayed",
             "relayedToken",
+            "relayedTokens",
             "signed",
             "token"
         ]

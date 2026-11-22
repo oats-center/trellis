@@ -300,9 +300,10 @@ impl Webhooks {
         let definition = &endpoint.record.definition;
         let received_at = request.received_at_ms;
         // Intake checks stand only under the policy they ran under, and only
-        // while each secret they matched still accepts the value matched: a
-        // replaced value matched during its overlap stands after the overlap
-        // ends, unless the revision holding it is deleted.
+        // while the secret of every check that matched one still accepts the
+        // value that check matched: a replaced value matched during its
+        // overlap stands after the overlap ends, unless the revision holding
+        // it is deleted.
         // Under another policy every verifier runs again where the stored
         // request allows it; a credential removed at intake cannot be checked
         // again, so the request is refused.
@@ -314,11 +315,21 @@ impl Webhooks {
         };
         let mut checks = Vec::new();
         if same_policy {
-            for (field, generation) in &request.matched {
-                if !endpoint.accepts(field, *generation, received_at) {
+            for matched in &request.matched {
+                if !endpoint.accepts(&matched.field, matched.generation, received_at) {
+                    // The same policy has the same verifiers, so the index
+                    // names the check that ran at intake.
+                    let described = definition
+                        .verifiers
+                        .get(matched.check)
+                        .map(trellis_idl::webhook::describe_verifier)
+                        .unwrap_or_default();
                     return rejected(format!(
-                        "secret {field} changed after intake and no longer accepts the value \
-                        the request matched; the credential check can't be rerun"
+                        "secret {} changed after intake and no longer accepts the {} value \
+                        check {} ({described}) matched; the credential check can't be rerun",
+                        matched.field,
+                        matched.key.as_str(),
+                        matched.check + 1,
                     ));
                 }
             }
