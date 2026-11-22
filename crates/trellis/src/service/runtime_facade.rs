@@ -823,6 +823,18 @@ impl ServiceHandle {
             .map_err(|error| ServerError::Internal(error.to_string()))
     }
 
+    /// The issuer key that signed the own authority this service signs its
+    /// replies with, or `None` while it holds no usable authority. The
+    /// Trellis runtime checks it as `Issuers.Revoke` commits.
+    #[doc(hidden)]
+    pub fn own_issuer_key_id(&self) -> Option<String> {
+        self.client
+            .authorization_owner()
+            .own_authority()
+            .ok()
+            .map(|authority| authority.authority().issuer_key_id.clone())
+    }
+
     /// Return the service instance name used during bootstrap.
     pub fn service_name(&self) -> &str {
         &self.service_name

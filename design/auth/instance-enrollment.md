@@ -671,7 +671,9 @@ including a repeated one, as `ServiceInstances.Provision` does.
 `identityPublicKey`, and a `serviceIdentityStatus` proof, and answers
 `{ "state" }`: `active`, `disabled` (the instance, its deployment, or its
 principal is off), `removed`, `retired`, or `unregistered`. It answers from
-the tombstone once the rows are gone. A key-file host calls it after a failed
+the tombstone once the rows are gone. A device's identity key, current or
+tombstoned, is `unregistered` here, the same as a key Auth never saw. A
+key-file host calls it after a failed
 connect; any answer other than `removed`, `retired`, or `unregistered` (or no
 answer) means retry with the same key, with backoff up to 30 seconds.
 

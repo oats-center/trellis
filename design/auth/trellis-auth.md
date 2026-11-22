@@ -204,8 +204,8 @@ renew its own authority either, and expired authority authorizes nothing.
 ## Consent and delegation
 
 Required access has no choice: approving the consent grants it. Optional
-access the user can be granted starts selected, unless an earlier answer
-declined it; optional administration starts unselected and takes its own
+access the user can be granted starts selected, administration included,
+unless an earlier answer declined it; administration takes its own
 confirmation. The server rechecks the submitted selection against current
 holdings in the approving transaction, and a changed meaning requires a fresh
 presentation. Every answer on the consent page is remembered, approvals and
@@ -509,8 +509,7 @@ substitutes for the product.
 The consent page lists required access first, without checkboxes, as what
 approving grants. Optional capabilities and groups the user can be granted
 follow with checkboxes, checked unless the user declined them before for this
-client at the current `grants` text; optional administration starts
-unchecked. Select all and Clear all are explicit actions over all optional
+client at the current `grants` text, administration included. Select all and Clear all are explicit actions over all optional
 access the user may grant, administration included. Optional access the user
 can't be granted (through their roles, grants, or sign-in provider, or
 administration for an unregistered app) is not offered at all; required access
@@ -858,7 +857,10 @@ it.
 Optional-action availability is advisory: a missing live authority snapshot is
 unknown, not proof that the action is denied. Finite requests wait for verified
 authority before signing and publishing, within their original deadline and
-cancellation signal. A current snapshot that excludes the action remains denied;
+cancellation signal. Signing can read authorization material over the network,
+and the same deadline bounds it: a request or event signed after its deadline is
+never sent, and the caller gets a timeout. A current snapshot that excludes the
+action remains denied;
 recovery never retransmits a potentially executed request. An authority carries
 a group's member capabilities, not the group, so a selected group is available
 when its actions are.
@@ -1005,6 +1007,15 @@ serves that page only for a return address on an origin the client registered a
 redirect URI on, so it is no open redirector; the page then posts the Portal's
 CSRF-protected logout and returns. It asks for no confirmation: a forged
 navigation can only sign someone out, never in or into another account.
+
+Sign-out reports success only once the server has ended what it was asked to
+end. `/portal/logout` answers `access_denied` only when no Portal login is left,
+which the page treats as signed out; when ending the login fails on the server
+it answers `server_error`, the login stays valid, and the page keeps its
+"Try again" screen with the request's reference. `/revoke` answers
+`server_error` when revoking the token's refresh family failed, even though the
+token itself is gone; the browser app then keeps its stored session and reports
+the failure instead of clearing it while that family's sessions stay live.
 
 Ending the Portal login does not end the OIDC provider's own session. So that
 the next OIDC sign-in from that browser does not sign the person straight back
@@ -1188,7 +1199,17 @@ links it has published, so each link is written once per Auth process and an
 answer otherwise costs only a database read of the newest rotation.
 
 Explicit key compromise (`Issuers.Revoke`) makes the key unusable; restart must
-not reinstall it as an active signer. It retires every user session holding any
+not reinstall it as an active signer. The operator always gets a definitive
+answer. A caller refuses a reply once it knows the key is revoked if either the
+authority its request was made with or Auth's own authority, which signs the
+reply, came from that key. So the transaction that commits the revocation
+first checks both and, if either came from the key, refuses and writes nothing.
+It runs on the same database writer as activation and renewal. The key's
+state therefore cannot change between the check and the commit. Auth's own
+authority cannot move back onto the key either: its renewals run one at a time,
+and every renewal after the switch is signed by a later key. Before that
+transaction Auth renews its own authority off a key that is no longer current,
+so normally only a request made under the key is refused. It retires every user session holding any
 authority the key signed, since such a session may have been admitted with an
 OAuth admission the key signed. A service or device session admits with its own
 identity key, which the issuer key cannot forge, so it is retired only when its

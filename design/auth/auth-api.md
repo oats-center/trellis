@@ -144,6 +144,16 @@ signing key is a validation error that says to rotate first, and a key already
 revoked is a validation error saying so. A retried request with the same
 idempotency key still returns the original result.
 
+The reply to a revoke must verify after the revocation it reports, so the
+transaction that commits it also checks that the reply does not depend on the
+key. It refuses with a validation error, writing nothing, when the authority the
+request was made with came from the key (connect again or wait for the session
+to renew onto the current key), or while Auth's own authority, which signs the
+reply, still came from it. Before that transaction Auth renews its own
+authority off a key that isn't current. Activation and renewal commit through
+the same writer, so a revoke that races the rotation or activation retiring
+the key is either refused or committed with its success reply.
+
 ### Upstream Identity Providers
 
 `SignInSettings` holds `localUsers`, `localSignUp` and `passwordMinLength`.
@@ -237,7 +247,10 @@ result. `Packages.Pull` and the registry RPCs require
 Deployment Apply is the administrator's direct mutation path. A running
 service can also submit its own build: `ServiceUpdates.Submit` and
 `ServiceUpdates.Status` are callable by every service instance through
-`trellis.auth.v1:serviceUpdates.submit`; `ServiceUpdates.List`, `Get`, and
+`trellis.auth.v1:serviceUpdates.submit`. `Status` answers only for the
+caller's own deployment (or its claim): another deployment's update gets the
+same `not_found` reply as an update that doesn't exist, and only the log says
+which it was. `ServiceUpdates.List`, `Get`, and
 `Decide` require `trellis.auth.v1:users.manage`. An update that asks for no new
 capability or resource installs at once; one that does waits for `Decide`.
 Create, Apply, and Decide all refuse to make a deployment serve an API another

@@ -235,7 +235,9 @@ pub(super) fn mutation(
 pub(super) fn rpc_error(error: AuthError) -> ServerError {
     let needed;
     let (error_type, code, message) = match &error {
-        AuthError::NotFound(detail) => (errors::AuthError::TYPE, "not_found", detail.as_str()),
+        AuthError::NotFound(detail) | AuthError::Hidden(detail, _) => {
+            (errors::AuthError::TYPE, "not_found", detail.as_str())
+        }
         AuthError::Conflict(detail) => (
             errors::AuthError::TYPE,
             "revision_conflict",

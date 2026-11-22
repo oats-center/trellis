@@ -348,6 +348,13 @@ ul {
   font-size: 0.8125rem;
   font-weight: 600;
 }
+/* Tells apart APIs that share a title. */
+.api-id {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
 .group + .group {
   border-top: 1px solid var(--line);
 }

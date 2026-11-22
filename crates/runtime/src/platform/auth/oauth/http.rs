@@ -1280,10 +1280,10 @@ async fn consent_data(
                 }
                 let declined = answer.as_deref() == Some("declined") && !required;
                 // Required access has no choice. Optional access starts
-                // selected unless the person declined it before; approving
-                // administration is never remembered and takes its own
-                // confirmation, so it starts unselected.
-                let selected = required || (available && !declined && !administrative);
+                // selected unless the person declined it before,
+                // administration included. Approving administration is never
+                // remembered and still takes its own confirmation.
+                let selected = required || (available && !declined);
                 capabilities.push(serde_json::json!({
                     "capabilityId":capability,
                     "apiId":api_id,
@@ -1898,9 +1898,15 @@ async fn portal_logout(
     let authority = engine.server.store().authority.clone();
     let (csrf, request_id) = (csrf.clone(), request_id.clone());
     let logged_out = blocking(move || {
+        // Only a login that is gone is answered `access_denied`, which the
+        // Portal takes as signed out. A login the server failed to end stays
+        // valid, so the sign-out reports the failure and can be retried.
         let login = authority
             .portal_login(&cookie, &csrf, now)
-            .map_err(|_| ErrorCode::AccessDenied)?;
+            .map_err(|cause| match cause {
+                super::super::AuthError::Denied => ErrorCode::AccessDenied,
+                cause => failed("could not read the Portal login", cause),
+            })?;
         let identity = super::super::Mutation {
             actor: login.principal_id.clone(),
             request_id,
@@ -1910,7 +1916,11 @@ async fn portal_logout(
         };
         authority
             .portal_logout(&identity, &login, now)
-            .map_err(|_| ErrorCode::AccessDenied)
+            .map_err(|cause| match cause {
+                super::super::AuthError::Denied => ErrorCode::AccessDenied,
+                super::super::AuthError::Conflict(_) => ErrorCode::InvalidRequest,
+                cause => failed("could not end the Portal login", cause),
+            })
     })
     .await;
     match logged_out {
@@ -2214,6 +2224,10 @@ async fn revoke(
     }))
     .await
     {
+        // The library answers success even when revoking the token's refresh
+        // family failed. That family's sessions stay live, so the caller is
+        // told the sign-out failed instead of being shown it as done.
+        Ok(Ok(())) if crate::http_failure::recorded() => error(ErrorCode::ServerError),
         Ok(Ok(())) => StatusCode::OK.into_response(),
         Ok(Err(response)) => error(response.error),
         Err(cause) => error(failed("the revocation's task failed", cause)),

@@ -65,6 +65,11 @@ pub(crate) enum AuthError {
     /// kind and ID, as in "no user <id>".
     #[error("not found: {0}")]
     NotFound(String),
+    /// A record that exists but is outside the caller's scope. Callers are
+    /// answered exactly as for [`AuthError::NotFound`] with the same detail;
+    /// only the log has the second field, which says why.
+    #[error("not found: {0} ({1})")]
+    Hidden(String, &'static str),
     /// Someone else changed the target since the caller read it, or a retry
     /// reused an idempotency key for a different request. The detail says
     /// what changed and that the caller should reload and try again.

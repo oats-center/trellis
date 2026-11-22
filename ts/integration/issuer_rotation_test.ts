@@ -204,10 +204,26 @@ test("administrator issuer rotation is idempotent and retained native custody fo
               ((await serviceSession()).maximumContextExpiresAt ?? 0) >
               (renewedFrom.maximumContextExpiresAt ?? 0),
           );
-          await runtime.callAdminRpc("authIssuersRevoke", {
+          // The administrator's session renews onto the new key on the same
+          // notice as the service. Until it has, Auth refuses the revoke,
+          // whose reply would not verify, and changes nothing.
+          const revoke = {
             keyId: second.keyId,
             idempotencyKey: codecs.ulid.decode(ulid()),
+          };
+          let failure: unknown;
+          await runtime.waitFor(async () => {
+            try {
+              await runtime.callAdminRpc("authIssuersRevoke", revoke);
+            } catch (error) {
+              if (String(error).includes("this request was made with")) {
+                return false;
+              }
+              failure = error;
+            }
+            return true;
           });
+          if (failure !== undefined) throw failure;
           const userSession = async () =>
             (
               await runtime.callAdminRpc("authAuthorizationSessionsList", {

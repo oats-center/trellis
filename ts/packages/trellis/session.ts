@@ -202,6 +202,7 @@ import {
   isBrowserAuthRequiredError,
   isRuntimeRpcErrorDesc,
   payloadByteLength,
+  signedBefore,
   traceIdFromTraceparent,
 } from "./session/helpers.ts";
 import {
@@ -3283,7 +3284,32 @@ export class Trellis<
           headers.set("Nats-Msg-Id", event.header.id);
           headers.set("Trellis-Event-Time", event.header.time);
           headers.set("Trellis-Event-Descriptor", event.descriptorIdentity);
-          const proof = await this.#createEventProof(event);
+          // Signing may read cold authorization material over the network.
+          // An event signed after the deadline is never sent: the caller is
+          // told it timed out, so it must not be published. Nothing between
+          // this check and the publish yields.
+          const proof = await signedBefore(
+            this.#createEventProof(event),
+            deadlineMs,
+          );
+          if (!proof || Date.now() >= deadlineMs) {
+            finish("error");
+            const error = requestFailedTransportError({
+              code: "trellis.request.timeout",
+              message:
+                "The event was not published: its deadline passed before it was signed.",
+              hint: "Publish it again, or allow a longer timeout.",
+              subject: event.subject,
+              context: { event: event.event },
+            });
+            recordRuntimeError(error, {
+              surface: "event",
+              direction: "publisher",
+              operation: event.event,
+              phase: "publish",
+            });
+            return err(error);
+          }
           headers.set("proof", proof.proof);
           headers.set("authorization-context", proof.contextDigest);
           headers.set("Trellis-Api-Generation", proof.apiGeneration);
@@ -4223,12 +4249,33 @@ export class Trellis<
         // reply subject the response arrives on.
         reply = createInbox(this.#inboxPrefix);
         try {
-          authHeaders = await this.createRequestProof(
-            args.subject,
-            args.payload,
-            reply,
-            args.permission,
+          // Signing may read cold authorization material over the network;
+          // the caller's budget bounds it. A request signed too late is
+          // never sent.
+          const signed = await signedBefore(
+            this.createRequestProof(
+              args.subject,
+              args.payload,
+              reply,
+              args.permission,
+            ),
+            deadlineMs,
           );
+          if (!signed) {
+            lease.release();
+            recordAttempt("timeout");
+            return err(
+              requestFailedTransportError({
+                code: "trellis.request.timeout",
+                message:
+                  "The request was not sent: its deadline passed before it was signed.",
+                hint: "Send it again, or allow a longer timeout.",
+                method: args.method,
+                subject: args.subject,
+              }),
+            );
+          }
+          authHeaders = signed;
           break;
         } catch (cause) {
           lease.release();
