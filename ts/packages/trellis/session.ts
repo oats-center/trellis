@@ -561,6 +561,9 @@ export class Trellis<
         get log() {
           return trellis.#log;
         },
+        get name() {
+          return trellis.name;
+        },
         get adaptiveTransport() {
           return trellis.#adaptiveTransport;
         },
@@ -3553,7 +3556,11 @@ export class Trellis<
             logFailure(this.#log, handlerValue.error, {
               route: String(event),
               service: this.name,
-              extra: { event_id: eventHeaderId(m), subject: msg.subject },
+              traceId: traceIdFromTraceparent(msg.headers?.get("traceparent")),
+              extra: {
+                event_id: eventHeaderId(msg.headers),
+                subject: msg.subject,
+              },
             });
           }
         }

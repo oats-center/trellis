@@ -89,7 +89,10 @@ pub(super) async fn page(State(engine): State<Arc<OAuthEngine>>, headers: Header
             600,
             super::assets::page(&engine, None, None),
         ),
-        Err(_) => super::http::error(ErrorCode::ServerError),
+        Err(cause) => super::http::error(super::http::failed(
+            "could not open a Portal session for the device page",
+            cause,
+        )),
     }
 }
 
@@ -170,7 +173,7 @@ pub(super) async fn begin(
         };
         store
             .store_authorization(&transaction, &flow, grant.client_id.as_str())
-            .map_err(|_| ErrorCode::ServerError)?;
+            .map_err(|cause| super::http::failed("could not save the device sign-in", cause))?;
         let page = if store.authority.portal_login(&cookie, &csrf, now).is_ok() {
             "consent"
         } else {
@@ -261,7 +264,12 @@ impl OAuthEngine {
             .store()
             .claim_replay_id(&replay, binding.replay_until)
             .await
-            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
+            .map_err(|cause| {
+                ErrorResponse::new(super::http::failed(
+                    "could not record the device request's DPoP proof",
+                    cause,
+                ))
+            })?
         {
             return Err(ErrorResponse::new(ErrorCode::InvalidDpopProof));
         }
@@ -274,8 +282,18 @@ impl OAuthEngine {
             .store()
             .get_device_grant(&response.device_code)
             .await
-            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
-            .ok_or_else(|| ErrorResponse::new(ErrorCode::ServerError))?;
+            .map_err(|cause| {
+                ErrorResponse::new(super::http::failed(
+                    "could not read the new device grant",
+                    cause,
+                ))
+            })?
+            .ok_or_else(|| {
+                ErrorResponse::new(super::http::failed(
+                    "could not read the new device grant",
+                    "it was not stored",
+                ))
+            })?;
         let store = self.server.store().clone();
         let selection = DeviceSelection {
             client_id: client_id.as_str().into(),
@@ -285,7 +303,12 @@ impl OAuthEngine {
         };
         blocking(move || store.store_device_selection(&grant, &selection))
             .await
-            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?;
+            .map_err(|cause| {
+                ErrorResponse::new(super::http::failed(
+                    "could not save the device grant's capabilities",
+                    cause,
+                ))
+            })?;
         Ok(response)
     }
 
@@ -301,7 +324,12 @@ impl OAuthEngine {
             .store()
             .find_device_grant_by_user_code(&oauth_as::device::normalize_user_code(user_code))
             .await
-            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
+            .map_err(|cause| {
+                ErrorResponse::new(super::http::failed(
+                    "could not look up the device code",
+                    cause,
+                ))
+            })?
             .ok_or_else(|| ErrorResponse::new(ErrorCode::InvalidGrant))?;
         let (store, device_code) = (self.server.store().clone(), device.device_code.clone());
         let selection = blocking(move || store.device_selection(&device_code))

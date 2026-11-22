@@ -798,7 +798,9 @@ pub(super) async fn page(
                 let session = storage
                     .authority
                     .create_portal_session(now)
-                    .map_err(|_| ErrorCode::ServerError)?;
+                    .map_err(|cause| {
+                        super::http::failed("could not open a Portal session", cause)
+                    })?;
                 (
                     (session.cookie.clone(), session.csrf.clone()),
                     Some(session),
@@ -814,7 +816,7 @@ pub(super) async fn page(
             .authority
             .reader()
             .and_then(|reader| super::super::sign_in::read(&reader))
-            .map_err(|_| ErrorCode::ServerError)?
+            .map_err(|cause| super::http::failed("could not read the sign-in policy", cause))?
             .password_min_length
             .0;
         Ok((action, current, guest, signed_in, minimum))
@@ -1011,7 +1013,12 @@ pub(super) async fn submit(
         };
         let replacement = match self::token() {
             Ok(token) => token,
-            Err(_) => return error(ErrorCode::ServerError),
+            Err(cause) => {
+                return error(super::http::failed(
+                    "could not make a Portal login cookie",
+                    cause,
+                ))
+            }
         };
         let new_cookie = replacement.clone();
         let csrf_cookie = csrf.clone();

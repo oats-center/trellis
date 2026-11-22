@@ -144,6 +144,15 @@ through your trace backend. A failed job's reference is its job ID, a failed
 event delivery's is the event's ID, a failed Operation's is its Operation ID,
 and a webhook request's is its attempt ID; each log line carries that ID.
 
+Sign-in, the Portal and enrollment work the same way. When `trellis-server`
+can't answer one of these requests, such as an OIDC provider it can't reach,
+the Portal page says `Reference: <id>`, an OAuth client gets it at the end of
+the `server_error` description, and a service or device that couldn't enroll
+ends its error with it. That ID is the request's own, so the line has
+`error_id` and `request_id` both set to it, and `route` is the method and path,
+such as `GET /portal/oidc/01KAQ.../begin`. The response's `Trellis-Reference`
+header carries the same ID.
+
 ## Back up
 
 ```sh

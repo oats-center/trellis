@@ -38,6 +38,7 @@ pub(super) async fn view(
     Query(query): Query<ThemeQuery>,
 ) -> Response {
     let Some(theme) = portal_theme(&engine, query.transaction).await else {
+        crate::http_failure::reference("unavailable");
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let mut response = Json(theme).into_response();
@@ -62,7 +63,9 @@ pub(super) async fn portal_theme(
         portal_themes::portal_view(&*store.authority.reader()?, client.as_deref())
     })
     .await
+    .map_err(|cause| crate::http_failure::record("could not read the Portal theme", cause))
     .ok()?
+    .map_err(|cause| crate::http_failure::record("could not read the Portal theme", cause))
     .ok()?;
     let logo = theme.logo_owner.map(|owner| match owner {
         Some(client) => format!(
@@ -93,7 +96,8 @@ pub(super) async fn logo(
     match logo {
         Ok(Ok(Some((content_type, bytes)))) => sandboxed(content_type, bytes),
         Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
-        _ => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Ok(Err(cause)) => unavailable("could not read the Portal logo", &cause),
+        Err(cause) => unavailable("could not read the Portal logo", &cause),
     }
 }
 
@@ -112,8 +116,16 @@ pub(super) async fn stylesheet(
             "text/css; charset=utf-8",
             stylesheet.unwrap_or_default().into_bytes(),
         ),
-        _ => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Ok(Err(cause)) => unavailable("could not read the Portal stylesheet", &cause),
+        Err(cause) => unavailable("could not read the Portal stylesheet", &cause),
     }
+}
+
+/// A server failure, logged once under the reference sent back with it.
+fn unavailable(error: &str, cause: &dyn std::fmt::Display) -> Response {
+    crate::http_failure::record(error, cause);
+    crate::http_failure::reference("unavailable");
+    StatusCode::SERVICE_UNAVAILABLE.into_response()
 }
 
 /// Theme files come from administrators, not the Portal; opened directly on

@@ -60,6 +60,10 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:OIDCProviders.List"],
     (client, input) => client.oidcProvidersList(input).orThrow(),
   ),
+  authOIDCProvidersPut: adminMethod(
+    apis.auth.API.actions["rpc:OIDCProviders.Put"],
+    (client, input) => client.oidcProvidersPut(input).orThrow(),
+  ),
   authIssuersRotate: adminMethod(
     apis.auth.API.actions["rpc:Issuers.Rotate"],
     (client, input) => client.issuersRotate(input).orThrow(),

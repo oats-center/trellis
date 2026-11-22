@@ -3809,17 +3809,25 @@ async fn run_durable_event_pull_loop(
                     }
                 };
                 if let Err(error) = &result {
-                    // The event's own ID is the reference an operator sees in
-                    // a dead letter; the trace links back to its publisher.
-                    let event_id = serde_json::from_slice::<serde_json::Value>(effective_payload)
-                        .ok()
-                        .and_then(|event| {
-                            event
-                                .pointer("/header/id")
-                                .and_then(serde_json::Value::as_str)
+                    // The event's own ID, which publishers send as
+                    // `Nats-Msg-Id`, is the reference an operator sees in a
+                    // dead letter; the trace is the publisher's, else this
+                    // attempt's when it is traced.
+                    let header = |name: &str| {
+                        effective_headers
+                            .and_then(|headers| headers.get(name))
+                            .map(|value| value.as_str().to_owned())
+                    };
+                    let event_id = header("Nats-Msg-Id");
+                    let trace_id = header("traceparent")
+                        .and_then(|traceparent| {
+                            super::request_loop::trace_id_from_traceparent(&traceparent)
                                 .map(str::to_owned)
+                        })
+                        .or_else(|| {
+                            let context = attempt_context.span().span_context().clone();
+                            context.is_valid().then(|| context.trace_id().to_string())
                         });
-                    let trace_id = attempt_context.span().span_context().trace_id();
                     tracing::warn!(
                         event_id = event_id.as_deref(),
                         event = %registration.event_name,
@@ -3827,7 +3835,7 @@ async fn run_durable_event_pull_loop(
                         stream_sequence = message.stream_sequence().ok(),
                         delivery,
                         max_deliver = config.max_deliver,
-                        trace_id = %trace_id,
+                        trace_id = trace_id.as_deref(),
                         publisher_deployment = publisher.deployment_id.as_deref(),
                         publisher_instance = publisher.instance_id.as_deref(),
                         %error,

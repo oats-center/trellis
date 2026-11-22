@@ -822,6 +822,17 @@ pub(super) async fn http_enroll(
     let refuse = |status: StatusCode, code: &str| {
         (status, axum::Json(json!({"error": {"code": code}}))).into_response()
     };
+    // The server failing the enrollment: logged once, under the reference the
+    // caller gets in the error envelope.
+    let unavailable = |error: &str, cause: &dyn std::fmt::Display| {
+        crate::http_failure::record(error, cause);
+        let reference = crate::http_failure::reference("unavailable");
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({"error": {"code": "unavailable", "reference": reference}})),
+        )
+            .into_response()
+    };
     let response = match enrolled {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(refusal))) => {
@@ -837,14 +848,16 @@ pub(super) async fn http_enroll(
             }
         }
         Ok(Err(error)) | Err(error) => {
-            tracing::warn!(%error, "service enrollment failed");
-            return refuse(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+            return unavailable("could not enroll the service instance", &error);
         }
     };
     // The instance's resources are ready before it connects, as for a
     // provisioned one. A retry of a lost response resumes this.
     let Some(operational) = engine.operational() else {
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        return unavailable(
+            "could not prepare the enrolled instance's resources",
+            &"Trellis is not connected to NATS",
+        );
     };
     if let Err(error) = super::resources::materialize_native_kv(
         &store,
@@ -854,8 +867,7 @@ pub(super) async fn http_enroll(
     )
     .await
     {
-        tracing::warn!(%error, "enrolled instance resources not ready yet");
-        return refuse(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        return unavailable("enrolled instance resources not ready yet", &error);
     }
     axum::Json(response).into_response()
 }
@@ -1170,7 +1182,15 @@ pub(super) async fn http_identity_status(
         .into_response(),
         Ok(Ok(Err(Refusal::Clock))) => refuse(StatusCode::BAD_REQUEST, "clock_skew"),
         Ok(Ok(Err(_))) => refuse(StatusCode::BAD_REQUEST, "invalid_request"),
-        Ok(Err(_)) | Err(_) => refuse(StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        Ok(Err(cause)) | Err(cause) => {
+            crate::http_failure::record("could not read the service identity's status", cause);
+            let reference = crate::http_failure::reference("unavailable");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({"error": {"code": "unavailable", "reference": reference}})),
+            )
+                .into_response()
+        }
     }
 }
 

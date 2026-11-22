@@ -487,6 +487,10 @@ export class BrowserOAuthClient {
       if (!response.ok)
         return err(
           new AuthError({
+            // A server failure's description names its reference.
+            message: z
+              .object({ error_description: z.string() })
+              .safeParse(response.data).data?.error_description,
             reason:
               response.status >= 500 || response.status === 429
                 ? "OAuthUnavailable"

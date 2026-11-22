@@ -64,6 +64,9 @@ fn nanos(value: SystemTime) -> Result<i64, StorageError> {
 }
 
 fn failure(error: impl std::fmt::Display) -> StorageError {
+    // The OAuth library answers a storage error as `server_error`; the
+    // request's log line names this as the cause.
+    crate::http_failure::record("OAuth storage failed", &error);
     StorageError::new(error.to_string())
 }
 
@@ -74,10 +77,10 @@ impl From<AuthError> for StorageError {
 }
 
 /// An HTTP handler whose blocking storage work could not run answers as a
-/// server failure.
+/// server failure, logged with the storage error as its cause.
 impl From<AuthError> for oauth_as::ErrorCode {
-    fn from(_: AuthError) -> Self {
-        oauth_as::ErrorCode::ServerError
+    fn from(error: AuthError) -> Self {
+        super::http::failed("Auth storage failed", error)
     }
 }
 

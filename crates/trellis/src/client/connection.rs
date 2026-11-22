@@ -507,6 +507,7 @@ pub(crate) async fn fetch_device_activation<C: crate::generated::ParticipantDesc
         return Err(TrellisClientError::BootstrapHttp {
             status: error.status,
             code: error.code,
+            reference: error.reference,
         });
     }
     Ok(serde_json::from_slice(

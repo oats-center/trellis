@@ -297,13 +297,23 @@ impl ProviderSnapshot {
         .await
         .map_err(|error| {
             // An issuer must match the discovery document's `issuer` exactly,
-            // including any trailing slash.
-            tracing::warn!(
-                %provider_id,
-                %issuer,
-                error = %error_chain(&error),
-                "upstream OIDC discovery failed"
-            );
+            // including any trailing slash. A sign-in's request logs the
+            // failure once, under the reference the browser is shown.
+            if crate::http_failure::current().is_some() {
+                crate::http_failure::record(
+                    format!(
+                        "upstream OIDC discovery of {issuer} for provider {provider_id} failed"
+                    ),
+                    error_chain(&error),
+                );
+            } else {
+                tracing::warn!(
+                    %provider_id,
+                    %issuer,
+                    error = %error_chain(&error),
+                    "upstream OIDC discovery failed"
+                );
+            }
             AuthError::Unavailable
         })?;
         let token = metadata.token_endpoint().ok_or_else(|| {

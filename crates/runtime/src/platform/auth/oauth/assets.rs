@@ -58,12 +58,16 @@ pub(super) fn page(
 ) -> Response {
     let mut form_action = String::from("'self'");
     if let Some(callback) = callback {
-        let Ok(callback) = url::Url::parse(callback) else {
-            return super::http::error(oauth_as::error::ErrorCode::ServerError);
+        let parsed = url::Url::parse(callback);
+        let Some(callback) = parsed
+            .ok()
+            .filter(|callback| matches!(callback.scheme(), "https" | "http"))
+        else {
+            return super::http::error(super::http::failed(
+                "the Portal page's callback is not an http(s) URL",
+                callback,
+            ));
         };
-        if !matches!(callback.scheme(), "https" | "http") {
-            return super::http::error(oauth_as::error::ErrorCode::ServerError);
-        }
         form_action.push(' ');
         form_action.push_str(&callback.origin().ascii_serialization());
     }
@@ -73,7 +77,10 @@ pub(super) fn page(
         'none'; form-action {form_action}"
     );
     let Ok(csp) = HeaderValue::from_str(&csp) else {
-        return super::http::error(oauth_as::error::ErrorCode::ServerError);
+        return super::http::error(super::http::failed(
+            "the Portal page's Content-Security-Policy is not a header value",
+            csp,
+        ));
     };
     let mut response = asset("index.html");
     if let Some(file) = PortalAssets::get("index.html") {

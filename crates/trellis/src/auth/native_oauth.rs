@@ -312,6 +312,13 @@ pub enum NativeOAuthError {
     /// retry in about a minute.
     #[error("Trellis is limiting sign-in requests from this address; try again in a minute")]
     Busy,
+    /// The issuer failed the request itself; durable credentials remain stored.
+    /// Its log has one line under `reference`.
+    #[error("Something went wrong on the server. Reference: {reference}")]
+    ServerFailed {
+        /// The reference Trellis gave, which finds the failure's log line.
+        reference: String,
+    },
 }
 
 /// Verified inputs for the ordinary one-step native NATS connection. Never
@@ -445,6 +452,8 @@ struct TokenResponse {
 #[derive(Deserialize)]
 struct OAuthError {
     error: String,
+    #[serde(default)]
+    error_description: Option<String>,
 }
 
 impl NativeOAuthClient {
@@ -877,6 +886,16 @@ impl NativeOAuthClient {
                 nonce = Some(challenge.ok_or(ExchangeError::Failed)?);
                 continue;
             }
+            if error.error == "server_error" {
+                // Trellis names the reference its log line has.
+                return Err(ExchangeError::Server(error.error_description.and_then(
+                    |description| {
+                        description
+                            .rsplit_once("Reference: ")
+                            .map(|(_, reference)| reference.to_owned())
+                    },
+                )));
+            }
             return Err(ExchangeError::OAuth(error.error));
         }
         Err(ExchangeError::Failed)
@@ -980,6 +999,8 @@ impl NativeOAuthClient {
 
 enum ExchangeError {
     OAuth(String),
+    /// The issuer failed the request itself, with the reference it gave.
+    Server(Option<String>),
     /// Refused by the issuer's request limit before the request was read.
     Busy,
     Failed,
@@ -991,6 +1012,7 @@ fn exchange_error(error: ExchangeError) -> NativeOAuthError {
         ExchangeError::OAuth(code) if code == "expired_token" => NativeOAuthError::Expired,
         ExchangeError::OAuth(code) if code == "invalid_grant" => NativeOAuthError::RecoveryRequired,
         ExchangeError::Busy => NativeOAuthError::Busy,
+        ExchangeError::Server(Some(reference)) => NativeOAuthError::ServerFailed { reference },
         _ => NativeOAuthError::Unavailable,
     }
 }
