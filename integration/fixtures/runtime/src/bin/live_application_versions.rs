@@ -1,6 +1,5 @@
 //! Generated application-major interoperability over the one Live protocol.
 
-use trellis_rs::__internal::{RuntimeOwner as _, RuntimeService as _};
 use futures_util::{stream, StreamExt};
 use runtime_live_v2::apis::runtime_trellis_documents_v2::lives as v2_lives;
 use runtime_live_v2::participants::runtime_trellis_live_v2_provider::{Participant, Provider};
@@ -9,6 +8,7 @@ use runtime_trellis::apps::runtime_trellis_live_v1_caller::Request;
 use runtime_trellis::types::Value;
 use std::io::Write as _;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use trellis_rs::__internal::{RuntimeOwner as _, RuntimeService as _};
 use trellis_rs::generated::Client;
 
 #[tokio::main(worker_threads = 2)]
@@ -42,6 +42,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .init();
     let mut service = Participant::connect(
         trellis_runtime_acceptance::service_options(
             &std::env::var("TRELLIS_URL")?,
@@ -56,9 +61,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .register_echo(|_, input| async move { Ok(input) });
     provider
         .runtime_trellis_documents_v2()
-        .register_watch(|_, mut input| {
-            input.value = format!("v2:{}", input.value);
-            stream::iter([Ok(input)])
+        .register_watch(|_, mut input| match input.value.as_str() {
+            // A failing handler, one that panics while its stream is read,
+            // and one that panics when called.
+            "fail" => stream::iter([Err(trellis_rs::service::ServerError::Internal(
+                "fixture live failure: the store is unreachable".to_owned(),
+            ))])
+            .boxed(),
+            "panic" => stream::once(async { panic!("fixture live panic") }).boxed(),
+            "panic-open" => panic!("fixture live open panic"),
+            _ => {
+                input.value = format!("v2:{}", input.value);
+                stream::iter([Ok(input)]).boxed()
+            }
         });
     provider
         .runtime_trellis_documents_v2()

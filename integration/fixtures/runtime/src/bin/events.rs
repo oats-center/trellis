@@ -49,6 +49,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("CONSUMER_ONLY").as_deref() == Ok("true") {
         return run_consumer_only(&url, &identity).await;
     }
+    if std::env::var("EPHEMERAL_FAILURES").as_deref() == Ok("true") {
+        return run_ephemeral_failures(&url, &identity).await;
+    }
     let server =
         trellis_rs::auth::discover_native_oauth(&url, &trellis_runtime_acceptance::trust_roots())
             .await?;
@@ -309,6 +312,54 @@ async fn run_signing_time(url: &str, identity: &str) -> Result<(), Box<dyn std::
     }
     lifecycle.stop();
     run.await??;
+    Ok(())
+}
+
+/// Subscriber-only participant with an ephemeral Alpha listener that fails on
+/// "fail" and panics on "panic". Prints `EPHEMERAL_READY` once listening,
+/// `EPHEMERAL_HANDLED <value>` for every other event, and `RUN_ENDED` if the
+/// service run ends.
+async fn run_ephemeral_failures(
+    url: &str,
+    identity: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use runtime_trellis::participants::runtime_trellis_event_subscriber_service::Participant;
+
+    let server =
+        trellis_rs::auth::discover_native_oauth(url, &trellis_runtime_acceptance::trust_roots())
+            .await?;
+    let service = Participant::connect(ServiceConnectOptions::new(
+        server.nats_servers,
+        server.trust,
+        identity,
+    ))
+    .await?;
+    let _listener = service
+        .listen_event::<Alpha, _, _>(
+            |event, _| async move {
+                match event.value.as_str() {
+                    "fail" => Err(ServerError::Internal("fixture ephemeral failure".into())),
+                    "panic" => panic!("fixture ephemeral panic"),
+                    value => {
+                        println!("EPHEMERAL_HANDLED {value}");
+                        Ok(())
+                    }
+                }
+            },
+            ServiceEventListenOptions {
+                mode: ServiceEventListenerMode::Ephemeral,
+                group: None,
+            },
+        )
+        .await?;
+    let lifecycle = service.lifecycle();
+    let run = tokio::spawn(service.run());
+    if !lifecycle.ready().await {
+        return Err("the service did not start serving".into());
+    }
+    println!("EPHEMERAL_READY");
+    let result = run.await?;
+    println!("RUN_ENDED {result:?}");
     Ok(())
 }
 

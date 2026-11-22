@@ -265,42 +265,82 @@ pub(crate) struct OperationWatchOpening {
 /// Adapt one generated Live handler stream into the engine's source items.
 ///
 /// Each encoded event is emitted as one application value and a normal stream
-/// completion becomes the engine's explicit `End` item.
+/// completion becomes the engine's explicit `End` item. A handler's error or
+/// panic is logged once through `failure`, and the session ends with only its
+/// reference, as an RPC caller gets for an unexpected failure.
 pub(crate) fn source_from_handler<TEvent, S>(
     stream: S,
+    failure: LiveFailureLog,
 ) -> std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<SourceItem, String>> + Send>>
 where
     TEvent: crate::generated::Codec + 'static,
     S: futures_util::Stream<Item = Result<TEvent, ServerError>> + Send + 'static,
 {
-    // A panic while the handler's stream is polled ends this session with a
-    // reference, like any source failure, and leaves the provider serving.
     Box::pin(
         std::panic::AssertUnwindSafe(stream)
             .catch_unwind()
-            .map(|item| match item {
+            .map(move |item| match item {
                 Ok(Ok(event)) => crate::generated::Codec::encode(&event)
                     .map(SourceItem::Value)
-                    .map_err(|error| error.to_string()),
-                Ok(Err(error)) => Err(error.to_string()),
-                Err(panic) => Err(live_handler_panicked(&super::request_loop::panic_message(
-                    &*panic,
+                    .map_err(|error| failure.log(&format!("live event encoding failed: {error}"))),
+                Ok(Err(error)) => Err(failure.log(&error.to_string())),
+                Err(panic) => Err(failure.log(&format!(
+                    "live handler panicked: {}",
+                    super::request_loop::panic_message(&*panic)
                 ))),
             }),
     )
 }
 
-/// Log a Live handler's panic once, under a new error ID, and return the
-/// session's end message: the reference, without the panic's text.
-pub(crate) fn live_handler_panicked(panic: &str) -> String {
-    let id = super::request_loop::error_id();
-    tracing::error!(
-        error_id = %id,
-        error_type = "UnexpectedError",
-        error = %format!("live handler panicked: {panic}"),
-        "request failed",
-    );
-    format!("An unexpected error has occurred. Reference: {id}")
+/// Where a Live handler failed, for its one log line.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LiveFailureLog {
+    route: String,
+    request_id: Option<String>,
+    trace_id: Option<String>,
+    caller_principal: Option<String>,
+    caller_session: Option<String>,
+}
+
+impl LiveFailureLog {
+    /// The fields of a Live opened with `context` on `route`.
+    pub(crate) fn new(route: &str, context: &RequestContext) -> Self {
+        Self {
+            route: route.to_owned(),
+            request_id: context.request_id.clone(),
+            trace_id: context
+                .traceparent
+                .as_deref()
+                .and_then(super::request_loop::trace_id_from_traceparent)
+                .map(str::to_owned),
+            caller_principal: context
+                .caller
+                .as_ref()
+                .map(|caller| caller.principal_id.clone()),
+            caller_session: context
+                .caller
+                .as_ref()
+                .map(|caller| caller.authorization_session_id.clone()),
+        }
+    }
+
+    /// Log one failure under a new error ID and return the session's end
+    /// message: the reference, without the failure's text.
+    pub(crate) fn log(&self, error: &str) -> String {
+        let id = super::request_loop::error_id();
+        tracing::error!(
+            error_id = %id,
+            request_id = self.request_id.as_deref(),
+            trace_id = self.trace_id.as_deref(),
+            route = %self.route,
+            caller_principal = self.caller_principal.as_deref(),
+            caller_session = self.caller_session.as_deref(),
+            error_type = "UnexpectedError",
+            error,
+            "request failed",
+        );
+        format!("An unexpected error has occurred. Reference: {id}")
+    }
 }
 
 /// Adapt one Operation watch frame stream into the engine's source items.

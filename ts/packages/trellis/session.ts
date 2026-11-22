@@ -1848,23 +1848,63 @@ export class Trellis<
           contextDigest: callerValue.authorityDigest,
         },
         async ({ emit, signal }) => {
-          await handler({
-            input: parsed as TInput,
-            caller: callerValue,
-            signal,
-            emit: (event: TEvent) =>
-              AsyncResult.from(
-                (async () => {
-                  const payload = encodeRuntimeSchema(
-                    descriptor.event,
-                    event,
-                  ).take();
-                  if (isErr(payload)) return payload;
-                  await emit(JSON.parse(payload));
-                  return ok(undefined);
-                })(),
-              ),
-          });
+          // A handler's failure is unexpected: it is logged once under a new
+          // error ID and the caller's session ends with that reference only,
+          // as an RPC caller gets. Runtime Live failures pass through.
+          const failed = (cause: unknown): LiveStreamError => {
+            const traceId = traceIdFromTraceparent(
+              msg.headers?.get("traceparent"),
+            );
+            const requestId = msg.headers?.get("request-id") || undefined;
+            const error = annotateHandlerBoundaryError(cause, {
+              live,
+              requestId,
+              service: this.name,
+              contractId: this.contractId,
+              contractDigest: this.contractDigest,
+              traceId,
+            });
+            logFailure(this.#log, error, {
+              route: live,
+              ...(requestId === undefined ? {} : { requestId }),
+              ...(traceId === undefined ? {} : { traceId }),
+              service: this.name,
+              caller: {
+                principal: callerValue.principalId,
+                session: callerValue.authorizationSessionId,
+              },
+            });
+            return new LiveStreamError(
+              "source_failed",
+              `An unexpected error has occurred. Reference: ${error.id}`,
+            );
+          };
+          let returned: unknown;
+          try {
+            returned = await handler({
+              input: parsed as TInput,
+              caller: callerValue,
+              signal,
+              emit: (event: TEvent) =>
+                AsyncResult.from(
+                  (async () => {
+                    const payload = encodeRuntimeSchema(
+                      descriptor.event,
+                      event,
+                    ).take();
+                    if (isErr(payload)) return payload;
+                    await emit(JSON.parse(payload));
+                    return ok(undefined);
+                  })(),
+                ),
+            });
+          } catch (cause) {
+            if (signal.aborted || cause instanceof LiveStreamError) throw cause;
+            throw failed(cause);
+          }
+          if (isResultLike(returned) && returned.isErr()) {
+            throw failed(returned.error);
+          }
         },
       );
     } catch (cause) {

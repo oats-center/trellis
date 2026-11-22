@@ -819,6 +819,7 @@ impl Router {
                         };
                         let cancellation = crate::live::LiveCancellation::new();
                         let factory_cancellation = cancellation.clone();
+                        let failure = live_router::LiveFailureLog::new(D::KEY, &ctx);
                         let source_factory = {
                             let handler = Arc::clone(&handler);
                             let request = ctx.clone();
@@ -834,13 +835,14 @@ impl Router {
                                         input,
                                     )
                                 })) {
-                                    Ok(stream) => {
-                                        live_router::source_from_handler::<D::Event, S>(stream)
-                                    }
+                                    Ok(stream) => live_router::source_from_handler::<D::Event, S>(
+                                        stream, failure,
+                                    ),
                                     Err(panic) => {
-                                        let end = live_router::live_handler_panicked(
-                                            &super::request_loop::panic_message(&*panic),
-                                        );
+                                        let end = failure.log(&format!(
+                                            "live handler panicked: {}",
+                                            super::request_loop::panic_message(&*panic)
+                                        ));
                                         Box::pin(futures_util::stream::once(
                                             async move { Err(end) },
                                         ))

@@ -82,6 +82,10 @@ async fn a_rust_service_receives_webhook_events_and_answers_decide_calls() {
             {
                 return Err(Unprintable);
             }
+            assert!(
+                !request.delivery.text().is_ok_and(|body| body == "panic"),
+                "the decide handler panics"
+            );
             let setup = request.delivery.text().is_ok_and(|body| body == "setup");
             Ok(serde_json::from_value(json!({
                 "verdict": if setup { "ignore" } else { "accept" },
@@ -188,14 +192,16 @@ async fn a_rust_service_receives_webhook_events_and_answers_decide_calls() {
     let answered = handshake("setup").await.unwrap();
     assert_eq!(answered.status(), reqwest::StatusCode::OK);
     assert_eq!(answered.text().await.unwrap(), "challenge-echo");
-    // A failed decide gets no answer, so the sender gets 503. An error whose
-    // `Display` panics is logged all the same, and the handler goes on
-    // answering.
-    let failed = handshake("unprintable").await.unwrap();
-    assert_eq!(failed.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
-    let answered = handshake("setup").await.unwrap();
-    assert_eq!(answered.status(), reqwest::StatusCode::OK);
-    assert_eq!(answered.text().await.unwrap(), "challenge-echo");
+    // A failed decide gets no answer, so the sender gets 503. A handler that
+    // panics, or returns an error whose `Display` panics, is logged all the
+    // same, and the handler goes on answering.
+    for body in ["panic", "unprintable"] {
+        let failed = handshake(body).await.unwrap();
+        assert_eq!(failed.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let answered = handshake("setup").await.unwrap();
+        assert_eq!(answered.status(), reqwest::StatusCode::OK);
+        assert_eq!(answered.text().await.unwrap(), "challenge-echo");
+    }
 
     // Each endpoint feeds the service's health with Trellis's check for it:
     // the relayed endpoint is degraded and says why, the token one is fine.

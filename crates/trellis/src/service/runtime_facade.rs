@@ -3052,12 +3052,24 @@ where
                     .unwrap_or_else(|panic| {
                         Err(ServerError::Internal(format!("event handler panicked: {panic}")))
                     });
-                    if let Err(source) = handled {
+                    if let Err(error) = handled {
+                        // An ephemeral delivery is never redelivered: its
+                        // failure is logged once and the listener goes on
+                        // with the next event, as in TypeScript.
                         observation.finish("error");
-                        return Err(ServiceRuntimeError::EventHandler {
-                            source: Box::new(source),
-                            context: Box::new(context),
-                        });
+                        let trace_id = context
+                            .traceparent
+                            .as_deref()
+                            .and_then(super::request_loop::trace_id_from_traceparent);
+                        tracing::warn!(
+                            event_id = context.id.as_deref(),
+                            event = %event_name,
+                            subject = %message.subject,
+                            trace_id,
+                            %error,
+                            "event handler failed",
+                        );
+                        continue;
                     }
                     observation.finish("ok");
                 }

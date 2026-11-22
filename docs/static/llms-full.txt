@@ -1948,6 +1948,11 @@ with `.prepare(...)`, bound `kv`, `store`, and `jobs` handles,
 stay on the connected service; there is no generic
 `client.rpc`/`client.operation`/`client.event` tree.
 
+A Live handler that throws or returns an error `Result` ends its session with
+only a reference (`An unexpected error has occurred. Reference: <id>`), and the
+failure is logged under that ID, as for an RPC. A failed ephemeral event
+handler is logged and the listener goes on with the next event.
+
 Declare wire models and expected errors in IDL. The generator owns the runtime
 schemas and generated error types. Construct a declared error from its declared
 payload alone, `new OrderNotFound({ orderId })` (or `new Gone()` without one);
@@ -2529,7 +2534,10 @@ reply never includes it. A generated `UnexpectedError` displays as
 `<message> (Reference: <id>)`. A panic in an RPC, Live, Operation, job, event
 or webhook decide handler fails only that call as an unexpected failure with a
 reference. The service keeps serving, a durable event is retried, and the log
-line holds the panic message.
+line holds the panic message. A failed or panicking ephemeral event handler is
+logged and its listener goes on. A Live handler's `ServerError` never reaches
+the caller: the session ends with `SourceFailed` and only the reference, and
+the text is in the log line under it.
 
 Rust schema-validation issue paths use JSON Pointer: an empty path is the root,
 `/` is an empty-name property, and property names escape `~` as `~0` and `/` as
