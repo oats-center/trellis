@@ -2134,8 +2134,6 @@ dependencies = [
  "trellis-builtin-contracts",
  "trellis-codegen-rust",
  "trellis-idl",
- "trellis-models",
- "trellis-protocol",
  "trellis-rs",
 ]
 
@@ -3169,7 +3167,6 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
- "trellis-protocol",
  "trellis-rs",
 ]
 

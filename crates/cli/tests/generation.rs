@@ -196,11 +196,13 @@ output = "sdk"
         r#"
 import { AuthUser } from trellis;
 model Empty {}
+model Seen { at: timestamp; size: int64; }
 api who@v1 {
   title "Who";
   description "Return a built-in model.";
   rpc Me { input Empty; output AuthUser; }
-  capabilities { public { allows { rpc Me; } } }
+  rpc LastSeen { input Empty; output Seen; }
+  capabilities { public { allows { rpc Me; rpc LastSeen; } } }
 }
 "#,
     )
@@ -394,34 +396,65 @@ fn main() {
         "{tree}"
     );
 
-    // A trellis-rs that links a sibling path trellis-models, with no patch for
-    // trellis-models anywhere, still gives the SDK that exact crate: a value
-    // of the type trellis-rs exposes passes through the SDK's type.
+    // A trellis-rs that links sibling path trellis-models and trellis-protocol
+    // crates, with no patch for either anywhere, still gives the SDK those
+    // exact crates: values of the types trellis-rs exposes pass through the
+    // SDK's types.
     let runtime_manifest = root
         .path()
         .join(format!("trellis-rs-{cli_version}/Cargo.toml"));
     let published_runtime = fs::read_to_string(&runtime_manifest).unwrap();
     let mut sibling: toml::Table = toml::from_str(&published_runtime).unwrap();
-    sibling["dependencies"]["trellis-models"]
-        .as_table_mut()
-        .unwrap()
-        .insert("path".into(), models.display().to_string().into());
+    for (dependency, path) in [
+        ("trellis-models", models.clone()),
+        ("trellis-protocol", repository.join("crates/protocol")),
+    ] {
+        sibling["dependencies"][dependency]
+            .as_table_mut()
+            .unwrap()
+            .insert("path".into(), path.display().to_string().into());
+    }
     fs::write(&runtime_manifest, toml::to_string(&sibling).unwrap()).unwrap();
+    let models_manifest = models.join("Cargo.toml");
+    let published_models = fs::read_to_string(&models_manifest).unwrap();
+    fs::write(
+        &models_manifest,
+        published_models.replace(
+            &format!("trellis-protocol = \"{protocol_version}\""),
+            &format!(
+                "trellis-protocol = {{ path = {:?} }}",
+                repository.join("crates/protocol")
+            ),
+        ),
+    )
+    .unwrap();
     fs::write(
         root.path().join("Cargo.toml"),
         format!(
             "[package]\nname = \"shared-model-consumer\"\nversion = \"1.0.0\"\nedition = \
             \"2021\"\n[workspace]\n[dependencies]\nbuiltin-consumer = {{ path = \"sdk\" }}\n\
             trellis-rs = \"{cli_version}\"\nserde_json = \"1\"\n[patch.crates-io]\n\
-            trellis-rs = {{ path = {:?} }}\ntrellis-protocol = {{ path = {:?} }}\n",
+            trellis-rs = {{ path = {:?} }}\n",
             root.path().join(format!("trellis-rs-{cli_version}")),
-            repository.join("crates/protocol"),
         ),
     )
     .unwrap();
     fs::write(
         root.path().join("src/main.rs"),
-        identity.replace("trellis_models::", "trellis_rs::models::"),
+        identity
+            .replace("trellis_models::", "trellis_rs::models::")
+            .replace(
+                "\n}\n",
+                r#"
+    let wire = serde_json::json!({ "at": "2026-11-22T08:30:00Z", "size": "9007199254740993" });
+    let seen: builtin_consumer::types::Seen = serde_json::from_value(wire.clone()).unwrap();
+    let at: trellis_rs::protocol::model::Timestamp = seen.at;
+    let size: trellis_rs::protocol::model::Int64 = seen.size;
+    let back = builtin_consumer::types::Seen { at, size, extra: seen.extra };
+    assert_eq!(serde_json::to_value(back).unwrap(), wire);
+}
+"#,
+            ),
     )
     .unwrap();
     fs::remove_file(root.path().join("Cargo.lock")).unwrap();
@@ -435,6 +468,7 @@ fn main() {
     );
     cargo(root.path(), &["run", "--quiet", "--offline"]);
     fs::write(&runtime_manifest, published_runtime).unwrap();
+    fs::write(&models_manifest, published_models).unwrap();
     fs::remove_file(root.path().join("Cargo.lock")).unwrap();
     consumer(&format!("{{ path = {models:?} }}"), identity);
     cargo(root.path(), &["generate-lockfile", "--offline"]);

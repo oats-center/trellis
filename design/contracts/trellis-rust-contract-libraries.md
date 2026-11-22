@@ -29,7 +29,12 @@ Generated device options do not accept a reusable session seed.
 Primitive wire wrappers, nullable values, and cursor-page structures live in
 the transport-independent protocol library. Generated packages re-export those exact types rather
 than defining per-package copies; authored IDL models retain their own nominal
-types. Their serialization remains unchanged. Generated Rust ABI 2 requires this
+types. Generated packages depend only on `trellis-rs` among Trellis crates:
+`trellis-rs` re-exports the `trellis-protocol` it links as
+`trellis_rs::protocol`, and generated code names protocol types through that
+path. A `trellis-rs` that links a path, git, or alternate-registry
+`trellis-protocol` with no workspace `[patch]` therefore gives the generated
+package that exact crate, never a second copy whose types differ. Their serialization remains unchanged. Generated Rust ABI 2 requires this
 shared support; regenerate packages with the matching CLI and SDK instead of
 adding compatibility definitions. This is a Rust support-ABI change, not a wire
 protocol version change.

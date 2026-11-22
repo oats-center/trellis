@@ -84,6 +84,15 @@ pub mod telemetry;
 /// resolved the crate from.
 pub use trellis_models as models;
 
+/// Transport-independent Trellis wire types, from the exact
+/// `trellis-protocol` crate this runtime links.
+///
+/// Generated SDKs name protocol types such as `Bytes`, `Int64`, and
+/// `Timestamp` through this path rather than depending on `trellis-protocol`
+/// themselves, so they are the types this runtime uses wherever Cargo resolved
+/// the crate from.
+pub use trellis_protocol as protocol;
+
 #[doc(hidden)]
 #[path = "internal.rs"]
 pub mod __internal;

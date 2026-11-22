@@ -1542,8 +1542,6 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
- "trellis-models",
- "trellis-protocol",
  "trellis-rs",
 ]
 
@@ -2673,7 +2671,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-models"
-version = "0.100.0-rc.48"
+version = "0.100.0-rc.51"
 dependencies = [
  "serde",
  "serde_json",
@@ -2711,7 +2709,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-protocol"
-version = "0.100.0-rc.39"
+version = "0.100.0-rc.51"
 dependencies = [
  "base64 0.23.1",
  "ed25519-dalek 3.0.0",
@@ -2730,7 +2728,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-rs"
-version = "0.100.0-rc.48"
+version = "0.100.0-rc.52"
 dependencies = [
  "async-nats",
  "base64 0.23.1",
