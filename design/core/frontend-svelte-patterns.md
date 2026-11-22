@@ -92,9 +92,25 @@ already put back to use, usually means the record changed. Reread the list
 right away, keep the refusal's message on screen, and never send the action
 again on the operator's behalf. Show that message apart from read errors, so
 the other rows stay usable, and outside the record's own row, which the reread
-may remove. A page with a form rereads what it shows but keeps what was typed;
-a form that replaces the whole record also keeps the revision it was made from,
-so saving it again can't undo the other change.
+may remove.
+
+A form's reread never changes what was typed and never moves a draft onto a
+newer revision without the operator knowing. Each typed field remembers the
+saved value it was typed over. A field left alone takes the newly read value;
+a typed field whose saved value is unchanged stays as typed. A typed field
+whose saved value changed meanwhile is a conflict: the form shows the
+operator's value beside the saved one, and saves nothing until they keep
+theirs, which saves it against the new revision, or take the saved one. A
+secret shows only that it changed, never either value. Once no conflict is
+left, every typed field was typed over what is saved now, so saving against
+the newer revision overwrites nothing anyone else saved. The same holds for a
+refused save, a refused delete, and any other reread of the record the form
+edits. `$lib/console/draft.ts` and `DraftConflicts.svelte` implement this.
+
+A reply or reread started for one target never lands on another. Capture the
+request scope's key before awaiting, apply the outcome, show its message, or
+start a reread only while that key is still current, and let a read run only
+for the target the route names now.
 
 ### Live views schedule coalesced refreshes
 
