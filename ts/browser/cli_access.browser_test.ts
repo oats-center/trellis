@@ -15,168 +15,196 @@ test(
   "CLI manages roles for new users, sign-in methods, and an app's sign-up",
   { timeout: 90_000 },
   async () => {
-    await withTrellisRuntime(async (runtime) => {
-      const browser = await chromium.launch({
-        headless: true,
-        env: browserTrustEnvironment(),
-      });
-      const page = await browser.newPage();
-      page.setDefaultTimeout(10_000);
-      try {
-        const { run } = await loginCliAsAdministrator(runtime, page);
-        // A script can run commands back to back. Each run reuses the
-        // admission an earlier one kept rather than signing in again, so 65
-        // runs in a row stay under the 120 sign-in requests a minute Trellis
-        // allows one address; signing in each time would take 130.
-        for (let index = 0; index < 65; index += 1) {
-          assert.equal((await run("whoami")).loggedIn, true);
-        }
-        // A role marked for new users is given to each user created while the
-        // mark stands, and to nobody created after it is cleared.
-        const { role } = await run(
-          "roles",
-          "create",
-          "--title",
-          "Readers",
-          "--capability",
-          "trellis.auth.v1:users.read",
-          "--new-users",
-        );
-        const createUser = async () =>
-          (await run("users", "create", "--username", `cli-${ulid()}`)).user
-            .principalId;
-        const before = await createUser();
-        const renamed = await run(
-          "roles",
-          "edit",
-          role.roleId,
-          "--title",
-          "Directory readers",
-          "--no-new-users",
-        );
-        assert.deepEqual(
-          renamed.role.capabilities.map(
-            (capability: { capabilityId: string }) => capability.capabilityId,
-          ),
-          ["trellis.auth.v1:users.read"],
-        );
-        const after = await createUser();
-        const readers = await run("roles", "show", role.roleId);
-        assert.equal(readers.role.title, "Directory readers");
-        assert.equal(readers.role.assignToNewUsers, false);
-        assert.deepEqual(readers.members, [before]);
-        // An administrator can still give the role to anyone, or take it away.
-        await run("roles", "assign", role.roleId, "--user", after);
-        await run("roles", "revoke", role.roleId, "--user", before);
-        assert.deepEqual((await run("roles", "show", role.roleId)).members, [
-          after,
-        ]);
-        await assert.rejects(
-          run("roles", "revoke", role.roleId, "--user", before),
-        );
-        await run("roles", "delete", role.roleId);
-        await assert.rejects(run("roles", "show", role.roleId));
-        // Recreated under the same ID, the role keeps the earlier assignment,
-        // which no longer gives it. Show and revoke act on the current one.
-        const put = (input: Record<string, unknown>) =>
-          runtime.callAdminRpc(
-            "authRolesPut",
-            apis.auth.API.actions["rpc:Roles.Put"].input.decode({
+    await withTrellisRuntime(
+      async (runtime) => {
+        const browser = await chromium.launch({
+          headless: true,
+          env: browserTrustEnvironment(),
+        });
+        const page = await browser.newPage();
+        page.setDefaultTimeout(10_000);
+        try {
+          const { run } = await loginCliAsAdministrator(runtime, page);
+          // A script can run commands back to back. Each run reuses the
+          // admission an earlier one kept rather than signing in again, so 65
+          // runs in a row stay under the 120 sign-in requests a minute Trellis
+          // allows one address; signing in each time would take 130.
+          for (let index = 0; index < 65; index += 1) {
+            assert.equal((await run("whoami")).loggedIn, true);
+          }
+          // A role marked for new users is given to each user created while the
+          // mark stands, and to nobody created after it is cleared.
+          const { role } = await run(
+            "roles",
+            "create",
+            "--title",
+            "Readers",
+            "--capability",
+            "trellis.auth.v1:users.read",
+            "--new-users",
+          );
+          const createUser = async () =>
+            (await run("users", "create", "--username", `cli-${ulid()}`)).user
+              .principalId;
+          const before = await createUser();
+          const renamed = await run(
+            "roles",
+            "edit",
+            role.roleId,
+            "--title",
+            "Directory readers",
+            "--no-new-users",
+          );
+          assert.deepEqual(
+            renamed.role.capabilities.map(
+              (capability: { capabilityId: string }) => capability.capabilityId,
+            ),
+            ["trellis.auth.v1:users.read"],
+          );
+          const after = await createUser();
+          const readers = await run("roles", "show", role.roleId);
+          assert.equal(readers.role.title, "Directory readers");
+          assert.equal(readers.role.assignToNewUsers, false);
+          assert.deepEqual(readers.members, [before]);
+          // An administrator can still give the role to anyone, or take it away.
+          await run("roles", "assign", role.roleId, "--user", after);
+          await run("roles", "revoke", role.roleId, "--user", before);
+          assert.deepEqual((await run("roles", "show", role.roleId)).members, [
+            after,
+          ]);
+          await assert.rejects(
+            run("roles", "revoke", role.roleId, "--user", before),
+          );
+          await run("roles", "delete", role.roleId);
+          await assert.rejects(run("roles", "show", role.roleId));
+          // Recreated under the same ID, the role keeps the earlier assignment,
+          // which no longer gives it. Show and revoke act on the current one.
+          const put = (input: Record<string, unknown>) =>
+            runtime.callAdminRpc(
+              "authRolesPut",
+              apis.auth.API.actions["rpc:Roles.Put"].input.decode({
+                expectedRevision: "0",
+                description: "",
+                capabilityIds: [],
+                assignToNewUsers: false,
+                idempotencyKey: codecs.ulid.decode(ulid()),
+                ...input,
+              }),
+            );
+          await put({
+            roleId: role.roleId,
+            title: "Directory readers",
+            capabilityIds: ["trellis.auth.v1:users.read"],
+          });
+          await runtime.callAdminRpc(
+            "authRoleAssignmentsAssign",
+            apis.auth.API.actions["rpc:RoleAssignments.Assign"].input.decode({
+              principalId: after,
+              roleId: role.roleId,
               expectedRevision: "0",
-              description: "",
-              capabilityIds: [],
-              assignToNewUsers: false,
               idempotencyKey: codecs.ulid.decode(ulid()),
-              ...input,
             }),
           );
-        await put({
-          roleId: role.roleId,
-          title: "Directory readers",
-          capabilityIds: ["trellis.auth.v1:users.read"],
-        });
-        await runtime.callAdminRpc(
-          "authRoleAssignmentsAssign",
-          apis.auth.API.actions["rpc:RoleAssignments.Assign"].input.decode({
-            principalId: after,
-            roleId: role.roleId,
-            expectedRevision: "0",
-            idempotencyKey: codecs.ulid.decode(ulid()),
-          }),
-        );
-        assert.deepEqual((await run("roles", "show", role.roleId)).members, [
-          after,
-        ]);
-        await run("roles", "revoke", role.roleId, "--user", after);
-        assert.deepEqual((await run("roles", "show", role.roleId)).members, []);
-        // Listing follows every page rather than stopping at the first 100.
-        const extra = Array.from(
-          { length: 101 },
-          (_, index) => `Bulk ${index}`,
-        );
-        for (let start = 0; start < extra.length; start += 20)
-          await Promise.all(
-            extra.slice(start, start + 20).map((title) => put({ title })),
+          assert.deepEqual((await run("roles", "show", role.roleId)).members, [
+            after,
+          ]);
+          await run("roles", "revoke", role.roleId, "--user", after);
+          assert.deepEqual(
+            (await run("roles", "show", role.roleId)).members,
+            [],
           );
-        const listed = (await run("roles", "list")).items.map(
-          (item: { title: string }) => item.title,
-        );
-        for (const title of extra) assert.ok(listed.includes(title), title);
-        // Sign-in methods change live, and an app chooses its own sign-up.
-        assert.equal(
-          (await run("sign-in", "show")).settings.localSignUp,
-          false,
-        );
-        const opened = await run(
-          "sign-in",
-          "set",
-          "--local-sign-up",
-          "--password-min-length",
-          "16",
-        );
-        assert.equal(opened.settings.localSignUp, true);
-        assert.equal(opened.settings.localUsers, true);
-        assert.equal(opened.settings.passwordMinLength, 16);
-        // No provider is on, so password sign-in is the only way in.
-        await assert.rejects(run("sign-in", "set", "--no-local-users"));
-        const joined = await run(
-          "clients",
-          "sign-up",
-          "trellis.console",
-          "--password",
-        );
-        assert.deepEqual(joined.client.signUp, {
-          password: true,
-          providers: false,
-        });
-        // Commands keep working across an issuer key replacement, and the
-        // replaced key can then be revoked from the CLI: the revoking command
-        // signs in afresh under the new key, so the revocation does not end
-        // the session it runs on.
-        await page.goto(
-          new URL("/.well-known/oauth-authorization-server", runtime.trellisUrl)
-            .href,
-        );
-        const signer = JSON.parse(
-          await page.locator("body").innerText(),
-        ).trellis.issuers.find(
-          (key: { state: string }) => key.state === "active",
-        ).keyId;
-        await runtime.callAdminRpc("authIssuersRotate", {
-          expectedCurrentKeyId: signer,
-          idempotencyKey: codecs.ulid.decode(ulid()),
-        });
-        assert.equal((await run("whoami")).loggedIn, true);
-        assert.equal((await run("issuers", "revoke", signer)).keyId, signer);
-        // The server's own services renew onto the new key when Auth announces
-        // the rotation, so the revocation spares them. One that has not yet
-        // renewed is retired and reconnects, and the next command waits for it
-        // rather than failing.
-        assert.equal((await run("whoami")).loggedIn, true);
-      } finally {
-        await browser.close();
-      }
-    }, browserRuntimeOptions());
+          // Listing follows every page rather than stopping at the first 100.
+          const extra = Array.from(
+            { length: 101 },
+            (_, index) => `Bulk ${index}`,
+          );
+          for (let start = 0; start < extra.length; start += 20)
+            await Promise.all(
+              extra.slice(start, start + 20).map((title) => put({ title })),
+            );
+          const listed = (await run("roles", "list")).items.map(
+            (item: { title: string }) => item.title,
+          );
+          for (const title of extra) assert.ok(listed.includes(title), title);
+          // Sign-in methods change live, and an app chooses its own sign-up.
+          assert.equal(
+            (await run("sign-in", "show")).settings.localSignUp,
+            false,
+          );
+          const opened = await run(
+            "sign-in",
+            "set",
+            "--local-sign-up",
+            "--password-min-length",
+            "16",
+          );
+          assert.equal(opened.settings.localSignUp, true);
+          assert.equal(opened.settings.localUsers, true);
+          assert.equal(opened.settings.passwordMinLength, 16);
+          // No provider is on, so password sign-in is the only way in.
+          await assert.rejects(run("sign-in", "set", "--no-local-users"));
+          const joined = await run(
+            "clients",
+            "sign-up",
+            "trellis.console",
+            "--password",
+          );
+          assert.deepEqual(joined.client.signUp, {
+            password: true,
+            providers: false,
+          });
+          // Commands keep working across an issuer key replacement, and the
+          // replaced key can then be revoked from the CLI: the revoking command
+          // signs in afresh under the new key, so the revocation does not end
+          // the session it runs on.
+          await page.goto(
+            new URL(
+              "/.well-known/oauth-authorization-server",
+              runtime.trellisUrl,
+            ).href,
+          );
+          const signer = JSON.parse(
+            await page.locator("body").innerText(),
+          ).trellis.issuers.find(
+            (key: { state: string }) => key.state === "active",
+          ).keyId;
+          await runtime.callAdminRpc("authIssuersRotate", {
+            expectedCurrentKeyId: signer,
+            idempotencyKey: codecs.ulid.decode(ulid()),
+          });
+          assert.equal((await run("whoami")).loggedIn, true);
+          // A rotation announces the new key and Trellis signs with it once the
+          // activation delay has passed; until then the old key is current and
+          // can't be revoked.
+          await runtime.waitFor(
+            async () => {
+              const response = await fetch(
+                new URL(
+                  "/.well-known/oauth-authorization-server",
+                  runtime.trellisUrl,
+                ),
+              );
+              const current = (await response.json()).trellis.issuers.find(
+                (key: { state: string }) => key.state === "active",
+              )?.keyId;
+              return current && current !== signer ? true : undefined;
+            },
+            { timeoutMs: 15_000, intervalMs: 250 },
+          );
+          assert.equal((await run("issuers", "revoke", signer)).keyId, signer);
+          // The server's own services renew onto the new key when Auth announces
+          // the rotation, so the revocation spares them. One that has not yet
+          // renewed is retired and reconnects, and the next command waits for it
+          // rather than failing.
+          assert.equal((await run("whoami")).loggedIn, true);
+        } finally {
+          await browser.close();
+        }
+      },
+      browserRuntimeOptions({
+        authorization: { issuerActivationDelaySeconds: 1 },
+      }),
+    );
   },
 );
 

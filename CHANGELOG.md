@@ -21,6 +21,13 @@ and this project adheres to
 
 ### Changed
 
+- `trellis roles assign|revoke <ROLE> --user <USER>`, `roles show|edit|delete
+<ROLE>` and `users show|edit|delete|link|unlink <USER>` take a role by name
+  or ID and a user by username, email or ID, and refuse an ambiguous name with
+  the candidates.
+- Creating a user gives a one-time password setup link (Console "Password
+  setup link", CLI "Setup link") instead of a bare token, and says when
+  password sign-in is off, with a way to turn it on.
 - Async webhook endpoints check HMAC before answering, so a wrong secret gets
   401 and the sender sees the failure; an unset secret gets 503.
 - The TypeScript testkit's `runtime.caCertificate` is the CA's PEM text, as
@@ -43,6 +50,8 @@ and this project adheres to
 
 ### Fixed
 
+- Saving an app in the Console shows "App saved." beside Save and reloads the
+  form from what was saved.
 - Server failures on the OAuth, Portal, sign-in and enrollment HTTP endpoints
   are logged once under a reference the caller sees: OAuth `server_error`
   descriptions, the Portal's sign-in, sign-up and device approval pages, the
