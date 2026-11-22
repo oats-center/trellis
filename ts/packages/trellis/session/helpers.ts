@@ -105,3 +105,29 @@ export function ingressRetiredError(id: number): TransportError {
     context: { generationId: id },
   });
 }
+
+/**
+ * Settles with what `signing` produces, or with `undefined` once `deadlineMs`
+ * passes first. Signing that loses the race keeps running, but its proof is
+ * dropped, so a message signed after the caller's budget is never sent.
+ */
+export async function signedBefore<T extends object>(
+  signing: Promise<T>,
+  deadlineMs: number,
+): Promise<T | undefined> {
+  signing.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      signing,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(
+          () => resolve(undefined),
+          Math.max(0, deadlineMs - Date.now()),
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

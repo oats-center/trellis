@@ -17,9 +17,10 @@ import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserRuntimeOptions } from "./browser_test_support.ts";
 
 // Consent for an app that asks, here the CLI signing in with a device code.
-// "select-all" grants administration through the bulk action and its caution
-// step; "ordinary" grants every other choice and leaves administration out.
-for (const selection of ["select-all", "ordinary"] as const) {
+// Administration starts selected like any other optional access. "kept"
+// keeps it and confirms it in the caution step; "declined" unchecks it and
+// grants every other choice.
+for (const selection of ["kept", "declined"] as const) {
   test(`consent grants administration only when selected (${selection})`, async () => {
     await withTrellisRuntime(async (runtime) => {
       const username = runtime.adminUsername;
@@ -78,6 +79,9 @@ for (const selection of ["select-all", "ordinary"] as const) {
             trust: server.trust,
           })
         ).orThrow();
+        const administration = page
+          .getByRole("group", { name: "Manage this Trellis", exact: true })
+          .getByRole("checkbox", { name: /^Allow all: / });
         const device = (await client.startDevice(apps.cli.request)).orThrow();
         await page.goto(device.verificationUri);
         await page.getByLabel("Code", { exact: true }).fill(device.userCode);
@@ -95,33 +99,21 @@ for (const selection of ["select-all", "ordinary"] as const) {
         await page
           .getByRole("heading", { name: /wants to use your account/ })
           .waitFor();
-
-        const access = page.getByRole("checkbox", { name: /^Allow all: / });
-        const administration = page
-          .getByRole("group", { name: "Manage this Trellis", exact: true })
-          .getByRole("checkbox", { name: /^Allow all: / });
-        // Optional access the person was never asked about starts selected;
-        // administration starts unselected and takes its own confirmation.
-        for (const choice of await access.all()) {
+        // Optional access the person was never asked about starts selected,
+        // administration included.
+        for (const choice of await page
+          .getByRole("checkbox", { name: /^Allow all: / })
+          .all())
           if (await choice.isEnabled())
             strictEqual(
               await choice.isChecked(),
-              (await choice.getAttribute("aria-label")) !==
-                "Allow all: Manage this Trellis",
+              true,
+              `${await choice.getAttribute("aria-label")} starts selected`,
             );
-        }
-        if (selection === "select-all") {
-          await page
-            .getByRole("button", { name: "Select all", exact: true })
-            .click();
-        } else {
-          for (const choice of await access.all())
-            if (await choice.isEnabled()) await choice.check();
-          await administration.uncheck();
-        }
+        if (selection === "declined") await administration.uncheck();
         await page.getByRole("button", { name: "Allow", exact: true }).click();
         // Administration takes the caution step before it is granted.
-        if (selection === "select-all")
+        if (selection === "kept")
           await page
             .getByRole("button", { name: "Allow management", exact: true })
             .click();
@@ -141,7 +133,7 @@ for (const selection of ["select-all", "ordinary"] as const) {
             displayName: "Consented",
             idempotencyKey: codecs.ulid.decode(ulid()),
           });
-          strictEqual(created.isOk(), selection === "select-all");
+          strictEqual(created.isOk(), selection === "kept");
         } finally {
           await cli.connection.close();
         }

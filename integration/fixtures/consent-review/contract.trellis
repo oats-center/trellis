@@ -1,3 +1,5 @@
+import { auth } from trellis;
+
 model Value { value: string; }
 api fields@v1 {
   title "Fields";
@@ -19,8 +21,19 @@ api crops@v1 {
     capability plans.edit { title "Change crop plans"; description "Plan next season's planting."; grants "The app can change your crop plans."; allows { rpc Plan; } }
   }
 }
-service Provider { implements fields; implements crops; }
+// Another API titled "Fields": the consent page must keep the two apart.
+api fieldmaps@v1 {
+  title "Fields";
+  description "Field boundaries from the mapping service.";
+  rpc Read { input Value; output Value; }
+  capabilities {
+    capability records.read { title "See mapped fields"; description "Look up field boundaries drawn on the map."; grants "The app can see your mapped fields."; allows { rpc Read; } }
+  }
+}
+service Provider { implements fields; implements crops; implements fieldmaps; }
 app Reviewer {
   use fields { required capability records.read; capability records.edit; }
   use crops { capability records.read; capability plans.edit; }
+  use fieldmaps { capability records.read; }
+  use auth { capability accounts.manage; }
 }
