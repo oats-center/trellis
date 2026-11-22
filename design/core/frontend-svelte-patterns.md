@@ -67,6 +67,18 @@ a labelled snapshot. Component disposal invalidates outstanding reads so no late
 response mutates a page that has gone away. Do not make the initiating `$effect`
 itself async.
 
+### Shell authority stays while it is rechecked
+
+The shell's authority snapshot is advisory: Trellis authorizes every request.
+The connection renews its authority every few minutes, after an issuer
+rotation and after a reconnect, and the shell checks each renewal again. While
+it checks, and after a check that failed for a recoverable reason, the snapshot
+keeps the authority and profile last verified for the session. Sections and
+forms shown on it stay mounted with what was typed, and a page that rereads
+after a renewal updates in place. Only a missing or ended session, which sends
+the user to sign in, and an authorization denial clear it. A page never sends a
+person to sign in, or reloads, for a recoverable condition.
+
 ### Lists use cursor pagination
 
 Tables advance one server page at a time with an opaque cursor history and reset

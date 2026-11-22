@@ -15,6 +15,11 @@ and this project adheres to
 
 ### Fixed
 
+- The Console no longer loses what you are typing every few minutes. Each
+  renewal of its session's authority, an issuer rotation or a reconnect made it
+  briefly treat the user as having no permissions, which unmounted forms and
+  emptied the navigation. The last verified authority now stays while it is
+  checked again.
 - Debug builds of Rust services and tests could overflow a 2 MiB thread stack:
   connecting, testkit startup and every generated RPC call held very large
   futures. They are boxed where they are created, so callers hold small ones.
