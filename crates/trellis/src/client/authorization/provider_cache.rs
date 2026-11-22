@@ -454,7 +454,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn possession_and_signed_retirement_follow_real_mirror_coverage() {
+    async fn possession_and_signed_retirement_use_the_last_known_mirror_state() {
         let source = tempfile::tempdir().unwrap();
         trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
             source.path(),
@@ -549,8 +549,11 @@ mod tests {
             .verify_authority(&signed, &issuer, SessionAuthorityPurpose::Live)
             .unwrap();
         owner.promote_own(authority.clone(), None).unwrap();
-        assert!(owner.own_authority().is_err());
-        assert!(owner.assert_current(&authority).is_err());
+        // No mirror has run yet. Own authority and peer checks proceed on what
+        // is known, which is no revocation at all.
+        owner.own_authority().unwrap();
+        owner.assert_current(&authority).unwrap();
+        owner.assert_accepted_response_allowed(&authority).unwrap();
         let (stop, _) = watch::channel(false);
         let start_mirror = || {
             let owner = owner.clone();
@@ -569,26 +572,16 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        owner.assert_current(&authority).unwrap();
-        let (second, snapshot) = start_mirror();
-        tokio::time::timeout(RESOLUTION_TIMEOUT, snapshot)
-            .await
-            .unwrap()
-            .unwrap();
         first.abort();
         assert!(first.await.unwrap_err().is_cancelled());
+        // A mirror that stopped leaves the last known state in force.
         owner.assert_current(&authority).unwrap();
-        second.abort();
-        assert!(second.await.unwrap_err().is_cancelled());
-        assert!(owner.assert_current(&authority).is_err());
-        assert!(owner.assert_accepted_response_allowed(&authority).is_err());
-        assert!(owner.own_authority().is_err());
+        owner.own_authority().unwrap();
         let (third, snapshot) = start_mirror();
         tokio::time::timeout(RESOLUTION_TIMEOUT, snapshot)
             .await
             .unwrap()
             .unwrap();
-        owner.assert_current(&authority).unwrap();
         let request = SessionRequest {
             authority_digest: authority.digest().into(),
             api_id: "documents@v1".into(),
@@ -689,6 +682,11 @@ mod tests {
             .is_err());
         third.abort();
         assert!(third.await.unwrap_err().is_cancelled());
+        // Observed cutoffs outlive the mirror that delivered them.
+        assert!(matches!(
+            owner.assert_current(&replacement),
+            Err(TrellisClientError::Protocol(_))
+        ));
         let (fourth, snapshot) = start_mirror();
         tokio::time::timeout(RESOLUTION_TIMEOUT, snapshot)
             .await
@@ -884,21 +882,11 @@ struct OwnerState {
     material: BTreeMap<(MaterialKind, String), CacheEntry>,
     revocations: BTreeMap<String, SignedSessionRevocation>,
     revocation_overflow_until: i64,
-    revocation_epoch: Option<Arc<async_nats::Client>>,
-    revocation_predecessor_epoch: Option<Arc<async_nats::Client>>,
-    revocation_pending_epoch: Option<Arc<async_nats::Client>>,
-    revocation_covered: bool,
+    /// Set when the runtime closes; a closed owner vouches for nothing.
+    closed: bool,
 }
 
 impl OwnerState {
-    fn require_live_coverage(&self) -> Result<(), TrellisClientError> {
-        if !self.revocation_covered {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "revocation mirror is not current".into(),
-            ));
-        }
-        Ok(())
-    }
     fn issuer(&self, key_id: &str, now: i64) -> Option<AuthorityIssuerKey> {
         let mut issuer = self.issuers.get(key_id)?.clone();
         if issuer.state == AuthorityIssuerState::Active
@@ -910,79 +898,6 @@ impl OwnerState {
             issuer.state = AuthorityIssuerState::Retired;
         }
         Some(issuer)
-    }
-}
-
-struct RevocationCoverage {
-    owner: AuthorizationOwner,
-    epoch: Arc<async_nats::Client>,
-}
-
-impl RevocationCoverage {
-    fn ready(&self) -> Result<(), TrellisClientError> {
-        let mut state = self.owner.state.write().map_err(|_| {
-            TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
-        })?;
-        if !state
-            .revocation_pending_epoch
-            .as_ref()
-            .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
-            || state.revocation_overflow_until > self.owner.policy().now_unix_seconds
-        {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "revocation snapshot superseded or incomplete".into(),
-            ));
-        }
-        state.revocation_predecessor_epoch = if state.revocation_covered {
-            state.revocation_epoch.take()
-        } else {
-            None
-        };
-        state.revocation_epoch = Some(Arc::clone(&self.epoch));
-        state.revocation_pending_epoch = None;
-        state.revocation_covered = true;
-        drop(state);
-        let _ = self.owner.changes.send(());
-        Ok(())
-    }
-}
-
-impl Drop for RevocationCoverage {
-    fn drop(&mut self) {
-        if let Ok(mut state) = self.owner.state.write() {
-            if state
-                .revocation_pending_epoch
-                .as_ref()
-                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
-            {
-                state.revocation_pending_epoch = None;
-            }
-            if state
-                .revocation_predecessor_epoch
-                .as_ref()
-                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
-            {
-                state.revocation_predecessor_epoch = None;
-            }
-            if state
-                .revocation_epoch
-                .as_ref()
-                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
-            {
-                // A completed candidate can still lose its final transport
-                // check. Its never-stopped predecessor remains valid coverage.
-                state.revocation_epoch =
-                    state
-                        .revocation_predecessor_epoch
-                        .take()
-                        .filter(|transport| {
-                            transport.connection_state() == async_nats::connection::State::Connected
-                        });
-                state.revocation_covered = state.revocation_epoch.is_some();
-                drop(state);
-                let _ = self.owner.changes.send(());
-            }
-        }
     }
 }
 
@@ -1052,10 +967,7 @@ impl AuthorizationOwner {
             material: BTreeMap::new(),
             revocations: BTreeMap::new(),
             revocation_overflow_until: 0,
-            revocation_epoch: None,
-            revocation_predecessor_epoch: None,
-            revocation_pending_epoch: None,
-            revocation_covered: false,
+            closed: false,
         };
         Ok(Self {
             trust,
@@ -1085,7 +997,10 @@ impl AuthorizationOwner {
         self.changes.subscribe()
     }
 
-    /// Retain own authority only while the current revocation snapshot is covered.
+    /// Own authority while it is unexpired, trusted and not known to be revoked.
+    ///
+    /// The revocation mirror never gates this: the broker and Auth enforce
+    /// revocation of this runtime's own session.
     pub fn own_authority(&self) -> Result<Arc<VerifiedSessionAuthority>, TrellisClientError> {
         let authority = self.staged_own_authority()?;
         self.assert_current(&authority)?;
@@ -1124,6 +1039,11 @@ impl AuthorizationOwner {
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
+        if state.closed {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "authority owner closed".into(),
+            ));
+        }
         let authority = state.own.clone().ok_or_else(|| {
             TrellisClientError::AuthorizationUnavailable("own authority not installed".into())
         })?;
@@ -1155,7 +1075,7 @@ impl AuthorizationOwner {
         Ok(authority)
     }
 
-    /// Check a private own transport candidate before coverage exists. This does not
+    /// Check a private own transport candidate before it is installed. This does not
     /// grant peer/application usability or require the candidate to be promoted yet.
     pub(crate) fn assert_prepared_current(
         &self,
@@ -1211,9 +1131,9 @@ impl AuthorizationOwner {
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
-        state.require_live_coverage()?;
         let policy = self.policy();
-        if authority.authority().trellis_instance_id != self.trust.instance_id
+        if state.closed
+            || authority.authority().trellis_instance_id != self.trust.instance_id
             || authority.authority().audience_nats_account != self.trust.account
             || (authority.authority().runtime_id == self.runtime_id
                 && authority.authority().session_public_key == self.session_public_key
@@ -1240,7 +1160,7 @@ impl AuthorizationOwner {
     }
 
     /// Permit delivery of a verified finite response to its already-accepted opening.
-    /// The opening need not remain live, but terminal ownership, lost coverage,
+    /// The opening need not remain live, but terminal ownership,
     /// known revocation and compromised issuer trust still fence delivery.
     pub(crate) fn assert_accepted_response_allowed(
         &self,
@@ -1249,10 +1169,10 @@ impl AuthorizationOwner {
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
-        state.require_live_coverage()?;
         let body = opening.authority();
         let policy = self.policy();
-        if body.trellis_instance_id != self.trust.instance_id
+        if state.closed
+            || body.trellis_instance_id != self.trust.instance_id
             || body.audience_nats_account != self.trust.account
             || body.runtime_id != self.runtime_id
             || body.session_public_key != self.session_public_key
@@ -1307,7 +1227,6 @@ impl AuthorizationOwner {
             let state = self.state.read().map_err(|_| {
                 TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
             })?;
-            state.require_live_coverage()?;
             let issuer = state
                 .issuer(&issuer.key_id, policy.now_unix_seconds)
                 .ok_or_else(|| {
@@ -1424,7 +1343,6 @@ impl AuthorizationOwner {
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
-        state.require_live_coverage()?;
         let policy = self.policy();
         let issuer = state
             .issuer(&issuer.key_id, policy.now_unix_seconds)
@@ -1616,7 +1534,6 @@ impl AuthorizationOwner {
         {
             return Ok(false);
         }
-        state.require_live_coverage()?;
         if state.revocation_overflow_until > self.policy().now_unix_seconds {
             return Err(TrellisClientError::AuthorizationUnavailable(
                 "revocation capacity reached".into(),
@@ -1693,7 +1610,6 @@ impl AuthorizationOwner {
                             "authority owner unavailable".into(),
                         )
                     })?;
-                    state.require_live_coverage()?;
                     if state.revocation_overflow_until > policy.now_unix_seconds {
                         return Err(TrellisClientError::AuthorizationUnavailable(
                             "revocation capacity reached".into(),
@@ -1789,7 +1705,7 @@ impl AuthorizationOwner {
                     }
                 }
                 // Recheck exact bytes only after verified own authority changed.
-                // Coverage loss, cutoffs and unchanged authority remain fenced.
+                // Cutoffs and unchanged authority remain fenced.
                 if result.is_err()
                     && self
                         .own_authority()
@@ -1821,7 +1737,6 @@ impl AuthorizationOwner {
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
-        state.require_live_coverage()?;
         let policy = self.policy();
         if state.revocation_overflow_until > policy.now_unix_seconds
             || !state
@@ -2275,7 +2190,6 @@ impl AuthorizationOwner {
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
-        state.require_live_coverage()?;
         if state.revocation_overflow_until > policy.now_unix_seconds {
             return Err(TrellisClientError::AuthorizationUnavailable(
                 "revocation capacity reached".into(),
@@ -2793,36 +2707,12 @@ impl AuthorizationOwner {
         Ok(())
     }
 
-    /// A closed runtime no longer mirrors revocations, whatever its transport
-    /// still reports while closing; it must stop vouching for any authority.
-    pub(crate) fn retire_revocation_coverage(&self) {
+    /// Stop vouching for any authority once the runtime closes, whatever its
+    /// transport still reports while closing.
+    pub(crate) fn close(&self) {
         if let Ok(mut state) = self.state.write() {
-            let changed = state.revocation_covered || state.revocation_epoch.is_some();
-            state.revocation_covered = false;
-            state.revocation_epoch = None;
-            state.revocation_predecessor_epoch = None;
-            state.revocation_pending_epoch = None;
-            drop(state);
-            if changed {
-                let _ = self.changes.send(());
-            }
-        }
-    }
-
-    /// Invalidate pending snapshots without erasing signed retirements.
-    /// A complete mirror on a still-connected carrier may cover retained work;
-    /// a displaced snapshot cannot restore coverage after a transport change.
-    pub(crate) fn fence_revocation_coverage(&self) {
-        if let Ok(mut state) = self.state.write() {
-            let changed = state.revocation_covered || state.revocation_epoch.is_some();
-            state.revocation_pending_epoch = None;
-            if !state.revocation_epoch.as_ref().is_some_and(|transport| {
-                transport.connection_state() == async_nats::connection::State::Connected
-            }) {
-                state.revocation_covered = false;
-                state.revocation_epoch = None;
-                state.revocation_predecessor_epoch = None;
-            }
+            let changed = !state.closed;
+            state.closed = true;
             drop(state);
             if changed {
                 let _ = self.changes.send(());
@@ -2831,30 +2721,19 @@ impl AuthorizationOwner {
     }
 
     /// Run one logical-session mirror for this attachment, not one watch per peer.
-    /// A replacement stages its snapshot while a healthy predecessor continues
-    /// covering retained work. Snapshot completion atomically hands over its
-    /// scoped epoch; failure never erases signed retirements or revives a stopped
-    /// predecessor.
+    ///
+    /// The mirror only informs verification of other parties' messages. Every
+    /// verification uses the revocations observed so far, whether or not this
+    /// mirror is running, so a missing or lagging mirror delays when a
+    /// revocation takes effect here and never refuses or delays work. `ready`
+    /// fires once the initial snapshot has been applied. Failure never erases
+    /// observed retirements.
     pub async fn run_revocations(
         &self,
         transport: &async_nats::Client,
         mut shutdown: watch::Receiver<bool>,
         ready: tokio::sync::oneshot::Sender<()>,
     ) -> Result<(), TrellisClientError> {
-        let epoch = Arc::new(transport.clone());
-        {
-            let mut state = self.state.write().map_err(|_| {
-                TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
-            })?;
-            // Preparing a successor is not loss of a healthy shared mirror.
-            // Only a complete authenticated snapshot may displace its epoch.
-            state.revocation_pending_epoch = Some(Arc::clone(&epoch));
-        }
-        let coverage = RevocationCoverage {
-            owner: self.clone(),
-            epoch,
-        };
-        let _ = self.changes.send(());
         if *shutdown.borrow() {
             return Ok(());
         }
@@ -2899,7 +2778,6 @@ impl AuthorizationOwner {
         let initial_delivered = initial.delivered.consumer_sequence;
         let mut ready = Some(ready);
         if initial_delivered == 0 && initial.num_pending == 0 {
-            coverage.ready()?;
             if let Some(ready) = ready.take() {
                 let _ = ready.send(());
             }
@@ -2949,8 +2827,7 @@ impl AuthorizationOwner {
                             }
                         }
                     }
-                    if snapshot_complete && ready.is_some() {
-                        coverage.ready()?;
+                    if snapshot_complete {
                         if let Some(ready) = ready.take() {
                             let _ = ready.send(());
                         }

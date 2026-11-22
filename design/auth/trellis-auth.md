@@ -164,9 +164,34 @@ path.
    the caller can receive and verify the reply over the same connection. Auth
    refuses the session from the cutoff; every other session in scope is
    enforced at once.
-6. SDKs keep a verified mirror of revocations. Authority is usable only while
-   that mirror's coverage is current; a lost or unverified mirror fences new
-   work rather than permitting it.
+6. SDKs keep a verified mirror of revocations and use it only to check other
+   parties: a provider checking a caller, a caller checking a responder.
+   Revocation is eventually consistent. See [revocation is eventually
+   consistent](#revocation-is-eventually-consistent).
+
+### Revocation is eventually consistent
+
+Auth and the broker enforce revocation of a session at once: Auth refuses its
+admission and renewal from the cutoff, and the effect publisher kicks its
+connections right after publishing the signed revocation. A participant's
+mirror learns of it when the revocation's JetStream update reaches it, normally
+well under a second later, and from then on refuses that session's requests
+and replies.
+
+A mirror that is down or lagging, as during a reconnect, a broker restart or a
+consumer the broker refused, never blocks anything. Requests on a participant's
+own session are sent, and other parties' messages are checked against the
+revocations the participant has observed so far, while the mirror catches up in
+the background. No participant refuses to send on its own session because of
+its mirror; the broker and Auth enforce that session's revocation. Nothing in
+connecting, renewal, Live, jobs or event consumers waits for the mirror either.
+
+There is no separate staleness bound, because the authority lifetime is one: a
+revoked session cannot renew, so its signed authority stops verifying anywhere
+once it expires, at most one authority lifetime (`context_lifetime_seconds`,
+300 by default) after the revocation, even at a participant whose mirror never
+catches up. A participant that cannot reach Auth for longer than that cannot
+renew its own authority either, and expired authority authorizes nothing.
 
 ## Consent and delegation
 
@@ -712,18 +737,16 @@ Auth-host failure. The durable intent remains available to its current or next
 owner. Claim settlement includes time spent awaiting broker effects rather than
 reusing the batch's original timestamp.
 
-### SDK authority coverage (`crates/trellis/src/client`, `ts/packages/trellis`)
+### SDK authority and revocation mirror (`crates/trellis/src/client`, `ts/packages/trellis`)
 
 A bounded positive-only verified cache retains known cutoffs through missing
-mirror entries; forged updates cannot install or erase a cutoff. A cache miss is
-not evidence that unknown authority is valid. Owners use one shared
-snapshot/update stream. Live authority is unavailable until its initial snapshot
-has been verified and applied, and becomes unavailable if coverage is lost.
-Replacement streams use an epoch fence: completion of a retired watcher cannot
-restore or clear its successor's coverage. Observed revocations remain sticky;
-recovery never extends the signed authority's expiry. Verified authority is
-keyed by context digest; usability requires continuous revocation coverage, not
-continued attachment to the socket that first resolved it.
+mirror entries; forged updates cannot install or erase a cutoff. Owners use one
+shared snapshot/update stream. Verification of a peer uses the cutoffs observed
+so far: before the first snapshot, while a replacement stream catches up, and
+after a stream ends. Observed revocations remain sticky across every
+replacement; recovery never extends the signed authority's expiry. Verified
+authority is keyed by context digest, not by the socket that first resolved
+it.
 
 Optional-action availability is advisory: a missing live authority snapshot is
 unknown, not proof that the action is denied. Finite requests wait for verified
@@ -738,46 +761,26 @@ promoted. Reply signing reacquires a coherent current provider snapshot when
 asynchronous certificate resolution overlaps that promotion, within one
 configured signing deadline. This repeats only local signing preparation, never
 the handler or its application request. Current provider eligibility, issuer
-trust, expiry and shared revocation coverage remain required.
+trust, expiry and known revocations remain required.
 
-A healthy transport rollover stages its replacement mirror without stopping the
-current one. The replacement becomes the single authoritative mirror only after
-its authenticated snapshot and queued updates have been applied, including any
-already-received predecessor updates. Failed preparation leaves the predecessor
-authoritative; loss of the predecessor still fences application use until a
-complete replacement restores coverage. Superseded watcher completion cannot
-clear the promoted mirror's coverage.
-
-Rust retains the predecessor's carrier lease during this handover. A failed or
-superseded replacement can fall back only to that still-running, connected
-predecessor; stopping a predecessor prevents its restoration. Fresh work on the
-replacement stays fenced until its snapshot and exact publication are checked.
-Losing the actual covering carrier withdraws coverage without erasing cutoffs.
-
-While an already-received revocation update is being verified and applied,
-asynchronous reply verification waits for that owner's ordered update queue,
-then repeats its live authority checks. It does not discard a received reply
-merely because this bounded ingress fence is active, retransmit the request, or
-treat lost or superseded mirror coverage as usable. Fresh application
-acquisitions fenced during that update are notified when coverage returns, even
-without renewal or transport replacement; they recheck current authority within
-their original deadline rather than retransmitting work.
+A published transport generation serves application work at once. Its mirror
+starts in the background and follows each newly published generation; the
+TypeScript SDK keeps the predecessor's stream until the replacement has applied
+its snapshot. While an already-received revocation update is being verified and
+applied, TypeScript peer verification waits for that ordered update queue,
+which is local and bounded, then checks what is known. It never waits for a
+lost, lagging or replacement stream.
 
 One cancellable supervisor retries unexpected stream loss or a temporarily
-missing published carrier with bounded backoff and jitter. Private maintenance
-can acquire an admitted carrier while application use remains fenced; only a
-complete authenticated snapshot on the current generation restores usability. A
-retired session remains denied, but fresh ordinary admission may replace it
-under a still-valid credential. Explicit close or terminal credential failure
+missing published carrier with bounded backoff and jitter. A retired session
+remains denied, but fresh ordinary admission may replace it under a
+still-valid credential. Explicit close or terminal credential failure
 stops recovery. The broker refusing fresh admission is not terminal: NATS
 reports an unavailable Auth the same way as a refused credential, so a disabled
 deployment's service keeps retrying and resumes once the deployment is enabled
 again. Explicit native authority refresh and scheduled renewal share
-one custody worker and await authenticated publication and mirror coverage. If
-the own signed authority expires during mirror loss, restoring the snapshot
-alone does not restore application usability. The retained runtime key proves a
-fresh admission exchange on the surviving attachment; its verified authority is
-promoted before normal renewal resumes. Expired authority never authorizes work.
+one custody worker and await authenticated publication. Expired authority never
+authorizes work.
 
 Own refresh carries the original verified preparation, exact attempt identity,
 clock, and CONNECT companions through retention and promotion; digest equality
@@ -822,14 +825,14 @@ Accepted finite RPC results retain their authenticated opening rather than
 requiring that opening's context to remain live at delivery. Ordinary renewal
 and opening-context expiry do not reject a signed success or declared error
 received within the original request deadline. Current provider trust and
-authority, the exact request/response transcript, caller revocation coverage,
-known revocation, cancellation and logical shutdown remain enforced. This
+authority, the exact request/response transcript, known revocation,
+cancellation and logical shutdown remain enforced. This
 evidence cannot authorize a new request.
 
 Provider ingress preparation retains the verified private candidate authority,
 not the suspended predecessor. This applies to Live and Operation observation
 providers alike. Retention still verifies provider actions against the accepted
-catalog and current revocation coverage; the candidate cannot authorize frames
+catalog and known revocations; the candidate cannot authorize frames
 until checked transport publication commits it. Failed preparation retires the
 candidate and releases its verifier only after retained installation leases
 drain.
@@ -1012,10 +1015,11 @@ seed may remain on a read-only configuration mount. Auth writes a new
 content-addressed `<keyId>.key` file with `0600` permissions, and durably flushes
 the file and directory. Existing files are never overwritten and unsafe existing
 directories are rejected rather than chmodded. The old issuer signs the
-successor link. Retirement, successor activation, the signed chain link, its
-publication intent, and the idempotent result commit in one SQLite transaction.
-Every signer is selected from that transaction's current issuer, so concurrent
-issuance cannot mix issuer state and signing custody. Replays return the same
+successor link. The announced successor, the signed chain link, its
+publication intent, the scheduled activation, and the idempotent result commit
+in one SQLite transaction. Every signer is selected from that transaction's
+current issuer, so concurrent issuance cannot mix issuer state and signing
+custody. Replays return the same
 transition without generating another key; stale expected keys conflict. A
 precommit failure leaves the old issuer active, with at most an unused key file.
 After commit, startup selects the database-current key and fails closed if its
@@ -1026,32 +1030,51 @@ bootstrap seed, successor-key directory, and the independent OAuth storage key;
 Rotation does not change that OAuth encryption key, revoke existing logical
 sessions, or invalidate historical evidence signed by a merely retired issuer.
 Accepted API catalogs outlive the key that signed them, so the same transaction
-has the successor sign a copy of each current catalog; current-catalog selection
-and authority issuance use the current issuer's copy, and older copies remain
-only for verifying history. Revoking the retired key therefore leaves no current
+has the successor sign a copy of each current catalog, and activation signs one
+of any catalog accepted during the announcement; current-catalog selection and
+authority issuance use the current issuer's copy, and older copies remain only
+for verifying history. Revoking the retired key therefore leaves no current
 catalog unverifiable.
 
+A rotation announces its key before Auth signs with it. The transaction records
+the successor as announced, not current, with an activation time
+`auth.authorization.issuer_activation_delay_seconds` ahead (60 by default, 1 to
+3600), and the outbox publishes the chain link and the successor's catalog
+copies at once. Auth keeps signing with the current key until the activation
+time. Then the `issuer_activate` effect, which the effect worker's one-second
+tick picks up when it is due, makes the successor current and retires the
+predecessor, in one transaction. A participant, even one reading from a lagging
+NATS node, so has the link well before anything the successor signs reaches it.
+`Issuers.Rotate` answers with `activatesAt`, and `trellis issuers rotate`
+reports it. Discovery and the admission registry name the current signer and
+the sequence of the link that introduced it, not an announced successor. While
+a successor is announced, another rotation is refused, the current key cannot be
+revoked (Auth still signs with it), and the announced key cannot be revoked
+either; each refusal says when the switch happens. SDKs accept a link whose
+`activatedAt` is up to an hour ahead of their clock.
+
 A rotation does not interrupt sessions. The signed link's `previousRetiredAt`
-is one authority lifetime after the rotation, and SDKs accept the predecessor
+is one authority lifetime after the activation, and SDKs accept the predecessor
 for live use until then, so every authority it signed expires before its
 deadline. The commit also queues an issuer notice on `trellis.auth.issuers`,
-published after the chain link. Every session may subscribe to it. On the
+published after the activation. Every session may subscribe to it. On the
 notice a session renews at once, moving onto authority the successor signed.
 A renewal verifies Auth's answer against the key that signed it while that key
 is still live, not against the newest pin: a further rotation during the
 renewal moves the pin on, the answer stays valid through its overlap, and the
 notice renews again under the newest key.
 
-The successor signs from the moment the rotation commits, but a participant
-pinned to an earlier key can authenticate it only through the chain link in the
-material registry, which the outbox would otherwise publish some time later.
-Until then the participant must discard whatever the successor signed: an
-own-context or metadata answer then goes unverified until the request times
-out, and a revocation mirror that receives a cutoff the successor signed loses
-its coverage. So nothing the successor signed leaves Auth before its link is in
-the registry. The own-context and metadata responders, and the outbox before
-each batch, publish every link the registry may still lack, up to the newest
-rotation, and only then send their answer or material. Auth remembers which
+A participant pinned to an earlier key authenticates the successor only through
+the chain link in the material registry. It looks the link up when it first
+meets something the successor signed, within that message's own verification
+deadline, and accepts it once the link verifies; without a link the message is
+rejected. Announce-then-activate makes that lookup find the link: it was
+published an activation delay earlier, which also covers a participant that
+was disconnected for the whole announcement. As a backstop, nothing the
+successor signed leaves Auth before its link is in the registry. The
+own-context and metadata responders, and the outbox before each batch, publish
+every link the registry may still lack, up to the newest rotation, and only
+then send their answer or material. Auth remembers which
 links it has published, so each link is written once per Auth process and an
 answer otherwise costs only a database read of the newest rotation.
 

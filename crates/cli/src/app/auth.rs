@@ -2933,13 +2933,16 @@ async fn issuers_rotate_command(
         .await
         .into_diagnostic()?;
     output::emit(format, &response, |response| {
+        let activates_at = output::field(response, "activatesAt");
         output::success(format!(
-            "Signing with new issuer key {}",
-            output::strong(output::field(response, "keyId"))
+            "Announced new issuer key {}; Trellis signs with it from {}",
+            output::strong(output::field(response, "keyId")),
+            output::absolute_time(&activates_at),
         ));
         output::hint(format!(
-            "Issuer key {} is retired. Authority it signed works until it expires; \
-            `trellis issuers revoke {}` ends that authority now.",
+            "Issuer key {} signs until then, and retires at that time. Authority it signed \
+            works until it expires; after the switch, `trellis issuers revoke {}` ends that \
+            authority now.",
             args.current_key_id, args.current_key_id
         ));
         Ok(())

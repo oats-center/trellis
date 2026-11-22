@@ -364,7 +364,7 @@ export type TransportGenerationManagerOptions = {
    * reference equality to detect a concurrent promotion across awaits.
    */
   desiredPolicy(): TransportAuthorizationV1 | undefined;
-  /** Fresh application leases require current own authority and mirror coverage. */
+  /** Fresh application leases require current own authority. */
   applicationUsable?(): boolean;
   /** Capture immutable CONNECT material for the newest desired policy. */
   prepare(): Promise<TransportGenerationPrepared | undefined>;

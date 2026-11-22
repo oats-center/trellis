@@ -314,6 +314,13 @@ impl SqliteAuthorizationStore {
                             .map_err(|error| AuthError::Broker(error.to_string()))?;
                         Ok(())
                     }
+                    "issuer_activate" => {
+                        let sequence = effect.payload["sequence"]
+                            .as_u64()
+                            .ok_or(AuthError::Denied)?;
+                        let store = Arc::clone(self);
+                        blocking(move || store.activate_issuer(sequence, now)).await
+                    }
                     "providers_notice" => {
                         let api = effect.payload["apiId"].as_str().ok_or(AuthError::Denied)?;
                         let subject = trellis_protocol::derive_providers_notice_subject(api)

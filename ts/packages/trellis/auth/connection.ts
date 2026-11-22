@@ -485,6 +485,9 @@ export async function connectAdmitted(options: {
       mirrorRecovery?.abort();
       const value = candidates.get(generation.nc);
       if (!value) throw new Error("AdmissionUnavailable");
+      // The revocation mirror only informs verification of other parties'
+      // messages, so activation does not wait for its snapshot. A mirror that
+      // fails is recovered in the background.
       await owner.attach(
         generation.nc,
         registrySchema.parse(value.context.registry),
@@ -573,8 +576,8 @@ export async function connectAdmitted(options: {
   /** Revalidate current authority through the admitted runtime key without rotating OAuth custody or replacing an equal-policy attachment. */
   const refreshAuthority = (): Promise<void> => {
     if (renewalTask) {
-      // Coverage loss cancels the attempt, but broker-info requests can only be
-      // bounded by their transport timeout. Join settlement, not its cancelled
+      // Transport loss cancels the attempt, but broker-info requests can only
+      // be bounded by their transport timeout. Join settlement, not its cancelled
       // result, before the single renewal owner starts another exchange.
       if (renewalAbort?.signal.aborted) {
         return renewalTask
@@ -765,30 +768,28 @@ export async function connectAdmitted(options: {
       options.signal?.removeEventListener("abort", abort);
       unsubscribeOwner();
     });
-    const unsubscribeOwner = owner.subscribeChanges(() => {
+    const onOwnerChange = () => {
       if (manager.isClosed()) return;
-      if (owner.coverageLost) {
-        if (renewalTimer !== undefined) clearTimeout(renewalTimer);
-        renewalTimer = undefined;
-        renewalAbort?.abort();
+      if (owner.mirrorFailed) {
+        // Reattach the mirror in the background. Nothing waits for it:
+        // renewal and application work carry on with the revocations
+        // observed so far.
         if (mirrorRecovery) return;
         const controller = new AbortController();
         mirrorRecovery = controller;
         const signal = options.signal
           ? AbortSignal.any([options.signal, controller.signal])
           : controller.signal;
-        // Private maintenance may retain the physically published attachment
-        // while application authority stays fenced by the missing snapshot.
         void (async () => {
           let delay = 100;
-          while (!signal.aborted && !manager.isClosed() && owner.coverageLost) {
+          while (!signal.aborted && !manager.isClosed() && owner.mirrorFailed) {
             try {
               const lease = await manager.acquirePublishedAttachment();
               if (!lease) return; // ordinary transport recovery owns replacement
               try {
                 const value = candidates.get(lease.nc);
                 if (!value) return;
-                await owner.attach(
+                const { caughtUp } = await owner.attach(
                   lease.nc,
                   registrySchema.parse(value.context.registry),
                   {
@@ -797,26 +798,14 @@ export async function connectAdmitted(options: {
                     inboxPrefix,
                   },
                 );
+                await caughtUp;
               } finally {
                 lease.release();
               }
-              if (!signal.aborted) {
-                if (
-                  installedAuthority &&
-                  installedAuthority.expiresAt <= options.auth.currentIat()
-                ) {
-                  // Snapshot recovery is not authority renewal. Admission is
-                  // proved by the retained runtime key, not the expired context.
-                  await refreshAuthority();
-                } else {
-                  manager.authorizationPromoted();
-                  scheduleRenewal();
-                }
-              }
             } catch {
-              // Failed preparation never restores coverage or clears cutoffs.
+              // A failed mirror never clears observed cutoffs.
             }
-            if (!signal.aborted && owner.coverageLost) {
+            if (!signal.aborted && owner.mirrorFailed) {
               await new Promise<void>((resolve) => {
                 const done = () => {
                   clearTimeout(timer);
@@ -845,11 +834,14 @@ export async function connectAdmitted(options: {
           /* replacement already owns recovery */
         }
       } else {
-        // An ordinary ordered mirror update can restore coverage without
-        // renewal or transport adoption. Wake acquisitions fenced at ingress.
+        // Promotion, retirement or a rotation can change what own authority
+        // permits without a transport change.
         manager.applicationUsabilityChanged();
       }
-    });
+    };
+    const unsubscribeOwner = owner.subscribeChanges(onOwnerChange);
+    // A mirror that already failed while connecting is recovered now.
+    if (owner.mirrorFailed) onOwnerChange();
     return {
       manager,
       owner,

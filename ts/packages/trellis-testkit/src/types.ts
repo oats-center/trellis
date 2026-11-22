@@ -11,6 +11,11 @@ export type TrellisControlPlaneAuthorization = {
    * every process of a test runtime shares one clock.
    */
   allowedClockSkewSeconds: number;
+  /**
+   * Seconds between announcing a rotated-in issuer key and signing with it.
+   * Left out, the server's default applies.
+   */
+  issuerActivationDelaySeconds: number;
 };
 
 /** Generated participant descriptor accepted by Trellis test admin automation. */

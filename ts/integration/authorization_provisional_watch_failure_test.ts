@@ -1,4 +1,4 @@
-/** Failed candidate mirrors cannot withdraw a healthy predecessor or disable revocation. */
+/** A mirror that fails on a new generation neither interrupts Live delivery nor disables revocation. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deadline } from "@nats-io/nats-core";
@@ -13,7 +13,7 @@ import {
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-test("failed provisional mirror preserves live delivery and real revocation enforcement", async () => {
+test("a failed mirror on a new generation preserves live delivery and real revocation enforcement", async () => {
   await withTrellisRuntime(
     async (runtime) => {
       const targetIdentity = await runtime.registerService({
@@ -118,7 +118,7 @@ test("failed provisional mirror preserves live delivery and real revocation enfo
         const candidate = await deadline(hold.held, 90_000);
         const consumer = candidate.requestSubject.slice(infoPrefix.length);
         assert(consumer);
-        // Delete only this ephemeral candidate watcher, not committed application
+        // Delete only this ephemeral mirror consumer, not committed application
         // infrastructure. Its real INFO reply stays withheld during the failure.
         assert(
           await manager.consumers.delete(
@@ -126,7 +126,6 @@ test("failed provisional mirror preserves live delivery and real revocation enfo
             consumer,
           ),
         );
-        await deadline(gate.waitForClose(candidate.connectionId), 15_000);
         await hold.release();
         hold = undefined;
         sendAfterFailure.resolve();

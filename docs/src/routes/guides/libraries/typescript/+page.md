@@ -206,10 +206,10 @@ removed bindings remain invalid. Jobs and durable event intake keep bounded
 receiving capacity, and each delivery retains its receiving connection through
 disposition.
 
-A connected socket is not proof of usable application authorization. Fresh work
-cannot proceed while own revocation coverage is unavailable. Bounded
-acquisitions wait within their budget; immediate acquisitions report
-unavailability. Verified coverage recovery wakes waiting calls without requiring
-socket churn. Successful make-before-break watch migration preserves cached
-authority and existing authorization leases. Actual revocation still fails
-closed.
+A connected socket is not proof of usable application authorization: fresh work
+needs current, unexpired own authority. The revocation mirror never holds up
+work. Requests on the client's own session are sent whether or not the mirror is
+current, and peers are checked against the revocations observed so far while the
+mirror catches up in the background. Auth and the broker enforce revocation of
+the client's own session; an observed revocation of a peer stays in force across
+reconnects.

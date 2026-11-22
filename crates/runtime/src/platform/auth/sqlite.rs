@@ -119,6 +119,8 @@ pub(crate) struct AuthSettings {
     pub(crate) authority_lifetime_seconds: u32,
     pub(crate) clock_skew_seconds: u32,
     pub(crate) oauth_admission_lifetime_seconds: u32,
+    /// Seconds a rotated-in issuer key is announced before it signs.
+    pub(crate) issuer_activation_delay_seconds: u32,
     pub(crate) login_lifetime_seconds: u32,
     pub(crate) enforcement_page_size: usize,
 }
@@ -515,6 +517,12 @@ impl SqliteAuthorizationStore {
                         "OAuth admission lifetime exceeds supported range".into(),
                     )
                 })?,
+            issuer_activation_delay_seconds: authorization
+                .issuer_activation_delay_seconds
+                .try_into()
+                .map_err(|_| {
+                    RuntimeError::Platform("issuer activation delay exceeds supported range".into())
+                })?,
             login_lifetime_seconds: 86_400,
             enforcement_page_size: 128,
         };
@@ -652,9 +660,10 @@ impl SqliteAuthorizationStore {
             FROM auth_authorization_issuers \
             WHERE key_id=?1 AND public_key=?2 \
             AND is_current=1 AND state='active' \
-            AND revoked_at IS NULL), coalesce((SELECT max(sequence) \
+            AND revoked_at IS NULL), coalesce((SELECT sequence \
             FROM auth_issuer_rotations \
-            WHERE trellis_instance_id=?3 \
+            WHERE next_key_id=?1 \
+            AND trellis_instance_id=?3 \
             AND audience_nats_account=?4),0)",
             params![
                 issuer.key_id,

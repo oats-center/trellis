@@ -1,4 +1,4 @@
-/** Shared retirement-coverage loss fences accepted work while replacement replay is stalled. */
+/** Losing the revocation mirror during a handover leaves accepted Live work running. */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
@@ -18,7 +18,7 @@ import { spawnTracked } from "./_support/process.ts";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 import { type Attributes, decodeMetrics } from "./_support/otlp.ts";
 
-test("Rust terminates accepted work on shared coverage loss before replacement replay finishes", async () => {
+test("Rust keeps accepted Live work when its revocation mirror is lost before the replacement catches up", async () => {
   await withTrellisRuntime(
     async (runtime) => {
       const owner = ulid();
@@ -226,26 +226,35 @@ test("Rust terminates accepted work on shared coverage loss before replacement r
                   pull,
                   "identify the mirror from its actual owner socket",
                 );
+                // Rust replaces its mirror when a new generation is
+                // published, so the original's consumer may already be gone.
+                await js.consumers
+                  .delete(stream, pull.subject.slice(prefix.length))
+                  .catch((error: unknown) => {
+                    if (
+                      !(error instanceof Error) ||
+                      error.name !== "ConsumerNotFoundError"
+                    )
+                      throw error;
+                  });
+                // Fill the stream's consumer limit so no mirror can return.
                 const count = (await js.streams.info(stream)).state
                   .consumer_count;
-                const constrained = {
-                  ...settings,
-                  max_consumers: count,
-                };
+                const constrained = { ...settings, max_consumers: count + 1 };
                 await js.streams.update(stream, constrained);
-                await js.consumers.delete(
-                  stream,
-                  pull.subject.slice(prefix.length),
-                );
                 const blocker = await js.consumers.add(stream, {
                   name: ulid(),
                   ack_policy: AckPolicy.None,
                 });
-                await runtime.waitFor(
-                  () =>
-                    total("trellis.live.ends", "authorization_lost") ===
-                      beforeLoss + 1 && total("trellis.live.sessions") === 0,
-                  { timeoutMs: 8_000 },
+                // With no mirror at all, the provider keeps serving the
+                // observation on the revocations it has observed.
+                const mark = latest.index;
+                await runtime.waitFor(() => latest.index >= mark + 3n, {
+                  timeoutMs: 8_000,
+                });
+                assert.equal(
+                  total("trellis.live.ends", "authorization_lost"),
+                  beforeLoss,
                 );
                 assert.equal(
                   gate.connection(candidate.connectionId)?.closed,

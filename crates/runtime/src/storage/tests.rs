@@ -78,6 +78,7 @@ fn runtime_config() -> RuntimeConfig {
                 context_lifetime_seconds: 300,
                 allowed_clock_skew_seconds: 30,
                 oauth_admission_lifetime_seconds: 300,
+                issuer_activation_delay_seconds: 60,
             }),
         }),
         platform: None,

@@ -151,6 +151,19 @@ fn issuer_rotation_replay_does_not_rotate_again_and_stale_requests_do_not_change
         serde_json::to_value(&rotation).unwrap(),
         serde_json::to_value(&replay).unwrap()
     );
+    // While the successor is announced, Auth refuses another rotation.
+    let announced = trellis_runtime_apis::types::AuthIssuerRotateRequest {
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
+        ..input.clone()
+    };
+    assert!(matches!(
+        f.store
+            .rotate_issuer(&mutation(&f.admin, &announced), &announced, NOW + 1),
+        Err(AuthError::Invalid(message)) if message.contains("is already announced")
+    ));
+    f.store
+        .activate_issuer(rotation.sequence.get(), rotation.activated_at)
+        .unwrap();
     assert!(matches!(
         f.store
             .rotate_issuer(&mutation(&f.admin, &input), &input, NOW + 1),

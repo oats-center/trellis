@@ -636,9 +636,12 @@ pub(super) fn admission_registry(
     connection: &crate::platform::auth::sqlite::Connection,
     issuer: &trellis_protocol::AuthorityIssuerKey,
 ) -> Result<Value, AuthError> {
+    // The sequence of the link that introduced the current signer, not of an
+    // announced successor that does not sign yet.
     let sequence: u64 = connection.query_row(
-        "SELECT coalesce(max(sequence),0) FROM auth_issuer_rotations",
-        [],
+        "SELECT coalesce((SELECT sequence FROM auth_issuer_rotations \
+        WHERE next_key_id=?1),0)",
+        [&issuer.key_id],
         |row| row.get(0),
     )?;
     Ok(json!({

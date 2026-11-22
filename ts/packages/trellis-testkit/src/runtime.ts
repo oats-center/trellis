@@ -931,7 +931,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         `system_credentials = "nats/system.creds"\noperator_signing_key = "nats/trellis-operator.nk"`,
         // Every process of a test runtime shares one clock, so tolerating
         // installation-wide skew only delays what expiry-driven tests observe.
-        `\n[auth.authorization]\ncontext_lifetime_seconds = ${options.authorization?.contextLifetimeSeconds ?? 300}\nallowed_clock_skew_seconds = ${options.authorization?.allowedClockSkewSeconds ?? 2}\noauth_admission_lifetime_seconds = ${options.authorization?.oauthAdmissionLifetimeSeconds ?? 300}`,
+        `\n[auth.authorization]\ncontext_lifetime_seconds = ${options.authorization?.contextLifetimeSeconds ?? 300}\nallowed_clock_skew_seconds = ${options.authorization?.allowedClockSkewSeconds ?? 2}\noauth_admission_lifetime_seconds = ${options.authorization?.oauthAdmissionLifetimeSeconds ?? 300}${options.authorization?.issuerActivationDelaySeconds === undefined ? "" : `\nissuer_activation_delay_seconds = ${options.authorization.issuerActivationDelaySeconds}`}`,
         `\n[client]`,
         ...(options.websocketOnly ? ["nats_servers = []"] : []),
         ...(relayed ? [] : [`ws_nats_servers = [${toml(websocketUrl)}]`]),

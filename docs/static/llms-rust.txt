@@ -208,7 +208,7 @@ Native OAuth renewal leases the current maintenance transport after HTTP
 refresh and retains it through signer lookup and verified authority promotion;
 replacing the physical NATS generation does not pin renewal to the original
 socket. Explicit native authority refresh uses the scheduled renewal worker and
-awaits authenticated publication and coverage.
+awaits authenticated publication.
 
 ### Devices
 

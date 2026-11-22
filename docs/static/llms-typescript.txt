@@ -109,8 +109,8 @@ Missing live authority is not optional-capability denial. Requests await
 verified authority before publication within their original deadline and
 cancellation; current authority that excludes the action still denies it.
 Requests are never replayed. Signed reply verification waits for
-already-received ordered revocation updates before its live checks; it does not
-retransmit the request or bypass lost coverage.
+already-received ordered revocation updates before its live checks, never for a
+lost or lagging mirror; it does not retransmit the request.
 
 When the broker is lost, an idle client retries it after 1 s, 2 s, 4 s, then
 every 8 s. A request waiting for the transport or for verified authority makes

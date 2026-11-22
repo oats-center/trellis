@@ -375,17 +375,23 @@ Installation identity and the independently provisioned OAuth storage key
 survive restarts and issuer rotation. `Issuers.Rotate` requires
 `trellis.auth.v1:platform.manage`, the expected current key ID, and an
 idempotency key. Auth generates and durably flushes a private successor key on
-its own host, then atomically commits the old-key-signed chain link, activation,
-publication intent, and replay result; replays do not rotate again, and private
-keys never cross the RPC. SDKs verify the successor chain from pinned trust.
+its own host, then atomically commits the old-key-signed chain link, the
+announced successor, publication intent, and replay result; replays do not
+rotate again, and private keys never cross the RPC. The link is published at
+once, but Auth keeps signing with the old key until the activation delay
+(`auth.authorization.issuer_activation_delay_seconds`, 60 by default) has
+passed; the reply's `activatesAt` says when it switches. SDKs verify the
+successor chain from pinned trust, looking up a missing link when they first
+meet the new key.
 Back up the issuer seed and the Auth database's sibling
 `<database-stem>.issuer-keys` directory (`platform.issuer-keys` by default) with
 the database and the OAuth storage key. Restart loads the database-current key
 and fails closed on missing custody.
 
 A rotation interrupts no session: SDKs accept the old key for live use for one
-authority lifetime, and every session renews onto the new key when Auth
-announces the rotation. `Issuers.Revoke` is for a compromised key. It ends
+authority lifetime after the switch, and every session renews onto the new key
+when Auth announces the switch. Until then another rotation, or revoking either
+key, is refused with the switch time. `Issuers.Revoke` is for a compromised key. It ends
 that overlap at once and retires every user session holding authority the key
 signed. A service or device session that already renewed onto the new key
 keeps running, because it signs in with its own identity key. Revoke an old key
@@ -822,18 +828,20 @@ recreates subscriptions on it, and then routes requests. A request made during
 the gap, or one whose connection is lost while it is being signed, waits for
 it within its deadline and is never sent after the deadline.
 
-Live authority requires a verified initial revocation snapshot and continuing
-coverage; epoch fencing prevents old watchers from changing successor coverage.
-Fresh application IO cannot proceed while own revocation coverage is
-unavailable: bounded acquisitions wait within their budget, immediate ones report
-unavailability. Mirror rollover stages the replacement without withdrawing
-healthy predecessor coverage, and replacement IO stays fenced until authenticated
-replay and checked handover. On mirror failure, one cancellable private
-supervisor restores coverage on the surviving attachment while application IO
-remains fenced; it neither clears known revocations nor retransmits application
-requests. If authority expires during coverage loss, private admission obtains
-and verifies fresh authority before application use resumes; snapshot recovery
-alone never extends expired authority. Jobs and durable event intake keep
+Revocation is eventually consistent. Each participant's revocation mirror is
+used only to check other parties (a service checking a caller, a client checking
+a responder) and never holds up work: while it is down or catching up after a
+reconnect, own requests are sent and peers are checked against the revocations
+observed so far. A revocation takes effect at a participant when its mirror
+receives it, normally well under a second after Auth publishes it; Auth and the
+broker enforce it at once (refused admission and renewal, kicked connections).
+A revoked session cannot renew, so its authority stops verifying everywhere
+within one authority lifetime (300 seconds by default). Observed revocations
+stay in force across reconnects. Fresh application IO needs current, unexpired
+own authority. A publish that waited for transport while the session was
+renewed or replaced fails instead of sending the event, since verifiers refuse
+an event whose time precedes the authority that signs it; prepare the event
+again. Jobs and durable event intake keep
 bounded capacity across generations, with each delivery retaining its receiving
 connection through disposition.
 
@@ -1769,8 +1777,8 @@ Missing live authority is not optional-capability denial. Requests await
 verified authority before publication within their original deadline and
 cancellation; current authority that excludes the action still denies it.
 Requests are never replayed. Signed reply verification waits for
-already-received ordered revocation updates before its live checks; it does not
-retransmit the request or bypass lost coverage.
+already-received ordered revocation updates before its live checks, never for a
+lost or lagging mirror; it does not retransmit the request.
 
 When the broker is lost, an idle client retries it after 1 s, 2 s, 4 s, then
 every 8 s. A request waiting for the transport or for verified authority makes
@@ -2423,7 +2431,7 @@ Native OAuth renewal leases the current maintenance transport after HTTP
 refresh and retains it through signer lookup and verified authority promotion;
 replacing the physical NATS generation does not pin renewal to the original
 socket. Explicit native authority refresh uses the scheduled renewal worker and
-awaits authenticated publication and coverage.
+awaits authenticated publication.
 
 #### Devices
 
@@ -2749,9 +2757,8 @@ Keep this logical app owner across automatic transport handoffs. Equal-policy
 renewal keeps a healthy socket; newly approved authority is adopted on a ready
 successor without a manual refresh method or upgrade flag. Do not recreate the
 client or add an effect that reconnects it on each authorization refresh. Safe
-accepted work continues on its receiving connection. While own authorization
-coverage is unavailable, fresh calls either wait within their acquisition budget
-or report unavailability.
+accepted work continues on its receiving connection. The revocation mirror never
+holds up calls; it catches up in the background.
 
 Use Svelte context, not module-global mutable state, for app-scoped Trellis
 clients. `@oatscenter/trellis-svelte` owns the app context created by

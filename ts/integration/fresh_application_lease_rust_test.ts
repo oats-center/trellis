@@ -1,289 +1,19 @@
-/** Fresh application work must not use a live carrier with lost own coverage. */
+/** Fresh application work started during a transport loss waits for the replacement and is sent once. */
 import assert from "node:assert/strict";
 import { Readable, Writable } from "node:stream";
 import { TextDecoderStream } from "node:stream/web";
 import { test } from "node:test";
-import { AckPolicy, jetstreamManager } from "@nats-io/jetstream";
 import { deadline } from "@nats-io/nats-core";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Result } from "@oatscenter/trellis";
-import { ulid } from "ulid";
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
   apis,
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
-import { readRuntimeBrokerInventory } from "./_support/broker_inventory.ts";
 import { spawnTracked } from "./_support/process.ts";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
-test("Rust fresh Jobs leases reject suspended own coverage and resume on the same carrier", async () => {
-  await withTrellisRuntime(
-    async (runtime) => {
-      const contract =
-        participants.TransportGrowthOperationProvider.participant;
-      const deployment = "fresh-lease-rust";
-      await runtime.contracts.apply({ deployment, contract });
-      const instance = await runtime.services.createInstance({
-        deployment,
-        name: deployment,
-        contract,
-      });
-      const nats = await connect({
-        servers: runtime.natsUrl,
-        authenticator: credsAuthenticator(
-          await runtime.natsCredentials("trellis"),
-        ),
-      });
-      const js = await jetstreamManager(nats);
-      const gate = runtime.nativeTransportGate();
-      const argv = rustFixtureArgv("transport_growth_operation");
-      const child = spawnTracked(argv[0], argv.slice(1), {
-        env: {
-          ...process.env,
-          TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
-          TRELLIS_IDENTITY_SEED: instance.seed,
-          TRELLIS_TEST_HEALTH_HEARTBEAT_MS: "2000",
-        },
-      });
-      child.stderr.pipe(process.stderr);
-      const stdin = Writable.toWeb(child.stdin).getWriter();
-      let exited = false;
-      const status = child.exited.then((value) => {
-        exited = true;
-        return value;
-      });
-      const lines: string[] = [];
-      const drain = (async () => {
-        let pending = "";
-        for await (const chunk of Readable.toWeb(child.stdout).pipeThrough(
-          new TextDecoderStream(),
-        )) {
-          const complete = (pending + chunk).split("\n");
-          pending = complete.pop() ?? "";
-          lines.push(...complete.map((line) => line.trim()));
-        }
-      })();
-      const send = async (command: string) => {
-        await stdin.write(new TextEncoder().encode(`${command}\n`));
-      };
-      const marker = async (prefix: string, after = 0) =>
-        await runtime
-          .waitFor(
-            () => {
-              const found = lines
-                .slice(after)
-                .find((line) => line.startsWith(prefix));
-              if (found) return found;
-              if (exited)
-                throw new Error(`fixture exited: ${lines.join("\n")}`);
-            },
-            { timeoutMs: 15_000, intervalMs: 20 },
-          )
-          .catch((cause) => {
-            throw new Error(
-              `missing ${prefix}; fixture output:\n${lines.join("\n")}`,
-              {
-                cause,
-              },
-            );
-          });
-      const stream = "KV_TRELLIS_AUTH_REVOCATIONS";
-      const settings = (await js.streams.info(stream)).config;
-      let blocker: string | undefined;
-      try {
-        await marker("OPERATION_PROVIDER_READY");
-        await marker("JOB_STARTED 1 initial");
-        const prefix = `$JS.API.CONSUMER.MSG.NEXT.${stream}.`;
-        const carriers = gate
-          .connections()
-          .filter((connection) =>
-            connection.outboundContexts.some(
-              (message) =>
-                message.subject.startsWith("trellis.jobs.") &&
-                message.subject.endsWith(".created"),
-            ),
-          );
-        assert.equal(
-          carriers.length,
-          1,
-          JSON.stringify(
-            gate.connections().map((connection) => ({
-              id: connection.id,
-              closed: connection.closed,
-              subjects: connection.outboundContexts.map(
-                (message) => message.subject,
-              ),
-            })),
-          ),
-        );
-        const carrier = carriers[0];
-        const pull = carrier.outboundContexts.findLast((message) =>
-          message.subject.startsWith(prefix),
-        );
-        assert(pull, "identify the shared mirror on the actual Jobs carrier");
-        const consumer = await js.consumers.info(
-          stream,
-          pull.subject.slice(prefix.length),
-        );
-        const heartbeats = () =>
-          gate
-            .connection(carrier.id)!
-            .outboundContexts.filter(
-              (out) =>
-                out.subject ===
-                apis.health.API.actions["event:Heartbeat"].subject,
-            );
-        assert(
-          heartbeats().length > 0,
-          "the ordinary service heartbeat really publishes before coverage loss",
-        );
-        // Prove the actual health publisher—not the separate Jobs worker-presence
-        // publisher—is running at its short, test-configured interval.
-        const initialHeartbeats = heartbeats().length;
-        await runtime.waitFor(
-          () => (heartbeats().length > initialHeartbeats ? true : undefined),
-          { timeoutMs: 8_000, intervalMs: 50 },
-        );
-        // A pull consumer whose connection has closed holds no waiting request
-        // and expires after its inactivity threshold. Capping capacity while one
-        // remains would free a slot mid-test for the suspended mirror to take.
-        await runtime.waitFor(
-          async () => {
-            for await (const info of js.consumers.list(stream))
-              if (
-                !info.config.durable_name &&
-                !info.config.deliver_subject &&
-                info.num_waiting === 0
-              )
-                return undefined;
-            return true;
-          },
-          { timeoutMs: 15_000, intervalMs: 100 },
-        );
-        // Exhaust real ephemeral-consumer capacity without changing retained data.
-        const constrained = {
-          ...settings,
-          max_consumers: (await js.streams.info(stream)).state.consumer_count,
-        };
-        await js.streams.update(stream, constrained);
-        assert(await js.consumers.delete(stream, consumer.name));
-        blocker = (
-          await js.consumers.add(stream, {
-            durable_name: ulid(),
-            ack_policy: AckPolicy.None,
-          })
-        ).name;
-        await runtime.waitFor(
-          async () => {
-            const before = lines.length;
-            await send("AUTH_STATUS");
-            return (await marker("AUTH_USABLE", before)) === "AUTH_USABLE false"
-              ? true
-              : undefined;
-          },
-          { timeoutMs: 15_000, intervalMs: 50 },
-        );
-        assert(!gate.connection(carrier.id)!.closed);
-        const before = lines.length;
-        const outbound = gate.connection(carrier.id)!.outboundContexts.length;
-        await send("JOB_STATUS initial");
-        const query = await marker("JOB_STATUS", before);
-        assert(query.startsWith("JOB_STATUS_ERROR"), query);
-        await send("JOB_SUBMIT suspended");
-        const submit = await marker("JOB_SUBMIT_ERROR", before);
-        assert(submit.startsWith("JOB_SUBMIT_ERROR"), submit);
-        assert.deepEqual(
-          gate
-            .connection(carrier.id)!
-            .outboundContexts.slice(outbound)
-            .filter(
-              (out) =>
-                out.subject.startsWith(
-                  `rpc.v1.${Buffer.from("trellis.jobs@v1").toString("base64url")}.`,
-                ) ||
-                out.subject.startsWith("trellis.work.") ||
-                (out.subject.startsWith("trellis.jobs.") &&
-                  !out.subject.startsWith("trellis.jobs.workers.")),
-            ).length,
-          0,
-          `rejected fresh query and submit must perform no Jobs broker IO (registry maintenance and retained ACKs remain permitted): ${JSON.stringify(
-            gate.connection(carrier.id)!.outboundContexts.slice(outbound),
-          )}`,
-        );
-        const heartbeatCount = heartbeats().length;
-        const suspendedAt = Date.now();
-        await send("JOB_RELEASE initial");
-        await marker("JOB_DONE 1 initial");
-        // Keep the real 2s health heartbeat unavailable across multiple
-        // due intervals while the same native process stays responsive.
-        await runtime.waitFor(
-          async () => {
-            const after = lines.length;
-            await send("AUTH_STATUS");
-            assert.deepEqual(
-              await marker("AUTH_USABLE", after),
-              "AUTH_USABLE false",
-            );
-            assert.deepEqual(
-              heartbeats().length,
-              heartbeatCount,
-              "unsigned fresh heartbeat must not publish while own coverage is suspended",
-            );
-            return Date.now() - suspendedAt >= 5_000 ? true : undefined;
-          },
-          { timeoutMs: 12_000, intervalMs: 250 },
-        );
-        await js.consumers.delete(stream, blocker);
-        blocker = undefined;
-        await js.streams.update(stream, settings);
-        await runtime.waitFor(async () => {
-          const after = lines.length;
-          await send("AUTH_STATUS");
-          return (await marker("AUTH_USABLE", after)) === "AUTH_USABLE true"
-            ? true
-            : undefined;
-        });
-        const after = lines.length;
-        await send("JOB_STATUS initial");
-        assert(
-          (await marker("JOB_STATUS", after)).startsWith(
-            "JOB_STATUS initial Completed 1",
-          ),
-        );
-        await send("JOB_SUBMIT resumed");
-        await marker("JOB_SUBMITTED resumed", after);
-        await marker("JOB_STARTED 2 resumed", after);
-        assert.equal(gate.connection(carrier.id)?.closed, false);
-        await runtime.waitFor(
-          () => (heartbeats().length > heartbeatCount ? true : undefined),
-          { timeoutMs: 15_000, intervalMs: 50 },
-        );
-        await send("EXIT");
-        await marker("OPERATION_PROVIDER_DONE");
-        await runtime.waitFor(() => (exited ? true : undefined));
-        assert((await status).code === 0);
-      } finally {
-        if (blocker) await js.consumers.delete(stream, blocker);
-        await js.streams.update(stream, settings);
-        await stdin.close().catch(() => undefined);
-        if (!exited && child.pid !== undefined) {
-          try {
-            child.kill("SIGKILL");
-          } catch {
-            /* already exited */
-          }
-        }
-        await Promise.allSettled([status, drain]);
-        await nats.close();
-      }
-    },
-    { interruptibleNativeProxy: true },
-  );
-});
-
-test("Rust fresh RPC is fenced during loss and resumes only after broker-ready intake publication", async () => {
+test("Rust fresh RPC started during loss is sent once on the replacement while its provider intake is still attaching", async () => {
   await withTrellisRuntime(
     async (runtime) => {
       const contract = participants.TransportGrowthSubject.participant;
@@ -404,26 +134,19 @@ test("Rust fresh RPC is fenced during loss and resumes only after broker-ready i
             stage.subs.some((sub) => sub.subject.endsWith(".Watch")),
         );
         const before = stage.outboundContexts.length;
+        // The replacement is published, but its provider intake's broker
+        // readiness probe is withheld. Outgoing calls do not depend on that
+        // intake: a call started now goes out on the replacement, once.
         await send("START_ADVANCE");
         await marker("TRANSPORT_GROWTH_ADVANCE_STARTED");
-        await marker("TRANSPORT_GROWTH_ADVANCE_ERROR");
-        await send("PING");
-        await marker("TRANSPORT_GROWTH_PONG");
-        // Independent real broker round trips while the exact readiness remains
-        // withheld. A fresh app call must not use the private parked attachment.
-        await readRuntimeBrokerInventory(runtime);
-        await readRuntimeBrokerInventory(runtime);
-        assert.deepEqual(
-          advances,
-          1,
-          "the target must not receive the fresh call before stage publication",
-        );
+        await marker("TRANSPORT_GROWTH_ADVANCE_OK", 2);
+        assert.deepEqual(advances, 2);
         assert.deepEqual(
           gate
             .connection(stageId)!
             .outboundContexts.slice(before)
             .filter((out) => out.subject.endsWith(".Advance")).length,
-          0,
+          1,
         );
         await readiness.release();
         await runtime.waitFor(async () => {
@@ -435,14 +158,14 @@ test("Rust fresh RPC is fenced during loss and resumes only after broker-ready i
           return lines.slice(before).includes("AUTH_USABLE true");
         });
         await send("ADVANCE");
-        await marker("TRANSPORT_GROWTH_ADVANCE_OK", 2);
-        assert.deepEqual(advances, 2);
+        await marker("TRANSPORT_GROWTH_ADVANCE_OK", 3);
+        assert.deepEqual(advances, 3);
         assert.deepEqual(
           gate
             .connection(stageId)!
             .outboundContexts.slice(before)
             .filter((out) => out.subject.endsWith(".Advance")).length,
-          1,
+          2,
         );
         await send("EXIT");
         await marker("TRANSPORT_GROWTH_DONE");

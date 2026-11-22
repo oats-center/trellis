@@ -1041,30 +1041,40 @@ async fn generated_values_starting_with_a_hyphen_are_arguments() {
 /// a second try.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn issuer_keys_rotate_and_revoke_from_the_cli() {
-    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
-    let cli = Cli::login(&mut runtime, None).await;
-    let metadata: Value = runtime
-        .https_client_builder()
-        .build()
-        .unwrap()
-        .get(format!(
-            "{}/.well-known/oauth-authorization-server",
-            runtime.trellis_url().trim_end_matches('/')
-        ))
-        .send()
-        .await
-        .unwrap()
-        .json()
+    // Long enough for a revoke command, which signs in afresh, to run while
+    // the new key is announced.
+    let mut runtime = TrellisTestRuntime::builder()
+        .issuer_activation_delay(std::time::Duration::from_secs(10))
+        .start()
         .await
         .unwrap();
-    let first = metadata["trellis"]["issuers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|key| key["state"] == "active")
-        .and_then(|key| key["keyId"].as_str())
-        .expect("one key signs")
-        .to_owned();
+    let cli = Cli::login(&mut runtime, None).await;
+    // Discovery names the key Trellis signs with.
+    let signing = || async {
+        let metadata: Value = runtime
+            .https_client_builder()
+            .build()
+            .unwrap()
+            .get(format!(
+                "{}/.well-known/oauth-authorization-server",
+                runtime.trellis_url().trim_end_matches('/')
+            ))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        metadata["trellis"]["issuers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|key| key["state"] == "active")
+            .and_then(|key| key["keyId"].as_str())
+            .expect("one key signs")
+            .to_owned()
+    };
+    let first = signing().await;
 
     let refused = cli.script(&["issuers", "revoke", &first]).await;
     assert!(
@@ -1082,6 +1092,25 @@ async fn issuer_keys_rotate_and_revoke_from_the_cli() {
     let rotated = cli.json(&["issuers", "rotate", &first]).await;
     let second = rotated["keyId"].as_str().unwrap().to_owned();
     assert_ne!(second, first);
+    assert!(rotated["activatesAt"].is_string());
+    // Until the new key signs, the current one cannot be revoked; the refusal
+    // says when Trellis switches.
+    let early = cli.script(&["issuers", "revoke", &first]).await;
+    assert!(
+        refused_with(
+            &early,
+            &format!("Trellis switches to issuer key {second} at")
+        ),
+        "{}",
+        String::from_utf8_lossy(&early.stderr)
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while signing().await != second {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("Trellis switches to the new key after the activation delay");
     // Rotating from a key that is no longer current names the one that is.
     let stale = cli.script(&["issuers", "rotate", &first]).await;
     assert!(

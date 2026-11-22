@@ -181,7 +181,10 @@ pub(super) fn rotate_issuer(
         idempotency_key: trellis_protocol::model::Ulid::generate().into(),
         extra: Default::default(),
     };
-    store.rotate_issuer(&mutation(actor, &input), &input, now)
+    let rotation = store.rotate_issuer(&mutation(actor, &input), &input, now)?;
+    // What follows a rotation in these tests starts once its key signs.
+    store.activate_issuer(rotation.sequence.get(), rotation.activated_at)?;
+    Ok(rotation)
 }
 
 /// Create an ordinary passwordless user through the production account aggregate.
@@ -332,6 +335,8 @@ pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuth
             authority_lifetime_seconds: 60,
             clock_skew_seconds: 5,
             oauth_admission_lifetime_seconds: 300,
+            // Component tests drive the activation effect themselves.
+            issuer_activation_delay_seconds: 0,
             login_lifetime_seconds: 86400,
             enforcement_page_size: 2,
         },

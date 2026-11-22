@@ -813,24 +813,24 @@ struct AuthorizationProviderHandle {
     task: JoinHandle<()>,
 }
 
-/// Attach the connected NATS authorization registry to this client's provider
-/// cache and wait for its complete snapshot before returning.
-async fn attach_authorization_provider(
+/// Keep this client's revocation mirror running on the published attachment.
+///
+/// The mirror only informs verification of other parties' messages, so
+/// nothing waits for it: not connecting, not sending, not verifying. It
+/// follows each newly published attachment and retries with bounded backoff
+/// and jitter after it ends, and every revocation it observed stays known
+/// across those replacements.
+fn attach_authorization_provider(
     authorization_contexts: Arc<AuthorizationContextCache>,
     generations: crate::client::TransportGenerationManager,
-) -> Result<AuthorizationProviderHandle, TrellisClientError> {
+) -> AuthorizationProviderHandle {
     let provider = authorization_contexts.owner.clone();
     let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(());
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
     let watcher = provider.clone();
     let task = tokio::spawn(async move {
         let mut publications = generations.subscribe_publication();
         let mut own_changes = watcher.subscribe_changes();
-        let mut initial_ready = Some(ready_tx);
         let mut retry_ms = 100u64;
-        let mut active: Option<
-            tokio_util::task::AbortOnDropHandle<Result<(), TrellisClientError>>,
-        > = None;
         loop {
             if generations.terminal().is_some() {
                 return;
@@ -847,7 +847,6 @@ async fn attach_authorization_provider(
                     }
                 ))
             ) {
-                authorization_contexts.set_transport_ready(false);
                 tokio::select! {
                     biased;
                     _ = stop_rx.changed() => return,
@@ -864,7 +863,7 @@ async fn attach_authorization_provider(
                 }
             }
             // Consume publication changes before acquiring, never after it: a
-            // change during acquisition must still cancel the old mirror.
+            // change during acquisition must still replace the old mirror.
             publications.borrow_and_update();
             let result = async {
                 let lease = match generations.acquire_published() {
@@ -877,17 +876,17 @@ async fn attach_authorization_provider(
                         return Err(error);
                     }
                 };
-                let generation_id = lease.generation_id();
                 let (snapshot_ready, snapshot) = tokio::sync::oneshot::channel();
-                let candidate_owner = watcher.clone();
+                let mirror_owner = watcher.clone();
                 let mut mirror =
                     tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
                         let (_shutdown, shutdown) = tokio::sync::watch::channel(false);
-                        candidate_owner
+                        mirror_owner
                             .run_revocations(lease.nats(), shutdown, snapshot_ready)
                             .await
                     }));
                 tokio::pin!(snapshot);
+                let mut caught_up = false;
                 loop {
                     tokio::select! {
                         biased;
@@ -904,67 +903,11 @@ async fn attach_authorization_provider(
                                 "authorization retirement mirror ended".into(),
                             ));
                         }
-                        result = async {
-                            match active.as_mut() {
-                                Some(previous) => previous.await,
-                                None => std::future::pending().await,
+                        ready = &mut snapshot, if !caught_up => {
+                            caught_up = true;
+                            if ready.is_ok() {
+                                retry_ms = 100;
                             }
-                        } => {
-                            active = None;
-                            authorization_contexts.set_transport_ready(false);
-                            tracing::warn!(
-                                ?result,
-                                "predecessor retirement mirror ended during preparation"
-                            );
-                        }
-                        ready = &mut snapshot => {
-                            ready.map_err(|error| {
-                                TrellisClientError::AuthorizationUnavailable(error.to_string())
-                            })?;
-                            break;
-                        }
-                    }
-                }
-                // A complete snapshot does not authorize a retired own session.
-                // Pin the exact carrier and installation through the final swap.
-                let resumed = {
-                    let transition = authorization_contexts.lock_own_transition()?;
-                    generations.commit_published_if_current(&transition, generation_id, || {
-                        if watcher.own_authority().is_err() {
-                            return false;
-                        }
-                        authorization_contexts.set_transport_ready(true);
-                        true
-                    })?
-                };
-                if !resumed {
-                    watcher.own_authority()?;
-                    return Err(TrellisClientError::AuthorizationUnavailable(
-                        "own authority is unavailable after retirement snapshot".into(),
-                    ));
-                }
-                // Only a complete checked replacement retires the healthy mirror.
-                active = Some(mirror);
-                retry_ms = 100;
-                if let Some(ready) = initial_ready.take() {
-                    let _ = ready.send(());
-                }
-                loop {
-                    tokio::select! {
-                        biased;
-                        _ = stop_rx.changed() => return Ok(false),
-                        _ = generations.wait_terminal() => return Ok(false),
-                        _ = publications.changed() => return Ok(true),
-                        result = active.as_mut().expect("published retirement mirror") => {
-                            active = None;
-                            result.map_err(|_| {
-                                TrellisClientError::AuthorizationUnavailable(
-                                    "retirement mirror task interrupted".into(),
-                                )
-                            })??;
-                            return Err(TrellisClientError::AuthorizationUnavailable(
-                                "authorization retirement mirror ended".into(),
-                            ));
                         }
                         changed = own_changes.recv() => {
                             if matches!(
@@ -975,16 +918,13 @@ async fn attach_authorization_provider(
                             }
                             if watcher.own_authority().is_err() {
                                 authorization_contexts.suspend_unless_own_authority();
-                                authorization_contexts.request_coverage_reconciliation();
+                                authorization_contexts.request_refresh();
                             }
                         }
                     }
                 }
             }
             .await;
-            // Dropping the epoch above fences verification before retrying. The
-            // owner keeps every authenticated cutoff across these replacements.
-            authorization_contexts.set_transport_ready(false);
             match result {
                 Ok(false) => return,
                 Ok(true) => continue,
@@ -1004,28 +944,11 @@ async fn attach_authorization_provider(
             }
         }
     });
-    let ready = match tokio::time::timeout(std::time::Duration::from_secs(30), ready_rx).await {
-        Ok(ready) => ready,
-        Err(_) => {
-            let _ = stop_tx.send(());
-            task.abort();
-            return Err(TrellisClientError::Bootstrap(
-                "authorization provider did not become ready".into(),
-            ));
-        }
-    };
-    if let Err(error) = ready {
-        let _ = stop_tx.send(());
-        task.abort();
-        return Err(TrellisClientError::AuthorizationUnavailable(
-            error.to_string(),
-        ));
-    }
-    Ok(AuthorizationProviderHandle {
+    AuthorizationProviderHandle {
         provider,
         stop: stop_tx,
         task,
-    })
+    }
 }
 
 /// A device's companion OAuth session, which needs the `native-oauth` feature.
@@ -1694,8 +1617,7 @@ impl TrellisClient {
             *slot = Some(std::sync::Arc::downgrade(&live));
         }
         let provider =
-            attach_authorization_provider(authorization_contexts.clone(), generations.clone())
-                .await?;
+            attach_authorization_provider(authorization_contexts.clone(), generations.clone());
         let authorization_context_refresh_task = Some(
             crate::client::authorization::spawn_authorization_context_refresh_task(
                 crate::client::authorization::AuthorizationRefreshRuntime {
@@ -1997,10 +1919,33 @@ impl TrellisClient {
         let deadline = Instant::now() + Duration::from_millis(self.timeout_ms);
         let result = timeout(deadline.saturating_duration_since(Instant::now()), async {
             let publish = [event.subject().to_owned()];
+            let prepared_under = self
+                .authorization_owner()
+                .own_authority()
+                .ok()
+                .map(|authority| authority.digest().to_owned());
             let lease = self
                 .generations
                 .acquire_for(&publish, &[], deadline)
                 .await?;
+            // Verifiers accept an event only inside the window of the
+            // authority that signs it. One prepared before this publish waited
+            // across a reconnect that renewed or replaced the session predates
+            // the new authority and would be refused downstream as forged.
+            let current = self.authorization_owner().own_authority()?;
+            if prepared_under.as_deref() != Some(current.digest())
+                && time::OffsetDateTime::parse(
+                    event.event_time(),
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .is_ok_and(|at| at.unix_timestamp() < current.authority().not_before)
+            {
+                return Err(TrellisClientError::AuthorizationUnavailable(
+                    "the session was renewed while this event waited to publish; prepare it \
+                    again"
+                        .into(),
+                ));
+            }
             publish_prepared_event(
                 lease.nats(),
                 &self.auth,
