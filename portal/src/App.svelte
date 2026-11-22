@@ -107,6 +107,8 @@
     signIn?: SignIn | null;
     consent?: Consent;
     theme?: Theme | null;
+    /** Someone was already signed in: ask before continuing as them. */
+    confirmAccount?: boolean;
   } => {
     try {
       return JSON.parse(
@@ -148,6 +150,21 @@
     deviceName: string;
     instanceId: string;
     canDecide: boolean;
+    signedInAs: SignedInAs;
+  }
+
+  /** Who is signed in, as they know themselves. */
+  interface SignedInAs {
+    name: string | null;
+    username: string | null;
+    email: string | null;
+  }
+
+  /** A name, a username, an email: the distinct ones, most familiar first. */
+  function knownAs(person: SignedInAs): string[] {
+    return [...new Set([person.name, person.username, person.email])].filter(
+      (part): part is string => !!part,
+    );
   }
 
   // The code survives the sign-in round trip so people type it once.
@@ -416,13 +433,8 @@
     sections.filter((section) => section.api !== null).length > 1,
   );
   // Who is signed in, as they know themselves: a name, a username, an email.
-  let signedInAs = $derived(
-    view
-      ? [...new Set([view.name, view.username, view.email])].filter(
-          (part): part is string => !!part,
-        )
-      : [],
-  );
+  let signedInAs = $derived(view ? knownAs(view) : []);
+  const confirmAccount = served.confirmAccount === true;
 
   function setGroup(group: Group, on: boolean): void {
     const ids = group.choices
@@ -535,6 +547,24 @@
   </p>
 {/snippet}
 
+{#snippet signedIn(parts: string[])}
+  {#if parts.length}<p class="muted">
+      Signed in as <strong>{parts[0]}</strong
+      >{#if parts[1]}{" "}({parts[1]}){/if}
+    </p>{/if}
+{/snippet}
+
+<!-- Signs this browser in again for the same flow, which keeps its request. -->
+{#snippet switchAccount(field: string, value: string, block = false)}
+  <form class="switch" method="post" action="/portal/switch-account">
+    <input type="hidden" name="csrf" value={csrf} />
+    <input type="hidden" name={field} {value} />
+    <button class={block ? "block" : "link"} type="submit"
+      >Use a different account</button
+    >
+  </form>
+{/snippet}
+
 {#snippet upstreamRefusal()}
   <p class="alert error" role="alert">
     {#if refusal}
@@ -562,7 +592,9 @@
         ? "Sign out"
         : login
           ? "Sign in"
-          : "Allow access"} · {brand}</title
+          : confirmAccount
+            ? "Continue"
+            : "Allow access"} · {brand}</title
   ></svelte:head
 >
 
@@ -626,6 +658,8 @@
     {/if}
     {#if enrollmentStep === "review" && enrollmentReview}
       {@const pending = enrollmentReview.state === "pending"}
+      {@render signedIn(knownAs(enrollmentReview.signedInAs))}
+      {@render switchAccount("review", reviewId)}
       <p class="muted">Check that this is the device in front of you.</p>
       <dl class="device-details">
         <dt>Device</dt>
@@ -951,6 +985,24 @@
       </p>
     {/if}
   </main>
+{:else if view && confirmAccount}
+  <main class="card narrow">
+    <div class="app">
+      <span class="app-icon" aria-hidden="true"
+        >{appName.charAt(0).toUpperCase()}</span
+      >
+      <div>
+        <h1>Continue to {appName}</h1>
+        {@render signedIn(signedInAs)}
+      </div>
+    </div>
+    <a
+      class="button primary block"
+      href={`/consent?transaction=${encodeURIComponent(transaction)}`}
+      >{signedInAs.length ? `Continue as ${signedInAs[0]}` : "Continue"}</a
+    >
+    {@render switchAccount("transaction", transaction, true)}
+  </main>
 {:else if view}
   <main class="card consent">
     <div class="app">
@@ -959,10 +1011,8 @@
       >
       <div>
         <h1>{appName} wants to use your account</h1>
-        {#if signedInAs.length}<p class="muted">
-            Signed in as <strong>{signedInAs[0]}</strong
-            >{#if signedInAs[1]}{" "}({signedInAs[1]}){/if}
-          </p>{/if}
+        {@render signedIn(signedInAs)}
+        {@render switchAccount("transaction", transaction)}
       </div>
     </div>
 

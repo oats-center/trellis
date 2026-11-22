@@ -87,7 +87,7 @@ export async function launchProfile(
 }
 
 /** A Portal page a sign-in or approval flow can show next. */
-type PortalStep = "signIn" | "approval" | "administration";
+type PortalStep = "signIn" | "account" | "approval" | "administration";
 
 /** Whether `url` is one of the Portal's sign-in or approval pages. */
 function onPortalStep(url: URL): boolean {
@@ -114,6 +114,7 @@ async function nextPortalStep(
 ): Promise<PortalStep | "done"> {
   const locators: Record<PortalStep, ReturnType<Page["getByLabel"]>> = {
     signIn: page.getByLabel("Username", { exact: true }),
+    account: page.getByRole("link", { name: /^Continue( as |$)/ }),
     approval: page.getByRole("button", { name: "Allow", exact: true }),
     administration: page.getByRole("button", {
       name: "Allow management",
@@ -138,11 +139,20 @@ export async function approveConsentIfRequired(
   page: Page,
   timeoutMs = 60_000,
 ): Promise<void> {
-  const step = await nextPortalStep(
+  let step = await nextPortalStep(
     page,
-    ["approval", "administration"],
+    ["account", "approval", "administration"],
     timeoutMs,
   );
+  // Someone already signed in continues as themselves.
+  if (step === "account") {
+    await page.getByRole("link", { name: /^Continue( as |$)/ }).click();
+    step = await nextPortalStep(
+      page,
+      ["approval", "administration"],
+      timeoutMs,
+    );
+  }
   if (step === "approval") {
     for (const choice of await page.getByRole("checkbox").all()) {
       if (await choice.isEnabled()) await choice.check();
@@ -173,7 +183,7 @@ export async function signInIfPrompted(
 ): Promise<void> {
   const step = await nextPortalStep(
     page,
-    ["signIn", "approval", "administration"],
+    ["signIn", "account", "approval", "administration"],
     timeoutMs,
   );
   if (step === "signIn") {
@@ -256,8 +266,13 @@ export async function completeConsoleEntry(
     .getByRole("button", { name: "Allow", exact: true })
     .waitFor({ state: "visible", timeout: 60_000 })
     .then(() => "approval" as const);
+  // Someone already signed in is asked whether to continue as themselves.
+  const account = page
+    .getByRole("link", { name: /^Continue( as |$)/ })
+    .waitFor({ state: "visible", timeout: 60_000 })
+    .then(() => "account" as const);
 
-  const outcome = await Promise.race([ready, form, approval]);
+  const outcome = await Promise.race([ready, form, approval, account]);
   if (outcome === "form") {
     await page
       .getByLabel("Username", { exact: true })

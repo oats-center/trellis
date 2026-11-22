@@ -252,8 +252,15 @@ async function signIn(
   } = {},
 ): Promise<{ askedForConsent: boolean }> {
   let askedForConsent = false;
+  // The page that only asks a signed-in person whether to continue as
+  // themselves asks nothing about access.
   const watch = (frame: { url(): string }) => {
-    if (new URL(frame.url()).pathname === "/consent") askedForConsent = true;
+    const shown = new URL(frame.url());
+    if (
+      shown.pathname === "/consent" &&
+      shown.searchParams.get("account") !== "confirm"
+    )
+      askedForConsent = true;
   };
   page.on("framenavigated", watch);
   try {
@@ -268,9 +275,21 @@ async function signIn(
       await page.getByRole("button", { name: "Sign in", exact: true }).click();
     }
     if (options.answer) await options.answer(page);
-    await page.waitForURL(
-      (url) => url.origin === origin && url.pathname === "/callback",
-    );
+    const returned = page
+      .waitForURL(
+        (url) => url.origin === origin && url.pathname === "/callback",
+      )
+      .then(() => "returned" as const);
+    const continueAs = page.getByRole("link", { name: /^Continue as / });
+    if (
+      (await Promise.race([
+        returned,
+        continueAs.waitFor().then(() => "account" as const),
+      ])) === "account"
+    ) {
+      await continueAs.click();
+      await returned;
+    }
   } finally {
     page.off("framenavigated", watch);
   }

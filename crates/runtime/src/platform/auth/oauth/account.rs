@@ -813,11 +813,23 @@ pub(super) async fn page(
                 )
             }
         };
-        let signed_in = storage
-            .authority
-            .portal_login(&current.0, &current.1, now)
-            .ok()
-            .map(|login| login.principal_id);
+        // Who is signed in, by the name they know themselves by.
+        let signed_in = match storage.authority.portal_login(&current.0, &current.1, now) {
+            Ok(login) => {
+                let known = storage
+                    .authority
+                    .read(|connection| super::http::signed_in_as(connection, &login.principal_id))
+                    .map_err(|cause| {
+                        super::http::failed("could not read who is signed in", cause)
+                    })?;
+                let label = ["name", "username", "email"]
+                    .iter()
+                    .find_map(|part| known[part].as_str().map(str::to_owned))
+                    .unwrap_or_else(|| login.principal_id.clone());
+                Some((login.principal_id, label))
+            }
+            Err(_) => None,
+        };
         let minimum = storage
             .authority
             .reader()
@@ -838,14 +850,29 @@ pub(super) async fn page(
             reset_form(token, &csrf, minimum, None),
         )
     } else {
+        // Someone already signed in sees who, and can sign in as someone else.
+        let switch = |class: &str| {
+            format!(
+                r#"<form method="post" action="/portal/switch-account"><input type="hidden" name="link" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><button class="{class} block">Use a different account</button></form>"#
+            )
+        };
         match signed_in {
-            Some(principal) if principal == action.target => (
+            Some((principal, label)) if principal == action.target => (
                 "Link OIDC sign-in",
                 format!(
-                    r#"<p class="muted">Add your OIDC sign-in to this account so you can use it next time.</p><form method="post" action="/portal/account/link"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><button class="primary block">Continue</button></form>"#
+                    r#"<p class="muted">Signed in as <strong>{}</strong></p><p class="muted">Add your OIDC sign-in to this account so you can use it next time.</p><form method="post" action="/portal/account/link"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><button class="primary block">Continue</button></form>{}"#,
+                    super::http::escape(&label),
+                    switch("")
                 ),
             ),
-            Some(_) => return error(ErrorCode::AccessDenied),
+            Some((_, label)) => (
+                "Use the account to link",
+                format!(
+                    r#"<p class="muted">You're signed in as <strong>{}</strong>, but this link is for another account. Sign in to the account you want to link.</p>{}"#,
+                    super::http::escape(&label),
+                    switch("primary")
+                ),
+            ),
             None => (
                 "Sign in",
                 format!(

@@ -444,6 +444,34 @@ theme assets are served same-origin with a sandboxing CSP. Every Portal page
 links `/portal-theme/stylesheet.css`, which is empty without a stylesheet. The
 Portal CSP allows same-origin images for the logo.
 
+#### Who is signed in, and using a different account
+
+A Portal flow never continues as an existing Portal login without saying who
+that is. The consent page (app, CLI, native and Device Code sign-ins alike),
+the device approval page and the identity-link page show the signed-in person
+by name with their username or email, and offer "Use a different account".
+When `/authorize` finds a Portal login, it sends the browser to
+`/consent?...&account=confirm`; if nothing is left to decide there, so the
+sign-in would otherwise finish without a page, the Portal shows "Continue to
+{app}" with "Continue as {name}" (the same consent page without
+`account=confirm`, which then finishes as before) and "Use a different
+account". A sign-in made within the flow itself, by password or OIDC, does not
+ask again. An identity link opened while signed in as someone other than its
+target says so and offers only the switch.
+
+"Use a different account" posts `/portal/switch-account` with the CSRF token and
+the flow: a `transaction`, a device `review`, or a `link` token. It rotates the
+portal session's cookie and CSRF secrets, detaches the session from its login
+and returns to the flow's sign-in page. The portal session ID stays, so every
+pending flow bound to it keeps its original request (client, capabilities,
+PKCE, state, redirect) and continues for whoever signs in next; the presentation
+shown to the earlier person no longer matches the new login and is presented
+again. The earlier login is not revoked: apps, CLIs and devices signed in
+through it keep working, and only this browser stops using it. The switch sets
+`__Host-trellis-portal-reauth` like `/logout`, so the next OIDC sign-in asks
+the provider again instead of its session signing the same person straight
+back in.
+
 Console and OAuth portal are separate required frontend apps. Their build tools
 use Node 24 or 26 (CI runs 26), npm workspaces, and Vite; embedded builds compile into staging
 before replacing only owner-marked output. Production builds require real

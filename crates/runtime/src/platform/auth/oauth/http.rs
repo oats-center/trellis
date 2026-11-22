@@ -206,6 +206,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         )
         .route("/portal/oidc/callback", get(super::upstream_http::callback))
         .route("/portal/logout", post(portal_logout))
+        .route("/portal/switch-account", post(switch_account))
         .layer(DefaultBodyLimit::max(32 * 1024))
         .layer(middleware::from_fn(move |request: Request, next: Next| {
             let origin = origin.clone();
@@ -349,6 +350,14 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
             }
         }))
         .with_state(engine)
+}
+
+/// `text` made safe to place in a server-rendered page's text or attribute.
+pub(super) fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 async fn avatar(State(engine): State<Arc<OAuthEngine>>, Path(token): Path<String>) -> Response {
@@ -568,12 +577,14 @@ async fn authorize(
         Ok(started) => started,
         Err(code) => return error(code),
     };
-    let page = if authenticated.is_some() {
-        "consent"
+    // Someone already signed in sees who before anything happens as them.
+    let (page, ask) = if authenticated.is_some() {
+        ("consent", "&account=confirm")
     } else {
-        "login"
+        ("login", "")
     };
-    let mut response = Redirect::to(&format!("/{page}?transaction={transaction}")).into_response();
+    let mut response =
+        Redirect::to(&format!("/{page}?transaction={transaction}{ask}")).into_response();
     if let Some(guest) = guest {
         response.headers_mut().extend(
             cookie_response(
@@ -611,10 +622,10 @@ async fn login_page(
     else {
         return error(ErrorCode::InvalidRequest);
     };
-    let Some(cookie) = portal_cookie(&headers, "__Host-trellis-portal") else {
-        return error(ErrorCode::AccessDenied);
-    };
-    let Some(csrf) = portal_cookie(&headers, "__Host-trellis-portal-csrf") else {
+    let (Some(cookie), Some(csrf)) = (
+        portal_cookie(&headers, "__Host-trellis-portal"),
+        portal_cookie(&headers, "__Host-trellis-portal-csrf"),
+    ) else {
         return error(ErrorCode::AccessDenied);
     };
     let now = crate::clock::unix_now();
@@ -728,19 +739,36 @@ async fn consent_page(
         Ok(view) => view,
         Err(code) => return error(code),
     };
-    if let Some(response) = approve_without_asking(&engine, &headers, transaction, &view).await {
+    let confirm_account = form.get("account").is_some_and(|ask| ask == "confirm");
+    if let Some(response) =
+        approve_without_asking(&engine, &headers, transaction, &view, confirm_account).await
+    {
         return response;
     }
-    // The page arrives with what it asks about and its theme.
-    let theme = super::theme::portal_theme(&engine, Some(transaction.clone())).await;
+    consent_view_page(&engine, transaction, view, false).await
+}
+
+/// The consent page, arriving with what it asks about and its theme. With
+/// `confirm_account` it only asks whether to continue as the signed-in person.
+async fn consent_view_page(
+    engine: &OAuthEngine,
+    transaction: &str,
+    view: Value,
+    confirm_account: bool,
+) -> Response {
+    let theme = super::theme::portal_theme(engine, Some(transaction.to_owned())).await;
     let callback = view
         .get("redirectUri")
         .and_then(Value::as_str)
         .map(str::to_owned);
     super::assets::page(
-        &engine,
+        engine,
         callback.as_deref(),
-        Some(serde_json::json!({ "consent": view, "theme": theme })),
+        Some(serde_json::json!({
+            "consent": view,
+            "theme": theme,
+            "confirmAccount": confirm_account
+        })),
     )
 }
 
@@ -753,11 +781,14 @@ async fn consent_page(
 /// not offered, so it never asks. An administrator who allowed administration
 /// without asking already confirmed it. When the person lacks something the
 /// app requires, the page explains. Native and Device Code sign-ins always ask.
+/// With `confirm_account`, set when the sign-in found someone already signed in
+/// to the Portal, it answers with a page asking whether to continue as them.
 async fn approve_without_asking(
     engine: &OAuthEngine,
     headers: &HeaderMap,
     transaction: &str,
     view: &Value,
+    confirm_account: bool,
 ) -> Option<Response> {
     if view.get("browser") != Some(&Value::Bool(true)) || !view.get("deviceUserCode")?.is_null() {
         return None;
@@ -813,6 +844,9 @@ async fn approve_without_asking(
                 return None;
             }
         }
+    }
+    if confirm_account {
+        return Some(consent_view_page(engine, transaction, view.clone(), true).await);
     }
     let presentation = flow.presentation.clone()?;
     let validated = engine.consent_intent(&flow.request).await.ok()?;
@@ -948,20 +982,7 @@ async fn consent_data(
                 .origin()
                 .ascii_serialization()
             };
-            let username: Option<String> = connection
-                .query_row(
-                    "SELECT normalized_username \
-                FROM auth_local_credentials \
-                WHERE principal_id=?1",
-                    [&login.principal_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            // People recognise their name, username and email, never their
-            // principal ID, which is only the last fallback for a name.
-            let profile = super::super::profiles::read(connection, &login.principal_id)?;
-            let name = Some(profile.display_name)
-                .filter(|name| *name != login.principal_id && Some(name) != username.as_ref());
+            let signed_in = signed_in_as(connection, &login.principal_id)?;
             let mut api_titles = std::collections::BTreeMap::new();
             let mut capabilities = Vec::new();
             let mut meanings = std::collections::BTreeMap::new();
@@ -1128,9 +1149,9 @@ async fn consent_data(
                 "clientId":validated.client_id.as_str(),
                 "clientName":client.name,
                 "registered":registered,
-                "name":name,
-                "username":username,
-                "email":profile.email,
+                "name":signed_in["name"],
+                "username":signed_in["username"],
+                "email":signed_in["email"],
                 "redirectUri":validated.redirect_uri,
                 "deviceUserCode":validated.device_user_code,
                 "browser":browser,
@@ -1141,6 +1162,26 @@ async fn consent_data(
     })
     .await;
     result.map_err(|cause| failed("could not present the consent", cause))
+}
+
+/// Who is signed in, as people know themselves: `name` (their display name,
+/// when it is more than their username), `username` and `email`, never their
+/// principal ID, which is only the last fallback for a name.
+pub(super) fn signed_in_as(
+    connection: &super::super::sqlite::Connection,
+    principal: &str,
+) -> Result<Value, super::super::AuthError> {
+    let username: Option<String> = connection
+        .query_row(
+            "SELECT normalized_username FROM auth_local_credentials WHERE principal_id=?1",
+            [principal],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let profile = super::super::profiles::read(connection, principal)?;
+    let name = Some(profile.display_name)
+        .filter(|name| name != principal && Some(name) != username.as_ref());
+    Ok(serde_json::json!({"name": name, "username": username, "email": profile.email}))
 }
 
 async fn approve(
@@ -1701,6 +1742,72 @@ async fn portal_logout(
         Ok(()) => cookie_response("", Some(""), 0, Json(serde_json::json!({})).into_response()),
         Err(code) => error(code),
     }
+}
+
+/// "Use a different account": takes this browser's Portal session off the
+/// signed-in login and sends it back to sign in for the same flow, which keeps
+/// its original request. The flow is an authorization (`transaction`), a device
+/// review (`review`) or an identity link (`link`). The login itself stays, so
+/// what was signed in with it keeps working.
+async fn switch_account(
+    State(engine): State<Arc<OAuthEngine>>,
+    headers: HeaderMap,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    if !portal_origin(&engine, &headers) {
+        return error(ErrorCode::InvalidRequest);
+    }
+    let Some(cookie) = portal_cookie(&headers, "__Host-trellis-portal") else {
+        return error(ErrorCode::AccessDenied);
+    };
+    let form = match fields(pairs) {
+        Ok(form) => form,
+        Err(response) => return error(response.error),
+    };
+    let encode = |value: &str| -> String {
+        url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+    };
+    let destination = match (
+        form.get("transaction"),
+        form.get("review"),
+        form.get("link"),
+    ) {
+        (Some(transaction), None, None) if ulid::Ulid::from_string(transaction).is_ok() => {
+            format!("/login?transaction={transaction}")
+        }
+        (None, Some(review), None) => {
+            format!("/device-enrollment?reviewId={}", encode(review))
+        }
+        (None, None, Some(link)) => format!("/account/link?token={}", encode(link)),
+        _ => return error(ErrorCode::InvalidRequest),
+    };
+    let Some(csrf) = form.get("csrf").cloned() else {
+        return error(ErrorCode::InvalidRequest);
+    };
+    let authority = engine.server.store().authority.clone();
+    let now = crate::clock::unix_now();
+    let session = match blocking(move || authority.portal_switch_account(&cookie, &csrf, now)).await
+    {
+        Ok(session) => session,
+        Err(super::super::AuthError::Denied) => return error(ErrorCode::AccessDenied),
+        Err(cause) => return error(failed("could not switch the Portal account", cause)),
+    };
+    let mut response = cookie_response(
+        &session.cookie,
+        Some(&session.csrf),
+        600,
+        Redirect::to(&destination).into_response(),
+    );
+    // The OIDC provider's own session would sign the same person straight
+    // back in, so the next OIDC sign-in asks it as after a sign-out.
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_static(
+            "__Host-trellis-portal-reauth=1; Path=/; Secure; HttpOnly; SameSite=Lax; \
+            Max-Age=2592000",
+        ),
+    );
+    response
 }
 
 /// Records what the server could not do for the current request, and why

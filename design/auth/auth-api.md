@@ -40,6 +40,7 @@ All routes are served only by the Trellis listener (`[http]`), beside
 | `POST` | `/portal/session`                         | Create a portal session cookie and CSRF token                                                                                    |
 | `POST` | `/portal/login`                           | Local username/password sign-in                                                                                                  |
 | `POST` | `/portal/logout`                          | End the portal login                                                                                                             |
+| `POST` | `/portal/switch-account`                  | "Use a different account": take the browser's portal session off its login and sign in again for the same flow                   |
 | `GET`  | `/portal/providers`                       | List enabled upstream OIDC providers, and this browser's last provider refusal for a sign-in                                     |
 | `GET`  | `/portal/oidc/{provider}/begin`           | Start upstream OIDC with server-owned state, nonce, and PKCE                                                                     |
 | `GET`  | `/portal/oidc/callback`                   | Verify the upstream OIDC callback                                                                                                |
