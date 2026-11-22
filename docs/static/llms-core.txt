@@ -1461,10 +1461,12 @@ handlers must still be idempotent. After a secret, token, or password changes,
 endpoint's rotation overlap (24 h by default); deleting the settings revision
 that holds it ends the overlap, and no older value is ever accepted.
 Each change of a secret is its own generation, even to an equal value. A queued
-request keeps its intake `token`/`basic` verdict only while the value it
-matched is still accepted and the verifiers and the settings they read are
-unchanged; otherwise it is rejected with the reason in its record. `hmac` and
-`address` run again under the secrets and settings in force at processing.
+request keeps its intake `token`/`basic` verdict while the verifiers and the
+settings they read are unchanged and the value it matched is current, or was
+the replaced value within the overlap at receipt; an overlap ending while it
+waits does not refuse it, but deleting the revision holding that value does,
+with the reason in its record. `hmac` and `address` run again under the
+current secrets and settings, the replaced `hmac` secret on the same terms.
 Every member but title and description is part of the build and needs
 approval; `verify none` also needs `--acknowledge-unauthenticated-webhooks`.
 Watch and operate endpoints with `trellis svc <name> webhooks [<endpoint>]`,
