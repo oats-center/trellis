@@ -1125,7 +1125,7 @@ test("a queued request keeps its token check under the policy it was accepted wi
       [refused.outcome, refused.reason],
       [
         "rejected",
-        "secret hookToken changed after intake and no longer accepts the previous value check 2 (Token in the x-hook-token header) matched; the credential check can't be rerun",
+        "check 2 (Token in the x-hook-token header) matched the previous value of secret hookToken, which changed after intake and no longer accepts it; the credential check can't be rerun",
       ],
     );
 
@@ -1260,7 +1260,7 @@ test("a queued request whose two checks of one secret matched different values i
       [refused.outcome, refused.reason],
       [
         "rejected",
-        "secret hookToken changed after intake and no longer accepts the previous value check 1 (Token in the x-hook-token header) matched; the credential check can't be rerun",
+        "check 1 (Token in the x-hook-token header) matched the previous value of secret hookToken, which changed after intake and no longer accepts it; the credential check can't be rerun",
       ],
     );
     assert.equal(received.length, 1);

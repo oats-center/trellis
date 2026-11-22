@@ -262,11 +262,12 @@ request:
   later change replaced it or the revision holding it was deleted, the
   request is rejected, even when another check of the same secret matched a
   value still accepted. The reason names the first such check, counting from
-  1: `secret <field> changed after intake and no longer accepts the <current
-or previous> value check <n> (<check description>) matched; the credential
-check can't be rerun`, for example `secret hookToken changed after intake and
-no longer accepts the previous value check 1 (Token in the x-hook-token
-header) matched; the credential check can't be rerun`. Deleting that revision
+  1: `check <n> (<check description>) matched the <current or previous> value
+of secret <field>, which changed after intake and no longer accepts it; the
+credential check can't be rerun`, for example `check 1 (Token in the
+x-hook-token header) matched the previous value of secret hookToken, which
+changed after intake and no longer accepts it; the credential check can't be
+rerun`. Deleting that revision
   is how an administrator withdraws the replaced value, queued requests
   included.
 - Under a different policy, the intake verdicts count for nothing. Every

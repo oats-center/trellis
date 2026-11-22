@@ -325,11 +325,12 @@ impl Webhooks {
                         .map(trellis_idl::webhook::describe_verifier)
                         .unwrap_or_default();
                     return rejected(format!(
-                        "secret {} changed after intake and no longer accepts the {} value \
-                        check {} ({described}) matched; the credential check can't be rerun",
-                        matched.field,
-                        matched.key.as_str(),
+                        "check {} ({described}) matched the {} value of secret {}, which \
+                        changed after intake and no longer accepts it; the credential check \
+                        can't be rerun",
                         matched.check + 1,
+                        matched.key.as_str(),
+                        matched.field,
                     ));
                 }
             }
