@@ -45,6 +45,8 @@ export class PromotedOwnAuthorityView implements OwnAuthorityView {
   #listeners = new Set<(snapshot: OwnAuthoritySnapshot | undefined) => void>();
   #unsubscribe: () => void;
   #closed = false;
+  /** The newest recomputation, which a superseded one settles with. */
+  #latest: Promise<void> = Promise.resolve();
 
   private readonly owner: SessionAuthorityOwner;
   private readonly api: RuntimeApi;
@@ -81,9 +83,21 @@ export class PromotedOwnAuthorityView implements OwnAuthorityView {
     return () => this.#listeners.delete(listener);
   }
 
-  /** Recompute from one retained verified installation, rejecting stale completions. */
-  async refresh(): Promise<void> {
+  /**
+   * Recompute from one retained verified installation, rejecting stale
+   * completions. Settles with the newest recomputation: owner changes start
+   * their own while this one runs, and a caller must not resume before the
+   * projection that superseded its own is installed.
+   */
+  refresh(): Promise<void> {
     const generation = ++this.#generation;
+    const run = this.#recompute(generation);
+    // A listener may have started a newer recomputation synchronously.
+    if (generation === this.#generation) this.#latest = run;
+    return run;
+  }
+
+  async #recompute(generation: number): Promise<void> {
     // Keep the immutable projection across transport suspension. `current`
     // hides it unless the owner is usable and still holds this exact digest;
     // refreshing unchanged authority must not temporarily withdraw actions.
@@ -143,12 +157,12 @@ export class PromotedOwnAuthorityView implements OwnAuthorityView {
           }
         }
         lease.assertCurrent();
-        if (
-          this.#closed ||
-          generation !== this.#generation ||
-          this.owner.ownDigest !== lease.digest
-        )
-          return;
+        if (this.#closed) return;
+        if (generation !== this.#generation) {
+          lease.release();
+          return await this.#latest;
+        }
+        if (this.owner.ownDigest !== lease.digest) return;
         const authority = lease.authority;
         this.#snapshot = Object.freeze({
           authorityDigest: lease.digest,
@@ -180,7 +194,8 @@ export class PromotedOwnAuthorityView implements OwnAuthorityView {
         lease.release();
       }
     } catch (cause) {
-      if (generation !== this.#generation) return;
+      if (this.#closed) return;
+      if (generation !== this.#generation) return await this.#latest;
       for (const listener of this.#listeners) listener(undefined);
       throw new TransportError({
         code: "trellis.authority.unavailable",
