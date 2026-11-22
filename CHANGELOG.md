@@ -62,6 +62,9 @@ and this project adheres to
 
 ### Fixed
 
+- A TypeScript client could fail to connect with "Auth failed: Unavailable"
+  when its revocation mirror caught up during the connect's authority refresh;
+  a superseded refresh now settles with the newer one.
 - A database held locked for a few seconds no longer stops trellis-server:
   background work logs the storage failure and retries with backoff, and only
   a corrupt database stops the server. The Jobs and Events stores wait 5 s on a
