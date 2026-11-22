@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.54] - 2026-11-22
+
 ### Added
 
 - Webhook dedupe templates read the body: `{json:/pointer}` (RFC 6901) and
