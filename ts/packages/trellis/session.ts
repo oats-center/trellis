@@ -3213,7 +3213,6 @@ export class Trellis<
         };
         // Generation acquisition and the publish+ack share one deadline.
         const deadlineMs = Date.now() + this.timeout;
-        const preparedUnder = this.#auth.authorityOwner?.ownDigest;
         let lease: TransportLease | undefined;
         if (this.#adaptiveTransport) {
           try {
@@ -3244,7 +3243,7 @@ export class Trellis<
           headers.set("Nats-Msg-Id", event.header.id);
           headers.set("Trellis-Event-Time", event.header.time);
           headers.set("Trellis-Event-Descriptor", event.descriptorIdentity);
-          const proof = await this.#createEventProof(event, preparedUnder);
+          const proof = await this.#createEventProof(event);
           headers.set("proof", proof.proof);
           headers.set("authorization-context", proof.contextDigest);
           headers.set("Trellis-Api-Generation", proof.apiGeneration);
@@ -3974,10 +3973,7 @@ export class Trellis<
     }
   }
 
-  async #createEventProof(
-    event: PreparedTrellisEvent,
-    preparedUnder: string | undefined,
-  ): Promise<{
+  async #createEventProof(event: PreparedTrellisEvent): Promise<{
     proof: string;
     contextDigest: string;
     apiGeneration: string;
@@ -3993,18 +3989,6 @@ export class Trellis<
       const apiId = `${permission.apiId}@${permission.apiVersion}`;
       const api = own.authority.apis.find((api) => api.apiId === apiId);
       if (!api) throw new Error("event API is not in verified authority");
-      // Verifiers accept an event only inside the window of the authority
-      // that signs it. One prepared before this publish waited across a
-      // reconnect that renewed or replaced the session predates the new
-      // authority and would be refused downstream as forged.
-      if (
-        preparedUnder !== own.digest &&
-        Math.floor(Date.parse(event.header.time) / 1000) <
-          own.authority.notBefore
-      )
-        throw new Error(
-          "the session was renewed while this event waited to publish; prepare it again",
-        );
       await own.authorize(apiId, toCatalogAction(permission));
       const signedEvent: SessionEvent = {
         authorityDigest: own.digest,
@@ -4015,6 +3999,9 @@ export class Trellis<
         subject: event.subject,
         eventId: event.header.id,
         eventTime: event.header.time,
+        // Signed now, under the authority current now, however long ago the
+        // event was prepared.
+        issuedAt: this.#currentIat(),
       };
       const digest = await sessionEventSigningDigest(
         signedEvent,

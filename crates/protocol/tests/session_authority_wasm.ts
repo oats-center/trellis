@@ -121,7 +121,7 @@ try {
         candidate.proof,
       ).ok,
       candidate.accepted,
-      `signed event time cutoff: ${candidate.event.eventTime}`,
+      `signing time cutoff: ${candidate.event.issuedAt}`,
     );
   }
   assert(!verify(fixture.event, null).ok);

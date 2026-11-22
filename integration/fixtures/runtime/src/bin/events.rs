@@ -43,6 +43,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("PUBLIC_BACKLOG").as_deref() == Ok("true") {
         return run_public_backlog(&url, &identity).await;
     }
+    if std::env::var("SIGNING_TIME").as_deref() == Ok("true") {
+        return run_signing_time(&url, &identity).await;
+    }
     if std::env::var("CONSUMER_ONLY").as_deref() == Ok("true") {
         return run_consumer_only(&url, &identity).await;
     }
@@ -217,6 +220,91 @@ async fn run_public_backlog(url: &str, identity: &str) -> Result<(), Box<dyn std
     println!("PUBLIC_BACKLOG_DELIVERED");
     drop(backlog);
     owner.shutdown_native_runtime().await?;
+    Ok(())
+}
+
+/// Publish events signed long after they were recorded, under an authority
+/// issued after that, and report what this service's own durable consumer
+/// accepts.
+///
+/// Commands on stdin: `DISPATCH` waits until the session holds an authority
+/// issued after the outbox event was recorded, then dispatches the outbox;
+/// `PUBLISH <value>` publishes at once, waiting for transport if it is down;
+/// `EXIT` stops the service. Every value the durable consumer accepts is
+/// printed as `SEEN <value>`.
+async fn run_signing_time(url: &str, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use runtime_trellis::apis::runtime_trellis_events_v1::Client as EventsClient;
+    use runtime_trellis::participants::runtime_trellis_event_service_both::Participant;
+    use tokio::io::{AsyncBufReadExt as _, BufReader};
+    use trellis_rs::client::{dispatch_outbox_once, MemoryOutboxStore, OutboxStore as _};
+
+    let server =
+        trellis_rs::auth::discover_native_oauth(url, &trellis_runtime_acceptance::trust_roots())
+            .await?;
+    let service = Participant::connect(ServiceConnectOptions::new(
+        server.nats_servers,
+        server.trust,
+        identity,
+    ))
+    .await?;
+    let _listener = service
+        .listen_event::<Alpha, _, _>(
+            |event, _| async move {
+                println!("SEEN {}", event.value);
+                Ok(())
+            },
+            ServiceEventListenOptions::default(),
+        )
+        .await?;
+    let authority = service.runtime_native_owner().runtime_authorization_owner();
+    let publisher = EventsClient::from_generated(service.generated_client());
+    let dispatcher = service.outbox_dispatcher();
+    let sample = |value: &str| Sample {
+        site: "signing-time-rust".into(),
+        value: value.into(),
+        extra: Default::default(),
+    };
+    // The application records the event in its own transaction now.
+    let prepared = trellis_rs::client::prepare_event::<Alpha>(&sample("rust-outbox"))?;
+    let recorded = time::OffsetDateTime::parse(
+        prepared.event_time(),
+        &time::format_description::well_known::Rfc3339,
+    )?
+    .unix_timestamp();
+    let mut outbox = MemoryOutboxStore::new();
+    outbox.enqueue("rust-outbox", &prepared).await?;
+    let lifecycle = service.lifecycle();
+    let run = tokio::spawn(service.run());
+    if !lifecycle.ready().await {
+        return Err("the service did not start serving".into());
+    }
+    println!("SIGNING_TIME_READY");
+    let mut commands = BufReader::new(tokio::io::stdin()).lines();
+    while let Some(command) = commands.next_line().await? {
+        if command == "DISPATCH" {
+            tokio::time::timeout(Duration::from_secs(90), async {
+                while authority
+                    .own_authority()
+                    .is_ok_and(|own| own.authority().not_before <= recorded)
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await?;
+            let result = dispatch_outbox_once(&mut outbox, &dispatcher).await?;
+            println!("DISPATCHED {result:?}");
+        } else if let Some(value) = command.strip_prefix("PUBLISH ") {
+            println!("PUBLISH_STARTED {value}");
+            match publisher.publish_alpha(&sample(value)).await {
+                Ok(()) => println!("PUBLISHED {value}"),
+                Err(error) => println!("PUBLISH_ERROR {error}"),
+            }
+        } else if command == "EXIT" {
+            break;
+        }
+    }
+    lifecycle.stop();
+    run.await??;
     Ok(())
 }
 

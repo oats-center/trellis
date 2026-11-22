@@ -186,6 +186,14 @@ the background. No participant refuses to send on its own session because of
 its mirror; the broker and Auth enforce that session's revocation. Nothing in
 connecting, renewal, Live, jobs or event consumers waits for the mirror either.
 
+An event is judged at the time its publisher signed it, under the authority it
+names, not at the time it was recorded or delivered: one signed while the
+session's authority was valid and before its revocation cutoff is genuine. An
+outbox backlog dispatched after its session renewed or reconnected is therefore
+accepted, and a publish that waits across a renewal is sent, while an event
+signed after the cutoff, or published after it with a backdated signature, is
+refused. See [event signing time](./auth-protocol.md#event-signing-time).
+
 There is no separate staleness bound, because the authority lifetime is one: a
 revoked session cannot renew, so its signed authority stops verifying anywhere
 once it expires, at most one authority lifetime (`context_lifetime_seconds`,
@@ -1117,7 +1125,7 @@ enumeration.
 Cold provider-certificate material reads authenticate the immutable signature,
 installation/account binding, identity, and validity bounds without applying
 today's clock. Live use still requires a current issuer and unexpired authority
-and certificate. Retained events require both signed event time and genuine
+and certificate. Retained events require both the signing time and genuine
 original JetStream publication time within those validity windows and before any
 signed revocation cutoff; ordinary certificate expiry and issuer retirement do
 not invalidate that historical evidence. Compromised issuers remain unusable.

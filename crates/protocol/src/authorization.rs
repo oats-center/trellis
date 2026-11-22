@@ -1268,8 +1268,12 @@ pub struct SessionEvent {
     pub subject: String,
     /// Canonical event ULID.
     pub event_id: String,
-    /// Signed RFC 3339 publisher timestamp.
+    /// Signed RFC 3339 time the publisher recorded the event, which can be long
+    /// before it was signed, as for an outbox backlog.
     pub event_time: String,
+    /// Unix seconds when the publisher signed this publication. Authority
+    /// validity, revocation and freshness are judged at this time.
+    pub issued_at: i64,
 }
 
 /// Compact signature of the event identity and exact payload bytes.
@@ -1322,6 +1326,13 @@ pub(crate) fn event_signing_digest_sha256(
     validate_subject(&event.subject)?;
     validate_id(&event.event_id, "eventId")?;
     validate_text(&event.event_time, &["eventTime"])?;
+    if event.issued_at < 0 {
+        return Err(authorization_error(
+            AuthorizationErrorCode::InvalidFormat,
+            ["issuedAt"],
+            "event issue time must be nonnegative",
+        ));
+    }
     if event.api_generation.get() == 0 || event.accepted_revision.get() == 0 {
         return Err(authorization_error(
             AuthorizationErrorCode::InvalidFormat,
@@ -1333,6 +1344,7 @@ pub(crate) fn event_signing_digest_sha256(
     let payload_hash = *payload_sha256;
     let generation = event.api_generation.get().to_be_bytes();
     let revision = event.accepted_revision.get().to_be_bytes();
+    let issued_at = event.issued_at.to_be_bytes();
     let mut bytes = Vec::new();
     for component in [
         MESSAGE_EVENT_DOMAIN_V1.as_bytes(),
@@ -1344,6 +1356,7 @@ pub(crate) fn event_signing_digest_sha256(
         event.subject.as_bytes(),
         event.event_id.as_bytes(),
         event.event_time.as_bytes(),
+        issued_at.as_slice(),
         payload_hash.as_slice(),
     ] {
         push_component(&mut bytes, component)?;
@@ -1445,23 +1458,26 @@ pub fn verify_session_event(
     {
         return Err(reject());
     }
+    // Authority, revocation and freshness are judged at the signing time. The
+    // event time only records when the publisher noted the event, which can be
+    // long before it was signed, so it is bounded above, never below.
     let event_time = time::OffsetDateTime::parse(
         &event.event_time,
         &time::format_description::well_known::Rfc3339,
     )
-    .map_err(|_| reject())?;
-    let not_before = i128::from(body.not_before) * 1_000_000_000;
-    let expires_at = i128::from(body.expires_at) * 1_000_000_000;
-    if event_time.unix_timestamp_nanos() < not_before
-        || event_time.unix_timestamp_nanos() >= expires_at
-        || input.authority.revocation_cutoff.is_some_and(|cutoff| {
-            event_time.unix_timestamp_nanos() >= i128::from(cutoff) * 1_000_000_000
-        })
+    .map_err(|_| reject())?
+    .unix_timestamp();
+    let skew = i64::from(input.policy.allowed_clock_skew_seconds);
+    let issued_at = event.issued_at;
+    if issued_at < body.not_before
+        || issued_at >= body.expires_at
+        || input
+            .authority
+            .revocation_cutoff
+            .is_some_and(|cutoff| issued_at >= cutoff)
+        || event_time > issued_at.saturating_add(skew)
         || (input.authority.purpose == SessionAuthorityPurpose::Live
-            && event_time
-                .unix_timestamp()
-                .abs_diff(input.policy.now_unix_seconds)
-                > u64::from(input.policy.allowed_clock_skew_seconds))
+            && issued_at.abs_diff(input.policy.now_unix_seconds) > skew.unsigned_abs())
     {
         return Err(reject());
     }
@@ -1472,6 +1488,12 @@ pub fn verify_session_event(
         )
         .map_err(|_| reject())?
         .unix_timestamp_nanos();
+        let not_before = i128::from(body.not_before) * 1_000_000_000;
+        let expires_at = i128::from(body.expires_at) * 1_000_000_000;
+        // A publisher signs right before it publishes, so the broker's time
+        // stays within clock skew of the signing time. A copy of a signed
+        // event published again later is refused, so replay is bounded to the
+        // skew window, inside which the stream's duplicate window drops it.
         if publication.stream_sequence.get() == 0
             || published_at < not_before
             || published_at >= expires_at
@@ -1479,6 +1501,8 @@ pub fn verify_session_event(
                 .authority
                 .revocation_cutoff
                 .is_some_and(|cutoff| published_at >= i128::from(cutoff) * 1_000_000_000)
+            || (published_at / 1_000_000_000).abs_diff(i128::from(issued_at))
+                > skew.unsigned_abs().into()
         {
             return Err(reject());
         }

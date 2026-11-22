@@ -54,8 +54,9 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         .await
         .unwrap();
 
+    let publisher_client = Arc::new(publisher);
     let publisher =
-        trellis_rs::__internal::LiveProviderOwner::from_connected_client(Arc::new(publisher));
+        trellis_rs::__internal::LiveProviderOwner::from_connected_client(publisher_client.clone());
     let receiver =
         trellis_rs::__internal::LiveProviderOwner::from_connected_client(Arc::new(receiver));
 
@@ -407,6 +408,69 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     })
     .await
     .unwrap();
+    // Sign a publication with the publisher's own session key, as only its
+    // holder can, and publish it through the broker directly: after revocation
+    // the session's own connection is gone, but its key may not be.
+    let signer = publisher
+        .runtime_authorization_owner()
+        .own_authority()
+        .unwrap();
+    let (stored_in, verifier) = (&stream, &verify);
+    let sign_and_publish = |issued_at: i64| {
+        let mut event: trellis_protocol::SessionEvent =
+            serde_json::from_str(raw.headers.get("Trellis-Session-Event").unwrap().as_str())
+                .unwrap();
+        event.authority_digest = signer.digest().to_owned();
+        event.event_id = ulid::Ulid::generate().to_string();
+        event.event_time = time::OffsetDateTime::from_unix_timestamp(issued_at)
+            .unwrap()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        event.issued_at = issued_at;
+        let proof = publisher_client
+            .auth()
+            .create_event_proof(&event, &raw.payload)
+            .unwrap();
+        let mut headers = raw.headers.clone();
+        headers.insert("Nats-Msg-Id", event.event_id.as_str());
+        headers.insert("Trellis-Event-Time", event.event_time.as_str());
+        headers.insert("authorization-context", event.authority_digest.as_str());
+        headers.insert(
+            "Trellis-Session-Event",
+            serde_json::to_string(&event).unwrap().as_str(),
+        );
+        headers.insert("proof", proof.as_str());
+        let context = context.clone();
+        let subject = raw.subject.clone();
+        let payload = raw.payload.clone();
+        async move {
+            let ack = context
+                .publish_with_headers(subject, headers, payload)
+                .await
+                .unwrap()
+                .await
+                .unwrap();
+            assert!(!ack.duplicate);
+            let stored = stored_in.get_raw_message(ack.sequence).await.unwrap();
+            verifier(trellis_events_runtime::EventAuthorizationInput {
+                subject: stored.subject.to_string(),
+                payload: stored.payload.to_vec(),
+                headers: Some(stored.headers),
+                original_publication: trellis_protocol::OriginalEventPublication {
+                    published_at: stored
+                        .time
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap(),
+                    stream_sequence: trellis_protocol::U64s::new(stored.sequence),
+                },
+            })
+            .await
+        }
+    };
+    let now = || time::OffsetDateTime::now_utc().unix_timestamp();
+    sign_and_publish(now())
+        .await
+        .expect("a publication signed by a live session is genuine");
     for session in sessions.items {
         admin
             .authorization_sessions_revoke(&AuthAuthorizationSessionRevokeRequest {
@@ -432,6 +496,12 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     })
     .await
     .expect("retirement preserves genuine pre-cutoff backlog");
+    // The cutoff is at most the time the revocation returned, so a signature
+    // made now is at or after it.
+    assert!(matches!(
+        sign_and_publish(now()).await,
+        Err(EventVerificationFailure::Rejected(_))
+    ));
     // Until its purge runs, the broker acknowledges the replay as a duplicate
     // of the retained message and stores nothing; wait for a real copy.
     let replay_sequence = tokio::time::timeout(Duration::from_secs(10), async {

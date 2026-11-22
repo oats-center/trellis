@@ -81,7 +81,7 @@
     }
   },
   {
-    "digest": "0kGpRLfqP15QHUMcaleJETvzlPeh6hn1TztxolX4Vbk",
+    "digest": "hZPCN4wg_VIRL9ROlE9cjiiwjfu7Uz9lBZJkTRa_fRw",
     "event": {
       "acceptedRevision": "5",
       "action": "event.Changed",
@@ -90,7 +90,8 @@
       "authorityDigest": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
       "eventId": "01J0000000000000000000000B",
       "eventTime": "2026-10-22T12:00:00.000Z",
-      "subject": "events.v1.example.Changed"
+      "subject": "events.v1.example.Changed",
+      "issuedAt": 1792670405
     },
     "kind": "sessionEvent",
     "payloadHex": "7b2261223a317d"

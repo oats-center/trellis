@@ -708,6 +708,9 @@ async fn publish_prepared_event(
         subject: event.subject().to_owned(),
         event_id: event.event_id().to_owned(),
         event_time: event.event_time().to_owned(),
+        // Signed now, under the authority current now, however long ago the
+        // event was prepared.
+        issued_at: now_iat_seconds() as i64,
     };
     let mut headers = event.publish_headers();
     headers.insert("authorization-context", authority.digest());
@@ -1926,33 +1929,10 @@ impl TrellisClient {
         let deadline = Instant::now() + Duration::from_millis(self.timeout_ms);
         let result = timeout(deadline.saturating_duration_since(Instant::now()), async {
             let publish = [event.subject().to_owned()];
-            let prepared_under = self
-                .authorization_owner()
-                .own_authority()
-                .ok()
-                .map(|authority| authority.digest().to_owned());
             let lease = self
                 .generations
                 .acquire_for(&publish, &[], deadline)
                 .await?;
-            // Verifiers accept an event only inside the window of the
-            // authority that signs it. One prepared before this publish waited
-            // across a reconnect that renewed or replaced the session predates
-            // the new authority and would be refused downstream as forged.
-            let current = self.authorization_owner().own_authority()?;
-            if prepared_under.as_deref() != Some(current.digest())
-                && time::OffsetDateTime::parse(
-                    event.event_time(),
-                    &time::format_description::well_known::Rfc3339,
-                )
-                .is_ok_and(|at| at.unix_timestamp() < current.authority().not_before)
-            {
-                return Err(TrellisClientError::AuthorizationUnavailable(
-                    "the session was renewed while this event waited to publish; prepare it \
-                    again"
-                        .into(),
-                ));
-            }
             publish_prepared_event(
                 lease.nats(),
                 &self.auth,
