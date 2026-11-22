@@ -668,7 +668,7 @@ test("B28 user creation rotates the one-time setup receipt", async () => {
       // This administrator is permitted the setup step, so the terminal state
       // is the ready receipt. Wait for that actual condition rather than
       // counting headings while the separate setup request is still running.
-      await page.getByText("Password-reset token").first().waitFor({
+      await page.getByText("Password setup link").first().waitFor({
         state: "visible",
         timeout: 30_000,
       });
@@ -684,13 +684,10 @@ test("B28 user creation rotates the one-time setup receipt", async () => {
         .first()
         .innerText();
       const firstUrl = await page
-        .getByLabel("Password-reset token")
+        .getByLabel("Password setup link")
         .inputValue();
       await page.getByRole("button", { name: "Create another user" }).click();
-      assert.deepEqual(
-        await page.getByLabel("Password-reset token").count(),
-        0,
-      );
+      assert.deepEqual(await page.getByLabel("Password setup link").count(), 0);
       const secondUsername = `ct-b28-next-${ulid()}`.toLowerCase();
       await main.getByRole("textbox").nth(0).fill(secondUsername);
       await main.getByRole("textbox").nth(1).fill("Console B28 Next");
@@ -699,7 +696,7 @@ test("B28 user creation rotates the one-time setup receipt", async () => {
         state: "visible",
         timeout: 30_000,
       });
-      await page.getByText("Password-reset token").first().waitFor({
+      await page.getByText("Password setup link").first().waitFor({
         state: "visible",
         timeout: 30_000,
       });
@@ -709,7 +706,7 @@ test("B28 user creation rotates the one-time setup receipt", async () => {
         .innerText();
       assert.deepEqual(secondId !== firstId, true);
       assert.deepEqual(
-        (await page.getByLabel("Password-reset token").inputValue()) ===
+        (await page.getByLabel("Password setup link").inputValue()) ===
           firstUrl,
         false,
       );
@@ -754,18 +751,20 @@ test("a password reset receipt clears its token when closed", async () => {
       await row.waitFor({ state: "visible", timeout: 30_000 });
       await row.getByRole("button", { name: "Actions" }).click();
       await row.getByRole("button", { name: "Reset password" }).click();
-      await page.getByLabel("Password-reset token").waitFor({
+      await page.getByLabel("Password reset link", { exact: true }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
-      const url = await page.getByLabel("Password-reset token").inputValue();
+      const url = await page
+        .getByLabel("Password reset link", { exact: true })
+        .inputValue();
       assert.deepEqual(url.length > 0, true);
       await page
         .getByRole("button", {
           name: "Close password reset link dialog",
         })
         .click();
-      await page.getByLabel("Password-reset token").waitFor({
+      await page.getByLabel("Password reset link", { exact: true }).waitFor({
         state: "detached",
       });
     } finally {

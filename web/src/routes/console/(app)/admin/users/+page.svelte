@@ -31,6 +31,7 @@
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { getNotifications } from "$lib/notifications.svelte";
   import { getTrellis } from "$lib/trellis";
+  import { accountFlowUrl } from "$lib/config";
 
   const trellis = getTrellis();
   const notifications = getNotifications();
@@ -243,11 +244,10 @@
     }
 
     try {
-      await navigator.clipboard.writeText(resetResult.token);
-      notifications.success(
-        "Password-reset token copied to clipboard.",
-        "Copied",
+      await navigator.clipboard.writeText(
+        accountFlowUrl("reset", resetResult.token),
       );
+      notifications.success("Reset link copied.", "Copied");
     } catch (e) {
       notifications.error(errorMessage(e), "Copy failed");
     }
@@ -478,13 +478,14 @@
       </div>
       <div class="px-5 py-4">
         <p class="trellis-field-help">
-          Send this one-time code to {resetResult.label}. It works once.
+          Send this link to {resetResult.label} so they can choose a new password.
+          It works once.
         </p>
         <input
           class="input input-bordered input-sm mt-3 w-full trellis-identifier"
           readonly
-          value={resetResult.token}
-          aria-label="Password-reset token"
+          value={accountFlowUrl("reset", resetResult.token)}
+          aria-label="Password reset link"
         />
         <div class="mt-4 flex flex-wrap justify-end gap-2">
           <button

@@ -14,10 +14,66 @@
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import { getNotifications } from "$lib/notifications.svelte";
   import { getTrellis } from "$lib/trellis";
+  import { accountFlowUrl } from "$lib/config";
+  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
+  import { canPerform } from "$lib/console/operations.ts";
+  import { codecs } from "@oatscenter/trellis/generated";
+  import { ulid } from "ulid";
   import { onDestroy } from "svelte";
 
   const trellis = getTrellis();
   const notifications = getNotifications();
+  const authority = getConsoleAuthority();
+
+  // A user made here signs in with the password they set from the setup
+  // link, which works only while password sign-in is on for this Trellis.
+  let signIn = $state.raw<apis.auth.SignInSettingsGetOutput["settings"] | null>(
+    null,
+  );
+  let turningOn = $state(false);
+  const passwordsOff = $derived(signIn !== null && !signIn.localUsers);
+
+  // Read once the Console knows what this administrator may do. Without
+  // the authority to read the setting, the page says nothing about it.
+  let signInRequested = false;
+  $effect(() => {
+    if (signInRequested) return;
+    if (!canPerform(authority.authority, "signInSettingsGet")) return;
+    signInRequested = true;
+    void trellis
+      .signInSettingsGet({})
+      .orThrow()
+      .then(
+        (response) => (signIn = response.settings),
+        () => {},
+      );
+  });
+
+  async function turnOnPasswords(): Promise<void> {
+    if (signIn === null || turningOn) return;
+    turningOn = true;
+    try {
+      signIn = (
+        await trellis
+          .signInSettingsUpdate({
+            localUsers: true,
+            localSignUp: signIn.localSignUp,
+            passwordMinLength: signIn.passwordMinLength,
+            expectedRevision: signIn.revision,
+            idempotencyKey: codecs.ulid.decode(ulid()),
+          })
+          .orThrow()
+      ).settings;
+      notifications.success(
+        "People can now sign in with a username and password.",
+        "Password sign-in on",
+      );
+    } catch (cause) {
+      notifications.error(failureFrom(cause).message, "Not turned on");
+    } finally {
+      turningOn = false;
+    }
+  }
 
   function failureFrom(cause: unknown): UserCreationFailure {
     const projected = projectConsoleError(cause);
@@ -96,11 +152,10 @@
       return;
     }
     try {
-      await navigator.clipboard.writeText(setupReceipt.token);
-      notifications.success(
-        "Password-reset token copied to clipboard.",
-        "Copied",
+      await navigator.clipboard.writeText(
+        accountFlowUrl("reset", setupReceipt.token),
       );
+      notifications.success("Setup link copied.", "Copied");
     } catch (cause) {
       notifications.error(failureFrom(cause).message, "Copy failed");
     }
@@ -124,6 +179,21 @@
       >
     {/snippet}
   </PageToolbar>
+
+  {#if passwordsOff}
+    <Notice variant="warning">
+      Password sign-in is off, so people you add here can't sign in until you
+      turn it on.
+      {#if canPerform(authority.authority, "signInSettingsUpdate")}<button
+          class="btn btn-outline btn-sm ml-2"
+          type="button"
+          disabled={turningOn}
+          onclick={() => void turnOnPasswords()}
+          >Turn on password sign-in</button
+        >{:else}<a class="link ml-1" href={resolve("/admin/sign-in")}>Sign-in</a
+        >{/if}
+    </Notice>
+  {/if}
 
   {#if failure}
     <Notice
@@ -168,25 +238,25 @@
             class="flex min-w-0 flex-wrap items-center justify-between gap-2"
           >
             <div>
-              <h2 class="text-sm font-semibold">Password-reset token</h2>
+              <h2 class="text-sm font-semibold">Password setup link</h2>
               <p class="trellis-field-help mt-1">
-                Send this one-time token to the user to complete local password
-                setup. It expires {formatDate(setupReceipt.expiresAt)}.
+                Send this link to the person so they can choose a password. It
+                works once, until {formatDate(setupReceipt.expiresAt)}.
               </p>
             </div>
             <div class="flex flex-wrap gap-2">
               <button
                 class="btn btn-outline btn-sm"
                 type="button"
-                onclick={copySetupUrl}>Copy token</button
+                onclick={copySetupUrl}>Copy link</button
               >
             </div>
           </div>
           <input
             class="input input-bordered input-sm mt-3 w-full trellis-identifier"
             readonly
-            value={setupReceipt.token}
-            aria-label="Password-reset token"
+            value={accountFlowUrl("reset", setupReceipt.token)}
+            aria-label="Password setup link"
           />
           <p class="trellis-field-help mt-2">
             A lost setup link is not recoverable; creating another one is a new

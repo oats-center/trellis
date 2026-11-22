@@ -61,6 +61,16 @@ export const APP_CONFIG: RuntimeAppConfig = {
   },
 };
 
+/**
+ * The Trellis page where a person completes a one-time account flow, such as
+ * choosing a password from a setup or reset link (`kind` `reset`).
+ */
+export function accountFlowUrl(kind: "reset", token: string): string {
+  const url = new URL(`/account/${kind}`, APP_CONFIG.authUrl);
+  url.searchParams.set("token", token);
+  return url.toString();
+}
+
 /** The Console's OAuth identity; its generated request already asks for administration optionally. */
 export function consoleAuthOptions(): ClientAuthOptions {
   return {
