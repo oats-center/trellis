@@ -339,7 +339,12 @@ test("what an administrator types in the Console survives authority renewal, iss
         }
       },
       browserRuntimeOptions({
-        authorization: { contextLifetimeSeconds: AUTHORITY_LIFETIME_SECONDS },
+        authorization: {
+          contextLifetimeSeconds: AUTHORITY_LIFETIME_SECONDS,
+          // A rotation announces its key and Auth signs with it after this
+          // delay; a short one keeps the rotation step quick.
+          issuerActivationDelaySeconds: 1,
+        },
       }),
     );
   } finally {
