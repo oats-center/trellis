@@ -217,11 +217,18 @@ impl<D: WebhookDescriptor> WebhookHandle<D> {
                         }
                     }
                     Err(error) => {
+                        // The error's `Display` is the application's code and
+                        // runs in this loop; a panic in it must not end the
+                        // endpoint's decide subscription.
+                        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            error.to_string()
+                        }))
+                        .unwrap_or_else(|_| "[unprintable cause]".to_owned());
                         tracing::error!(
                             delivery_id,
                             route = endpoint,
                             error_type = "UnexpectedError",
-                            %error,
+                            error,
                             "webhook decide handler failed",
                         );
                     }

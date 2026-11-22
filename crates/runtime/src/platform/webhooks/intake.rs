@@ -75,6 +75,8 @@ struct Refusal {
     reason: String,
     /// Counts toward the client's failed-request budget.
     failure: bool,
+    /// A verifier refused the request, rather than a check before them.
+    verified: bool,
 }
 
 fn refuse(status: StatusCode, outcome: &'static str, reason: impl Into<String>) -> Refusal {
@@ -83,6 +85,15 @@ fn refuse(status: StatusCode, outcome: &'static str, reason: impl Into<String>) 
         outcome,
         reason: reason.into(),
         failure: matches!(outcome, "rejected"),
+        verified: false,
+    }
+}
+
+/// A verifier's refusal: a verdict on the request, which endpoint health reads.
+fn reject(status: StatusCode, reason: &'static str) -> Refusal {
+    Refusal {
+        verified: true,
+        ..refuse(status, "rejected", reason)
     }
 }
 
@@ -159,6 +170,7 @@ async fn handle(
                         outcome: refusal.outcome,
                         reason: Some(refusal.reason.clone()),
                         status: Some(refusal.status.as_u16()),
+                        reached_verification: refusal.verified,
                         ..Outcome::default()
                     },
                 )
@@ -394,9 +406,8 @@ async fn intake(
         match verifier {
             WebhookVerifier::Address { ranges } => {
                 if !endpoint.allows(ranges, client) {
-                    return Err(fail(refuse(
+                    return Err(fail(reject(
                         StatusCode::FORBIDDEN,
-                        "rejected",
                         "client address outside the allowed ranges",
                     )));
                 }
@@ -439,9 +450,8 @@ async fn intake(
                 });
                 strip(&mut stored, name.as_deref(), query.as_deref());
                 let Some(matched) = matched else {
-                    return Err(fail(refuse(
+                    return Err(fail(reject(
                         StatusCode::UNAUTHORIZED,
-                        "rejected",
                         "token does not match",
                     )));
                 };
@@ -493,9 +503,8 @@ async fn intake(
                 let Some(matched) =
                     secrets.matching(&presented, |secret| format!("{user}:{secret}").into_bytes())
                 else {
-                    return Err(fail(refuse(
+                    return Err(fail(reject(
                         StatusCode::UNAUTHORIZED,
-                        "rejected",
                         "basic credentials do not match",
                     )));
                 };
@@ -567,6 +576,7 @@ async fn intake(
                                     outcome: "rejected",
                                     reason: Some(reason),
                                     status: Some(401),
+                                    reached_verification: true,
                                     ..Outcome::default()
                                 },
                             )

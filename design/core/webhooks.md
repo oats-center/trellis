@@ -790,6 +790,15 @@ holds:
   ignored, duplicate, or rejected) was rejected, such as
   `the latest request was rejected: signature does not match`.
 
+A verdict comes from the verifiers: a signature, token, Basic credential or
+client address that does not match is one. A request refused before the
+verifiers run, for its method, header count, body size, content encoding or a
+rate limit, is recorded as `rejected` or `limited` like any other attempt, but
+it is no verdict and leaves the check as it was. A sender that sends one
+oversized request does not hide that its signatures verify, and one that sends
+a bad signature is not cleared by an oversized request after it. Each record
+stores whether its request reached a verdict.
+
 It recovers on its own: setting the secret clears the first, and a later
 accepted request, or 10 minutes without a rejection, clears the last. A
 degraded check makes the instance degraded, and the check's name and summary

@@ -285,6 +285,16 @@ refusal at `warn`; a declared outcome or invalid input at `info`. A Rust
 `DeclaredRpcError` that stands in for an internal failure carries its cause
 with `with_cause`, which only the log line repeats.
 
+Writing the line never fails the request it describes. The reply, the event's
+redelivery and a background task's result go ahead even when a cause cannot be
+printed. In TypeScript each cause's message is at most 4096 characters, and an
+object cause prints as JSON with cycles marked `"[Circular]"`, BigInts as
+`"<digits>n"` and nesting past six levels cut. A cause that JSON cannot print,
+for example because a getter throws, falls back to `String(cause)`, and to
+`"[unprintable cause]"` when that throws too. In Rust, a webhook decide
+handler's error is the one application type the runtime formats itself; a
+panic in its `Display` logs `"[unprintable cause]"` and the decide loop goes on.
+
 Console shows an unexpected failure as `Something went wrong on the server.
 Reference: <error_id>`; the CLI and Rust callers end the error text with
 `Reference: <error_id>`.

@@ -41,6 +41,16 @@ await service
         event.value === "fail" || (event.value === "replay" && attempt <= 3);
       stats.active--;
       if (fails) throw new Error("fixture handler failure");
+      if (event.value === "unprintable") {
+        // A cause that refers to itself and has a getter that throws.
+        const cause: Record<string, unknown> = {
+          get broken(): never {
+            throw new Error("getter failed");
+          },
+        };
+        cause.self = cause;
+        throw new Error("fixture handler failure", { cause });
+      }
       stats.successes.push(event.value);
     },
     {},

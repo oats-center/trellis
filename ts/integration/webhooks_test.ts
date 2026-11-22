@@ -1585,6 +1585,40 @@ test("each webhook endpoint feeds its service's health: degraded while a secret 
     );
     assert.equal((await signed('{"id":"evt_y"}')).status, 200);
     await check("signed", (entry) => entry.status === "ok");
+
+    // A request refused before verification, here one over the size limit,
+    // is kept in the records but reached no verdict, so the endpoint stays
+    // ok in every heartbeat after it. A signature rejection degrades it.
+    assert.equal((await signed("x".repeat(5 * 1024))).status, 413);
+    const { attempts } = await runtime.callAdminRpc("webhooksAttemptsQuery", {
+      service: key.deploymentId,
+      endpoint: "signed",
+    });
+    assert.equal(attempts[0]?.reason, "body over the size limit");
+    // Heartbeats come every second; one stamped this late was checked after
+    // the refusal.
+    const refusedAt = Date.now() + 1500;
+    const after = await runtime.waitFor(async () => {
+      const { instances } = await observer
+        .healthInspect({
+          contractId: participant.identity,
+          participantKind: "service",
+        })
+        .orThrow();
+      const sample = instances.find(
+        (instance) => instance.instanceId === key.instanceId,
+      )?.latestSample;
+      return sample && Date.parse(sample.sample.time) > refusedAt
+        ? sample.checks.find((entry) => entry.name === "webhook:signed")
+        : undefined;
+    });
+    assert.equal(after.status, "ok", after.summary);
+    assert.equal((await signed('{"id":"evt_z"}', "wrong-key")).status, 401);
+    const degraded = await check("signed", (entry) => entry.status !== "ok");
+    assert.equal(
+      degraded.summary,
+      "the latest request was rejected: signature does not match",
+    );
     await service.stop();
   });
 });

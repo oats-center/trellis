@@ -230,6 +230,22 @@ test("TypeScript RPC, Operation, job and event failures are each logged once und
       // The cause stays in the log: the caller's error never carries it.
       assert(!JSON.stringify(failed.error).includes(CAUSE));
 
+      // A cause that cannot be serialized still leaves the caller its error
+      // and reference, and its line a plain description of the cause. The
+      // service goes on answering.
+      const unprintable = await client.echo({ value: "unprintable" });
+      assert(unprintable.isErr());
+      const unprintableReference = references(unprintable.error);
+      const unprintableLine = JSON.parse(
+        await lineWith(runtime, () => output, unprintableReference.id),
+      ) as Record<string, unknown>;
+      assert.equal(unprintableLine.request_id, unprintableReference.requestId);
+      assert.deepEqual(unprintableLine.cause, [
+        { type: "Error", message: "echo failed" },
+        { type: "object", message: "[object Object]" },
+      ]);
+      assert((await client.echo({ value: "after" })).isOk());
+
       // A failed Operation's snapshot carries the error ID and trace; the line
       // adds the Operation ID, the caller that started it and the cause.
       const work = await client.work({ value: "fail" }).start().orThrow();
@@ -301,6 +317,36 @@ test("TypeScript RPC, Operation, job and event failures are each logged once und
         assert(tracedHere(delivery.trace_id), JSON.stringify(delivery));
         assert.deepEqual(delivery.cause, [
           { type: "Error", message: "fixture handler failure" },
+        ]);
+      }
+
+      // A handler failure whose cause cannot be serialized is logged with a
+      // plain description and still retried.
+      await publishTraced(() =>
+        alpha.publishAlpha({ site: "one", value: "unprintable" }).orThrow(),
+      );
+      const otherEvent = () =>
+        [...eventOutput().matchAll(/"event_id":"([^"]+)"/g)]
+          .map((match) => match[1])
+          .find((id) => id !== eventId);
+      await runtime.waitFor(() => otherEvent() !== undefined);
+      const unprintableEventId = otherEvent()!;
+      const retried = (
+        await linesWith(
+          runtime,
+          eventOutput,
+          `"event_id":"${unprintableEventId}"`,
+          EVENT_DELIVERIES,
+        )
+      ).map((text) => JSON.parse(text) as Record<string, unknown>);
+      assert.deepEqual(
+        retried.map((delivery) => delivery.delivery),
+        [1, 2, 3],
+      );
+      for (const delivery of retried) {
+        assert.deepEqual(delivery.cause, [
+          { type: "Error", message: "fixture handler failure" },
+          { type: "object", message: "[object Object]" },
         ]);
       }
     } finally {
