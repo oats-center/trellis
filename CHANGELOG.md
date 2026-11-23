@@ -82,6 +82,10 @@ deviceName })`); `trellis login` sends the hostname, and the confirmation
 
 ### Fixed
 
+- trellis-server stops within about a second while its database is locked;
+  background loops stop mid-pass and a warning names the storage calls still
+  waiting. The TypeScript testkit keeps a runtime's ports reserved across
+  restarts, so another runtime can't take them.
 - A deployment removed while an instance is enrolling no longer leaves its
   Operation storage behind, and a removed deployment's webhook records are
   finished even when its intake stream was already deleted.
