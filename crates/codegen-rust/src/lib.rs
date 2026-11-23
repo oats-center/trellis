@@ -3749,7 +3749,7 @@ fn main() {
                 root.join("crates/protocol"),
             )
         };
-        let target = root.join("target/codegen-consumers");
+        let target = root.join("target/codegen-consumers/sdk-upgrade");
         let run = || {
             let result = Command::new("cargo")
                 .args(["run", "--quiet", "--offline"])
@@ -3925,6 +3925,11 @@ fn main() {
                 &format!("trellis-rs = \"{}\"", env!("CARGO_PKG_VERSION")),
                 &format!("trellis-rs = {{ path = {runtime:?} }}"),
             );
+        // Each fixture has its own target directory. Cargo locks a shared one
+        // only while compiling, and rebuilding a crate in place first deletes
+        // its rlib, so another fixture's build could break this one's tests
+        // and doctests.
+        let target = runtime.join("../../target/codegen-consumers/current-abi");
         // This fixture is independent even when TMPDIR is inside the repository.
         fs::write(
             output.path().join("Cargo.toml"),
@@ -4170,10 +4175,7 @@ fn download_output_round_trips_transfer_grant() {
         assert!(Command::new("cargo")
             .arg("test")
             .arg("--quiet")
-            .env(
-                "CARGO_TARGET_DIR",
-                runtime.join("../../target/codegen-consumers")
-            )
+            .env("CARGO_TARGET_DIR", &target)
             .current_dir(output.path())
             .status()
             .unwrap()
@@ -4190,10 +4192,7 @@ fn download_output_round_trips_transfer_grant() {
         .unwrap();
         let mismatch = Command::new("cargo")
             .args(["check", "--quiet", "--example", "mismatched_model"])
-            .env(
-                "CARGO_TARGET_DIR",
-                runtime.join("../../target/codegen-consumers"),
-            )
+            .env("CARGO_TARGET_DIR", &target)
             .current_dir(output.path())
             .output()
             .unwrap();
@@ -4211,10 +4210,7 @@ fn download_output_round_trips_transfer_grant() {
         .unwrap();
         let mismatched_abi = Command::new("cargo")
             .args(["check", "--quiet", "--example", "mismatched_abi"])
-            .env(
-                "CARGO_TARGET_DIR",
-                runtime.join("../../target/codegen-consumers"),
-            )
+            .env("CARGO_TARGET_DIR", &target)
             .current_dir(output.path())
             .output()
             .unwrap();
@@ -4232,10 +4228,7 @@ fn download_output_round_trips_transfer_grant() {
         .unwrap();
         let failure = Command::new("cargo")
             .args(["check", "--quiet", "--example", "unselected_write"])
-            .env(
-                "CARGO_TARGET_DIR",
-                runtime.join("../../target/codegen-consumers"),
-            )
+            .env("CARGO_TARGET_DIR", &target)
             .current_dir(output.path())
             .output()
             .unwrap();
@@ -4275,6 +4268,7 @@ fn download_output_round_trips_transfer_grant() {
                 &format!("trellis-rs = \"{}\"", env!("CARGO_PKG_VERSION")),
                 &format!("trellis-rs = {{ path = {runtime:?} }}"),
             );
+        let target = runtime.join("../../target/codegen-consumers/distinct-channels");
         // This fixture is independent even when TMPDIR is inside the repository.
         fs::write(
             output.path().join("Cargo.toml"),
@@ -4352,10 +4346,7 @@ fn generated_descriptors_validate_each_channel() {
         assert!(Command::new("cargo")
             .arg("test")
             .arg("--quiet")
-            .env(
-                "CARGO_TARGET_DIR",
-                runtime.join("../../target/codegen-consumers")
-            )
+            .env("CARGO_TARGET_DIR", &target)
             .current_dir(output.path())
             .status()
             .unwrap()
@@ -4401,7 +4392,7 @@ fn generated_descriptors_validate_each_channel() {
             ),
         )
         .unwrap();
-        let target = runtime.join("../../target/codegen-consumers");
+        let target = runtime.join("../../target/codegen-consumers/rustdoc");
         let result = Command::new("cargo")
             .args(["doc", "--quiet", "--no-deps"])
             .env("CARGO_TARGET_DIR", &target)
