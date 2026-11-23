@@ -11,6 +11,10 @@ import { createInterface } from "node:readline";
 import { ulid } from "ulid";
 import { codecs } from "@oatscenter/trellis/generated";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
+import { discoverNativeOAuth } from "../native.ts";
+
+/** A short activation delay, an ordinary setting, keeps the rotation quick. */
+const quickActivation = { authorization: { issuerActivationDelaySeconds: 1 } };
 
 test(
   "a refused refresh or trust check keeps the login, while a real consumed refresh whose HTTP response is lost cannot be retried and old session references cannot release custody",
@@ -191,10 +195,20 @@ test(
         child.stdin.write("rotate\n");
         while (tokens === beforeRotation)
           await new Promise((resolve) => setTimeout(resolve, 20));
-        await runtime.callAdminRpc("authIssuersRotate", {
+        const rotated = await runtime.callAdminRpc("authIssuersRotate", {
           expectedCurrentKeyId: rotate.slice("rotate ".length),
           idempotencyKey: codecs.ulid.decode(ulid()),
         });
+        // A rotation announces its key and activates it after the activation
+        // delay. Only a successor signed by the new key makes the client
+        // re-check trust, so release the held request once Trellis signs with
+        // it: discovery, asked directly, names it as the signer.
+        await runtime.waitFor(
+          async () =>
+            (await discoverNativeOAuth(runtime.trellisUrl)).orThrow().trust
+              .issuer.keyId === rotated.keyId,
+          { timeoutMs: 15_000, intervalMs: 100 },
+        );
         refuseDiscovery = true;
         release();
         assert.equal(await nextLine(), "ready");
@@ -222,6 +236,6 @@ test(
         proxy.close();
         forwarding.close();
       }
-    });
+    }, quickActivation);
   },
 );
