@@ -201,9 +201,16 @@ trellis login https://trellis.example.com
 ```
 
 `/readyz` returns `503` while Trellis starts and `200` with its version after.
-The login opens the device sign-in. Once you approve it, the CLI connects to
-NATS over the WebSocket on port 443, which proves the whole path works. The
-Console is at `https://trellis.example.com/console`.
+The login prints a link, `https://trellis.example.com/device`, and a code such
+as `WDJB-MJHT`. Open the link in any browser. If that browser is already signed
+in to Trellis, it shows who and asks you to continue or use a different
+account; otherwise you sign in first. Then type the code. The next page shows
+what asked to sign in: the app (Trellis CLI), when it asked and from which
+address. Check it is your terminal and choose **Yes, this is my device**, or
+**Cancel** if it isn't, which stops the login. Last comes the usual page of
+what the CLI may do. Once you allow it, the CLI connects to NATS over the
+WebSocket on port 443, which proves the whole path works. The Console is at
+`https://trellis.example.com/console`.
 
 With the service stopped, `sudo -u trellis trellis-server check --system`
 connects with every configured credential and checks that the streams,

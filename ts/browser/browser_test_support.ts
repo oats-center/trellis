@@ -165,6 +165,41 @@ export async function confirmAdministrationIfAsked(
       .click();
 }
 
+/**
+ * Takes a device's Device Code sign-in through the Portal as a person does:
+ * opens `verificationUri`, signs in with `credentials` when asked or else
+ * continues as the account already signed in, types `userCode`, and confirms
+ * the device is theirs. The page is then on the consent step.
+ */
+export async function enterDeviceCode(
+  page: Page,
+  verificationUri: string,
+  userCode: string,
+  credentials: { username: string; password: string },
+): Promise<void> {
+  await page.goto(verificationUri);
+  const signIn = page.getByLabel("Username", { exact: true });
+  const account = page.getByRole("heading", { name: "Device activation" });
+  const step = await Promise.any([
+    signIn.waitFor().then(() => "signIn" as const),
+    account.waitFor().then(() => "account" as const),
+  ]);
+  if (step === "signIn") {
+    await signIn.fill(credentials.username);
+    await page
+      .getByLabel("Password", { exact: true })
+      .fill(credentials.password);
+    await page.getByRole("button", { name: "Sign in" }).click();
+  } else {
+    await page.getByRole("link", { name: "Continue", exact: true }).click();
+  }
+  await page.getByLabel("Code", { exact: true }).fill(userCode);
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Yes, this is my device", exact: true })
+    .click();
+}
+
 /** Completes the local sign-in form when the portal displays it. */
 export async function signInIfPrompted(
   page: Page,
@@ -408,16 +443,10 @@ export async function loginCliAsAdministrator(
       }
     }
     assert.ok(challenge);
-    await page.goto(challenge.loginUrl);
-    await page.getByLabel("Code", { exact: true }).fill(challenge.userCode);
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
-    await page
-      .getByLabel("Username", { exact: true })
-      .fill(runtime.adminUsername);
-    await page
-      .getByLabel("Password", { exact: true })
-      .fill(runtime.adminPassword);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await enterDeviceCode(page, challenge.loginUrl, challenge.userCode, {
+      username: runtime.adminUsername,
+      password: runtime.adminPassword,
+    });
     await page
       .getByRole("heading", { name: /wants to use your account/ })
       .waitFor();

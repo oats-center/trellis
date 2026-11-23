@@ -2,6 +2,8 @@
 
 use std::{sync::Arc, time::UNIX_EPOCH};
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
 use super::super::oauth::{OAuthEngine, OAuthStorage};
 use super::super::sqlite::id;
 use super::super::tests::*;
@@ -54,10 +56,41 @@ async fn browsers_get_portal_pages_for_unusable_flows_and_one_answer_for_every_u
         .unwrap();
     let now = crate::clock::unix_now();
     let session = authority.create_portal_session(now).unwrap();
+    let signed_in = URL_SAFE_NO_PAD.encode([23; 32]);
+    authority
+        .portal_local_login(
+            &session.cookie,
+            &session.csrf,
+            &signed_in,
+            ("admin", "a strong bootstrap password"),
+            &id(),
+            now,
+        )
+        .unwrap();
     let cookies = format!(
-        "__Host-trellis-portal={}; __Host-trellis-portal-csrf={}",
-        session.cookie, session.csrf
+        "__Host-trellis-portal={signed_in}; __Host-trellis-portal-csrf={}",
+        session.csrf
     );
+    // The code step of a device sign-in this person signed in for.
+    let entering = id();
+    engine
+        .server
+        .store()
+        .store_authorization(
+            &entering,
+            &super::portal::PortalAuthorization {
+                presentation: None,
+                session_id: session.session_id.clone(),
+                request: super::portal::ConsentRequest::Device {
+                    device_code: None,
+                    confirmed: false,
+                },
+                public_jwk: serde_json::Value::Null,
+                expires_at: now + 600,
+            },
+            None,
+        )
+        .unwrap();
     let at = |seconds: i64| UNIX_EPOCH + std::time::Duration::from_secs(seconds as u64);
     for (device_code, user_code, state, expires) in [
         (
@@ -97,7 +130,11 @@ async fn browsers_get_portal_pages_for_unusable_flows_and_one_answer_for_every_u
             .header("Origin", &origin)
             .header("Cookie", &cookies)
             .header("Accept", accept)
-            .form(&[("csrf", session.csrf.as_str()), ("user_code", user_code)])
+            .form(&[
+                ("csrf", session.csrf.as_str()),
+                ("transaction", entering.as_str()),
+                ("user_code", user_code),
+            ])
             .send()
     };
     // Unknown, expired and used codes get one identical page, so the page
@@ -144,7 +181,7 @@ async fn browsers_get_portal_pages_for_unusable_flows_and_one_answer_for_every_u
                 public_jwk: serde_json::json!({}),
                 expires_at: now - 1,
             },
-            "native-client",
+            Some("native-client"),
         )
         .unwrap();
     for page in ["login", "consent"] {
@@ -184,7 +221,8 @@ async fn browsers_get_portal_pages_for_unusable_flows_and_one_answer_for_every_u
         .json::<serde_json::Value>()
         .await
         .unwrap();
-    assert_eq!(api["error"], "access_denied");
+    // API callers keep the JSON answer for the lapsed authorization.
+    assert_eq!(api["error"], "invalid_request");
     let _ = stop.send(());
     host.await.unwrap();
 }

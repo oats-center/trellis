@@ -23,6 +23,7 @@ import {
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
   browserRuntimeOptions,
+  enterDeviceCode,
   launchProfile,
 } from "./browser_test_support.ts";
 
@@ -107,20 +108,10 @@ test("an enrolled device uses an independently browser-consented native companio
       try {
         const flow = (await custody.startDevice(request)).orThrow();
         const page = await context.newPage();
-        await page.goto(flow.verificationUri);
-        await page.getByLabel("Code", { exact: true }).fill(flow.userCode);
-        await page
-          .getByRole("button", { name: "Continue", exact: true })
-          .click();
-        await page
-          .getByLabel("Username", { exact: true })
-          .fill(runtime.adminUsername);
-        await page
-          .getByLabel("Password", { exact: true })
-          .fill(runtime.adminPassword);
-        await page
-          .getByRole("button", { name: "Sign in", exact: true })
-          .click();
+        await enterDeviceCode(page, flow.verificationUri, flow.userCode, {
+          username: runtime.adminUsername,
+          password: runtime.adminPassword,
+        });
         await page
           .getByRole("heading", { name: /wants to use your account/ })
           .waitFor();

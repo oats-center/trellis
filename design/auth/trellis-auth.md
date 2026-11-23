@@ -447,8 +447,9 @@ Portal CSP allows same-origin images for the logo.
 #### Who is signed in, and using a different account
 
 Every Portal page that continues as an existing Portal login says who that is:
-the consent page (app, CLI, native and Device Code sign-ins alike), the device
-approval page and the identity-link page show the signed-in person by name with
+the consent page (app, CLI, native and Device Code sign-ins alike), the Device
+Code account, code and device steps, the device approval page and the
+identity-link page show the signed-in person by name with
 their username or email, and offer "Use a different account". An identity link
 opened while signed in as someone other than its target says so and offers only
 the switch.
@@ -489,7 +490,7 @@ back in.
 A browser never sees a raw JSON error from the Portal. The router's outermost
 layer turns an OAuth JSON error into a server-rendered Portal page, keeping its
 status, for any request that accepts `text/html` and for any `GET` of a page
-route (`/authorize`, `/login`, `/consent`, `/logout`, `/account/*`,
+route (`/authorize`, `/device`, `/login`, `/consent`, `/logout`, `/account/*`,
 `/portal/oidc/*`). API and `fetch` callers keep the JSON. The page says what
 happened in that flow: an invalid sign-in link, an expired or used sign-in, an
 expired or used password or identity link, a full request budget, or a server
@@ -552,16 +553,51 @@ the same way. An app asking for nothing skips it only when registered.
 
 Registered-client implied capability consent is browser-only and limited to the
 configured subset, the requested selection and the user's current entitlement.
-It never substitutes for native approval. Device Code consent shows the user
-code beside a warning to compare it with the device and to stop if someone else
-sent the code or link; it is not a separate required confirmation. Device codes
-last 15 minutes. The code is always typed: the issuer does not return
-`verification_uri_complete`, `/device` never fills its field from `?user_code=`,
-and native clients print (and may QR-encode) only the plain `/device` link
-beside the code. A link someone else sends therefore can't carry the code of
-their device. The consent page shows, beside the code, when the device asked
-and the network address its `/device_authorization` request came from (the
-trusted proxy's forwarded client, as for request budgets).
+It never substitutes for native approval. Device codes last 15 minutes. The
+code is always typed: the issuer does not return `verification_uri_complete`,
+`/device` never takes a code from its link, and native clients print (and may
+QR-encode) only the plain `/device` link beside the code. A link someone else
+sends therefore can't carry the code of their device.
+
+#### Device Code sign-in steps
+
+A Device Code sign-in in the Portal takes four steps, in this order, and the
+server enforces the order:
+
+1. **Account.** `GET /device` opens a device transaction on this browser's
+   portal session, as `/authorize` does for an app, with no code yet. Someone
+   signed in to the Portal goes to `/device?transaction=…&account=confirm`, a
+   "Device activation" card naming them (profile picture or initials, name,
+   username or email) with **Continue** and **Use a different account**, which
+   is the ordinary `/portal/switch-account` for that transaction. Anyone else
+   goes to `/login?transaction=…`. Signing in by password or OIDC returns to
+   `/consent?transaction=…`, which sends an unfinished device transaction back
+   to `/device?transaction=…`, so a fresh sign-in lands on the code step.
+   Sign-up isn't offered there: the app, whose client settings allow it, is
+   only known from the code.
+2. **Code.** `/device?transaction=…` asks for the code, formatted as
+   `XXXX-XXXX` while typed. `POST /portal/device` takes the CSRF token, the
+   transaction and the code, requires the Portal login the transaction is bound
+   to, spends the user-code entry rate limit, and moves the transaction on to
+   that device grant. Unknown, expired and used codes keep the one answer
+   described above.
+3. **Device.** The same URL then shows what the device's request carries: the
+   app's name and kind (an installed app, registered by the administrator or
+   unverified), the code, when the device asked, and the network address its
+   `/device_authorization` request came from (the trusted proxy's forwarded
+   client, as for request budgets), beside a warning to cancel if someone else
+   sent the code or link. The request carries nothing else, such as a device
+   name. `POST /portal/device/confirm` with `decision=confirm` marks the
+   transaction confirmed and goes to `/consent`; `decision=cancel` refuses the
+   device grant, so the device gets `access_denied`, and shows the done page.
+4. **Consent.** The ordinary consent page, with the rules above; native and
+   Device Code sign-ins always show it. Approving shows "Your device is
+   connected. You can close this window."
+
+Until a device transaction has its code and the person's confirmation,
+`/consent` redirects back to `/device?transaction=…`, and
+`GET /portal/authorization/{transaction}` and `POST /portal/approve` (approve
+or deny) refuse it with `invalid_request`, so no step can be skipped.
 
 Code and device consent presentations are retained in their encrypted,
 expiring authorization artifacts. Approval submits the presentation identity and

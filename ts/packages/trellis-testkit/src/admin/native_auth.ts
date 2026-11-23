@@ -135,34 +135,42 @@ export async function approveNativeDeviceCode(options: {
     }
     return response;
   };
-  const portal = await request("/portal/session", new URLSearchParams());
-  if (!portal.ok) throw new Error("Portal session denied");
+  // The verification page opens a device sign-in on a new Portal session,
+  // which signs in first, then takes the code, then the device's confirmation.
+  const portal = await request("/device");
   await portal.body?.cancel();
   const csrf = cookies.get("__Host-trellis-portal-csrf");
-  if (!csrf) throw new Error("Portal session omitted CSRF cookie");
+  const signIn = new URL(portal.headers.get("Location") ?? "", options.issuer);
+  const transaction = signIn.searchParams.get("transaction");
+  if (!csrf || signIn.pathname !== "/login" || !transaction)
+    throw new Error("Device page did not ask to sign in");
   const login = await request(
     "/portal/login",
     new URLSearchParams({
       csrf,
       username: options.username,
       password: options.password,
-      request_id: ulid(),
+      request_id: transaction,
     }),
   );
   if (!login.ok) throw new Error("Portal local login denied");
   await login.body?.cancel();
-  const confirmation = await request(
+  const entered = await request(
     "/portal/device",
-    new URLSearchParams({ csrf, user_code: options.userCode }),
+    new URLSearchParams({ csrf, transaction, user_code: options.userCode }),
   );
-  const location = confirmation.headers.get("Location");
-  if (confirmation.status < 300 || confirmation.status >= 400 || !location)
+  await entered.body?.cancel();
+  if (entered.headers.get("Location") !== `/device?transaction=${transaction}`)
+    throw new Error("Device code denied");
+  const confirmed = await request(
+    "/portal/device/confirm",
+    new URLSearchParams({ csrf, transaction, decision: "confirm" }),
+  );
+  await confirmed.body?.cancel();
+  if (
+    confirmed.headers.get("Location") !== `/consent?transaction=${transaction}`
+  )
     throw new Error("Device confirmation denied");
-  await confirmation.body?.cancel();
-  const consent = new URL(location, options.issuer);
-  const transaction = consent.searchParams.get("transaction");
-  if (consent.origin !== options.issuer || !transaction)
-    throw new Error("Invalid consent location");
   const response = await request(
     `/portal/authorization/${encodeURIComponent(transaction)}`,
   );

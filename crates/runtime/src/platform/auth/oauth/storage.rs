@@ -490,29 +490,63 @@ impl OAuthStorage {
         &self,
         id: &str,
         flow: &super::portal::PortalAuthorization,
-        client: &str,
+        client: Option<&str>,
+    ) -> Result<(), StorageError> {
+        self.transaction(|connection| self.write_authorization(connection, id, flow, client))
+    }
+
+    /// Moves this browser's pending authorization `id` on from its `expected`
+    /// request to `next`, in one step. A flow already used, expired, moved on
+    /// by another request, or kept for another Portal session stays as it is.
+    pub(super) fn advance_authorization(
+        &self,
+        id: &str,
+        expected: &super::portal::PortalAuthorization,
+        next: &super::portal::PortalAuthorization,
+        client: Option<&str>,
+        now: i64,
     ) -> Result<(), StorageError> {
         self.transaction(|connection| {
-            self.write(
-                connection,
-                Record {
-                    kind: "authorization",
-                    key: id,
-                    value: flow,
-                    client: Some(client),
-                    grant: None,
-                    family: None,
-                    user_code: None,
-                    established: SystemTime::now(),
-                    expires: Some(
-                        UNIX_EPOCH
-                            + std::time::Duration::from_secs(
-                                flow.expires_at.try_into().map_err(failure)?,
-                            ),
-                    ),
-                },
-            )
+            let current: super::portal::PortalAuthorization = self
+                .read(connection, "authorization", id)?
+                .ok_or_else(|| StorageError::new("authorization unavailable"))?;
+            if current.session_id != expected.session_id
+                || current.expires_at <= now
+                || serde_json::to_value(&current.request).map_err(failure)?
+                    != serde_json::to_value(&expected.request).map_err(failure)?
+            {
+                return Err(StorageError::new("authorization unavailable"));
+            }
+            self.write_authorization(connection, id, next, client)
         })
+    }
+
+    fn write_authorization(
+        &self,
+        connection: &Connection,
+        id: &str,
+        flow: &super::portal::PortalAuthorization,
+        client: Option<&str>,
+    ) -> Result<(), StorageError> {
+        self.write(
+            connection,
+            Record {
+                kind: "authorization",
+                key: id,
+                value: flow,
+                client,
+                grant: None,
+                family: None,
+                user_code: None,
+                established: SystemTime::now(),
+                expires: Some(
+                    UNIX_EPOCH
+                        + std::time::Duration::from_secs(
+                            flow.expires_at.try_into().map_err(failure)?,
+                        ),
+                ),
+            },
+        )
     }
 
     pub(super) fn take_authorization(
@@ -1697,7 +1731,7 @@ mod tests {
                         expires_at: now + 600,
                         presentation: None,
                     },
-                    &client_id,
+                    Some(&client_id),
                 )
                 .unwrap();
             transactions.push(transaction);

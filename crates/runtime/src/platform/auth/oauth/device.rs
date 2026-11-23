@@ -5,7 +5,7 @@ use super::super::sqlite::blocking;
 use super::super::{GrantApproval, Mutation};
 use super::{OAuthEngine, RequestedAuthority, TokenBinding};
 use axum::{
-    extract::{Form, State},
+    extract::{Form, Query, State},
     http::{header, HeaderMap},
     response::{IntoResponse, Redirect, Response},
     Json,
@@ -107,8 +107,221 @@ pub(super) async fn page(State(engine): State<Arc<OAuthEngine>>, headers: Header
     }
 }
 
-/// Explicit entry/confirmation is separate from approval: deep links never make
-/// an authority decision and the normal consent page shows the actual client.
+/// `GET /device`, the verification URL a device shows. Without `transaction`
+/// it starts a new device sign-in for this browser: someone signed in to the
+/// Portal is asked whether to continue as themselves, anyone else signs in
+/// first. With `transaction` it shows that sign-in's next step: the code
+/// entry, then the device's details to confirm. A code is never taken from
+/// the link, so a link someone else sent can't carry their device's code.
+pub(super) async fn entry(
+    State(engine): State<Arc<OAuthEngine>>,
+    headers: HeaderMap,
+    Query(pairs): Query<Vec<(String, String)>>,
+) -> Response {
+    let form = match super::http::fields(pairs) {
+        Ok(form) => form,
+        Err(response) => return super::http::error(response.error),
+    };
+    let cookies = super::http::portal_cookie(&headers, "__Host-trellis-portal").zip(
+        super::http::portal_cookie(&headers, "__Host-trellis-portal-csrf"),
+    );
+    let now = crate::clock::unix_now();
+    match form.get("transaction") {
+        None => start_sign_in(&engine, cookies, now).await,
+        Some(transaction) if ulid::Ulid::from_string(transaction).is_ok() => {
+            let account = form.get("account").is_some_and(|ask| ask == "confirm");
+            step(&engine, cookies, transaction, account, now).await
+        }
+        Some(_) => super::http::error(ErrorCode::InvalidRequest),
+    }
+}
+
+/// Opens a device sign-in on this browser's Portal session, as `/authorize`
+/// does for an app, and sends the browser to its first step.
+async fn start_sign_in(
+    engine: &OAuthEngine,
+    cookies: Option<(String, String)>,
+    now: i64,
+) -> Response {
+    let store = engine.server.store().clone();
+    let started = blocking(move || {
+        let login = cookies
+            .and_then(|(cookie, csrf)| store.authority.portal_login(&cookie, &csrf, now).ok());
+        let (session_id, guest) = match &login {
+            Some(login) => (login.session_id.clone(), None),
+            None => {
+                let guest = store
+                    .authority
+                    .create_portal_session(now)
+                    .map_err(|cause| {
+                        super::http::failed(
+                            "could not open a Portal session for the device page",
+                            cause,
+                        )
+                    })?;
+                (guest.session_id.clone(), Some(guest))
+            }
+        };
+        let transaction = super::super::sqlite::id();
+        let flow = super::portal::PortalAuthorization {
+            presentation: None,
+            session_id,
+            request: super::portal::ConsentRequest::Device {
+                device_code: None,
+                confirmed: false,
+            },
+            public_jwk: serde_json::Value::Null,
+            expires_at: now + 600,
+        };
+        store
+            .store_authorization(&transaction, &flow, None)
+            .map_err(|cause| super::http::failed("could not save the device sign-in", cause))?;
+        Ok::<_, ErrorCode>((guest, transaction))
+    })
+    .await;
+    match started {
+        Ok((None, transaction)) => Redirect::to(&format!(
+            "/device?transaction={transaction}&account=confirm"
+        ))
+        .into_response(),
+        Ok((Some(guest), transaction)) => super::http::cookie_response(
+            &guest.cookie,
+            Some(&guest.csrf),
+            600,
+            Redirect::to(&format!("/login?transaction={transaction}")).into_response(),
+        ),
+        Err(code) => super::http::error(code),
+    }
+}
+
+/// The page for a device sign-in's current step (see [`entry`]).
+async fn step(
+    engine: &OAuthEngine,
+    cookies: Option<(String, String)>,
+    transaction: &str,
+    account: bool,
+    now: i64,
+) -> Response {
+    let Some((cookie, csrf)) = cookies else {
+        return super::http::lapsed(engine, transaction, ErrorCode::AccessDenied).await;
+    };
+    let store = engine.server.store().clone();
+    let id = transaction.to_owned();
+    let found = blocking(move || {
+        let session = store
+            .authority
+            .portal_session_identity(&cookie, &csrf, now)
+            .map_err(|cause| {
+                super::http::denied_or_failed("could not read the Portal session", cause)
+            })?;
+        let flow = store
+            .authorization(&id, &session, now)
+            .map_err(|_| ErrorCode::InvalidRequest)?;
+        let person =
+            match store.authority.portal_login(&cookie, &csrf, now) {
+                Ok(login) => Some(signed_in(&store, &login.principal_id).map_err(|cause| {
+                    super::http::failed("could not read who is signed in", cause)
+                })?),
+                Err(_) => None,
+            };
+        Ok::<_, ErrorCode>((flow, person))
+    })
+    .await;
+    let (flow, person) = match found {
+        Ok(found) => found,
+        Err(code) => return super::http::lapsed(engine, transaction, code).await,
+    };
+    let Some(person) = person else {
+        return Redirect::to(&format!("/login?transaction={transaction}")).into_response();
+    };
+    let device = match &flow.request {
+        super::portal::ConsentRequest::Authorization(_) => {
+            return super::http::error(ErrorCode::InvalidRequest)
+        }
+        super::portal::ConsentRequest::Device {
+            device_code: None, ..
+        } => serde_json::json!({
+            "step": if account { "account" } else { "code" },
+            "transaction": transaction,
+            "signedInAs": person,
+        }),
+        super::portal::ConsentRequest::Device {
+            confirmed: false, ..
+        } => {
+            let Ok(intent) = engine.consent_intent(&flow.request).await else {
+                // The code expired or was used since it was entered.
+                return super::http::device_code_invalid(engine);
+            };
+            let client = engine.server.store().get_client(&intent.client_id).await;
+            let store = engine.server.store().clone();
+            let client_id = intent.client_id.as_str().to_owned();
+            let registered = blocking(move || {
+                store.authority.read(|connection| {
+                    Ok(connection.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM auth_oauth_clients \
+                        WHERE client_id=?1 AND state='active')",
+                        [&client_id],
+                        |row| row.get::<_, bool>(0),
+                    )?)
+                })
+            })
+            .await;
+            let (Ok(Some(client)), Ok(registered)) = (client, registered) else {
+                return super::http::error(super::http::failed(
+                    "could not read the device's app",
+                    "its client could not be read",
+                ));
+            };
+            let (requested_at, requested_from) = intent.device_requested.unwrap_or((0, None));
+            serde_json::json!({
+                "step": "confirm",
+                "transaction": transaction,
+                "signedInAs": person,
+                "request": {
+                    "clientId": intent.client_id.as_str(),
+                    "clientName": client.name,
+                    "registered": registered,
+                    "userCode": intent.device_user_code,
+                    "requestedAt": requested_at,
+                    "requestedFrom": requested_from,
+                },
+            })
+        }
+        super::portal::ConsentRequest::Device { .. } => {
+            return Redirect::to(&format!("/consent?transaction={transaction}")).into_response()
+        }
+    };
+    let theme = super::theme::portal_theme(engine, Some(transaction.to_owned())).await;
+    super::assets::page(
+        engine,
+        None,
+        Some(serde_json::json!({ "device": device, "theme": theme })),
+    )
+}
+
+/// Who is signed in, as [`super::http::signed_in_as`] gives it, with the URL
+/// of their profile picture when there is one, so the page can show it.
+fn signed_in(
+    store: &super::OAuthStorage,
+    principal: &str,
+) -> Result<serde_json::Value, super::super::AuthError> {
+    store.authority.read(|connection| {
+        let mut person = super::http::signed_in_as(connection, principal)?;
+        let profile = super::super::profiles::read(connection, principal)?;
+        person["avatar"] = serde_json::json!(super::super::avatars::avatar_url(
+            &store.authority,
+            connection,
+            principal,
+            &profile
+        ));
+        Ok(person)
+    })
+}
+
+/// `POST /portal/device`: the code step. The person, signed in, enters the
+/// code their device shows; a code that matches a pending request moves this
+/// sign-in on to confirming the device's details. Every code that can't be
+/// used gets one answer, so the page never tells valid codes from invalid ones.
 pub(super) async fn begin(
     State(engine): State<Arc<OAuthEngine>>,
     headers: HeaderMap,
@@ -121,27 +334,32 @@ pub(super) async fn begin(
         Ok(form) => form,
         Err(response) => return super::http::error(response.error),
     };
-    let (Some(code), Some(csrf), Some(cookie)) = (
+    let (Some(code), Some(csrf), Some(transaction), Some(cookie)) = (
         form.get("user_code"),
         form.get("csrf"),
+        form.get("transaction"),
         super::http::portal_cookie(&headers, "__Host-trellis-portal"),
     ) else {
         return super::http::error(ErrorCode::InvalidRequest);
     };
-    if code.len() > 32 {
+    if code.len() > 32 || ulid::Ulid::from_string(transaction).is_err() {
         return super::http::error(ErrorCode::InvalidRequest);
     }
     let now = crate::clock::unix_now();
-    let authority = engine.server.store().authority.clone();
-    let (identity_cookie, identity_csrf) = (cookie.clone(), csrf.clone());
-    let session = match blocking(move || {
-        authority.portal_session_identity(&identity_cookie, &identity_csrf, now)
-    })
-    .await
-    {
-        Ok(session) => session,
-        Err(_) => return super::http::error(ErrorCode::AccessDenied),
-    };
+    let flow =
+        match super::http::login_and_flow(&engine, cookie, csrf.clone(), transaction, now).await {
+            Ok((_, flow)) => flow,
+            Err(code) => return super::http::error(code),
+        };
+    if !matches!(
+        flow.request,
+        super::portal::ConsentRequest::Device {
+            device_code: None,
+            ..
+        }
+    ) {
+        return super::http::error(ErrorCode::InvalidRequest);
+    }
     if !matches!(
         engine.device_entries.check(Attempt::DeviceUserCodeEntry),
         RateLimitDecision::Allow
@@ -163,17 +381,17 @@ pub(super) async fn begin(
         return super::http::error(ErrorCode::InvalidRequest);
     }
     let store = engine.server.store().clone();
-    let csrf = csrf.clone();
-    let started = blocking(move || {
+    let id = transaction.clone();
+    let entered = blocking(move || {
         let selection = store
             .device_selection(&grant.device_code)
             .map_err(|_| ErrorCode::InvalidRequest)?;
-        let transaction = super::super::sqlite::id();
-        let flow = super::portal::PortalAuthorization {
+        let next = super::portal::PortalAuthorization {
             presentation: None,
-            session_id: session,
+            session_id: flow.session_id.clone(),
             request: super::portal::ConsentRequest::Device {
-                device_code: grant.device_code,
+                device_code: Some(grant.device_code),
+                confirmed: false,
             },
             public_jwk: selection.public_jwk,
             expires_at: grant
@@ -183,21 +401,106 @@ pub(super) async fn begin(
                 .unwrap_or(now),
         };
         store
-            .store_authorization(&transaction, &flow, grant.client_id.as_str())
-            .map_err(|cause| super::http::failed("could not save the device sign-in", cause))?;
-        let page = if store.authority.portal_login(&cookie, &csrf, now).is_ok() {
-            "consent"
-        } else {
-            "login"
-        };
-        Ok((page, transaction))
+            .advance_authorization(&id, &flow, &next, Some(grant.client_id.as_str()), now)
+            .map_err(|_| ErrorCode::InvalidRequest)
     })
     .await;
-    let (page, transaction) = match started {
-        Ok(started) => started,
-        Err(code) => return super::http::error(code),
+    match entered {
+        Ok(()) => Redirect::to(&format!("/device?transaction={transaction}")).into_response(),
+        Err(code) => super::http::error(code),
+    }
+}
+
+/// `POST /portal/device/confirm`: the person says the device whose details
+/// they were shown is theirs (`decision=confirm`), which leads on to the
+/// consent page, or cancels (`decision=cancel`), which refuses the device.
+pub(super) async fn confirm(
+    State(engine): State<Arc<OAuthEngine>>,
+    headers: HeaderMap,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    if !super::http::portal_origin(&engine, &headers) {
+        return super::http::error(ErrorCode::InvalidRequest);
+    }
+    let form = match super::http::fields(pairs) {
+        Ok(form) => form,
+        Err(response) => return super::http::error(response.error),
     };
-    Redirect::to(&format!("/{page}?transaction={transaction}")).into_response()
+    let (Some(csrf), Some(transaction), Some(decision), Some(cookie)) = (
+        form.get("csrf"),
+        form.get("transaction"),
+        form.get("decision"),
+        super::http::portal_cookie(&headers, "__Host-trellis-portal"),
+    ) else {
+        return super::http::error(ErrorCode::InvalidRequest);
+    };
+    if ulid::Ulid::from_string(transaction).is_err() {
+        return super::http::error(ErrorCode::InvalidRequest);
+    }
+    let now = crate::clock::unix_now();
+    let flow =
+        match super::http::login_and_flow(&engine, cookie, csrf.clone(), transaction, now).await {
+            Ok((_, flow)) => flow,
+            Err(code) => return super::http::error(code),
+        };
+    let super::portal::ConsentRequest::Device {
+        device_code: Some(device_code),
+        confirmed: false,
+    } = &flow.request
+    else {
+        return super::http::error(ErrorCode::InvalidRequest);
+    };
+    let device = match engine.server.store().get_device_grant(device_code).await {
+        Ok(Some(device)) => device,
+        _ => return super::http::error(ErrorCode::InvalidRequest),
+    };
+    let store = engine.server.store().clone();
+    let id = transaction.clone();
+    match decision.as_str() {
+        "confirm" => {
+            let next = super::portal::PortalAuthorization {
+                presentation: None,
+                session_id: flow.session_id.clone(),
+                request: super::portal::ConsentRequest::Device {
+                    device_code: Some(device.device_code.clone()),
+                    confirmed: true,
+                },
+                public_jwk: flow.public_jwk.clone(),
+                expires_at: flow.expires_at,
+            };
+            let client = device.client_id.as_str().to_owned();
+            match blocking(move || {
+                store
+                    .advance_authorization(&id, &flow, &next, Some(&client), now)
+                    .map_err(|_| ErrorCode::InvalidRequest)
+            })
+            .await
+            {
+                Ok(()) => {
+                    Redirect::to(&format!("/consent?transaction={transaction}")).into_response()
+                }
+                Err(code) => super::http::error(code),
+            }
+        }
+        "cancel" => {
+            let session = flow.session_id.clone();
+            if blocking(move || {
+                store
+                    .take_authorization(&id, &session, now)
+                    .map_err(|_| ErrorCode::InvalidRequest)
+            })
+            .await
+            .is_err()
+            {
+                return super::http::error(ErrorCode::InvalidRequest);
+            }
+            match engine.server.deny_device(&device.user_code).await {
+                Ok(()) => Redirect::to("/device/complete?decision=denied").into_response(),
+                Err(_) => super::http::error(ErrorCode::InvalidRequest),
+            }
+        }
+        _ => super::http::error(ErrorCode::InvalidRequest),
+    }
 }
 
 impl OAuthEngine {
