@@ -33,6 +33,10 @@ deviceName })`); `trellis login` sends the hostname, and the confirmation
 
 ### Fixed
 
+- A deployment removed while an instance is enrolling no longer leaves its
+  Operation storage behind, and a removed deployment's webhook records are
+  finished even when its intake stream was already deleted.
+- `cookie` 0.18.3 clears RUSTSEC-2026-0594.
 - Removing a deployment deletes its webhook intake stream and its Operation
   records and staging buckets, releasing their JetStream reservations; the
   cleanup survives a restart.
