@@ -173,7 +173,7 @@ pub async fn start_jobs_projector(
             // A database another process holds locked, or a passing I/O
             // error, fails the batch; projecting it again changes nothing
             // already committed, so the same batch is retried.
-            let mut failures = 0;
+            let mut backoff = trellis_rs::__internal::Backoff::default();
             let projected = loop {
                 let (batch_store, events) = (store.clone(), events.clone());
                 let result = tokio::task::spawn_blocking(move || {
@@ -197,8 +197,7 @@ pub async fn start_jobs_projector(
                     // An event that cannot be projected is rejected alone
                     // inside the batch; what fails here is the batch itself.
                     Err(error) => {
-                        let delay = crate::storage::retry_delay(failures);
-                        failures += 1;
+                        let delay = backoff.failed();
                         if error.transient() {
                             tracing::warn!(
                                 %error,

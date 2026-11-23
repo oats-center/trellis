@@ -150,7 +150,10 @@ pub(crate) async fn open_client_session(
     // The opening is sent again only when the broker reports that no provider
     // received it, as for requests.
     let wait_until = tokio::time::Instant::now() + crate::client::SERVICE_AVAILABILITY_WAIT;
-    let mut pause = std::time::Duration::from_millis(100);
+    let mut pause = crate::retry::Backoff::new(
+        std::time::Duration::from_millis(100),
+        std::time::Duration::from_secs(1),
+    );
     let response = loop {
         // Signing, subscribing, or a late resend wakeup can run past the
         // deadline, and the timeouts poll the send before their timer. An
@@ -175,14 +178,13 @@ pub(crate) async fn open_client_session(
             .await
             .map_err(|_| TrellisClientError::Timeout)?
             .ok_or(TrellisClientError::Timeout)?;
-        let retry_at = tokio::time::Instant::now() + pause;
+        let retry_at = tokio::time::Instant::now() + pause.next_delay();
         if response.status != Some(async_nats::StatusCode::NO_RESPONDERS)
             || retry_at >= wait_until.min(deadline)
         {
             break response;
         }
-        tokio::time::sleep(pause).await;
-        pause = (pause * 2).min(std::time::Duration::from_secs(1));
+        tokio::time::sleep(pause.failed()).await;
     };
 
     verify_offer(

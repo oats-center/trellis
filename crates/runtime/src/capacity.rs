@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures_util::StreamExt as _;
 
@@ -324,7 +324,7 @@ struct Shortage {
     kind: Exhaustion,
     /// The refusal with its numbers, as [`Shortages::refused`] returned it.
     reason: String,
-    logged: Instant,
+    log: trellis_rs::__internal::LogLimit,
 }
 
 /// The runtime resources JetStream currently refuses to create or write, and
@@ -376,25 +376,25 @@ impl Shortages {
             "{}: {resource} asks for {wanted}; {numbers}",
             exhaustion.describe()
         );
-        let now = Instant::now();
         let log = self.refused.lock().is_ok_and(|mut refused| {
-            let previous = refused.get(resource);
-            let log = previous.is_none_or(|shortage| {
-                now.duration_since(shortage.logged) >= LOG_EVERY || shortage.kind != exhaustion
-            });
-            let logged = match previous {
-                Some(shortage) if !log => shortage.logged,
-                _ => now,
-            };
+            // A refusal of another kind is a new failure, logged at once.
+            let mut log = refused
+                .get(resource)
+                .filter(|shortage| shortage.kind == exhaustion)
+                .map_or_else(
+                    || trellis_rs::__internal::LogLimit::new(LOG_EVERY),
+                    |shortage| shortage.log,
+                );
+            let admitted = log.admit().is_some();
             refused.insert(
                 resource.to_owned(),
                 Shortage {
                     kind: exhaustion,
                     reason: reason.clone(),
-                    logged,
+                    log,
                 },
             );
-            log
+            admitted
         });
         if log {
             tracing::error!(

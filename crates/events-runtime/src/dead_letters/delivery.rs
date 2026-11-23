@@ -661,31 +661,49 @@ pub async fn start_exhaustion_advisory_loop(
                             .map_err(nats)?;
                     }
                     Err(DeliveryReportError::NotFound(_)) => {
-                        let mut failures = 0;
-                        while let Err(error) =
-                            events_store.record_retention_gap(advisory.stream_sequence)
-                        {
-                            if error.database_unusable() {
+                        let recorded = trellis_rs::__internal::retry(
+                            trellis_rs::__internal::Backoff::default(),
+                            || {
+                                std::future::ready(
+                                    events_store.record_retention_gap(advisory.stream_sequence),
+                                )
+                            },
+                            |error: &crate::storage::EventsStoreError| {
+                                if error.database_unusable() {
+                                    trellis_rs::__internal::Failure::Unusable
+                                } else if error.transient() {
+                                    trellis_rs::__internal::Failure::Transient
+                                } else {
+                                    trellis_rs::__internal::Failure::Permanent
+                                }
+                            },
+                            |error, delay| {
+                                tracing::warn!(
+                                    %error,
+                                    retry_in_ms = delay.as_millis(),
+                                    "Events coverage gap not recorded; it will try again"
+                                );
+                            },
+                            std::future::pending(),
+                        )
+                        .await;
+                        match recorded {
+                            Ok(_) => {}
+                            Err(trellis_rs::__internal::Halted::Unusable(error)) => {
                                 return Err(ServerError::Internal(format!(
                                     "the Events database is unusable: {error}"
                                 )));
                             }
-                            if !error.transient() {
+                            Err(
+                                trellis_rs::__internal::Halted::Permanent(error)
+                                | trellis_rs::__internal::Halted::Stopped(error),
+                            ) => {
                                 tracing::error!(
                                     %error,
                                     stream_sequence = advisory.stream_sequence,
                                     "Events coverage gap dropped: trying again cannot record it"
                                 );
-                                break;
                             }
-                            let delay = crate::storage::retry_delay(failures);
-                            failures += 1;
-                            tracing::warn!(
-                                %error,
-                                retry_in_ms = delay.as_millis(),
-                                "Events coverage gap not recorded; it will try again"
-                            );
-                            tokio::time::sleep(delay).await;
                         }
                         tracing::error!(
                             stream_sequence = advisory.stream_sequence,

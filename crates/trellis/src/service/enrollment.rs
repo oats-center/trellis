@@ -89,7 +89,8 @@ async fn signed_post(
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-    let mut delay = Duration::from_millis(250);
+    let mut backoff =
+        crate::retry::Backoff::new(Duration::from_millis(250), Duration::from_secs(5));
     for attempt in 1.. {
         fields["requestId"] = request_id.clone().into();
         fields["iat"] = now_ms().into();
@@ -120,8 +121,7 @@ async fn signed_post(
                 ))
             }
             Err(_) => {
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(Duration::from_secs(5));
+                tokio::time::sleep(backoff.failed()).await;
                 continue;
             }
         };
@@ -144,8 +144,7 @@ async fn signed_post(
             )));
         }
         if response.status().is_server_error() && attempt < 8 {
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(Duration::from_secs(5));
+            tokio::time::sleep(backoff.failed()).await;
             continue;
         }
         let error = crate::client::decode_trellis_http_error(response).await;

@@ -152,7 +152,7 @@ pub(crate) async fn load(
     participant: &str,
     on_missing: &(dyn Fn(&str) + Sync),
 ) -> Result<ConfigState, TrellisClientError> {
-    let mut delay = Duration::from_secs(1);
+    let mut backoff = crate::retry::Backoff::new(Duration::from_secs(1), Duration::from_secs(15));
     let mut shown = String::new();
     loop {
         let response = read(client, true).await?;
@@ -211,8 +211,7 @@ pub(crate) async fn load(
             }
             shown = format!("{missing}{reasons}");
         }
-        tokio::time::sleep(delay).await;
-        delay = (delay * 2).min(Duration::from_secs(15));
+        tokio::time::sleep(backoff.failed()).await;
     }
 }
 

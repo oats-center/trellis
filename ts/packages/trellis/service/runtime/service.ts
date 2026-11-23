@@ -218,6 +218,7 @@ import {
   serviceIdentityStatus,
   type TrellisServiceEnrollmentOpts,
 } from "./enrollment.ts";
+import { Backoff } from "../../backoff.ts";
 
 const ServiceSignedAuthorizationSchema = Type.Object({
   participantId: Type.String(),
@@ -3597,7 +3598,7 @@ async function awaitServiceUpdate(
   try {
     let update = await submit();
     let shown: string | undefined;
-    let delay = 1_000;
+    const backoff = new Backoff(1_000, 15_000);
     for (;;) {
       if (update.state === "applied") return;
       if (update.state === "rejected")
@@ -3634,10 +3635,9 @@ async function awaitServiceUpdate(
         const timer = setTimeout(() => {
           signal?.removeEventListener("abort", abort);
           resolve();
-        }, delay);
+        }, backoff.failed());
         signal?.addEventListener("abort", abort, { once: true });
       });
-      delay = Math.min(delay * 2, 15_000);
       update = (
         await client.requestServiceUpdate("ServiceUpdates.Status", {
           updateId: update.updateId,

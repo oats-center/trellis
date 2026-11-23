@@ -11,6 +11,7 @@ use crate::jobs::JobsRuntime;
 use crate::service::{ConnectedServiceRuntime, EventsRuntime, LocalAuthVerifier};
 
 pub use crate::client::nats_tls::{connect_error_is_permanent, nats_tls_options};
+pub use crate::retry::{retry, Backoff, Failure, Halted, LogLimit};
 pub use crate::service::internal::*;
 pub use crate::service::live_router::LiveProviderOwner;
 

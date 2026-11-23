@@ -69,19 +69,19 @@ pub(crate) enum HealthStoreError {
 
 impl HealthStoreError {
     /// What this failure calls for in background work (see
-    /// [`crate::storage::StorageFailure`]); anything but SQLite fails the same
+    /// [`crate::storage::Failure`]); anything but SQLite fails the same
     /// way again.
-    pub(crate) fn storage_failure(&self) -> crate::storage::StorageFailure {
+    pub(crate) fn storage_failure(&self) -> crate::storage::Failure {
         match self {
             Self::Sqlite(error) => crate::storage::sqlite_failure(error),
             Self::Open(error) => crate::storage::ClassifiedFailure::storage_failure(error),
-            _ => crate::storage::StorageFailure::Permanent,
+            _ => crate::storage::Failure::Permanent,
         }
     }
 }
 
 impl crate::storage::ClassifiedFailure for HealthStoreError {
-    fn storage_failure(&self) -> crate::storage::StorageFailure {
+    fn storage_failure(&self) -> crate::storage::Failure {
         HealthStoreError::storage_failure(self)
     }
 }

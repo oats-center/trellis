@@ -112,13 +112,13 @@ impl AuthError {
     /// What this failure calls for in background work: a broker or writer that
     /// is unavailable can pass, as can a transient SQLite failure; a database
     /// that is unusable stops Auth; anything else fails the same way again
-    /// (see [`crate::storage::StorageFailure`]).
-    pub(crate) fn storage_failure(&self) -> crate::storage::StorageFailure {
-        use crate::storage::StorageFailure;
+    /// (see [`crate::storage::Failure`]).
+    pub(crate) fn storage_failure(&self) -> crate::storage::Failure {
+        use crate::storage::Failure;
         match self {
             Self::Storage(error) => crate::storage::sqlite_failure(error),
-            Self::Broker(_) | Self::Unavailable => StorageFailure::Transient,
-            _ => StorageFailure::Permanent,
+            Self::Broker(_) | Self::Unavailable => Failure::Transient,
+            _ => Failure::Permanent,
         }
     }
 }
@@ -280,7 +280,7 @@ pub(super) fn timestamp(seconds: i64) -> Result<trellis_rs::generated::Timestamp
 }
 
 impl crate::storage::ClassifiedFailure for AuthError {
-    fn storage_failure(&self) -> crate::storage::StorageFailure {
+    fn storage_failure(&self) -> crate::storage::Failure {
         AuthError::storage_failure(self)
     }
 }

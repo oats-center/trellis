@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 
 use super::sqlite::{blocking, json, AuthError, SqliteAuthorizationStore};
-use crate::storage::StorageFailure;
+use crate::storage::Failure;
 
 pub(crate) const ATTACHMENT_MARKER_PREFIX: &str = "trellis.auth.v1:";
 pub(crate) const MATERIAL_BUCKET: &str = "TRELLIS_AUTH_MATERIAL";
@@ -370,7 +370,7 @@ impl SqliteAuthorizationStore {
                 Ok(()) => blocking(move || store.complete_effect(&claimed, settled_at))
                     .await
                     .map(|done| completed += usize::from(done)),
-                Err(error) if error.storage_failure() == StorageFailure::Permanent => Err(error),
+                Err(error) if error.storage_failure() == Failure::Permanent => Err(error),
                 Err(error) => {
                     tracing::warn!(
                         action_id=%effect.action_id,
@@ -389,10 +389,10 @@ impl SqliteAuthorizationStore {
                 continue;
             };
             match error.storage_failure() {
-                StorageFailure::Unusable => return Err(error),
+                Failure::Unusable => return Err(error),
                 // Its claim lapses, and the effect runs again.
-                StorageFailure::Transient => failure = Some(error),
-                StorageFailure::Permanent => {
+                Failure::Transient => failure = Some(error),
+                Failure::Permanent => {
                     tracing::error!(
                         action_id=%effect.action_id,
                         kind=%effect.kind,
@@ -405,7 +405,7 @@ impl SqliteAuthorizationStore {
                     if let Err(error) =
                         blocking(move || store.set_aside_effect(&effect, &reason, settled_at)).await
                     {
-                        if error.storage_failure() == StorageFailure::Unusable {
+                        if error.storage_failure() == Failure::Unusable {
                             return Err(error);
                         }
                         // Its claim lapses, and the effect runs, and is set

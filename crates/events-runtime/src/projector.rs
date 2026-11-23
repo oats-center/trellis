@@ -135,7 +135,7 @@ pub async fn start_events_projector(
     let task = tokio::spawn(async move {
         // A database another process holds locked, or a passing I/O error,
         // fails a store step; the step is tried again after a growing wait.
-        let mut failures = 0;
+        let mut backoff = trellis_rs::__internal::Backoff::default();
         loop {
             let mut batch = Vec::new();
             let mut messages = consumer
@@ -154,8 +154,8 @@ pub async fn start_events_projector(
             }
             if batch.is_empty() {
                 match reconcile_unprojected(&runtime, &store).await {
-                    Ok(()) => failures = 0,
-                    Err(error) => retry(error, &mut failures).await?,
+                    Ok(()) => backoff.succeeded(),
+                    Err(error) => retry(error, &mut backoff).await?,
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
@@ -167,9 +167,9 @@ pub async fn start_events_projector(
                 .max()
             {
                 while let Err(error) = store.record_observed(observed) {
-                    retry(error, &mut failures).await?;
+                    retry(error, &mut backoff).await?;
                 }
-                failures = 0;
+                backoff.succeeded();
             }
 
             batch.sort_by_key(|message| {
@@ -190,8 +190,8 @@ pub async fn start_events_projector(
                 }
             }
             match reconcile_unprojected(&runtime, &store).await {
-                Ok(()) => failures = 0,
-                Err(error) => retry(error, &mut failures).await?,
+                Ok(()) => backoff.succeeded(),
+                Err(error) => retry(error, &mut backoff).await?,
             }
         }
     });
@@ -201,14 +201,16 @@ pub async fn start_events_projector(
 
 /// Waits before the projector tries a failed store step again, or fails the
 /// projector when the database itself is unusable.
-async fn retry(error: EventsStoreError, failures: &mut u32) -> Result<(), ServerError> {
+async fn retry(
+    error: EventsStoreError,
+    backoff: &mut trellis_rs::__internal::Backoff,
+) -> Result<(), ServerError> {
     if error.database_unusable() {
         return Err(ServerError::Internal(format!(
             "the Events database is unusable: {error}"
         )));
     }
-    let delay = crate::storage::retry_delay(*failures);
-    *failures += 1;
+    let delay = backoff.failed();
     if error.transient() {
         tracing::warn!(
             %error,

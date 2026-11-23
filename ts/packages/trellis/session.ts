@@ -238,6 +238,7 @@ import {
   reconstructDeclaredRpcError,
   recordRuntimeError,
 } from "./session/handler_errors.ts";
+import { Backoff } from "./backoff.ts";
 
 /** What an RPC learned before it failed, for the failure's log line. */
 type RpcObservation = {
@@ -4353,7 +4354,7 @@ export class Trellis<
             deadlineMs,
             Date.now() + SERVICE_AVAILABILITY_WAIT_MS,
           );
-          let pause = 100;
+          const pause = new Backoff(100, 1_000);
           let resend: ReturnType<typeof setTimeout> | undefined;
           const expire = () => {
             waitFailure = {
@@ -4394,10 +4395,9 @@ export class Trellis<
                 if (
                   !args.signal?.aborted &&
                   resend === undefined &&
-                  Date.now() + pause < waitUntil
+                  Date.now() + pause.nextDelayMs < waitUntil
                 ) {
-                  resend = setTimeout(send, pause);
-                  pause = Math.min(pause * 2, 1000);
+                  resend = setTimeout(send, pause.failed());
                 } else {
                   response.reject(new Error("no responders"));
                 }

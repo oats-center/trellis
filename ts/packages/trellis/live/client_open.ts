@@ -46,6 +46,7 @@ import {
   LiveStreamError,
 } from "./types.ts";
 import type { LiveSessionManager } from "./manager.ts";
+import { Backoff } from "../backoff.ts";
 
 export const LIVE_VERSION = "trellis.live.v1";
 
@@ -165,7 +166,7 @@ async function request(
     clock.nowMs() + SERVICE_AVAILABILITY_WAIT_MS,
     deadlineMs,
   );
-  let pause = 100;
+  const pause = new Backoff(100, 1_000);
   try {
     let received: Msg | undefined;
     for (;;) {
@@ -187,15 +188,17 @@ async function request(
         Math.min(host.timeoutMs, Math.max(1, deadlineMs - clock.nowMs())),
         replies.next().then((next) => (next.done ? undefined : next.value)),
       );
-      if (received?.headers?.code !== 503 || clock.nowMs() + pause >= waitUntil)
+      if (
+        received?.headers?.code !== 503 ||
+        clock.nowMs() + pause.nextDelayMs >= waitUntil
+      )
         break;
       await new Promise<void>((resolve) => {
-        const clear = clock.scheduleAt(clock.nowMs() + pause, () => {
+        const clear = clock.scheduleAt(clock.nowMs() + pause.failed(), () => {
           clear();
           resolve();
         });
       });
-      pause = Math.min(pause * 2, 1000);
     }
     if (!received) {
       throw new LiveStreamError("setup_timeout", "live request timed out");

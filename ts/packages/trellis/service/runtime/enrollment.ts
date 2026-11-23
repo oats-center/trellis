@@ -11,6 +11,7 @@ import { createAuth } from "../../auth/session_auth.ts";
 import { decodeTrellisHttpError } from "../../auth/http_error.ts";
 import { base64urlDecode, base64urlEncode, sha256 } from "../../auth/utils.ts";
 import type { LoggerLike } from "../../globals.ts";
+import { Backoff } from "../../backoff.ts";
 
 /** Environment variable the SDK reads an enrollment secret from when no seed or secret is given. */
 export const ENROLLMENT_SECRET_ENV = "TRELLIS_ENROLLMENT_SECRET";
@@ -85,7 +86,7 @@ async function signedPost(
   const identityKeyId = base64urlEncode(
     await sha256(base64urlDecode(identity.sessionKey)),
   );
-  let delay = 250;
+  const backoff = new Backoff(250, 5_000);
   for (let attempt = 1; ; attempt += 1) {
     const unsignedRequest = {
       ...fields,
@@ -115,8 +116,7 @@ async function signedPost(
       });
     } catch (error) {
       if (target.signal?.aborted || attempt >= 8) throw error;
-      await pause(delay, target.signal);
-      delay = Math.min(delay * 2, 5_000);
+      await pause(backoff.failed(), target.signal);
       continue;
     }
     if (response.ok) return await response.json();
@@ -131,8 +131,7 @@ async function signedPost(
     }
     if (TRANSIENT_STATUS.has(response.status) && attempt < 8) {
       await response.body?.cancel();
-      await pause(delay, target.signal);
-      delay = Math.min(delay * 2, 5_000);
+      await pause(backoff.failed(), target.signal);
       continue;
     }
     throw await decodeTrellisHttpError(response);
@@ -304,7 +303,7 @@ export async function connectWithServiceIdentity<T>(args: {
       enrolled: true,
     };
   }
-  let delay = 1_000;
+  const backoff = new Backoff(1_000, 30_000);
   for (;;) {
     try {
       return {
@@ -342,8 +341,7 @@ export async function connectWithServiceIdentity<T>(args: {
         { keyFile, state, error },
         "Could not connect with the stored key; retrying",
       );
-      await pause(delay, args.signal);
-      delay = Math.min(delay * 2, 30_000);
+      await pause(backoff.failed(), args.signal);
     }
   }
 }

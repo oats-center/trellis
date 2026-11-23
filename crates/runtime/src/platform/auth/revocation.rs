@@ -525,7 +525,7 @@ impl SqliteAuthorizationStore {
     pub(crate) fn enforce_next_page(&self, now: i64) -> Result<Option<String>, AuthError> {
         let mut selected = None;
         match self.enforce_page(now, &mut selected) {
-            Err(error) if error.storage_failure() == crate::storage::StorageFailure::Permanent => {
+            Err(error) if error.storage_failure() == crate::storage::Failure::Permanent => {
                 // A page that fails the same way every time must not hold back
                 // the enforcement work queued after it. It is tried again in a
                 // minute, since its sessions still need enforcing, and marked

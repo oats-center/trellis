@@ -195,7 +195,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     // Startup drains committed effects before serving. A database another
     // process holds locked, or a broker that is not answering yet, delays it;
     // only an unusable database stops startup.
-    let mut backoff = crate::storage::Backoff::default();
+    let mut backoff = trellis_rs::__internal::Backoff::default();
     loop {
         match Box::pin(store.process_effects(
             &material,
@@ -208,7 +208,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         {
             Ok(0) => break,
             Ok(_) => backoff.succeeded(),
-            Err(error) if error.storage_failure() == crate::storage::StorageFailure::Unusable => {
+            Err(error) if error.storage_failure() == crate::storage::Failure::Unusable => {
                 return Err(RuntimeError::Platform(format!(
                     "the Auth database is unusable: {error}"
                 )));
@@ -325,7 +325,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             let mut next_retirement = 0;
             // A database another process holds locked, or a passing I/O error,
             // fails a pass; the work stays durable and the pass runs again.
-            let mut backoff = crate::storage::Backoff::default();
+            let mut backoff = trellis_rs::__internal::Backoff::default();
             loop {
                 let ticked = tokio::select! {
                     () = worker_stop.stopped() => return Ok(()),
@@ -402,9 +402,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 };
                 match pass {
                     Ok(()) => backoff.succeeded(),
-                    Err(error)
-                        if error.storage_failure() == crate::storage::StorageFailure::Unusable =>
-                    {
+                    Err(error) if error.storage_failure() == crate::storage::Failure::Unusable => {
                         return Err(RuntimeError::Platform(format!(
                             "the Auth database is unusable: {error}"
                         )));
@@ -440,7 +438,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 let mut queued = event_store.work_signal();
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                let mut backoff = crate::storage::Backoff::default();
+                let mut backoff = trellis_rs::__internal::Backoff::default();
                 loop {
                     tokio::select! {
                         () = provider_stop.stopped() => break Ok::<(), RuntimeError>(()),
@@ -496,7 +494,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                                 }
                                 Err(error)
                                     if error.storage_failure()
-                                        == crate::storage::StorageFailure::Permanent =>
+                                        == crate::storage::Failure::Permanent =>
                                 {
                                     Err(error)
                                 }
@@ -516,7 +514,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                             match settled {
                                 Err(error)
                                     if error.storage_failure()
-                                        == crate::storage::StorageFailure::Permanent =>
+                                        == crate::storage::Failure::Permanent =>
                                 {
                                     tracing::error!(
                                         action_id=%effect.action_id,
@@ -550,8 +548,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     match pass {
                         Ok(()) => backoff.succeeded(),
                         Err(error)
-                            if error.storage_failure()
-                                == crate::storage::StorageFailure::Unusable =>
+                            if error.storage_failure() == crate::storage::Failure::Unusable =>
                         {
                             break Err(RuntimeError::Platform(format!(
                                 "the Auth database is unusable: {error}"
@@ -616,7 +613,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
 /// someone fixes its cause.
 fn retrying(work: &str, error: &auth::AuthError, delay: Duration) {
     let retry_in_ms = delay.as_millis();
-    if error.storage_failure() == crate::storage::StorageFailure::Transient {
+    if error.storage_failure() == crate::storage::Failure::Transient {
         tracing::warn!(work, %error, retry_in_ms, "Auth work failed; it will run again");
     } else {
         tracing::error!(work, %error, retry_in_ms, "Auth work failed; it will run again");
