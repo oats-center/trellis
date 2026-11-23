@@ -97,7 +97,8 @@ async fn writes_refused_for_lack_of_room_name_the_resource() {
     match events.publish_changed(&value("full")).await {
         Err(TrellisClientError::ResourceExhausted(exhausted)) => {
             assert_eq!(exhausted.kind, "events", "{exhausted}");
-            assert!(exhausted.name.contains(".Changed"), "{exhausted}");
+            // The subject carries the event's `value`, base64url-encoded.
+            assert!(exhausted.name.ends_with(".Changed.ZnVsbA"), "{exhausted}");
         }
         other => panic!("an event refused for room is typed: {other:?}"),
     }

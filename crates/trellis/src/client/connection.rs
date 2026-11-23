@@ -1907,9 +1907,7 @@ impl TrellisClient {
     where
         D: EventDescriptor,
     {
-        let subject = self.descriptor_subject(D::SUBJECT);
-        let prepared = prepare_event::<D>(event)?.with_subject(subject);
-        self.publish_prepared(&prepared).await
+        self.publish_prepared(&prepare_event::<D>(event)?).await
     }
 
     /// Publish an event that was already prepared, preserving its subject, payload, and message id.
