@@ -610,6 +610,27 @@ impl SqliteAuthorizationStore {
         })
     }
 
+    /// Effects and event publications set aside because trying again cannot
+    /// make them succeed, newest first, at most `limit`: their kind, when, and
+    /// the error.
+    pub(crate) fn set_aside_effects(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(String, i64, String)>, AuthError> {
+        self.read(|connection| {
+            Ok(connection
+                .prepare(
+                    "SELECT kind,failed_at,coalesce(last_error,'') \
+                    FROM auth_post_commit_actions WHERE failed_at IS NOT NULL \
+                    ORDER BY failed_at DESC,action_id LIMIT ?1",
+                )?
+                .query_map([limit as u64], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     /// Enforces the next eligible page. `selected` names the work it picked,
     /// even when the page then fails and rolls back.
     pub(super) fn enforce_page(

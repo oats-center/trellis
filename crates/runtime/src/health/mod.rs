@@ -37,7 +37,8 @@ use crate::shutdown::StopHandle;
 use crate::supervisor::{RuntimeContext, RuntimeError, SubsystemHandle};
 use crate::SubsystemName;
 
-use self::store::{HealthStore, HeartbeatIdentity, ProjectionCommit};
+pub(crate) use self::store::HealthStore;
+use self::store::{HeartbeatIdentity, ProjectionCommit};
 
 pub(crate) const HEALTH_STREAM: &str = "TRELLIS_HEALTH";
 pub(crate) const HEALTH_SUBJECT: &str = Heartbeat::SUBJECT;
@@ -184,6 +185,25 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         stop,
         join,
     })
+}
+
+/// This host's Health database opened read-only, for diagnostics answered by
+/// another subsystem. `None` when the configured database is not a file on
+/// this host, such as when Health runs on another one.
+pub(crate) fn open_reader(config: &crate::RuntimeConfig) -> Option<HealthStore> {
+    let Ok(crate::StorageBackend::Sqlite(sqlite)) = config.health_storage_backend() else {
+        return None;
+    };
+    if !sqlite.path.is_file() {
+        return None;
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        &sqlite.path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok()?;
+    connection.busy_timeout(sqlite.busy_timeout()).ok()?;
+    Some(HealthStore::reader(connection))
 }
 
 fn build_router(

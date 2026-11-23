@@ -64,6 +64,7 @@ trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.54" }
 [dev-dependencies]
 reqwest.workspace = true
 rexpect = "0.7.1"
+async-nats.workspace = true
 rusqlite.workspace = true
 runtime-trellis = { path = "../../integration/fixtures/runtime/crates/runtime-trellis" }
 trellis-rs = { path = "../trellis", version = "0.100.0-rc.54" }

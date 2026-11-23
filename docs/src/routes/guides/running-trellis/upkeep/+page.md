@@ -1,7 +1,59 @@
 ---
 title: "Keep Trellis running"
-description: "Upgrade the server, keep certificates current, know what a failure costs, find a failure from its reference, back up and restore, reset the administrator password, use the nats CLI, run jobs, health or events on their own server, run a second Trellis on one machine, and start over."
+description: "Diagnose a deployment with trellis doctor, upgrade the server, keep certificates current, know what a failure costs, find a failure from its reference, back up and restore, reset the administrator password, use the nats CLI, run jobs, health or events on their own server, run a second Trellis on one machine, and start over."
 ---
+
+## Diagnose a deployment
+
+Start with `trellis doctor`. It needs an administrator's sign-in, not a shell
+on the server's host:
+
+```sh
+trellis login https://trellis.example.com
+trellis doctor
+```
+
+It prints one section for each part of the installation, each marked `✓` (ok),
+`!` (warning) or `✗` (problem), with one line for each thing that needs
+attention:
+
+- **Server**: the version, the installation ID, the mode of the process that
+  answered, and when it started.
+- **Health**: each service deployment and the state of its instances. An
+  instance waiting for settings names them, one waiting for an administrator
+  to approve its update says so, and every degraded or failed check is listed
+  with its message, including Auth's `enforcement` check and each
+  `webhook:<endpoint>` check. Devices appear only when they report degraded
+  or unhealthy.
+- **JetStream**: storage and memory used and reserved against the account's
+  and the server's limits, a warning at 85% of a limit, and a problem for each
+  stream NATS refused for lack of room. These are the numbers from
+  `trellis storage`.
+- **Disk**: free and total space where the Auth database lives; a warning
+  below 10% free and a problem below 5%.
+- **Certificates**: the subject, issuer and expiry of the certificate the
+  Trellis listener serves, and of the CA behind a generated one; a warning
+  within 30 days of expiry and a problem once expired.
+- **Recent server failures**: the last 20 failures the server showed someone
+  as a reference, with the route, code and error from their log line. A
+  failure in the last hour is a warning. The server keeps the last 50 in
+  memory, so a restart empties the list; the log keeps them all (see
+  [Find a failure from its reference](#find-a-failure-from-its-reference)).
+- **Background work**: Auth enforcement whose pages keep failing, which is a
+  problem because the sessions it should end stay usable, and Auth effects or
+  health status events set aside because trying again can't help.
+
+`trellis doctor` exits non-zero when anything is a warning or a problem, so a
+script or a monitoring check can run it. `trellis doctor --format json` prints
+the same report as JSON. The Console's Diagnostics page, under Platform, shows
+it too. Both read `Auth.Runtime.Diagnostics`, which needs the
+`trellis.auth.v1:diagnostics.read` capability; the Administrator role has it.
+
+The report comes from the process serving Auth. When health runs on another
+host (see [Run jobs, health or events on their own server](#run-jobs-health-or-events-on-their-own-server)),
+the Health section shows what Auth knows of each instance and says that the
+health reports aren't on this host, and the failures listed are only that
+process's.
 
 ## Upgrade
 

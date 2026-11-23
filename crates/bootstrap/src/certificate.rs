@@ -15,6 +15,10 @@ pub struct CertificateSummary {
     pub sha256_fingerprint: String,
     /// End of the certificate validity period.
     pub not_after: OffsetDateTime,
+    /// The subject's distinguished name, such as `CN=trellis.example.com`.
+    pub subject: String,
+    /// The issuer's distinguished name.
+    pub issuer: String,
     /// DNS subject alternative names.
     pub dns_names: Vec<String>,
     /// IP address subject alternative names.
@@ -84,6 +88,8 @@ pub fn inspect_certificate(path: &Path) -> Result<CertificateSummary, Certificat
             .collect::<Vec<_>>()
             .join(":"),
         not_after: certificate.validity().not_after.to_datetime(),
+        subject: certificate.subject().to_string(),
+        issuer: certificate.issuer().to_string(),
         dns_names,
         ip_addresses,
     })

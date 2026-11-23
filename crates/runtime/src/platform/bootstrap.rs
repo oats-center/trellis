@@ -39,6 +39,7 @@ pub(crate) async fn connect_platform_provider(
     nats_server_name: Option<String>,
     identity_seed: &str,
     webhooks: super::webhooks::Webhooks,
+    diagnostics: super::auth::Diagnostics,
 ) -> Result<ConnectedServiceRuntime<Participant>, RuntimeError> {
     let reader = store.clone();
     let mut trust = super::auth::blocking(move || reader.runtime_authorization_trust()).await?;
@@ -91,6 +92,11 @@ pub(crate) async fn connect_platform_provider(
     super::webhooks::register_api(
         &mut trellis_runtime_apis::apis::trellis_webhooks_v1::Provider::new(&mut provider),
         webhooks,
+    );
+    super::auth::register_diagnostics_rpc(
+        &mut trellis_auth_v1::Provider::new(&mut provider),
+        oauth.clone(),
+        diagnostics,
     );
     register_rpc(
         &mut trellis_auth_v1::Provider::new(&mut provider),
