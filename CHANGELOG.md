@@ -8,6 +8,26 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `trellis svc <id> export` and `trellis svc import` move a service to another
+  installation in a passphrase-encrypted bundle: the build, deployment,
+  instance keys, enrollment secret hashes, settings and secrets, webhook
+  endpoints, KV and store data and unfinished jobs. Import keeps every ID,
+  refuses conflicts, reports the roles to recreate, and `--check` dry-runs it.
+- `trellis doctor` and the Console's Diagnostics page report server, health,
+  JetStream, disk, certificates, recent failures and stuck work in one view,
+  gated by `diagnostics.read`.
+- `scripts/check.sh quick` runs the Pipeline's fast checks locally, and an
+  `upgrade` Pipeline job tests upgrading from the previous release.
+
+### Changed
+
+- A development server build refuses a stale embedded Portal or Console.
+- A changed database schema is refused at startup naming both Trellis
+  versions, the webhooks database included.
+- `xtask release prepare` moves Unreleased into the release's dated section.
+
 ## [0.100.0-rc.54] - 2026-11-23
 
 ### Added
