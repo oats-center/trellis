@@ -128,8 +128,12 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .config
         .events_storage_backend()
         .map_err(RuntimeError::Config)?;
-    let store = EventsStore::open(&storage.path, storage.busy_timeout())
-        .map_err(|error| RuntimeError::Nats(format!("failed to open Events SQLite: {error}")))?;
+    // Another process can hold the database's lock while the server starts,
+    // such as a backup or an operator's query; startup waits for it.
+    let store = crate::supervisor::until_stored(context.stopping(), "Events startup", || {
+        std::future::ready(EventsStore::open(&storage.path, storage.busy_timeout()))
+    })
+    .await?;
     let events_runtime =
         trellis_rs::service::EventsRuntime::from_nats(context.trellis_nats.clone());
     let evidence = crate::resource_evidence::ResourceEvidenceReader::new(

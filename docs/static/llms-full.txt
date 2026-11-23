@@ -2193,9 +2193,17 @@ The SDK owns PKCE, DPoP, IndexedDB custody, exact callback validation, authority
 renewal, and transport maintenance. Persistent DPoP and encryption keys stay
 nonextractable in IndexedDB, and refresh exchange and commit share a Web Lock
 across tabs. A lost refresh response marks recovery required instead of
-replaying a spent token; credential handles cannot silently switch to another
-principal, and refresh-successor checkpointing is restricted to actual refresh
-exchanges. Retained clients refresh discovery from durable cross-tab trust
+replaying a spent token. A credential handle whose session still renews never
+switches to another principal: a sign-in as someone else fails `connect` with
+`OAuthAccountChanged`. Once that session has lapsed, for example after the
+Portal login it came from ended, a sign-in as someone else takes the handle
+over. A page never changes user, and refresh-successor checkpointing is
+restricted to actual refresh exchanges. On the sign-in callback, a code the
+token endpoint refuses fails `connect` with that error (its message carries the
+server's reference when it gave one) instead of starting another authorization,
+so an app that signs in without asking can't loop. A callback the tab isn't
+waiting for, such as an old link opened again, is ignored and the stored
+session carries on. Retained clients refresh discovery from durable cross-tab trust
 before consuming a refresh token, with no client recreation or page reload.
 A stored grant keeps the capabilities approved for it. When the app's request
 now requires one the grant lacks, `connect` revokes that grant and sends the

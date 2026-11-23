@@ -1097,7 +1097,12 @@ CREATE TABLE auth_enforcement_work (
     failed_kicks INTEGER NOT NULL DEFAULT 0 CHECK (failed_kicks >= 0),
     next_attempt_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
-    completed_at INTEGER
+    completed_at INTEGER,
+    -- Set while the work's pages fail in a way trying again cannot fix: since
+    -- when, the latest error, and when that was last logged.
+    stuck_since INTEGER,
+    stuck_error TEXT,
+    stuck_logged_at INTEGER
 );
 CREATE INDEX auth_enforcement_work_ready
     ON auth_enforcement_work(state, lane, created_at, work_id);

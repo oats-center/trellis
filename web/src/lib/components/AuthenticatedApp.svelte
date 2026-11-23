@@ -2,7 +2,7 @@
   import { page } from "$app/state";
   import type { Snippet } from "svelte";
   import { onDestroy } from "svelte";
-  import { buildConsoleLoginUrl } from "../auth";
+  import { buildConsoleLoginUrl, resetAutomaticSignIn } from "../auth";
   import {
     completeNavigation,
     currentNavigationToken,
@@ -69,6 +69,9 @@
       return;
     }
     authority.clear();
+    // The person asked to sign in again, so earlier automatic sign-ins in
+    // this tab don't count against it.
+    resetAutomaticSignIn();
     redirectToLogin();
   });
 
@@ -93,6 +96,7 @@
       return;
     }
     authority.clear();
+    resetAutomaticSignIn();
   }
 
   // The server's version, and a newer release when an administrator asks. A

@@ -10,7 +10,13 @@
   import AuthenticatedApp from "$lib/components/AuthenticatedApp.svelte";
   import LoadingScreen from "$lib/components/LoadingScreen.svelte";
   import AdminAccountRedirect from "$lib/components/AdminAccountRedirect.svelte";
-  import { buildConsoleLoginUrl, consoleReturnKey } from "$lib/auth";
+  import SignInFailed from "$lib/components/SignInFailed.svelte";
+  import {
+    allowAutomaticSignIn,
+    buildConsoleLoginUrl,
+    consoleReturnKey,
+    SIGN_IN_STOPPED,
+  } from "$lib/auth";
   import {
     buildAdminAccountLoginUrl,
     consumeAdminAccountToken,
@@ -28,6 +34,7 @@
   let initialized = $state(false);
   let adminAccountToken = $state<string | null>(null);
   let showConnectingModal = $state(false);
+  let signInStopped = $state(false);
   let connectingTimer: ReturnType<typeof setTimeout> | null = null;
 
   function currentPath(): string {
@@ -61,6 +68,12 @@
   });
 
   function redirectToLogin(loginUrl: string): void {
+    // Asking to approve something the person just used is their own action;
+    // anything else leaves on its own and could repeat forever.
+    if (!navigator.userActivation?.isActive && !allowAutomaticSignIn()) {
+      signInStopped = true;
+      return;
+    }
     sessionStorage.setItem(consoleReturnKey(), currentPath());
     if (loginUrl) {
       if (adminAccountToken) {
@@ -110,7 +123,9 @@
   }
 </script>
 
-{#if initialized}
+{#if signInStopped}
+  <SignInFailed problem={SIGN_IN_STOPPED} />
+{:else if initialized}
   <TrellisProvider
     {trellisApp}
     auth={consoleAuthOptions()}

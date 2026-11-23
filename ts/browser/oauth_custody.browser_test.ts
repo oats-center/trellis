@@ -199,6 +199,26 @@ test("browser OAuth custody survives Chromium restart without exporting private 
         const preserved = (await store.refreshToken()).unwrapOrElse((error) => {
           throw error;
         });
+        // A refresh that never succeeds leaves the session lapsed: its token
+        // is spent. Only then may a sign-in as someone else take the handle.
+        await store.rotate(
+          async () => {
+            throw new Error("the refresh was refused");
+          },
+          async () => {},
+        );
+        const lapsed = store.lapsed;
+        const takenOver = await store.rememberGrant({
+          principalId: "user-two",
+          oauthGrantId: "grant-two",
+          loginSessionId: "login-two",
+          refreshToken: "confidential-refresh-two",
+        });
+        const takenOverToken = (await store.refreshToken()).unwrapOrElse(
+          (error) => {
+            throw error;
+          },
+        );
         const retainedTrust = store.trust;
         // Simulate a pre-release unpinned record on disk. Reopening must not
         // associate its still-encrypted secret with newly discovered trust.
@@ -233,6 +253,10 @@ test("browser OAuth custody survives Chromium restart without exporting private 
           otherToken,
           changedUser: replacement.isOk(),
           preserved,
+          lapsed,
+          takenOver: takenOver.isOk(),
+          takenOverBy: store.grant?.principalId,
+          takenOverToken,
           retainedTrust,
           recovery,
         };
@@ -245,6 +269,10 @@ test("browser OAuth custody survives Chromium restart without exporting private 
       otherToken: undefined,
       changedUser: false,
       preserved: "confidential-refresh-one",
+      lapsed: true,
+      takenOver: true,
+      takenOverBy: "user-two",
+      takenOverToken: "confidential-refresh-two",
       retainedTrust: trust,
       recovery: "OAuthRecoveryRequired",
     });

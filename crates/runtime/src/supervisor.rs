@@ -401,6 +401,61 @@ pub(crate) async fn connect_nats(
     }
 }
 
+/// Runs startup `work` on a runtime database until it succeeds.
+///
+/// A failure that can pass, such as a lock another process holds past the busy
+/// timeout, is logged and the work runs again after a growing wait (see
+/// [`crate::storage::Backoff`]). A database that is unusable, or work that
+/// fails the same way every time, such as a migration whose checksum differs,
+/// ends startup with a message naming the work. So does `stopping`, which ends
+/// the wait at once.
+pub(crate) async fn until_stored<T, E, F>(
+    stopping: &StopHandle,
+    work: &str,
+    mut step: impl FnMut() -> F,
+) -> Result<T, RuntimeError>
+where
+    E: crate::storage::ClassifiedFailure,
+    F: Future<Output = Result<T, E>>,
+{
+    use crate::storage::StorageFailure;
+    let mut backoff = crate::storage::Backoff::default();
+    loop {
+        let error = match step().await {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        match error.storage_failure() {
+            StorageFailure::Unusable => {
+                return Err(RuntimeError::Startup(format!(
+                    "{work} failed: the database is unusable: {error}"
+                )));
+            }
+            StorageFailure::Permanent => {
+                return Err(RuntimeError::Startup(format!(
+                    "{work} failed, and trying again cannot help: {error}"
+                )));
+            }
+            StorageFailure::Transient => {}
+        }
+        let delay = backoff.failed();
+        tracing::warn!(
+            work,
+            %error,
+            retry_in_ms = delay.as_millis(),
+            "startup storage work failed; it will run again"
+        );
+        tokio::select! {
+            () = stopping.stopped() => {
+                return Err(RuntimeError::Startup(format!(
+                    "stopped while {work} was failing: {error}"
+                )));
+            }
+            () = tokio::time::sleep(delay) => {}
+        }
+    }
+}
+
 async fn check_nats_connection(
     nats: &crate::config::ResolvedRuntimeNatsConfig,
     credentials: &str,
@@ -425,6 +480,11 @@ pub enum RuntimeError {
     /// Runtime storage failed.
     #[error(transparent)]
     Store(#[from] StoreError),
+    /// Startup work on a runtime database cannot finish: the database is
+    /// unusable, the work fails the same way every time, or the process
+    /// stopped while it waited.
+    #[error("{0}")]
+    Startup(String),
     /// Runtime NATS connection failed.
     #[error("runtime NATS connection failed: {0}")]
     Nats(String),
@@ -653,9 +713,12 @@ impl RuntimeContext {
 
     /// Whether the process has begun shutting down.
     pub(crate) fn is_stopping(&self) -> bool {
-        self.groups
-            .stopping
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.groups.stopping.is_stopped()
+    }
+
+    /// Fires once the process begins shutting down.
+    pub(crate) fn stopping(&self) -> &StopHandle {
+        &self.groups.stopping
     }
 
     pub(crate) fn register_http_router(&self, router: axum::Router) -> Result<(), RuntimeError> {
@@ -705,7 +768,7 @@ struct GroupStates {
     ready: Arc<std::sync::atomic::AtomicBool>,
     components: Arc<crate::telemetry::snapshots::ComponentReadiness>,
     settled: std::sync::atomic::AtomicBool,
-    stopping: std::sync::atomic::AtomicBool,
+    stopping: StopHandle,
 }
 
 impl GroupStates {
@@ -719,7 +782,7 @@ impl GroupStates {
             ready,
             components: Arc::default(),
             settled: std::sync::atomic::AtomicBool::new(false),
-            stopping: std::sync::atomic::AtomicBool::new(false),
+            stopping: StopHandle::new(),
         }
     }
 
@@ -745,7 +808,7 @@ impl GroupStates {
             .is_none_or(|state| *state == GroupState::Running);
         let running = states.values().any(|state| *state == GroupState::Running);
         self.ready.store(
-            !self.stopping.load(SeqCst) && self.settled.load(SeqCst) && platform && running,
+            !self.stopping.is_stopped() && self.settled.load(SeqCst) && platform && running,
             SeqCst,
         );
     }
@@ -753,7 +816,7 @@ impl GroupStates {
     /// Marks the process stopping; it is not ready from here on.
     fn stop(&self) {
         use std::sync::atomic::Ordering::SeqCst;
-        self.stopping.store(true, SeqCst);
+        self.stopping.stop();
         self.ready.store(false, SeqCst);
         for name in self.states.borrow().keys() {
             self.components.set(component_label(name.subsystem()), 0.0);
@@ -842,7 +905,14 @@ pub async fn run_with_stop(
     // Nothing is created or changed on the broker, leases and streams
     // included, until it is known to be this installation's.
     let stores = RuntimeStores::from_config(&config, options.mode)?;
-    stores.migrate_all()?;
+    // Another process can hold a database's lock while the server starts,
+    // such as a backup or an operator's query; startup waits for it.
+    until_stored(
+        &stop.clone().unwrap_or_default(),
+        "Startup migrations",
+        || std::future::ready(stores.migrate_all()),
+    )
+    .await?;
     if !crate::platform::confirm_broker(&config, &stores, &trellis_nats, || {
         stop.as_ref().is_some_and(StopHandle::is_stopped)
     })
@@ -1178,6 +1248,15 @@ async fn run_owned_group(
     let started = start().await;
     let handle = match started {
         Ok(handle) => handle,
+        // A stop during startup, as while it waits for a locked database,
+        // ends the work like a stop after it.
+        Err(error) if stop.is_stopped() => {
+            tracing::info!(%subsystem, %error, "runtime stopped before this work started");
+            if let Ok(mut owners) = context.owners.lock() {
+                owners.remove(&group);
+            }
+            return Ok(());
+        }
         Err(error) => {
             if let Ok(mut owners) = context.owners.lock() {
                 owners.remove(&group);

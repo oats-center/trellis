@@ -87,11 +87,18 @@ impl From<ProjectionCommit> for Invalidation {
 }
 
 pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, RuntimeError> {
-    let store = HealthStore::new(context.stores.health()?.open()?)
-        .map_err(|error| RuntimeError::Health(error.to_string()))?;
-    let projection_id = store
-        .projection_id()
-        .map_err(|error| RuntimeError::Health(error.to_string()))?;
+    // Another process can hold the database's lock while the server starts,
+    // such as a backup or an operator's query; startup waits for it.
+    let database = context.stores.health()?;
+    let (store, projection_id) =
+        crate::supervisor::until_stored(context.stopping(), "Health startup", || {
+            std::future::ready((|| {
+                let store = HealthStore::new(database.open()?)?;
+                let projection_id = store.projection_id()?;
+                Ok::<_, store::HealthStoreError>((store, projection_id))
+            })())
+        })
+        .await?;
     let jetstream = jetstream::new(context.trellis_nats.clone());
     let owner = context.owner(OwnerGroup::Health)?;
     let invalidation_subject = format!("{INVALIDATION_PREFIX}.{projection_id}");

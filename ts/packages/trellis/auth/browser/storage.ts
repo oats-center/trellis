@@ -238,6 +238,14 @@ export class BrowserSessionStore {
     return this.#record.grant && Object.freeze({ ...this.#record.grant });
   }
 
+  /**
+   * Whether the stored session can no longer renew: its last refresh failed,
+   * or never answered, so its token is spent. Only a new sign-in restores it.
+   */
+  get lapsed(): boolean {
+    return this.#record.recoveryRequired === true;
+  }
+
   /** Persist only a successor authenticated from this record's retained pin. */
   async retainTrust(owner: SessionAuthorityOwner): Promise<void> {
     const trust = SessionAuthorityOwner.prototype.trustForCredential.call(
@@ -351,7 +359,10 @@ export class BrowserSessionStore {
     }
   }
 
-  /** Bind an unused credential handle to the verified user and initial family. */
+  /**
+   * Bind an unused or lapsed credential handle to the verified user and
+   * initial family. A handle whose session still renews stays its user's.
+   */
   async rememberGrant(
     grant: BrowserOAuthGrant,
   ): Promise<Result<void, AuthError>> {
@@ -372,7 +383,9 @@ export class BrowserSessionStore {
         );
         if (
           !current ||
-          (current.grant && current.grant.principalId !== grant.principalId)
+          (current.grant &&
+            !current.recoveryRequired &&
+            current.grant.principalId !== grant.principalId)
         ) {
           return err(new AuthError({ reason: "Conflict" }));
         }
