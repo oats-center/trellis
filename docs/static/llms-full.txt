@@ -606,7 +606,8 @@ changed limit is applied to the existing streams at the next start.
 `trellis.storage.bytes`, `trellis.storage.records` and
 `trellis.storage.oldest.age` gauges report each data class's size and oldest
 record. `Health.Storage` also reports JetStream storage and memory used and
-reserved against the account's and the server's limits; it is `degraded` at
+reserved against the account's and the server's limits (in a cluster, the
+most committed server for each); it is `degraded` at
 85% of a limit or while JetStream refuses a Trellis stream for lack of room,
 with each problem and its numbers. A KV, store, State, job or event write
 JetStream refuses for lack of room returns a typed resource-exhausted error

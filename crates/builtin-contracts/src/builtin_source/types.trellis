@@ -455,9 +455,12 @@ model HealthStorageJetStream {
   memory: HealthStorageJetStreamUsage;
   /// Each limit that is close, and each refusal, with the numbers.
   problems: list<string>;
-  /// Memory storage of the whole NATS server, when Trellis can ask it.
+  /// Memory storage of the NATS server with the most memory committed, when
+  /// Trellis can ask the servers. In a cluster this can be a different server
+  /// than `serverStorage`.
   serverMemory?: HealthStorageJetStreamUsage;
-  /// File storage of the whole NATS server, when Trellis can ask it.
+  /// File storage of the NATS server with the most storage committed, when
+  /// Trellis can ask the servers.
   serverStorage?: HealthStorageJetStreamUsage;
   /// `degraded` while used or reserved storage or memory, streams, or
   /// consumers reach 85% of a limit, or JetStream refuses a Trellis resource.

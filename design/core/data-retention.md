@@ -112,17 +112,20 @@ busy_timeout_ms`, five seconds when unset. A failure is then one of three kinds:
   with it trellis-server, with a message naming that database.
 
 `Health.Storage` also reports JetStream capacity: the Trellis account's storage
-and memory used and reserved against its limits, the whole server's from the
-system account's `JSZ` request when the process holds a system-account
-connection (the platform role does), stream and consumer counts, and the
-largest streams by bytes stored or reserved, absent rather than a partial list
-when JetStream does not list every stream. It is `degraded`, with each
-problem and its numbers, while used or reserved bytes, streams, or consumers
-reach 85% of a limit, and while JetStream refuses a resource this process
-needs. A refusal is reported until the resource is created or written, or
-until nothing needs it any more, as when the last webhook endpoint of a
-deployment whose intake stream was refused is removed. `trellis storage` and
-the Console Health page show it.
+and memory used and reserved against its limits, the server's from the system
+account's `JSZ` request when the process holds a system-account connection
+(the platform role does), stream and consumer counts, and the largest streams
+by bytes stored or reserved. In a cluster every server answers `JSZ`; storage
+is reported from the server with the largest share of its storage committed
+and memory from the one with the largest share of its memory committed, which
+can be different servers, since each refuses first for its resource. When
+JetStream does not list every stream, the largest streams are absent rather
+than a partial list. It is `degraded`, with each problem and its numbers,
+while used or reserved bytes, streams, or consumers reach 85% of a limit, and
+while JetStream refuses a resource this process needs. A refusal is reported
+until the resource is created or written, or until nothing needs it any more,
+as when the last webhook endpoint of a deployment whose intake stream was
+refused is removed. `trellis storage` and the Console Health page show it.
 
 `Health.Storage` and the `trellis.storage.bytes`, `trellis.storage.records`, and
 `trellis.storage.oldest.age` gauges (attribute `trellis.data_class`) report each

@@ -93,9 +93,11 @@ pub(crate) struct Capacity {
     pub(crate) storage: Usage,
     /// Memory storage of the Trellis account.
     pub(crate) memory: Usage,
-    /// File storage of the whole server, when the system account is reachable.
+    /// File storage of the server with the most committed, when the system
+    /// account is reachable.
     pub(crate) server_storage: Option<Usage>,
-    /// Memory storage of the whole server, when the system account is reachable.
+    /// Memory storage of the server with the most committed, when the system
+    /// account is reachable.
     pub(crate) server_memory: Option<Usage>,
     pub(crate) streams: u64,
     pub(crate) max_streams: Option<u64>,
@@ -226,8 +228,9 @@ impl Capacity {
 }
 
 /// The server's JetStream storage and memory, from the system account's
-/// `JSZ` request. In a cluster each server answers; the most committed one
-/// is the one that refuses first, so it is the one reported.
+/// `JSZ` request. In a cluster each server answers; for storage and for memory
+/// the most committed server is the one that refuses first, so it is the one
+/// reported, and the two can be different servers.
 async fn server_usage(system: &async_nats::Client) -> Option<(Usage, Usage)> {
     #[derive(serde::Deserialize)]
     struct Reply {
@@ -273,22 +276,26 @@ async fn server_usage(system: &async_nats::Client) -> Option<(Usage, Usage)> {
                     continue;
                 };
                 let config = data.config.unwrap_or(Config { max_memory: 0, max_storage: 0 });
-                let server = (
-                    Usage {
-                        used: data.storage,
-                        reserved: data.reserved_storage,
-                        limit: u64::try_from(config.max_storage).ok().filter(|limit| *limit > 0),
-                    },
-                    Usage {
-                        used: data.memory,
-                        reserved: data.reserved_memory,
-                        limit: u64::try_from(config.max_memory).ok().filter(|limit| *limit > 0),
-                    },
-                );
-                let fraction = |usage: &(Usage, Usage)| usage.0.fraction().unwrap_or(0.0);
-                if best.as_ref().is_none_or(|best| fraction(&server) > fraction(best)) {
-                    best = Some(server);
-                }
+                let storage = Usage {
+                    used: data.storage,
+                    reserved: data.reserved_storage,
+                    limit: u64::try_from(config.max_storage).ok().filter(|limit| *limit > 0),
+                };
+                let memory = Usage {
+                    used: data.memory,
+                    reserved: data.reserved_memory,
+                    limit: u64::try_from(config.max_memory).ok().filter(|limit| *limit > 0),
+                };
+                let fraction = |usage: &Usage| usage.fraction().unwrap_or(0.0);
+                let most = |best: Usage, next: Usage| {
+                    if fraction(&next) > fraction(&best) { next } else { best }
+                };
+                best = Some(match best {
+                    None => (storage, memory),
+                    Some((most_storage, most_memory)) => {
+                        (most(most_storage, storage), most(most_memory, memory))
+                    }
+                });
             }
         }
     }
@@ -514,6 +521,117 @@ mod tests {
             .connect(url)
             .await
             .unwrap()
+    }
+
+    // A cluster where one server's disk and another server's memory are
+    // nearly committed. Each limit is reported from the server closest to
+    // it, so the memory-heavy server is not hidden behind the disk-heavy one.
+    #[tokio::test]
+    async fn cluster_health_reports_the_most_committed_server_for_each_resource() {
+        let directory = tempfile::tempdir().unwrap();
+        let reservations = std::array::from_fn::<_, 4, _>(|_| {
+            trellis_local_nats::ReservedPort::reserve().unwrap()
+        });
+        let [client_a, route_a, client_b, route_b] =
+            reservations.each_ref().map(|reserved| reserved.port());
+        let mut servers = Vec::new();
+        for (name, tag, client, route, other) in [
+            ("disk", "disk", client_a, route_a, route_b),
+            ("memory", "memory", client_b, route_b, route_a),
+        ] {
+            let config = directory.path().join(format!("{name}.conf"));
+            std::fs::write(
+                &config,
+                format!(
+                    "server_name: {name}\nlisten: 127.0.0.1:{client}\nserver_tags: [{tag}]\n\
+                    jetstream {{ store_dir: '{}', max_memory_store: 64MB, max_file_store: 64MB }}\n\
+                    cluster {{ name: capacity, listen: 127.0.0.1:{route}, \
+                    routes: [nats-route://127.0.0.1:{other}] }}\n\
+                    accounts {{ SYS {{ users: [{{user: sys, password: pw}}] }}, \
+                    APP {{ jetstream: enabled, users: [{{user: app, password: pw}}] }} }}\n\
+                    system_account: SYS\n",
+                    directory.path().join(name).display()
+                ),
+            )
+            .unwrap();
+            servers.push(start_nats(&config).await);
+        }
+        drop(reservations);
+        let url = format!("nats://127.0.0.1:{client_a}");
+        let jetstream = async_nats::jetstream::new(connect(&url, "app").await);
+        let system = connect(&url, "sys").await;
+        for (name, tag, storage) in [
+            (
+                "DISK",
+                "disk",
+                async_nats::jetstream::stream::StorageType::File,
+            ),
+            (
+                "MEMORY",
+                "memory",
+                async_nats::jetstream::stream::StorageType::Memory,
+            ),
+        ] {
+            // The cluster takes streams once it has a JetStream leader.
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while jetstream
+                    .create_stream(async_nats::jetstream::stream::Config {
+                        name: name.into(),
+                        subjects: vec![name.to_lowercase()],
+                        storage,
+                        max_bytes: 60 * MIB,
+                        placement: Some(async_nats::jetstream::stream::Placement {
+                            cluster: None,
+                            tags: vec![tag.into()],
+                        }),
+                        ..Default::default()
+                    })
+                    .await
+                    .is_err()
+                {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .expect("the cluster places the stream");
+        }
+
+        let committed = |usage: &Usage| usage.fraction().unwrap_or(0.0);
+        let mut last = None;
+        let reported = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                last = server_usage(&system).await;
+                if let Some((storage, memory)) = last {
+                    if committed(&storage) >= DEGRADED_FRACTION
+                        && committed(&memory) >= DEGRADED_FRACTION
+                    {
+                        return (storage, memory);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await;
+        let (storage, memory) =
+            reported.unwrap_or_else(|_| panic!("a nearly committed server is hidden: {last:?}"));
+        assert_eq!(storage.reserved, 60 << 20);
+        assert_eq!(memory.reserved, 60 << 20);
+        let capacity = Capacity {
+            server_storage: Some(storage),
+            server_memory: Some(memory),
+            ..Capacity::default()
+        };
+        let problems = capacity.pressure();
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.starts_with("JetStream server storage is"))
+                && problems
+                    .iter()
+                    .any(|problem| problem.starts_with("JetStream server memory is")),
+            "{problems:?}"
+        );
+        drop(servers);
     }
 
     // A stream listing that fails, at once or after some streams arrived,
