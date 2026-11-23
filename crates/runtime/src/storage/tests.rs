@@ -315,3 +315,48 @@ fn runtime_stores_split_mode_ignores_unselected_storage() -> Result<(), Box<dyn 
     stores.check_all()?;
     Ok(())
 }
+
+#[test]
+#[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
+fn a_changed_webhooks_baseline_is_refused_before_the_other_databases_are_touched(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let mut config = runtime_config();
+    config.platform = Some(subsystem_config(directory.path().join("platform.sqlite")));
+    config.jobs = Some(subsystem_config(directory.path().join("jobs.sqlite")));
+    config.health = Some(subsystem_config(directory.path().join("health.sqlite")));
+    config.events = Some(subsystem_config(directory.path().join("events.sqlite")));
+    let stores = RuntimeStores::from_config(&config, RuntimeMode::All)?;
+    stores.migrate_all()?;
+
+    // The webhooks database was made by a release whose baseline differs
+    // from this one's, and that release had not yet made the jobs database.
+    Connection::open(directory.path().join(WEBHOOKS_DATABASE))?.execute(
+        "UPDATE refinery_schema_history SET checksum = substr(checksum, 1, length(checksum) - 1) \
+        || CASE substr(checksum, -1) WHEN '0' THEN '1' ELSE '0' END",
+        [],
+    )?;
+    let jobs = directory.path().join("jobs.sqlite");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = fs::remove_file(format!("{}{suffix}", jobs.display()));
+    }
+
+    let error = stores.migrate_all().unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            StoreError::IncompatibleSchema {
+                subsystem: "webhooks",
+                release,
+                ..
+            } if *release == env!("CARGO_PKG_VERSION")
+        ),
+        "{error}"
+    );
+    assert!(
+        !jobs.exists(),
+        "the refused start created the jobs database"
+    );
+    assert!(stores.check_all().is_err());
+    Ok(())
+}

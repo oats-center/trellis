@@ -924,7 +924,8 @@ The implementation settles these points the proposal left open:
 
 - **Where intake runs.** Intake is part of the platform subsystem, which owns
   the Auth database, the settings storage key, and the Trellis listener.
-  Request records live in `webhooks.sqlite` beside the platform database, and
+  Request records live in `webhooks.sqlite` beside the platform database.
+  Startup migrates it with the other databases, before any other work, and
   `trellis-server backup` includes it.
 - **Names in URLs and events.** The URL's service segment is the deployment's
   name lowercased, with runs of other characters made one `-`, fixed when the

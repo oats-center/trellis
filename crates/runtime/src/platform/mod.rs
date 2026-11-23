@@ -255,15 +255,11 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .map_err(|_| RuntimeError::Platform("authorization store lock poisoned".into()))? =
         Some(store.clone());
     let (publisher, published) = tokio::sync::watch::channel(None);
-    let records_path = context
-        .stores
-        .platform()?
-        .path()
-        .with_file_name(crate::storage::WEBHOOKS_DATABASE);
+    let records = context.stores.webhooks()?;
     let webhooks = Box::pin(webhooks::Webhooks::open(
         engine.server.store().clone(),
-        &records_path,
-        context.stores.platform()?.busy_timeout(),
+        records.path(),
+        records.busy_timeout(),
         context.trellis_nats.clone(),
         published,
         &context.config,

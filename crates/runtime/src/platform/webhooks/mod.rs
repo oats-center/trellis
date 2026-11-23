@@ -1287,7 +1287,18 @@ mod tests {
         // and stopped before it updated the deployment's records. Each
         // deployment has one request stored in its stream, waiting for
         // verification.
-        let path = directory.path().join("webhooks.sqlite");
+        let platform = crate::storage::SqliteStore::new(
+            crate::SubsystemName::Platform,
+            crate::SqliteStorageConfig {
+                path: directory.path().join("platform.sqlite"),
+                journal_mode: None,
+                busy_timeout_ms: None,
+                single_writer: None,
+            },
+        );
+        let database = crate::storage::SqliteStore::webhooks_beside(&platform);
+        database.migrate().unwrap();
+        let path = database.path().to_owned();
         let records = super::records::Records::open(&path, Duration::from_secs(5)).unwrap();
         for (attempt, deployment) in [
             ("01JA0000000000000000000001", &removed),
