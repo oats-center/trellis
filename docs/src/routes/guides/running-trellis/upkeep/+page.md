@@ -48,7 +48,9 @@ on a small VM. The status turns degraded when anything reaches 85% of a limit,
 and while NATS refuses a stream Trellis needs, with what was refused and the
 numbers. Trellis keeps trying with backoff and logs the refusal once, then
 every ten minutes; free disk, raise `max_file_store`, or remove streams you
-don't need, and it recovers by itself.
+don't need, and it recovers by itself. A stream the server needs at startup
+works the same way: the server waits, logs what didn't fit, and starts once
+there is room.
 The same numbers go to your metrics as `trellis.storage.bytes`,
 `trellis.storage.records` and `trellis.storage.oldest.age`.
 

@@ -166,8 +166,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         stopping,
     ))
     .await?;
-    // Capacity reports include the server's own JetStream numbers.
-    context.shortages.set_system(system.clone());
     // Provider notices reach sessions in the application account.
     let notices = context.trellis_nats.clone();
     // Every built-in this process starts must be one this server can install

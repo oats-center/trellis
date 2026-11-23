@@ -550,6 +550,53 @@ impl AdminSession {
             .collect())
     }
 
+    /// Sets one runtime setting of a webhook endpoint, or with `None` returns
+    /// it to its default, through `Auth.Webhooks.Update`.
+    pub(crate) async fn set_webhook_setting(
+        &self,
+        deployment_id: &str,
+        endpoint: &str,
+        setting: &str,
+        value: Option<u64>,
+    ) -> Result<(), TrellisTestError> {
+        self.auth
+            .webhooks_update(&wire(json!({
+                "deploymentId": deployment_id,
+                "endpoint": endpoint,
+                "change": "set",
+                "setting": setting,
+                "value": value.map(|value| value.to_string()),
+                "idempotencyKey": ulid::Ulid::generate().to_string(),
+            }))?)
+            .await
+            .map_err(|error| failure(TrellisTestStage::ServiceProvisioning, error))?;
+        Ok(())
+    }
+
+    /// The newest request records of a webhook endpoint, as `Attempts.Query`
+    /// returns them.
+    pub(crate) async fn webhook_attempts(
+        &self,
+        deployment_id: &str,
+        endpoint: &str,
+    ) -> Result<Vec<serde_json::Value>, TrellisTestError> {
+        let listed = self
+            .webhooks
+            .attempts_query(&wire(
+                json!({ "service": deployment_id, "endpoint": endpoint }),
+            )?)
+            .await
+            .map_err(|error| failure(TrellisTestStage::ServiceProvisioning, error.to_string()))?;
+        listed
+            .attempts
+            .iter()
+            .map(|attempt| {
+                serde_json::to_value(attempt)
+                    .map_err(|error| failure(TrellisTestStage::ServiceProvisioning, error))
+            })
+            .collect()
+    }
+
     pub(crate) async fn set_config(
         &self,
         deployment_id: &str,

@@ -40,6 +40,15 @@ whose name, subjects, retention kind, discard policy, or sources differ.
 JetStream cannot change storage type or retention kind (limits, work queue) in
 place, so those differences need an operator decision, not convergence.
 
+When JetStream refuses to create or resize a runtime stream for lack of room
+(insufficient storage or memory, or the account's stream limit), startup waits
+and tries again with the storage backoff, as it waits out a locked database.
+Every subsystem needs its streams, so nothing is served meanwhile. The refusal
+is logged once with what was asked for and the account's and server's storage
+used, reserved, and limit (the server's when the process has system-account
+credentials), then every ten minutes while it lasts, and the server starts as
+soon as there is room.
+
 SQL history is removed by hourly loops in the subsystem that owns the database,
 in transactions of at most 1,000 rows, so a backlog never holds the writer for
 long. A failed pass is retried at the next tick and never stops projection.

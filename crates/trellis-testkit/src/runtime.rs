@@ -1181,6 +1181,42 @@ impl TrellisTestRuntime {
             .await
     }
 
+    /// Sets one runtime setting of a service's webhook endpoint, such as
+    /// `intakeMaxBytes`, as `trellis svc <service> webhooks <endpoint> set`
+    /// does; `None` returns it to its default. Durations are milliseconds and
+    /// sizes bytes.
+    ///
+    /// # Errors
+    /// Returns an error when Auth refuses the setting or its value.
+    pub async fn set_webhook_setting(
+        &self,
+        service: &TestServiceIdentity,
+        endpoint: &str,
+        setting: &str,
+        value: Option<u64>,
+    ) -> Result<(), TrellisTestError> {
+        self.ensure_running()?;
+        self.admin()?
+            .set_webhook_setting(&service.deployment_id, endpoint, setting, value)
+            .await
+    }
+
+    /// The newest request records of a service's webhook endpoint, newest
+    /// first, as an administrator lists them.
+    ///
+    /// # Errors
+    /// Returns an error when the records cannot be read.
+    pub async fn webhook_attempts(
+        &self,
+        service: &TestServiceIdentity,
+        endpoint: &str,
+    ) -> Result<Vec<serde_json::Value>, TrellisTestError> {
+        self.ensure_running()?;
+        self.admin()?
+            .webhook_attempts(&service.deployment_id, endpoint)
+            .await
+    }
+
     /// The URL senders use for each of a service's webhook endpoints, by
     /// endpoint name. Tests send real requests to these URLs; nothing
     /// bypasses intake or verification.

@@ -395,8 +395,8 @@ struct Inner {
     limits: limits::Limits,
     /// JetStream refusals, reported with the numbers in logs and health.
     shortages: Arc<crate::capacity::Shortages>,
-    /// Why a deployment's intake stream is unavailable, while it is.
-    intake: std::sync::Mutex<BTreeMap<String, String>>,
+    /// What is wrong with a deployment's intake stream, while it is.
+    intake: std::sync::Mutex<BTreeMap<String, IntakeProblem>>,
 }
 
 /// The intake stream of one deployment.
@@ -422,6 +422,15 @@ fn stream_subject(deployment: &str) -> String {
 }
 
 const WORKER: &str = "TRELLIS_WEBHOOKS_WORKER";
+
+/// What is wrong with a deployment's intake stream, for its endpoints' health.
+#[derive(Debug)]
+enum IntakeProblem {
+    /// There is no stream, so `async` requests get 503.
+    Missing(String),
+    /// The stream serves, but with its old limits.
+    Unchanged(String),
+}
 
 /// Why the intake stream did not take a request.
 #[derive(Debug)]
@@ -539,27 +548,40 @@ impl Webhooks {
     /// succeeds. A refusal for lack of room is reported with the numbers.
     async fn ensure_stream(&self, deployment: &str, settings: &Settings) -> Result<(), String> {
         let resource = format!("intake stream {}", stream_name(deployment));
-        let result = self.converge_stream(deployment, settings).await;
-        let problem = match &result {
+        let (problem, result) = match self.converge_stream(deployment, settings).await {
             Ok(()) => {
                 self.inner.shortages.recovered(&resource);
-                None
+                (None, Ok(()))
             }
-            Err(error) => Some(match crate::capacity::exhaustion_in(error) {
-                Some(exhaustion) => {
-                    self.inner
-                        .shortages
-                        .refused(
-                            &self.inner.nats,
-                            &resource,
-                            exhaustion,
-                            Some(settings.intake_max_bytes),
-                            error,
-                        )
-                        .await
+            Err((exists, error)) => {
+                let reason = match crate::capacity::exhaustion_in(&error) {
+                    Some(exhaustion) => {
+                        self.inner
+                            .shortages
+                            .refused(
+                                &self.inner.nats,
+                                &resource,
+                                exhaustion,
+                                Some(settings.intake_max_bytes),
+                                &error,
+                            )
+                            .await
+                    }
+                    None => format!("{resource} unavailable: {error}"),
+                };
+                // A stream that could not take new limits keeps serving with
+                // its old ones.
+                if exists {
+                    (
+                        Some(IntakeProblem::Unchanged(format!(
+                            "the intake stream keeps its old limits: {reason}"
+                        ))),
+                        Ok(()),
+                    )
+                } else {
+                    (Some(IntakeProblem::Missing(reason)), Err(error))
                 }
-                None => format!("{resource} unavailable: {error}"),
-            }),
+            }
         };
         if let Ok(mut intake) = self.inner.intake.lock() {
             match problem {
@@ -570,7 +592,13 @@ impl Webhooks {
         result
     }
 
-    async fn converge_stream(&self, deployment: &str, settings: &Settings) -> Result<(), String> {
+    /// Creates the stream, or updates its limits; the error says whether the
+    /// stream exists.
+    async fn converge_stream(
+        &self,
+        deployment: &str,
+        settings: &Settings,
+    ) -> Result<(), (bool, String)> {
         use async_nats::jetstream::stream;
         let config = stream::Config {
             name: stream_name(deployment),
@@ -587,7 +615,10 @@ impl Webhooks {
         };
         match self.inner.jetstream.get_stream(&config.name).await {
             Ok(mut existing) => {
-                let info = existing.info().await.map_err(|error| error.to_string())?;
+                let info = existing
+                    .info()
+                    .await
+                    .map_err(|error| (true, error.to_string()))?;
                 if info.config.max_age != config.max_age
                     || info.config.max_bytes != config.max_bytes
                 {
@@ -595,7 +626,7 @@ impl Webhooks {
                         .jetstream
                         .update_stream(config)
                         .await
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| (true, error.to_string()))?;
                 }
             }
             Err(_) => {
@@ -603,7 +634,7 @@ impl Webhooks {
                     .jetstream
                     .create_stream(config)
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| (false, error.to_string()))?;
             }
         }
         Ok(())
@@ -648,12 +679,14 @@ impl Webhooks {
                 .get(&request.deployment_id)
                 .map(|endpoint| endpoint.settings.clone());
             if let Some(settings) = settings {
-                if self
-                    .ensure_stream(&request.deployment_id, &settings)
-                    .await
-                    .is_ok()
-                {
-                    result = publish().await;
+                match self.ensure_stream(&request.deployment_id, &settings).await {
+                    Ok(()) => result = publish().await,
+                    Err(error) => {
+                        return Err(match crate::capacity::exhaustion_in(&error) {
+                            Some(exhaustion) => StoreFailure::Exhausted(exhaustion),
+                            None => StoreFailure::Other(error),
+                        })
+                    }
                 }
             }
         }
@@ -843,15 +876,13 @@ impl Webhooks {
         }
         let (deployment, name) = endpoint.key();
         if record.definition.mode == trellis_idl::WebhookMode::Async {
-            if let Some(problem) = self
-                .inner
-                .intake
-                .lock()
-                .ok()
-                .and_then(|intake| intake.get(&deployment).cloned())
-            {
-                problems.push(format!("requests get 503: {problem}"));
-            }
+            let problem = self.inner.intake.lock().ok().and_then(|intake| {
+                intake.get(&deployment).map(|problem| match problem {
+                    IntakeProblem::Missing(reason) => format!("requests get 503: {reason}"),
+                    IntakeProblem::Unchanged(reason) => reason.clone(),
+                })
+            });
+            problems.extend(problem);
         }
         match self
             .inner

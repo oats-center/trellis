@@ -246,7 +246,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         &crate::RuntimeConfig::from_toml_str("").unwrap(),
         async_nats::jetstream::stream::StorageType::File,
     )
-    .converge_streams(nats.clone())
+    .converge_streams(nats.clone(), &crate::capacity::Shortages::default())
     .await
     .unwrap();
     let resource_source = r#"
