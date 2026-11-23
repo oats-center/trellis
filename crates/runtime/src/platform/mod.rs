@@ -391,8 +391,15 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                         next_retirement = now + 300;
                     }
                     Ok(())
-                }
-                .await;
+                };
+                // A pass waiting on a database another process holds locked
+                // can take the whole busy timeout per call. Stopping does not
+                // wait for it: each call commits on its own, and the work it
+                // has not done stays durable for the next start.
+                let pass = tokio::select! {
+                    () = worker_stop.stopped() => return Ok(()),
+                    pass = pass => pass,
+                };
                 match pass {
                     Ok(()) => backoff.succeeded(),
                     Err(error)
@@ -530,11 +537,16 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                             }
                         }
                         Ok::<(), auth::AuthError>(())
-                    }
-                    .await;
-                    // A claim or settlement the database refused leaves the
+                    };
+                    // Stopping does not wait for a pass held up by a locked
+                    // database. A claim or settlement the database refused,
+                    // or one left unfinished by the stop, leaves the
                     // publication pending; its lease runs out and it is sent
                     // again.
+                    let pass = tokio::select! {
+                        () = provider_stop.stopped() => break Ok(()),
+                        pass = pass => pass,
+                    };
                     match pass {
                         Ok(()) => backoff.succeeded(),
                         Err(error)

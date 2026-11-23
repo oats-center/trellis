@@ -120,7 +120,7 @@ impl Records {
         operation: impl FnOnce(&rusqlite::Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let connection = Arc::clone(&self.connection);
-        tokio::task::spawn_blocking(move || {
+        crate::blocking::spawn(move || {
             let connection = connection
                 .lock()
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;

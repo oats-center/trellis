@@ -92,9 +92,10 @@ verified immutable binaries are shared. Seeded admin is the default, with an
 explicit browser-flow option for first-admin tests. Real broker adapters use an
 isolated observer connection rather than a second TypeScript-owned NATS process.
 Automatic TCP listeners stay outside the kernel's outbound ephemeral range.
-Rust and Node reservations also hold the same loopback UDP port across the
-release-to-bind handoff, preventing another testkit from claiming a listener
-while its production child starts; the child binds TCP normally.
+Rust and Node reservations also hold the same loopback UDP port for the
+runtime's whole life, preventing another testkit from claiming a listener
+while its production child starts or while a restart has it down; the child
+binds TCP normally.
 The TypeScript host runs in a dedicated Unix process group: shutdown first asks
 the host to stop gracefully, then force-closes remaining owned descendants after
 the deadline or host exit. Process-failure tests may deliberately kill or

@@ -54,6 +54,7 @@ export type StartTrellisProcessArgs = {
   command: ResolvedTrellisProcessCommand;
   startupTimeoutMs: number;
   shutdownTimeoutMs: number;
+  /** Ports handed to the child at spawn; the caller keeps owning them. */
   portLeases?: readonly ReservedPort[];
 };
 
@@ -516,7 +517,6 @@ export async function startTrellisProcess(
     });
     await once(child, "spawn");
   } catch (error) {
-    for (const lease of args.portLeases ?? []) await lease.release();
     await Promise.all([stdoutLog.close(), stderrLog.close()]);
     throw error;
   }
@@ -581,10 +581,8 @@ export async function startTrellisProcess(
       stderrTail,
       readers: [stdoutReader, stderrReader],
     });
-    for (const lease of args.portLeases ?? []) await lease.release();
     return handle;
   } catch (error) {
-    for (const lease of args.portLeases ?? []) await lease.release();
     try {
       await handle.stop();
     } catch (cleanupError) {

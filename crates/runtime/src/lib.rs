@@ -28,6 +28,7 @@ pub mod tls;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 pub mod backup;
 mod blocking;
+pub use blocking::store_work_pending;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 mod capacity;
 mod clock;

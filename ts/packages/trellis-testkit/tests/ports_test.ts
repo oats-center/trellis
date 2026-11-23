@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -44,6 +44,63 @@ test("port reservations exclude other listeners until their release completes", 
     }
     await first.release();
     if (second) await second.release();
+  }
+});
+
+// A runtime restarts its server on the same ports. While the old server is
+// gone and the new one not yet started, another test process choosing ports
+// must not get one of them, or the restart finds it in use for good.
+test("a reserved port stays its owner's between the children it is handed to", async () => {
+  const reservation = await reserveLocalPort();
+  const ports = new URL("../src/ports.ts", import.meta.url).href;
+  const serve = (text: string) =>
+    spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+        import { createServer } from "node:http";
+        createServer((_request, response) => response.end(${JSON.stringify(text)}))
+          .listen(${reservation.port}, "127.0.0.1", () => console.log("listening"));
+        `,
+      ],
+      { stdio: ["ignore", "pipe", "inherit"] },
+    );
+  const handOff = async (text: string) => {
+    await reservation.releaseForSpawn();
+    const child = serve(text);
+    try {
+      const started = await Promise.race([
+        once(child.stdout, "data").then(([line]) => String(line).trim()),
+        once(child, "exit").then(([code]) => `exited with ${code}`),
+      ]);
+      assert.equal(started, "listening");
+      const response = await fetch(`http://127.0.0.1:${reservation.port}`);
+      assert.equal(await response.text(), text);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, "exit");
+        child.kill("SIGKILL");
+        await exited;
+      }
+    }
+  };
+  try {
+    await handOff("first server");
+    await promisify(execFile)(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      `
+      import assert from "node:assert/strict";
+      import { reserveLocalPort } from ${JSON.stringify(ports)};
+      await assert.rejects(() => reserveLocalPort(${reservation.port}), { code: "EADDRINUSE" });
+      `,
+    ]);
+    await reservation.reacquire();
+    await handOff("restarted server");
+  } finally {
+    await reservation.release();
   }
 });
 

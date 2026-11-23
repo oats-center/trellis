@@ -129,7 +129,12 @@ busy_timeout_ms`, five seconds when unset. A failure is then one of three kinds:
   doing: the migrations, and Auth, Jobs, Events and Health startup each retry
   every step that writes their database, so a server started while any of its
   databases is locked, or one locked part way through startup, starts once the
-  lock is released. A stop request ends the wait at once.
+  lock is released. A stop request ends the wait at once. The Auth effect and
+  event-publication loops also stop part way through a pass the lock holds up;
+  what the pass has not committed stays queued for the next start. Once its
+  shutdown has finished, trellis-server waits at most one second for store
+  calls still waiting on a lock, logs a warning with how many there were, and
+  exits; SQLite keeps none of what they had not committed.
 - It fails the same way on every attempt, such as a constraint violation or a
   value that cannot be decoded, for one item. That item is logged once at
   error with its ID and set aside, and the loop goes on with the next one. An

@@ -138,6 +138,48 @@ test(
   },
 );
 
+// trellis-server is stopped while another process holds the Auth database's
+// write lock. Background store work it started before the stop is still
+// waiting for the lock, each call for the whole 60-second busy timeout set
+// here. The server must stop without finishing that work, exit without
+// waiting for it, and report it. This catches a server that outlives its
+// shutdown by the busy timeout of every store call queued behind the lock,
+// until its supervisor kills it.
+test(
+  "trellis-server stopped while the Auth database is locked exits without waiting for the lock",
+  { timeout: 240_000 },
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const config = join(runtime.workdir, "config", "trellis", "config.toml");
+      await appendFile(
+        config,
+        '\n[platform.storage]\nkind = "sqlite"\nbusy_timeout_ms = 60000\n',
+      );
+      await runtime.restart();
+      const database = await authDatabase(runtime);
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        // Background store work runs every second, so some of it is waiting
+        // for the lock by now.
+        await sleep(3_000);
+        const stopping = Date.now();
+        await runtime.stop();
+        // The runtime's shutdown bound is 10 seconds, after which it kills
+        // the server.
+        const stopped = Date.now() - stopping;
+        assert(stopped < 8_000, `stopping took ${stopped}ms`);
+        assert.match(
+          runtime.controlPlaneOutput(),
+          /exiting with storage calls still waiting for their database/,
+        );
+      } finally {
+        database.exec("ROLLBACK");
+        database.close();
+      }
+    });
+  },
+);
+
 // An installation that sets a longer busy timeout for its Auth database
 // waits that long for a lock. A lock held for eight seconds, longer than the
 // five-second default but shorter than the 30 seconds configured here, must be

@@ -966,8 +966,23 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
     result
 }
 
-#[tokio::main]
-async fn main() -> miette::Result<()> {
+/// How long exit waits for store work still running once the host has shut down.
+const STORE_WORK_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn main() -> miette::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .into_diagnostic()?;
+    let result = runtime.block_on(serve());
+    // Store work outlives its stopped callers while another process holds its
+    // database locked, each call waiting out the busy timeout in turn. Exit
+    // does not wait for all of it.
+    runtime.shutdown_timeout(STORE_WORK_EXIT_GRACE);
+    result
+}
+
+async fn serve() -> miette::Result<()> {
     let args = Args::parse();
     // These commands need no server policy.
     match args.operation {
@@ -1008,6 +1023,15 @@ async fn main() -> miette::Result<()> {
     let policy = StartupPolicy::resolve(args)?;
     let telemetry = telemetry::init(policy.verbose, policy.operation == Operation::Check)?;
     let result = run(policy).await;
+    let pending = trellis_runtime::store_work_pending();
+    if pending > 0 {
+        tracing::warn!(
+            pending,
+            grace_ms = STORE_WORK_EXIT_GRACE.as_millis(),
+            "exiting with storage calls still waiting for their database; \
+             what they have not committed is not kept"
+        );
+    }
     telemetry.shutdown().await;
     result
 }

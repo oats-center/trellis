@@ -609,6 +609,9 @@ export class TrellisTestRuntime implements AsyncDisposable {
     ): Promise<AdminRpc["eventsDeadLettersReplay"]["output"]>;
   };
   #controlPlane: TrellisProcessHandle | undefined;
+  // Held for the runtime's life, so no other testkit process takes a port
+  // while a restart has the server down.
+  #portLeases: readonly ReservedPort[];
   #nc: NatsConnection;
   #observations = new Set<NatsConnection>();
   #admin: TrellisTestAdminAutomation;
@@ -676,6 +679,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     nativeGate?: NativeTransportGate;
     nc: NatsConnection;
     controlPlane?: TrellisProcessHandle;
+    portLeases: readonly ReservedPort[];
     admin: TrellisTestAdminAutomation;
     ownsWorkdir?: boolean;
   }) {
@@ -694,6 +698,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     this.#timeouts = args.timeouts;
     this.#nc = args.nc;
     this.#controlPlane = args.controlPlane;
+    this.#portLeases = args.portLeases;
     this.#launch = args.launch;
     this.#directWebsocket = args.websocketUrl;
     this.#websocketProxy = args.websocketProxy;
@@ -1066,6 +1071,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         nativeGate,
         nc,
         controlPlane: startedControlPlane,
+        portLeases,
         admin,
       });
     } catch (error) {
@@ -1341,16 +1347,15 @@ export class TrellisTestRuntime implements AsyncDisposable {
     this.#observations.clear();
     await this.#nc.close();
     await this.#controlPlane?.stop();
-    const portLeases: ReservedPort[] = [];
     try {
-      for (const port of this.#launch.ports) {
-        // After a real process-group shutdown, an inherited native listener can
-        // take a moment to release its fixed restart port. Reacquire that
-        // exact port rather than changing the test runtime's advertised address.
+      for (const lease of this.#portLeases) {
+        // A broker the host ran in its own process group can still be
+        // shutting down after the host's group is gone. Wait for it to let go
+        // of the port rather than change the runtime's advertised address.
         const deadline = Date.now() + this.#timeouts.shutdownMs;
         while (true) {
           try {
-            portLeases.push(await reserveLocalPort(port));
+            await lease.reacquire();
             break;
           } catch (error) {
             const addressInUse =
@@ -1368,7 +1373,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         command: serverCommand(this.#launch),
         startupTimeoutMs: this.#timeouts.startupMs,
         shutdownTimeoutMs: this.#timeouts.shutdownMs,
-        portLeases,
+        portLeases: this.#portLeases,
       });
       this.#nc = await connect({
         servers: this.natsUrl,
@@ -1378,8 +1383,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
     } catch (error) {
       await this.#controlPlane?.stop();
       throw error;
-    } finally {
-      for (const lease of portLeases) await lease.release();
     }
   }
 
@@ -1532,6 +1535,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     } catch (error) {
       failures.push(error);
     }
+    for (const lease of this.#portLeases) await lease.release();
     if (this.#ownsWorkdir && !this.#keepWorkdir) {
       try {
         await rm(this.workdir, { recursive: true, force: true });
