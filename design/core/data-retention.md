@@ -115,7 +115,8 @@ busy_timeout_ms`, five seconds when unset. A failure is then one of three kinds:
 and memory used and reserved against its limits, the whole server's from the
 system account's `JSZ` request when the process holds a system-account
 connection (the platform role does), stream and consumer counts, and the
-largest streams by bytes stored or reserved. It is `degraded`, with each
+largest streams by bytes stored or reserved, absent rather than a partial list
+when JetStream does not list every stream. It is `degraded`, with each
 problem and its numbers, while used or reserved bytes, streams, or consumers
 reach 85% of a limit, and while JetStream refuses a resource this process
 needs. A refusal is reported until the resource is created or written, or

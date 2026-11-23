@@ -228,12 +228,14 @@ fn build_router(
                         "maxStreams": capacity.max_streams.map(|max| max.to_string()),
                         "consumers": capacity.consumers.to_string(),
                         "maxConsumers": capacity.max_consumers.map(|max| max.to_string()),
-                        "largestStreams": capacity.largest.iter().map(|stream| json!({
-                            "name": stream.name,
-                            "bytes": stream.bytes.to_string(),
-                            "messages": stream.messages.to_string(),
-                            "maxBytes": stream.max_bytes.map(|bytes| bytes.to_string()),
-                        })).collect::<Vec<_>>(),
+                        "largestStreams": capacity.largest.as_ref().map(|largest| {
+                            largest.iter().map(|stream| json!({
+                                "name": stream.name,
+                                "bytes": stream.bytes.to_string(),
+                                "messages": stream.messages.to_string(),
+                                "maxBytes": stream.max_bytes.map(|bytes| bytes.to_string()),
+                            })).collect::<Vec<_>>()
+                        }),
                     }))
                 }
                 Err(error) => {

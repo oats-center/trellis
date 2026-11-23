@@ -101,8 +101,34 @@ pub(crate) struct Capacity {
     pub(crate) max_streams: Option<u64>,
     pub(crate) consumers: u64,
     pub(crate) max_consumers: Option<u64>,
-    /// The account's streams, largest stored or reserved first.
-    pub(crate) largest: Vec<StreamUsage>,
+    /// The account's streams, largest stored or reserved first; `None` when
+    /// JetStream did not list them all.
+    pub(crate) largest: Option<Vec<StreamUsage>>,
+}
+
+/// The [`LARGEST`] streams of a listing by bytes stored or reserved, or why
+/// the listing failed. A listing that fails partway yields nothing, so a
+/// partial list never passes for the largest streams.
+async fn largest_streams<E: std::fmt::Display>(
+    mut streams: impl futures_util::Stream<Item = Result<async_nats::jetstream::stream::Info, E>>
+        + Unpin,
+) -> Result<Vec<StreamUsage>, String> {
+    let mut largest = Vec::new();
+    while let Some(info) = streams.next().await {
+        let info = info.map_err(|error| error.to_string())?;
+        largest.push(StreamUsage {
+            name: info.config.name.clone(),
+            bytes: info.state.bytes,
+            messages: info.state.messages,
+            max_bytes: u64::try_from(info.config.max_bytes)
+                .ok()
+                .filter(|bytes| *bytes > 0),
+        });
+    }
+    largest
+        .sort_by_key(|stream| std::cmp::Reverse(stream.bytes.max(stream.max_bytes.unwrap_or(0))));
+    largest.truncate(LARGEST);
+    Ok(largest)
 }
 
 /// How many of the largest streams a capacity read lists.
@@ -125,22 +151,10 @@ impl Capacity {
             .await
             .map_err(|error| error.to_string())?;
         let limit = |limit: Option<i64>| limit.and_then(|limit| u64::try_from(limit).ok());
-        let mut largest = Vec::new();
-        let mut streams = jetstream.streams();
-        while let Some(Ok(info)) = streams.next().await {
-            largest.push(StreamUsage {
-                name: info.config.name.clone(),
-                bytes: info.state.bytes,
-                messages: info.state.messages,
-                max_bytes: u64::try_from(info.config.max_bytes)
-                    .ok()
-                    .filter(|bytes| *bytes > 0),
-            });
-        }
-        largest.sort_by_key(|stream| {
-            std::cmp::Reverse(stream.bytes.max(stream.max_bytes.unwrap_or(0)))
-        });
-        largest.truncate(LARGEST);
+        let largest = largest_streams(jetstream.streams())
+            .await
+            .inspect_err(|error| tracing::warn!(%error, "JetStream streams could not be listed"))
+            .ok();
         let server = match system {
             Some(system) => server_usage(system).await,
             None => None,
@@ -460,5 +474,103 @@ mod tests {
         ] {
             assert_eq!(exhaustion_in(text), expected, "{text}");
         }
+    }
+
+    const MIB: i64 = 1 << 20;
+
+    /// Starts the producer-resolved NATS executable on `config` and waits until
+    /// it is ready.
+    async fn start_nats(config: &std::path::Path) -> tokio::process::Child {
+        use tokio::io::AsyncBufReadExt as _;
+        let binary =
+            std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into());
+        let mut server = tokio::process::Command::new(binary)
+            .arg("-c")
+            .arg(config)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("producer-resolved NATS executable");
+        let mut output = tokio::io::BufReader::new(server.stderr.take().unwrap()).lines();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(line) = output.next_line().await.unwrap() {
+                if line.contains("Server is ready") {
+                    return;
+                }
+            }
+            panic!("NATS exited before readiness");
+        })
+        .await
+        .expect("NATS readiness deadline");
+        // Keep reading so the server never blocks on a full stderr pipe.
+        tokio::spawn(async move { while let Ok(Some(_)) = output.next_line().await {} });
+        server
+    }
+
+    async fn connect(url: &str, user: &str) -> async_nats::Client {
+        async_nats::ConnectOptions::with_user_and_password(user.into(), "pw".into())
+            .request_timeout(Some(Duration::from_secs(2)))
+            .connect(url)
+            .await
+            .unwrap()
+    }
+
+    // A stream listing that fails, at once or after some streams arrived,
+    // reports no largest streams rather than a short list, while the
+    // account totals still come through.
+    #[tokio::test]
+    async fn a_failed_stream_listing_reports_no_largest_streams() {
+        let directory = tempfile::tempdir().unwrap();
+        let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+        let port = reservation.port();
+        let config = directory.path().join("nats.conf");
+        std::fs::write(
+            &config,
+            format!(
+                "listen: 127.0.0.1:{port}\njetstream {{ store_dir: '{}' }}\n\
+                accounts {{ APP {{ jetstream: enabled, users: [\
+                {{user: app, password: pw}}, \
+                {{user: limited, password: pw, permissions: {{ publish: {{ \
+                deny: [\"$JS.API.STREAM.LIST\"] }} }} }}] }} }}\n",
+                directory.path().join("jetstream").display()
+            ),
+        )
+        .unwrap();
+        let _server = start_nats(&config).await;
+        drop(reservation);
+        let url = format!("nats://127.0.0.1:{port}");
+        let app = connect(&url, "app").await;
+        let limited = connect(&url, "limited").await;
+        let jetstream = async_nats::jetstream::new(app.clone());
+        for (name, max_bytes) in [("SMALL", MIB), ("LARGE", 8 * MIB)] {
+            jetstream
+                .create_stream(async_nats::jetstream::stream::Config {
+                    name: name.into(),
+                    subjects: vec![name.to_lowercase()],
+                    max_bytes,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+        }
+
+        let listed = Capacity::read(&app, None).await.unwrap();
+        let names: Option<Vec<&str>> = listed
+            .largest
+            .as_ref()
+            .map(|largest| largest.iter().map(|stream| stream.name.as_str()).collect());
+        assert_eq!(names, Some(vec!["LARGE", "SMALL"]));
+
+        let refused = Capacity::read(&limited, None).await.unwrap();
+        assert_eq!(refused.streams, 2, "the account totals still come through");
+        assert_eq!(refused.largest, None, "a refused listing is no list");
+
+        // The first stream of a real listing, then the real refusal.
+        let partway = async_nats::jetstream::new(app)
+            .streams()
+            .take(1)
+            .chain(async_nats::jetstream::new(limited).streams());
+        assert!(largest_streams(partway).await.is_err());
     }
 }

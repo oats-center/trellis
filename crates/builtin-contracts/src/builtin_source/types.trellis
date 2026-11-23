@@ -446,8 +446,9 @@ model HealthStorageResponse {
 /// is created, so reservations can run out while little is stored.
 model HealthStorageJetStream {
   consumers: uint64;
-  /// The account's largest streams by bytes stored or reserved.
-  largestStreams: list<HealthStorageJetStreamStream>;
+  /// The account's largest streams by bytes stored or reserved. Absent when
+  /// JetStream did not list every stream, rather than a partial list.
+  largestStreams?: list<HealthStorageJetStreamStream>;
   maxConsumers?: uint64;
   maxStreams?: uint64;
   /// Memory storage of the Trellis NATS account.
