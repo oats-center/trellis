@@ -461,8 +461,8 @@ depends on the app:
 - The operator's own registered web apps, such as the Console, sign the person
   straight in, so their reconnects never stop on a page.
 - A third-party browser app (unregistered, or known by its client metadata
-  document) with remembered consent shows "Continue to {app}" with "Continue as
-  {name}" and "Use a different account", so the person sees which account it
+  document) with remembered consent shows "Continue to _app_" with "Continue as
+  _name_" and "Use a different account", so the person sees which account it
   gets. "Continue as" is the same consent page without `account=confirm`,
   which then finishes.
 - A registered app gets that page too when it asks with
