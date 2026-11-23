@@ -92,6 +92,16 @@ reconnect them after restart and verify their stored values through public APIs.
 a `trellis-server --dev` installation does. Leave services running across it to
 test that they recover from losing their broker.
 
+For upgrade tests, start the runtime from
+`NativeSource::PreviousRelease(version)`, the newest published release no newer
+than `version`, populate it, then call
+`runtime.restart_with_server(NativeSource::Path { server })` to start the build
+under test on the same installation and broker, as an operator who replaces
+the binary does. `stop_server()` stops the server first, when the test inspects
+the stopped installation, and `server_version()` names the running server. When
+the new server refuses to start, its output is in the work directory's
+`logs/trellis-server.log`, and restarting with the earlier release rolls back.
+
 ## Browser and portal-driven tests
 
 ### Distinct ordinary users

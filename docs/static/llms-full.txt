@@ -2830,7 +2830,13 @@ broker's store, restores the backup and starts both again, for recovery drills
 (a missing backup, or one inside a folder it deletes such as the work
 directory's `certificates/`, is refused before anything stops);
 `remove_service(&identity)` removes a service's deployment as an
-administrator does; shutdown/cancellation reaps owned children before sandbox cleanup.
+administrator does; `stop_server()` stops only the server and leaves it
+stopped; `restart_with_server(source)` starts another `trellis-server` build
+on the same installation and broker, and `server_version()` names the running
+one, so an upgrade test starts from
+`NativeSource::PreviousRelease(version)` (the newest published release no
+newer than `version`) and restarts with the build under test;
+shutdown/cancellation reaps owned children before sandbox cleanup.
 
 Live user tests use `TrellisTestRuntime::create_user`, explicit
 `grant_user_capabilities(&user, Request::REQUIRED_CAPABILITIES)`, one

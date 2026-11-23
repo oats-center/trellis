@@ -82,6 +82,31 @@ pub enum StoreError {
         #[source]
         source: refinery::Error,
     },
+    /// A database's schema is not one this release's migrations continue
+    /// from: the schema baseline it was created with differs from this
+    /// release's, as between release candidates. Nothing was changed.
+    #[error(
+        "Trellis {release} can't upgrade the installation's {subsystem} database{made_by}: its \
+        schema migration {migration} differs from this release's. Start it with {start_with}, \
+        or create a new installation",
+        made_by = installed
+            .as_ref()
+            .map_or_else(String::new, |installed| format!(", made by Trellis {installed}")),
+        start_with = installed.as_ref().map_or_else(
+            || "the server version that created it".to_owned(),
+            |installed| format!("Trellis {installed}")
+        )
+    )]
+    IncompatibleSchema {
+        /// Subsystem whose database was refused.
+        subsystem: &'static str,
+        /// The applied migration that differs.
+        migration: String,
+        /// This server's release.
+        release: &'static str,
+        /// The release that last started the installation, when known.
+        installed: Option<String>,
+    },
 }
 
 mod sqlite_migrations {
@@ -268,20 +293,58 @@ impl RuntimeStores {
     }
 
     /// Migrates the selected subsystem stores.
+    ///
+    /// A database whose applied schema differs from this release's, as one a
+    /// different release candidate created, is refused with an error naming
+    /// both releases (see [`StoreError::IncompatibleSchema`]).
     pub(crate) fn migrate_all(&self) -> Result<(), StoreError> {
-        if let Some(store) = &self.platform {
-            store.migrate()?;
-        }
-        if let Some(store) = &self.jobs {
-            store.migrate()?;
-        }
-        if let Some(store) = &self.health {
-            store.migrate()?;
-        }
-        if let Some(store) = &self.events {
-            store.migrate()?;
+        for store in [&self.platform, &self.jobs, &self.health, &self.events]
+            .into_iter()
+            .flatten()
+        {
+            store.migrate().map_err(|error| match &error {
+                StoreError::MigrateSqlite {
+                    subsystem, source, ..
+                } => match source.kind() {
+                    refinery::error::Kind::DivergentVersion(applied, _) => {
+                        StoreError::IncompatibleSchema {
+                            subsystem,
+                            migration: applied.to_string(),
+                            release: env!("CARGO_PKG_VERSION"),
+                            installed: self.installed_release(),
+                        }
+                    }
+                    _ => error,
+                },
+                _ => error,
+            })?;
         }
         Ok(())
+    }
+
+    /// The release that last started this installation: the version of the
+    /// package its built-in platform participant was last installed from,
+    /// since each release installs its own build of it. `None` when the
+    /// platform database cannot tell.
+    fn installed_release(&self) -> Option<String> {
+        use trellis_rs::generated::ParticipantDescriptor as _;
+        use trellis_runtime_apis::participants::trellis_platform::Participant;
+        self.platform
+            .as_ref()?
+            .open_read_only()
+            .ok()?
+            .query_row(
+                "SELECT json_extract(package.value,'$.version') \
+                FROM auth_installed_participants s \
+                JOIN auth_package_evidence_documents e ON e.evidence_digest=s.evidence_digest \
+                JOIN json_each(e.evidence_json,'$.packages') package \
+                ON json_extract(package.value,'$.name')=\
+                json_extract(e.evidence_json,'$.rootPackage') \
+                WHERE s.participant_id=?1 ORDER BY s.revision DESC LIMIT 1",
+                [Participant::ID],
+                |row| row.get(0),
+            )
+            .ok()
     }
 
     pub(crate) fn check_all(&self) -> Result<(), StoreError> {

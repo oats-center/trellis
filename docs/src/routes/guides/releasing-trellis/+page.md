@@ -111,6 +111,10 @@ npm run test:integration
 
 For focused Rust diagnostics, pass a native test-filter substring to Cargo.
 
+### Testing in a git worktree
+
+A git worktree has no `node_modules` of its own, so Node and TypeScript would find the main checkout's install and load its `@oatscenter/*` packages instead of the worktree's `ts/packages/*`. The test runners in `scripts/`, `scripts/check.sh` jobs that use the packages, `npm run browser:embedded` (and with it `cargo xtask install`) and `npm run check:integration` first run `node ts/tools/link_checkout_modules.ts`. In a worktree without its own install, it fills the worktree's `node_modules` with links: each workspace package points at the worktree's own directory, and each third-party module points at the main checkout's install. A checkout that npm installed itself, such as the main checkout or CI, is left unchanged. Run `npm ci` in the main checkout first. A branch that changes `package-lock.json` needs its own `npm ci` in the worktree.
+
 ## Formatting policy
 
 Formatting is part of the normal implementation loop, not just release verification. After editing source, docs, styles, generated-artifact inputs, or workflow files, format the changed files before running type checks and tests.
@@ -271,6 +275,52 @@ created from the current baseline keep their data without reapplying schema. At
 the first release, freeze each shipped baseline; from then on, schema changes
 add new ordered migrations instead of editing a shipped one.
 
+### Upgrades from the previous release
+
+A stable release always upgrades an installation an earlier stable release
+made. Only between release candidates may a build refuse an installation, and
+then it changes nothing. A baseline edited since the installation was made is
+refused at startup with a message that names both releases, for example:
+
+```text
+Trellis 0.100.0-rc.55 can't upgrade the installation's platform database, made by
+Trellis 0.100.0-rc.54: its schema migration V1000__platform_init differs from this
+release's. Start it with Trellis 0.100.0-rc.54, or create a new installation
+```
+
+An incompatible change to a built-in API is refused the same way. The
+operator then starts the earlier release again, and it serves the installation
+as before.
+
+The Pipeline's `upgrade` job checks this rule on every candidate, before the
+acceptance gate. It runs `integration/fixtures/testkit/tests/upgrade.rs` with
+the release build from the `build` job and the test binary from
+`build-fixtures`. The test downloads the newest published release no newer than
+the candidate, which is the release the candidate upgrades, and checks it
+against its published checksum. Through public APIs it creates a user who
+signs in through a role, a service with a setting, a secret and a webhook
+endpoint, KV and store data, a finished job, and an event its durable consumer
+missed. It stops that server and starts the candidate on the same state
+directory and NATS store.
+
+- When both releases are stable, the candidate must start, and the user signs
+  in, the service connects with its setting and secret, the webhook endpoint
+  delivers, the KV and store data read back, the missed event arrives, and the
+  finished job is still listed.
+- When either is a release candidate, the candidate may refuse instead. The
+  refusal must name both releases, every database table must hold the same
+  rows as before, and the earlier release must start again and pass the same
+  checks. A candidate that starts must pass them too.
+
+The phase follows the two versions' semver prerelease parts, so the stable
+rule applies from the first stable release on without a change to the test.
+The test's second case restarts the candidate on an installation it made
+itself and runs the same checks, so the stable checks run on every candidate.
+To run the test locally, build `trellis-server`, then build the test with the
+`cargo test --no-run` command in `scripts/run-testkit-tests.sh` using
+`--test upgrade`, and run the binary with `TRELLIS_TEST_SERVER_BIN` and
+`TRELLIS_TEST_NATS_BIN` set.
+
 ## 1. Pick the release
 
 The core TypeScript workspace and embedded browser applications share
@@ -393,12 +443,16 @@ without becoming a raw commit dump. Generated-file-only churn does not need its
 own entry, but generated artifacts should point back to a covered source or
 contract change.
 
-Add a section whose heading matches the release version exactly:
-
-- stable: `## [X.Y.Z] - YYYY-MM-DD`
-- prerelease: `## [X.Y.Z-rc.1] - YYYY-MM-DD`
-
-For a stable release, move the relevant `Unreleased` bullets into the new version section before pushing the release marker.
+Write entries under `## [Unreleased]`, in Keep a Changelog subsections
+(`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`).
+`release prepare --tag vX` releases them: it moves them into a new
+`## [X] - YYYY-MM-DD` section dated today (UTC) and leaves an empty
+`## [Unreleased]`. When `## [X]` already exists, as for a held release, it puts
+the Unreleased entries ahead of that section's own in each subsection and moves
+its date to today. It keeps the subsection order and writes the file as
+prettier formats it. With nothing under Unreleased and no `## [X]` section,
+it stops before changing any version. Review the moved entries before
+committing.
 
 ## 3. Bump checked-in base versions
 
@@ -418,7 +472,7 @@ cargo xtask install --update
 cargo run --manifest-path xtask/Cargo.toml -- release check-versions
 ```
 
-`release bump` updates release-managed `package.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests, and the workspace packages' versions and internal dependency specs in the root `package-lock.json`, while preserving file layout. `release prepare` moves the same files, and `release check-versions` reports a lockfile entry that disagrees. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the matching `CHANGELOG.md` section to the candidate, so the pipeline builds and verifies the exact release versions.
+`release bump` updates release-managed `package.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests, and the workspace packages' versions and internal dependency specs in the root `package-lock.json`, while preserving file layout. `release prepare` moves the same files, and `release check-versions` reports a lockfile entry that disagrees. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the `CHANGELOG.md` section it writes to the candidate, so the pipeline builds and verifies the exact release versions.
 
 Do not run `release bump` just to add a prerelease suffix like `-rc.1`. Prerelease suffixes are handled from the tag by `release prepare` in the publish workflow.
 
@@ -631,7 +685,7 @@ Then verify the downstream publishes you care about:
 After publication, keep the `release/$RELEASE_TAG` branch. It remains the
 durable base for hotfixes against that released line.
 
-After a stable release, start the next development cycle by adding or reopening the `Unreleased` section in `CHANGELOG.md`.
+After a release, `CHANGELOG.md` already has an empty `Unreleased` section for the next cycle.
 
 If you want checked-in base versions to immediately move to the next line, do that in a separate follow-up change:
 
