@@ -151,14 +151,42 @@ pub async fn start_worker_presence_projector(
             // error, fails the heartbeat; recording it again is harmless. One
             // the store refuses for good is dropped, so the ones after it are
             // recorded.
-            let mut failures = 0;
-            while let Err(error) = project_worker_heartbeat(&store, &heartbeat) {
-                if error.database_unusable() {
+            let recorded = trellis_rs::__internal::retry(
+                trellis_rs::__internal::Backoff::default(),
+                || std::future::ready(project_worker_heartbeat(&store, &heartbeat)),
+                |error: &SqliteJobsStoreError| {
+                    if error.database_unusable() {
+                        trellis_rs::__internal::Failure::Unusable
+                    } else if error.transient() {
+                        trellis_rs::__internal::Failure::Transient
+                    } else {
+                        trellis_rs::__internal::Failure::Permanent
+                    }
+                },
+                |error, delay| {
+                    tracing::warn!(
+                        %error,
+                        service = %subject_service,
+                        job_type = %job_type,
+                        instance_id = %instance_id,
+                        retry_in_ms = delay.as_millis(),
+                        "worker heartbeat not recorded; it will try again"
+                    );
+                },
+                std::future::pending(),
+            )
+            .await;
+            match recorded {
+                Ok(_) => {}
+                Err(trellis_rs::__internal::Halted::Unusable(error)) => {
                     return Err(ServerError::Internal(format!(
                         "the Jobs database is unusable: {error}"
                     )));
                 }
-                if !error.transient() {
+                Err(
+                    trellis_rs::__internal::Halted::Permanent(error)
+                    | trellis_rs::__internal::Halted::Stopped(error),
+                ) => {
                     tracing::error!(
                         %error,
                         service = %subject_service,
@@ -166,19 +194,7 @@ pub async fn start_worker_presence_projector(
                         instance_id = %instance_id,
                         "worker heartbeat dropped: trying it again cannot record it"
                     );
-                    break;
                 }
-                let delay = crate::storage::retry_delay(failures);
-                failures += 1;
-                tracing::warn!(
-                    %error,
-                    service = %subject_service,
-                    job_type = %job_type,
-                    instance_id = %instance_id,
-                    retry_in_ms = delay.as_millis(),
-                    "worker heartbeat not recorded; it will try again"
-                );
-                tokio::time::sleep(delay).await;
             }
             tracing::debug!(
                 service = %subject_service,

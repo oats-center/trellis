@@ -212,6 +212,7 @@ export const CONSOLE_OPERATIONS = {
   usersIdentitiesUnlink: authRpc("Users.Identities.Unlink"),
   usersResolve: authRpc("Users.Resolve"),
   runtimeVersion: authRpc("Runtime.Version"),
+  runtimeDiagnostics: authRpc("Runtime.Diagnostics"),
   usersIdentityLinkCreate: authRpc("Users.IdentityLink.Create"),
   usersIdentityLinkProviders: authRpc("Users.IdentityLink.Providers"),
   usersPasswordResetCreate: authRpc("Users.PasswordReset.Create"),

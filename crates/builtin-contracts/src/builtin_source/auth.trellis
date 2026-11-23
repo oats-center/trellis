@@ -71,6 +71,7 @@ import {
   AuthSessionsListResponse,
   AuthSessionsMeResponse,
   AuthRuntimeVersionResponse,
+  AuthRuntimeDiagnosticsResponse,
   AuthSessionsLogoutResponse,
   AuthLoginRevokeRequest,
   AuthUserFindRequest,
@@ -295,6 +296,9 @@ api auth@v1 {
   /// The version of the Trellis server, and for administrators a newer
   /// release when one is out.
   rpc Runtime.Version { input AuthEmpty; output AuthRuntimeVersionResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// One report of this Trellis's state: the server, health, JetStream, disk,
+  /// certificates, recent server failures, and stuck background work.
+  rpc Runtime.Diagnostics { input AuthEmpty; output AuthRuntimeDiagnosticsResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Change your own name or picture.
   rpc Users.Profile.Update { input AuthUserProfileUpdateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Change your own password. Your other sign-ins end.
@@ -606,6 +610,12 @@ api auth@v1 {
       description "Follow sign-ins, sign-outs, and key changes as they happen.";
       grants "Can see security activity live.";
       allows { subscribe event Connections.Opened; subscribe event Connections.Closed; subscribe event Connections.Kicked; subscribe event AuthorizationSessions.Retired; subscribe event Issuers.Rotated; subscribe event Issuers.Revoked; }
+    }
+    capability diagnostics.read {
+      title "See diagnostics";
+      description "See one report of this Trellis's state: health, storage, certificates, and recent server failures.";
+      grants "Can see server failures, certificates, disk space, and the health of every service.";
+      allows { rpc Runtime.Diagnostics; }
     }
     capability platform.manage {
       administrative;

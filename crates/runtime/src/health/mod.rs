@@ -37,7 +37,8 @@ use crate::shutdown::StopHandle;
 use crate::supervisor::{RuntimeContext, RuntimeError, SubsystemHandle};
 use crate::SubsystemName;
 
-use self::store::{HealthStore, HeartbeatIdentity, ProjectionCommit};
+pub(crate) use self::store::HealthStore;
+use self::store::{HeartbeatIdentity, ProjectionCommit};
 
 pub(crate) const HEALTH_STREAM: &str = "TRELLIS_HEALTH";
 pub(crate) const HEALTH_SUBJECT: &str = Heartbeat::SUBJECT;
@@ -184,6 +185,25 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         stop,
         join,
     })
+}
+
+/// This host's Health database opened read-only, for diagnostics answered by
+/// another subsystem. `None` when the configured database is not a file on
+/// this host, such as when Health runs on another one.
+pub(crate) fn open_reader(config: &crate::RuntimeConfig) -> Option<HealthStore> {
+    let Ok(crate::StorageBackend::Sqlite(sqlite)) = config.health_storage_backend() else {
+        return None;
+    };
+    if !sqlite.path.is_file() {
+        return None;
+    }
+    let connection = rusqlite::Connection::open_with_flags(
+        &sqlite.path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok()?;
+    connection.busy_timeout(sqlite.busy_timeout()).ok()?;
+    Some(HealthStore::reader(connection))
 }
 
 fn build_router(
@@ -423,7 +443,7 @@ async fn run_owner(
     let mut retention = tokio::time::interval(Duration::from_secs(60 * 60));
     // The outbox and deadlines tick several times a second; a failure that
     // repeats is logged at most once a minute.
-    let mut failures = crate::storage::LogThrottle::default();
+    let mut failures = trellis_rs::__internal::LogLimit::default();
 
     loop {
         tokio::select! {
@@ -706,7 +726,7 @@ fn validate_sample(
 async fn publish_outbox(
     store: &HealthStore,
     owner: &trellis_rs::__internal::LiveProviderOwner,
-    failures: &mut crate::storage::LogThrottle,
+    failures: &mut trellis_rs::__internal::LogLimit,
 ) -> Result<(), RuntimeError> {
     const WORK: &str = "Health status events";
     let transitions = match store.pending_transitions(100) {
@@ -744,7 +764,7 @@ async fn publish_outbox(
         };
         match settled {
             Ok(()) => {}
-            Err(error) if error.storage_failure() == crate::storage::StorageFailure::Permanent => {
+            Err(error) if error.storage_failure() == crate::storage::Failure::Permanent => {
                 set_aside(store, &transition.event_id, &error.to_string(), failures)?;
             }
             Err(error) => return retained(error, WORK, failures),
@@ -759,7 +779,7 @@ fn set_aside(
     store: &HealthStore,
     event_id: &str,
     reason: &str,
-    failures: &mut crate::storage::LogThrottle,
+    failures: &mut trellis_rs::__internal::LogLimit,
 ) -> Result<(), RuntimeError> {
     tracing::error!(
         event_id,
@@ -852,17 +872,17 @@ fn map_store_error(error: store::HealthStoreError) -> ServerError {
 fn retained(
     error: store::HealthStoreError,
     work: &str,
-    failures: &mut crate::storage::LogThrottle,
+    failures: &mut trellis_rs::__internal::LogLimit,
 ) -> Result<(), RuntimeError> {
-    use crate::storage::StorageFailure;
+    use crate::storage::Failure;
     let failure = error.storage_failure();
-    if failure == StorageFailure::Unusable {
+    if failure == Failure::Unusable {
         return Err(RuntimeError::Health(format!(
             "the Health database is unusable: {error}"
         )));
     }
     if let Some(repeats) = failures.admit() {
-        if failure == StorageFailure::Transient {
+        if failure == Failure::Transient {
             tracing::warn!(%error, work, repeats, "Health storage failed; it will run again");
         } else {
             tracing::error!(%error, work, repeats, "Health storage failed; it will run again");
@@ -880,14 +900,14 @@ async fn redeliver(
     stream_sequence: u64,
     error: store::HealthStoreError,
 ) -> Result<(), RuntimeError> {
-    use crate::storage::StorageFailure;
+    use crate::storage::Failure;
     let ack = match error.storage_failure() {
-        StorageFailure::Unusable => {
+        Failure::Unusable => {
             return Err(RuntimeError::Health(format!(
                 "the Health database is unusable: {error}"
             )));
         }
-        StorageFailure::Transient => {
+        Failure::Transient => {
             tracing::warn!(
                 %error,
                 stream_sequence,
@@ -895,7 +915,7 @@ async fn redeliver(
             );
             AckKind::Nak(Some(Duration::from_secs(5)))
         }
-        StorageFailure::Permanent => {
+        Failure::Permanent => {
             tracing::error!(
                 %error,
                 stream_sequence,

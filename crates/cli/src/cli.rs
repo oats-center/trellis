@@ -104,6 +104,10 @@ pub enum TopLevelCommand {
     /// Show the disk each kind of Trellis data takes, and how close
     /// JetStream is to its storage and memory limits.
     Storage,
+    /// Report the state of this Trellis installation in one view: the server,
+    /// health, JetStream, disk, certificates, recent failures, and stuck work.
+    /// Exits non-zero when anything needs attention.
+    Doctor,
     /// Generate or derive Trellis keys.
     Keys(KeysCommand),
     /// Check for or install CLI updates.
@@ -144,6 +148,7 @@ impl TopLevelCommand {
             Self::Resources(_) => "resources",
             Self::Events(_) => "events",
             Self::Storage => "storage",
+            Self::Doctor => "doctor",
             Self::Keys(_) => "keys",
             Self::Upgrade(_) => "upgrade",
             Self::Version | Self::Completion { .. } => return None,

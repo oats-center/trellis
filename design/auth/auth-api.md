@@ -101,7 +101,7 @@ the exact request, response, and error types.
 | Sessions              | `Sessions.Me/List/Revoke/Logout`, `AuthorizationSessions.List/Revoke`                                                                                                                                                                  |
 | Connections           | `Connections.List`, `Connections.Kick`                                                                                                                                                                                                 |
 | Users                 | `Users.Create/Delete/Find/Get/List/Resolve/Update`, `Users.Identities.Link/Unlink`, `Users.Profile.Update`, `Users.Password.Change`, `Users.PasswordReset.Create`, `Users.IdentityLink.Providers/Create`, `UserIdentities.List/Unlink` |
-| Runtime               | `Runtime.Version`                                                                                                                                                                                                                      |
+| Runtime               | `Runtime.Version`, `Runtime.Diagnostics`                                                                                                                                                                                               |
 
 ### Errors
 
@@ -316,6 +316,48 @@ release candidates for a release-candidate build, stable releases otherwise.
 The server asks GitHub only while answering such a request, waits at most five
 seconds, and reuses the answer, or the failure, for an hour. A server nobody
 asks never calls out, and an unreachable GitHub only omits `update`.
+
+### Runtime Diagnostics
+
+`Runtime.Diagnostics` is one read-only report of the installation for an
+operator, gated by `trellis.auth.v1:diagnostics.read`. That capability is
+ordinary rather than administrative, because it reads and changes nothing,
+and in no group, so the Administrator role holds it on its own and it is never
+granted as part of `monitor` or `administration`. It is separate from
+`trellis.health.v1:metrics.read` because the report carries server failure
+text, certificate details and disk paths that health readers should not get.
+
+The platform answers it because it holds most of what the report reads: the
+Auth database, the listener's certificate files, and the failures of the
+requests it serves. The report has seven sections, each with a `status` (`ok`,
+`warning` or `problem`, the worst of its findings) and its `findings`; the
+response's `status` is the worst section's:
+
+- `server`: version, installation ID, the answering process's mode, start time
+  and uptime.
+- `health`: each active service deployment with its active instances. An
+  instance's state joins Auth's view (not connected, waiting for settings or
+  for an update's approval) with the health it reports on its current
+  connection, as `trellis svc <id> instances` does; missing settings are a
+  problem, an awaited approval a warning, degraded a warning and unhealthy or
+  stopped heartbeats a problem, with one finding per failing check. Devices
+  appear only as findings, when degraded or unhealthy. Health comes from this
+  host's Health database opened read-only; when it is elsewhere the section
+  says so and shows Auth's view only.
+- `jetstream`: the capacity read `Health.Storage` makes; a limit 85% committed
+  is a warning and a refusal for lack of room a problem.
+- `disk`: the file system holding the Auth database; below 10% free is a
+  warning, below 5% a problem.
+- `certificates`: the served leaf and, for generated TLS, the issuing CA, with
+  subject, issuer, expiry and fingerprint; expiry within 30 days is a warning,
+  an expired or unreadable certificate a problem.
+- `failures`: the last 20 of the 50 most recent `error`-level log lines with
+  an `error_id` the process wrote (ID, time, route, code, error; never the
+  cause or caller), kept in memory by a tracing layer `trellis-server`
+  installs. One in the last hour is a warning.
+- `work`: Auth enforcement work whose pages keep failing (a problem: sessions
+  it should end stay usable), and Auth effects and health status events set
+  aside (a warning).
 
 ### User Management
 

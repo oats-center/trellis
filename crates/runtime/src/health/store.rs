@@ -69,19 +69,19 @@ pub(crate) enum HealthStoreError {
 
 impl HealthStoreError {
     /// What this failure calls for in background work (see
-    /// [`crate::storage::StorageFailure`]); anything but SQLite fails the same
+    /// [`crate::storage::Failure`]); anything but SQLite fails the same
     /// way again.
-    pub(crate) fn storage_failure(&self) -> crate::storage::StorageFailure {
+    pub(crate) fn storage_failure(&self) -> crate::storage::Failure {
         match self {
             Self::Sqlite(error) => crate::storage::sqlite_failure(error),
             Self::Open(error) => crate::storage::ClassifiedFailure::storage_failure(error),
-            _ => crate::storage::StorageFailure::Permanent,
+            _ => crate::storage::Failure::Permanent,
         }
     }
 }
 
 impl crate::storage::ClassifiedFailure for HealthStoreError {
-    fn storage_failure(&self) -> crate::storage::StorageFailure {
+    fn storage_failure(&self) -> crate::storage::Failure {
         HealthStoreError::storage_failure(self)
     }
 }
@@ -122,6 +122,36 @@ impl HealthStore {
         };
         store.ensure_projection_meta()?;
         Ok(store)
+    }
+
+    /// A store over a read-only connection, for reading the projection
+    /// from another subsystem; it neither initializes nor writes anything.
+    pub(crate) fn reader(connection: Connection) -> Self {
+        Self {
+            connection: Arc::new(Mutex::new(connection)),
+        }
+    }
+
+    /// Status events set aside because trying again cannot publish them,
+    /// newest first, at most `limit`: when, and the error.
+    pub(crate) fn set_aside_transitions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(i64, String)>, HealthStoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| HealthStoreError::Poisoned)?;
+        let mut statement = connection.prepare(
+            "SELECT set_aside_at_ns, coalesce(last_error, '') FROM health_transition_outbox
+             WHERE set_aside_at_ns IS NOT NULL ORDER BY set_aside_at_ns DESC LIMIT ?1",
+        )?;
+        let rows = statement
+            .query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     pub(crate) fn projection_id(&self) -> Result<String, HealthStoreError> {

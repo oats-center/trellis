@@ -525,7 +525,7 @@ impl SqliteAuthorizationStore {
     pub(crate) fn enforce_next_page(&self, now: i64) -> Result<Option<String>, AuthError> {
         let mut selected = None;
         match self.enforce_page(now, &mut selected) {
-            Err(error) if error.storage_failure() == crate::storage::StorageFailure::Permanent => {
+            Err(error) if error.storage_failure() == crate::storage::Failure::Permanent => {
                 // A page that fails the same way every time must not hold back
                 // the enforcement work queued after it. It is tried again in a
                 // minute, since its sessions still need enforcing, and marked
@@ -602,6 +602,27 @@ impl SqliteAuthorizationStore {
                     FROM auth_enforcement_work \
                     WHERE stuck_since IS NOT NULL AND state IN ('queued','running') \
                     ORDER BY stuck_since,work_id LIMIT ?1",
+                )?
+                .query_map([limit as u64], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Effects and event publications set aside because trying again cannot
+    /// make them succeed, newest first, at most `limit`: their kind, when, and
+    /// the error.
+    pub(crate) fn set_aside_effects(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(String, i64, String)>, AuthError> {
+        self.read(|connection| {
+            Ok(connection
+                .prepare(
+                    "SELECT kind,failed_at,coalesce(last_error,'') \
+                    FROM auth_post_commit_actions WHERE failed_at IS NOT NULL \
+                    ORDER BY failed_at DESC,action_id LIMIT ?1",
                 )?
                 .query_map([limit as u64], |row| {
                     Ok((row.get(0)?, row.get(1)?, row.get(2)?))

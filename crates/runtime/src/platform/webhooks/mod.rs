@@ -1070,12 +1070,12 @@ impl Webhooks {
     ///
     /// Each start creates the intake stream when it is missing, as when it
     /// was deleted or JetStream refused it before, and failures wait with
-    /// [`crate::storage::Backoff`] and are logged at most once a minute.
+    /// [`trellis_rs::__internal::Backoff`] and are logged at most once a minute.
     async fn work(self, deployment: String) {
         use async_nats::jetstream::consumer;
         use futures_util::StreamExt as _;
-        let mut backoff = crate::storage::Backoff::default();
-        let mut throttle = crate::storage::LogThrottle::default();
+        let mut backoff = trellis_rs::__internal::Backoff::default();
+        let mut throttle = trellis_rs::__internal::LogLimit::default();
         loop {
             let result = async {
                 let settings = self

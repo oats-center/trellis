@@ -3,7 +3,8 @@
 //! Provider construction and export configuration live in the Rust SDK's
 //! `telemetry` module. This module owns only the process fmt subscriber
 //! assembly, so the CLI and native hosts share one exporter implementation.
-//! The existing fmt-based stdout/stderr tracing output is always installed.
+//! The existing fmt-based stdout/stderr tracing output is always installed,
+//! beside the layer that keeps recent failures for diagnostics.
 
 use std::io::IsTerminal as _;
 
@@ -83,6 +84,7 @@ pub(crate) fn init(verbose: bool, check: bool) -> miette::Result<TelemetryGuard>
     if attached {
         tracing_subscriber::registry()
             .with(otel_layer)
+            .with(trellis_runtime::failures::layer())
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_target(verbose)
@@ -95,6 +97,7 @@ pub(crate) fn init(verbose: bool, check: bool) -> miette::Result<TelemetryGuard>
     } else {
         tracing_subscriber::registry()
             .with(otel_layer)
+            .with(trellis_runtime::failures::layer())
             .with(
                 tracing_subscriber::fmt::layer()
                     .with_ansi(false)

@@ -2524,7 +2524,8 @@ impl<C> ConnectedServiceRuntime<C> {
         let Some(stored) = read_key_file(path)? else {
             return Ok((enroll_new().await?, false, None));
         };
-        let mut delay = Duration::from_secs(1);
+        let mut backoff =
+            crate::retry::Backoff::new(Duration::from_secs(1), Duration::from_secs(30));
         loop {
             let error = match connect_with(stored.clone()).await {
                 Ok(client) => return Ok((stored, false, Some(client))),
@@ -2550,8 +2551,7 @@ impl<C> ConnectedServiceRuntime<C> {
                     "Could not connect with the stored key; retrying"
                 ),
             }
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(Duration::from_secs(30));
+            tokio::time::sleep(backoff.failed()).await;
         }
     }
 
@@ -2810,7 +2810,10 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
     let waited = async {
         let mut update = submit().await?["update"].take();
         let mut shown = None;
-        let mut delay = std::time::Duration::from_secs(1);
+        let mut backoff = crate::retry::Backoff::new(
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(15),
+        );
         loop {
             let review_url = update["reviewUrl"].as_str().map(str::to_owned);
             let deployment = update["deploymentId"]
@@ -2865,8 +2868,7 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
             }
                 shown = Some(update_id);
             }
-            tokio::time::sleep(delay).await;
-            delay = (delay * 2).min(std::time::Duration::from_secs(15));
+            tokio::time::sleep(backoff.failed()).await;
             update = client
                 .request_json_value(
                     API,

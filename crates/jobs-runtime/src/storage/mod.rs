@@ -407,14 +407,6 @@ impl SqliteJobsStoreError {
     }
 }
 
-/// The wait before a projector stores what failed again: 250 milliseconds
-/// after the first failure, doubling up to 30 seconds.
-pub(crate) fn retry_delay(failures: u32) -> std::time::Duration {
-    std::time::Duration::from_millis(250)
-        .saturating_mul(1 << failures.min(7))
-        .min(std::time::Duration::from_secs(30))
-}
-
 impl SqliteJobsStore {
     /// Open a store at `path` and initialize the schema if needed. The
     /// connection waits up to `busy_timeout` for a lock another connection

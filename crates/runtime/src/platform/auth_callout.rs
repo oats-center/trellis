@@ -273,38 +273,38 @@ impl AuthCallout {
                         let store = self.store.clone();
                         let now = crate::clock::unix_now();
                         disconnecting.spawn(async move {
-                            let mut backoff = crate::storage::Backoff::default();
-                            loop {
-                                let (closing, on, nkey) =
-                                    (store.clone(), server.clone(), key.clone());
-                                match blocking(move || {
-                                    closing.disconnect_attachment(&on, cid, &nkey, now)
-                                })
-                                .await
-                                {
-                                    Ok(()) => return,
-                                    Err(error)
-                                        if error.storage_failure()
-                                            != crate::storage::StorageFailure::Transient =>
-                                    {
-                                        tracing::error!(
-                                            %error,
-                                            server_id = %server,
-                                            client_id = cid,
-                                            "disconnect not recorded: trying again cannot succeed"
-                                        );
-                                        return;
-                                    }
-                                    Err(error) => {
-                                        let delay = backoff.failed();
-                                        tracing::warn!(
-                                            %error,
-                                            retry_in_ms = delay.as_millis(),
-                                            "disconnect not recorded yet; trying again"
-                                        );
-                                        tokio::time::sleep(delay).await;
-                                    }
-                                }
+                            let recorded = trellis_rs::__internal::retry(
+                                trellis_rs::__internal::Backoff::default(),
+                                || {
+                                    let (closing, on, nkey) =
+                                        (store.clone(), server.clone(), key.clone());
+                                    blocking(move || {
+                                        closing.disconnect_attachment(&on, cid, &nkey, now)
+                                    })
+                                },
+                                AuthError::storage_failure,
+                                |error, delay| {
+                                    tracing::warn!(
+                                        %error,
+                                        retry_in_ms = delay.as_millis(),
+                                        "disconnect not recorded yet; trying again"
+                                    );
+                                },
+                                std::future::pending(),
+                            )
+                            .await;
+                            if let Err(
+                                trellis_rs::__internal::Halted::Permanent(error)
+                                | trellis_rs::__internal::Halted::Unusable(error)
+                                | trellis_rs::__internal::Halted::Stopped(error),
+                            ) = recorded
+                            {
+                                tracing::error!(
+                                    %error,
+                                    server_id = %server,
+                                    client_id = cid,
+                                    "disconnect not recorded: trying again cannot succeed"
+                                );
                             }
                         });
                     }

@@ -31,6 +31,7 @@ import {
   type TransportGenerationConnect,
   type OwnAdmission,
 } from "../transport/generations.ts";
+import { Backoff } from "../backoff.ts";
 
 /** Provisioned connectivity and trust; never principal, deployment, participant or implementation assertions. */
 export type ProvisionedConnectionOptions = {
@@ -781,7 +782,7 @@ export async function connectAdmitted(options: {
           ? AbortSignal.any([options.signal, controller.signal])
           : controller.signal;
         void (async () => {
-          let delay = 100;
+          const backoff = new Backoff(100, 5_000);
           while (!signal.aborted && !manager.isClosed() && owner.mirrorFailed) {
             try {
               const lease = await manager.acquirePublishedAttachment();
@@ -812,11 +813,10 @@ export async function connectAdmitted(options: {
                   signal.removeEventListener("abort", done);
                   resolve();
                 };
-                const timer = setTimeout(done, delay);
+                const timer = setTimeout(done, backoff.failed());
                 signal.addEventListener("abort", done, { once: true });
                 if (signal.aborted) done();
               });
-              delay = Math.min(delay * 2, 5_000);
             }
           }
         })().finally(() => {

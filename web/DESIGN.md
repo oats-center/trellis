@@ -63,8 +63,8 @@ boxes, and never show an empty frame where an empty state belongs.
 - **Sidebar** (light, same tone as the page): logo at the top; unlabeled
   primary group (Overview, Health, Events, Jobs, Sessions); then **Access**
   (Users, Roles, Connected apps, Apps) and **Platform** (Services, Devices,
-  APIs, Sign-in, Resources). Account sits at the bottom. The active item is a filled
-  primary pill.
+  APIs, Sign-in, Resources, Diagnostics). Account sits at the bottom. The
+  active item is a filled primary pill.
 - **Top bar**: search field, connection status pill, theme toggle, avatar menu.
 - **Workspace**: a slightly lighter panel with a rounded top-left corner.
 - **Page header**: optional small uppercase eyebrow, large title, one-line

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
+import { createServer as createNetServer, type Socket } from "node:net";
 import { buffer } from "node:stream/consumers";
 import { test } from "node:test";
 import {
@@ -9,7 +10,7 @@ import {
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
 import { decodeMetrics, type Metric } from "./_support/otlp.ts";
-import { withTrellisRuntime } from "./_support/runtime.ts";
+import { startTrellisRuntime, withTrellisRuntime } from "./_support/runtime.ts";
 
 /**
  * Verify exported Live completion and Auth's resource snapshot after ordinary
@@ -97,4 +98,61 @@ test("M01 Rust owners export Live completion and materialized resource counts ov
     );
   }
   assert.equal(collectorError, undefined);
+});
+
+test("M02 a server whose OTLP collector never answers stops within its shutdown bound", async () => {
+  // The collector accepts connections and never replies, so every export
+  // waits out its whole timeout, including the final one at shutdown.
+  const sockets = new Set<Socket>();
+  const collector = createNetServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.resume();
+  });
+  collector.listen(0, "127.0.0.1");
+  await once(collector, "listening");
+  const address = collector.address();
+  assert(address && typeof address !== "string");
+  const exporting = once(collector, "connection");
+  const shutdownMs = 10_000;
+  try {
+    const runtime = await startTrellisRuntime({
+      timeouts: { shutdownMs },
+      trellis: {
+        environment: {
+          unset: Object.keys(process.env).filter((key) =>
+            key.startsWith("OTEL_"),
+          ),
+          set: {
+            OTEL_METRICS_EXPORTER: "otlp",
+            OTEL_TRACES_EXPORTER: "otlp",
+            OTEL_TRACES_SAMPLER: "always_on",
+            OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}`,
+            OTEL_EXPORTER_OTLP_TIMEOUT: "60000",
+            OTEL_METRIC_EXPORT_INTERVAL: "200",
+            OTEL_BSP_SCHEDULE_DELAY: "100",
+          },
+        },
+      },
+    });
+    try {
+      await exporting;
+      // A served request leaves spans queued for export too.
+      await runtime.callAdminRpc("authUsersResolve", {});
+      const started = Date.now();
+      await runtime.stop();
+      const elapsed = Date.now() - started;
+      // A host still running at the bound is killed, which takes the whole bound.
+      assert(
+        elapsed < shutdownMs,
+        `stopping took ${elapsed}ms\n${runtime.controlPlaneOutput()}`,
+      );
+    } finally {
+      // Stopping again is a no-op once the timed stop ran.
+      await runtime.stop();
+    }
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    collector.close();
+  }
 });

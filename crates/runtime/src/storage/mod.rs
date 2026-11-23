@@ -478,24 +478,17 @@ fn create_parent_dir(path: &Path) -> Result<(), StoreError> {
     })
 }
 
-/// What a storage failure in background work calls for.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum StorageFailure {
-    /// It can pass: a lock another connection holds, a busy database, an
-    /// interrupted or failed I/O, a full disk. The same work is tried again.
-    Transient,
-    /// Trying the same work again fails the same way, such as a constraint
-    /// violation or a value of the wrong type. The work is set aside.
-    Permanent,
-    /// The database file is corrupt or is not a database. Its subsystem stops.
-    Unusable,
-}
+/// What a storage failure in background work calls for: a lock, a busy
+/// database, an interrupted or failed I/O or a full disk can pass and is
+/// tried again; a constraint violation or a value of the wrong type is set
+/// aside; a corrupt file, or one that is not a database, stops its subsystem.
+pub(crate) use trellis_rs::__internal::Failure;
 
-/// Classifies a SQLite failure (see [`StorageFailure`]).
-pub(crate) fn sqlite_failure(error: &rusqlite::Error) -> StorageFailure {
+/// Classifies a SQLite failure (see [`Failure`]).
+pub(crate) fn sqlite_failure(error: &rusqlite::Error) -> Failure {
     use rusqlite::ErrorCode;
     match error.sqlite_error_code() {
-        Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase) => StorageFailure::Unusable,
+        Some(ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase) => Failure::Unusable,
         Some(
             ErrorCode::DatabaseBusy
             | ErrorCode::DatabaseLocked
@@ -507,22 +500,22 @@ pub(crate) fn sqlite_failure(error: &rusqlite::Error) -> StorageFailure {
             | ErrorCode::FileLockingProtocolFailed
             | ErrorCode::SchemaChanged
             | ErrorCode::ReadOnly,
-        ) => StorageFailure::Transient,
-        _ => StorageFailure::Permanent,
+        ) => Failure::Transient,
+        _ => Failure::Permanent,
     }
 }
 
 /// A failure of work on a runtime database that tells what it calls for.
 pub(crate) trait ClassifiedFailure: std::fmt::Display {
-    /// What this failure calls for (see [`StorageFailure`]).
-    fn storage_failure(&self) -> StorageFailure;
+    /// What this failure calls for (see [`Failure`]).
+    fn storage_failure(&self) -> Failure;
 }
 
 impl ClassifiedFailure for StoreError {
     /// A migration that fails on the database's own error, such as a lock,
     /// is classified by that error; one refinery refuses, such as a changed
     /// checksum, fails the same way again.
-    fn storage_failure(&self) -> StorageFailure {
+    fn storage_failure(&self) -> Failure {
         match self {
             Self::OpenSqlite { source, .. } | Self::ConfigureSqlite { source, .. } => {
                 sqlite_failure(source)
@@ -530,78 +523,29 @@ impl ClassifiedFailure for StoreError {
             Self::MigrateSqlite { source, .. } => match source.kind() {
                 refinery::error::Kind::Connection(_, cause) => cause
                     .downcast_ref::<rusqlite::Error>()
-                    .map_or(StorageFailure::Permanent, sqlite_failure),
-                _ => StorageFailure::Permanent,
+                    .map_or(Failure::Permanent, sqlite_failure),
+                _ => Failure::Permanent,
             },
-            _ => StorageFailure::Permanent,
+            _ => Failure::Permanent,
         }
     }
 }
 
 impl ClassifiedFailure for trellis_jobs_runtime::SqliteJobsStoreError {
-    fn storage_failure(&self) -> StorageFailure {
+    fn storage_failure(&self) -> Failure {
         match self {
             Self::Sqlite(error) => sqlite_failure(error),
-            _ => StorageFailure::Permanent,
+            _ => Failure::Permanent,
         }
     }
 }
 
 impl ClassifiedFailure for trellis_events_runtime::storage::EventsStoreError {
-    fn storage_failure(&self) -> StorageFailure {
+    fn storage_failure(&self) -> Failure {
         match self {
             Self::Sqlite(error) => sqlite_failure(error),
-            _ => StorageFailure::Permanent,
+            _ => Failure::Permanent,
         }
-    }
-}
-
-/// Lets a log line that repeats through at most once a minute, so a failure a
-/// loop retries several times a second does not flood the log.
-#[derive(Debug, Default)]
-pub(crate) struct LogThrottle {
-    last: Option<std::time::Instant>,
-    held: u64,
-}
-
-impl LogThrottle {
-    /// Whether to log now: `Some` with how many repeats were held back since
-    /// the last line, or `None` to hold this one back.
-    pub(crate) fn admit(&mut self) -> Option<u64> {
-        let now = std::time::Instant::now();
-        if self
-            .last
-            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(60))
-        {
-            self.held += 1;
-            return None;
-        }
-        self.last = Some(now);
-        Some(std::mem::take(&mut self.held))
-    }
-}
-
-/// The wait between attempts of a background loop's storage work after it
-/// failed: 250 milliseconds, doubling with each further failure up to 30
-/// seconds, and back to the start once the work succeeds.
-#[derive(Debug, Default)]
-pub(crate) struct Backoff {
-    failures: u32,
-}
-
-impl Backoff {
-    /// Counts a failure and returns how long to wait before trying again.
-    pub(crate) fn failed(&mut self) -> Duration {
-        let delay = Duration::from_millis(250)
-            .saturating_mul(1 << self.failures.min(7))
-            .min(Duration::from_secs(30));
-        self.failures = self.failures.saturating_add(1);
-        delay
-    }
-
-    /// Starts the waits over after the work succeeded.
-    pub(crate) fn succeeded(&mut self) {
-        self.failures = 0;
     }
 }
 

@@ -1748,3 +1748,18 @@ OAuth, service or device enrollment), the reference is that request's ID: an
 OAuth `server_error` gives it in `error_description` as `Reference: <id>`, an
 enrollment error envelope as `error.reference`, the Portal shows it, and every
 such response carries it in the `Trellis-Reference` header.
+
+To diagnose an installation, start with `trellis doctor` (`--format json` for
+scripts), or the Console's Diagnostics page; both need only an administrator's
+sign-in. They read `Auth.Runtime.Diagnostics`, gated by
+`trellis.auth.v1:diagnostics.read` (in the Administrator role, in no group),
+which reports in one view: the server's version, installation ID, mode and
+uptime; each service deployment's instances with the settings they wait for,
+an update awaiting approval, and every degraded or failed check (Auth's
+`enforcement`, `webhook:<endpoint>`, and the service's own); devices that are
+degraded or unhealthy; JetStream use against its limits and refusals; free
+disk where the Auth database lives; the served certificate's subject, issuer
+and expiry; the last 20 failure references the Auth process logged (route,
+code and error, kept in memory, the last 50); and stuck Auth enforcement and
+set-aside effects. Each section and finding is `ok`, `warning` or `problem`,
+and `trellis doctor` exits non-zero unless everything is `ok`.

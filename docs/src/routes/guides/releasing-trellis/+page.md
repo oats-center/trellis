@@ -443,12 +443,16 @@ without becoming a raw commit dump. Generated-file-only churn does not need its
 own entry, but generated artifacts should point back to a covered source or
 contract change.
 
-Add a section whose heading matches the release version exactly:
-
-- stable: `## [X.Y.Z] - YYYY-MM-DD`
-- prerelease: `## [X.Y.Z-rc.1] - YYYY-MM-DD`
-
-For a stable release, move the relevant `Unreleased` bullets into the new version section before pushing the release marker.
+Write entries under `## [Unreleased]`, in Keep a Changelog subsections
+(`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`).
+`release prepare --tag vX` releases them: it moves them into a new
+`## [X] - YYYY-MM-DD` section dated today (UTC) and leaves an empty
+`## [Unreleased]`. When `## [X]` already exists, as for a held release, it puts
+the Unreleased entries ahead of that section's own in each subsection and moves
+its date to today. It keeps the subsection order and writes the file as
+prettier formats it. With nothing under Unreleased and no `## [X]` section,
+it stops before changing any version. Review the moved entries before
+committing.
 
 ## 3. Bump checked-in base versions
 
@@ -468,7 +472,7 @@ cargo xtask install --update
 cargo run --manifest-path xtask/Cargo.toml -- release check-versions
 ```
 
-`release bump` updates release-managed `package.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests, and the workspace packages' versions and internal dependency specs in the root `package-lock.json`, while preserving file layout. `release prepare` moves the same files, and `release check-versions` reports a lockfile entry that disagrees. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the matching `CHANGELOG.md` section to the candidate, so the pipeline builds and verifies the exact release versions.
+`release bump` updates release-managed `package.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests, and the workspace packages' versions and internal dependency specs in the root `package-lock.json`, while preserving file layout. `release prepare` moves the same files, and `release check-versions` reports a lockfile entry that disagrees. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the `CHANGELOG.md` section it writes to the candidate, so the pipeline builds and verifies the exact release versions.
 
 Do not run `release bump` just to add a prerelease suffix like `-rc.1`. Prerelease suffixes are handled from the tag by `release prepare` in the publish workflow.
 
@@ -681,7 +685,7 @@ Then verify the downstream publishes you care about:
 After publication, keep the `release/$RELEASE_TAG` branch. It remains the
 durable base for hotfixes against that released line.
 
-After a stable release, start the next development cycle by adding or reopening the `Unreleased` section in `CHANGELOG.md`.
+After a release, `CHANGELOG.md` already has an empty `Unreleased` section for the next cycle.
 
 If you want checked-in base versions to immediately move to the next line, do that in a separate follow-up change:
 

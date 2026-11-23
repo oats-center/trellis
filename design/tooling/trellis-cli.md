@@ -280,6 +280,19 @@ as `deadLetters` from the Events projection. The Console's Events page reads
 the same count for each service, so it is right even when the failed
 deliveries are not on the page it has loaded.
 
+## Diagnostics
+
+```text
+trellis doctor [--format json]
+trellis storage
+```
+
+`doctor` prints `Auth.Runtime.Diagnostics` as sections (server, health,
+JetStream, disk, certificates, recent server failures, background work), each
+marked ok, warning or problem with a line per finding, and exits non-zero
+unless the report's status is `ok`, so scripts and monitors can run it.
+`storage` prints `Health.Storage`.
+
 ## Users And Portals
 
 ```text

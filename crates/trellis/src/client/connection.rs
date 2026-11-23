@@ -841,7 +841,8 @@ fn attach_authorization_provider(
     let task = tokio::spawn(async move {
         let mut publications = generations.subscribe_publication();
         let mut own_changes = watcher.subscribe_changes();
-        let mut retry_ms = 100u64;
+        let mut backoff =
+            crate::retry::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
         loop {
             if generations.terminal().is_some() {
                 return;
@@ -917,7 +918,7 @@ fn attach_authorization_provider(
                         ready = &mut snapshot, if !caught_up => {
                             caught_up = true;
                             if ready.is_ok() {
-                                retry_ms = 100;
+                                backoff.succeeded();
                             }
                         }
                         changed = own_changes.recv() => {
@@ -943,9 +944,11 @@ fn attach_authorization_provider(
                     tracing::warn!(%error, "authorization retirement mirror unavailable; retrying");
                 }
             }
+            // Up to half again as long, so clients that failed together
+            // retry apart.
+            let retry_ms = u64::try_from(backoff.failed().as_millis()).unwrap_or(u64::MAX);
             let delay =
                 Duration::from_millis(retry_ms + rand::random::<u64>() % (retry_ms / 2 + 1));
-            retry_ms = (retry_ms * 2).min(5_000);
             tokio::select! {
                 biased;
                 _ = stop_rx.changed() => return,
@@ -2489,7 +2492,8 @@ impl TrellisClient {
             // it: a provider reconnecting is briefly absent.
             let payload = Bytes::from(payload);
             let wait_until = deadline.min(Instant::now() + SERVICE_AVAILABILITY_WAIT);
-            let mut pause = Duration::from_millis(100);
+            let mut pause =
+                crate::retry::Backoff::new(Duration::from_millis(100), Duration::from_secs(1));
             let message = loop {
                 // Authorization or a late resend wakeup can run past the
                 // deadline, and the timeouts poll the send before their timer.
@@ -2515,10 +2519,9 @@ impl TrellisClient {
                 match sent {
                     Err(error)
                         if error.kind() == async_nats::RequestErrorKind::NoResponders
-                            && Instant::now() + pause < wait_until =>
+                            && Instant::now() + pause.next_delay() < wait_until =>
                     {
-                        tokio::time::sleep(pause).await;
-                        pause = (pause * 2).min(Duration::from_secs(1));
+                        tokio::time::sleep(pause.failed()).await;
                     }
                     sent => break sent.map_err(TrellisClientError::from)?,
                 }

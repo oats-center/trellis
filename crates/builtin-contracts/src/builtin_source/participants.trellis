@@ -53,6 +53,7 @@ agent cli {
     capability sessions.revoke;
     capability delegations.read;
     capability delegations.revoke;
+    capability diagnostics.read;
   }
   use state { capability values.delete; }
   use core {
@@ -104,6 +105,7 @@ app console {
     capability sessions.revoke;
     capability delegations.read;
     capability delegations.revoke;
+    capability diagnostics.read;
   }
   use state {
     capability values.delete;

@@ -53,6 +53,7 @@ pub mod client;
 
 pub(crate) mod data_plane;
 pub(crate) mod live;
+pub(crate) mod retry;
 
 pub use live::subscription::LiveSubscription;
 pub use live::LiveSessionManager;

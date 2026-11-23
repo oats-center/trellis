@@ -251,6 +251,12 @@ Library support rule:
   responses should still attach `traceId` from a valid inbound `traceparent`
   header before the error leaves the server span boundary
 
+Export never holds up a stopping process. A Rust host that owns its OTLP
+providers gives their shutdown, including the last export of each signal, 5
+seconds in all, then exits; a collector that is down or never answers costs at
+most that. It logs to stderr what it failed to export: spans still queued, a
+failed final metric export, or a shutdown cut off by the 5-second budget.
+
 ## Failure Log Lines
 
 Every failed request, Operation, job attempt, event delivery and webhook
@@ -348,6 +354,12 @@ Reference: <id>` in `error_description`.
   an OIDC sign-in Trellis could not start or finish stores it with the refusal
   the sign-in page shows.
 - Every such response has the `Trellis-Reference: <id>` header.
+
+`trellis-server` also keeps the 50 most recent `error`-level lines that carry
+an `error_id`, HTTP and RPC alike, in memory: their ID, time, `route`, `code`
+(or `error_type`) and `error`, never `cause` or the caller.
+`Auth.Runtime.Diagnostics` lists them, so an operator can find a reference
+without the host's log. A restart empties the list.
 
 ## Request Correlation
 

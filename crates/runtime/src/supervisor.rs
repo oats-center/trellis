@@ -379,7 +379,8 @@ pub(crate) async fn connect_nats(
 ) -> Result<async_nats::Client, RuntimeError> {
     use async_nats::ConnectErrorKind;
     let give_up = tokio::time::Instant::now() + NATS_CONNECT_RETRY_WINDOW;
-    let mut delay = Duration::from_millis(250);
+    let mut backoff =
+        trellis_rs::__internal::Backoff::new(Duration::from_millis(250), Duration::from_secs(2));
     loop {
         let error = match nats_connect_options(nats, credentials)?
             .connect(nats.server_urls())
@@ -392,68 +393,59 @@ pub(crate) async fn connect_nats(
             error.kind(),
             ConnectErrorKind::Io | ConnectErrorKind::TimedOut | ConnectErrorKind::Dns
         ) && !trellis_rs::__internal::connect_error_is_permanent(&error);
-        if !transient || stopping() || tokio::time::Instant::now() + delay >= give_up {
+        if !transient || stopping() || tokio::time::Instant::now() + backoff.next_delay() >= give_up
+        {
             return Err(RuntimeError::Nats(error.to_string()));
         }
         tracing::warn!(error = %error, "NATS connection failed; retrying");
-        tokio::time::sleep(delay).await;
-        delay = (delay * 2).min(Duration::from_secs(2));
+        tokio::time::sleep(backoff.failed()).await;
     }
 }
 
 /// Runs startup `work` on a runtime database until it succeeds.
 ///
 /// A failure that can pass, such as a lock another process holds past the busy
-/// timeout, is logged and the work runs again after a growing wait (see
-/// [`crate::storage::Backoff`]). A database that is unusable, or work that
-/// fails the same way every time, such as a migration whose checksum differs,
-/// ends startup with a message naming the work. So does `stopping`, which ends
+/// timeout, is logged and the work runs again after a growing wait (the
+/// default [`trellis_rs::__internal::Backoff`]). A database that is unusable,
+/// or work that fails the same way every time, such as a migration whose
+/// checksum differs, ends startup with a message naming the work. So does `stopping`, which ends
 /// the wait at once.
 pub(crate) async fn until_stored<T, E, F>(
     stopping: &StopHandle,
     work: &str,
-    mut step: impl FnMut() -> F,
+    step: impl FnMut() -> F,
 ) -> Result<T, RuntimeError>
 where
     E: crate::storage::ClassifiedFailure,
     F: Future<Output = Result<T, E>>,
 {
-    use crate::storage::StorageFailure;
-    let mut backoff = crate::storage::Backoff::default();
-    loop {
-        let error = match step().await {
-            Ok(value) => return Ok(value),
-            Err(error) => error,
-        };
-        match error.storage_failure() {
-            StorageFailure::Unusable => {
-                return Err(RuntimeError::Startup(format!(
-                    "{work} failed: the database is unusable: {error}"
-                )));
+    use trellis_rs::__internal::Halted;
+    trellis_rs::__internal::retry(
+        trellis_rs::__internal::Backoff::default(),
+        step,
+        E::storage_failure,
+        |error, delay| {
+            tracing::warn!(
+                work,
+                %error,
+                retry_in_ms = delay.as_millis(),
+                "startup storage work failed; it will run again"
+            );
+        },
+        stopping.stopped(),
+    )
+    .await
+    .map_err(|halted| {
+        RuntimeError::Startup(match halted {
+            Halted::Unusable(error) => {
+                format!("{work} failed: the database is unusable: {error}")
             }
-            StorageFailure::Permanent => {
-                return Err(RuntimeError::Startup(format!(
-                    "{work} failed, and trying again cannot help: {error}"
-                )));
+            Halted::Permanent(error) => {
+                format!("{work} failed, and trying again cannot help: {error}")
             }
-            StorageFailure::Transient => {}
-        }
-        let delay = backoff.failed();
-        tracing::warn!(
-            work,
-            %error,
-            retry_in_ms = delay.as_millis(),
-            "startup storage work failed; it will run again"
-        );
-        tokio::select! {
-            () = stopping.stopped() => {
-                return Err(RuntimeError::Startup(format!(
-                    "stopped while {work} was failing: {error}"
-                )));
-            }
-            () = tokio::time::sleep(delay) => {}
-        }
-    }
+            Halted::Stopped(error) => format!("stopped while {work} was failing: {error}"),
+        })
+    })
 }
 
 async fn check_nats_connection(
@@ -686,6 +678,8 @@ pub(crate) struct RuntimeContext {
     groups: GroupStates,
     /// What JetStream refuses this process for lack of room.
     pub(crate) shortages: Arc<crate::capacity::Shortages>,
+    /// When this process began serving its runtime.
+    pub(crate) started_at: time::OffsetDateTime,
 }
 
 impl std::fmt::Debug for RuntimeContext {
@@ -969,26 +963,27 @@ pub async fn run_with_stop(
         &config,
         async_nats::jetstream::stream::StorageType::File,
     );
-    let mut backoff = crate::storage::Backoff::default();
-    loop {
-        match expected
-            .converge_streams(trellis_nats.clone(), &shortages)
-            .await
-        {
-            Err(RuntimeError::JetStreamExhausted(_)) => {
-                tokio::select! {
-                    () = process_stop.stopped() => {
-                        tracing::info!("runtime stop requested before startup finished");
-                        return Ok(());
-                    }
-                    () = tokio::time::sleep(backoff.failed()) => {}
-                }
-            }
-            result => {
-                result?;
-                break;
-            }
+    match trellis_rs::__internal::retry(
+        trellis_rs::__internal::Backoff::default(),
+        || expected.converge_streams(trellis_nats.clone(), &shortages),
+        |error| match error {
+            RuntimeError::JetStreamExhausted(_) => trellis_rs::__internal::Failure::Transient,
+            _ => trellis_rs::__internal::Failure::Permanent,
+        },
+        |_, _| {},
+        process_stop.stopped(),
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(trellis_rs::__internal::Halted::Stopped(_)) => {
+            tracing::info!("runtime stop requested before startup finished");
+            return Ok(());
         }
+        Err(
+            trellis_rs::__internal::Halted::Permanent(error)
+            | trellis_rs::__internal::Halted::Unusable(error),
+        ) => return Err(error),
     }
     let listener = crate::bind_http_listener(&config).await?;
     let origin = url::Url::parse(&config.public_origin()).map_err(|error| {
@@ -1012,6 +1007,7 @@ pub async fn run_with_stop(
         authorization_store: std::sync::Mutex::default(),
         live_providers: crate::platform::LiveProviderSlots::new(),
         shortages,
+        started_at: time::OffsetDateTime::now_utc(),
     });
     let result = serve(&context, &manager, listener, &origin, &process_stop).await;
     tracing::info!("runtime shutdown finished; flushing NATS");
@@ -1310,12 +1306,14 @@ async fn run_owned_group(
         if group == OwnerGroup::Platform {
             return Ok(());
         }
-        let mut delay = PROVIDER_RETRY_INITIAL;
+        let mut backoff =
+            trellis_rs::__internal::Backoff::new(PROVIDER_RETRY_INITIAL, PROVIDER_RETRY_MAX);
         loop {
             match bootstrap_live_provider(context, role).await {
                 Err(RuntimeError::AuthUnavailable(reason)) => {
                     // Equal jitter keeps roles that failed together from
                     // retrying together.
+                    let delay = backoff.failed();
                     let wait = delay - delay.mul_f64(rand::random_range(0.0..0.5));
                     tracing::warn!(
                         %subsystem,
@@ -1325,7 +1323,6 @@ async fn run_owned_group(
                     );
                     context.groups.set(group, GroupState::StandingBy);
                     tokio::time::sleep(wait).await;
-                    delay = (delay * 2).min(PROVIDER_RETRY_MAX);
                 }
                 result => break result,
             }

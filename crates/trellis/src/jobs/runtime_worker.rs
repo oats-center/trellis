@@ -2223,7 +2223,8 @@ where
                     }
                     let mut publication = owner.manager.subscribe_publication();
                     let mut availability = owner.manager.watch_own_availability();
-                    let mut retry_delay = WORKER_RETRY_MIN;
+                    let mut backoff =
+                        crate::retry::Backoff::new(WORKER_RETRY_MIN, WORKER_RETRY_MAX);
                     loop {
                         let changed = owner.sources_changed.notified();
                         if owner.cancellation.is_cancelled() {
@@ -2323,7 +2324,7 @@ where
                         // A retiring generation must not wait out this slot's backoff.
                         drop(reservation);
                         let Err(error) = result else {
-                            retry_delay = WORKER_RETRY_MIN;
+                            backoff.succeeded();
                             continue;
                         };
                         // Physical loss belongs to the receiving work. It may
@@ -2342,6 +2343,7 @@ where
                                 | RuntimeWorkerError::LifecycleRead { .. }
                                 | RuntimeWorkerError::KeyCoordinator(_)
                         ) {
+                            let retry_delay = backoff.failed();
                             tracing::warn!(
                                 queue = %queue_type,
                                 slot = worker_index,
@@ -2353,7 +2355,6 @@ where
                                 _ = owner.cancellation.cancelled() => break,
                                 _ = tokio::time::sleep(retry_delay) => {}
                             }
-                            retry_delay = (retry_delay * 2).min(WORKER_RETRY_MAX);
                             continue;
                         }
                         let mut failure = owner

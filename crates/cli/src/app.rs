@@ -21,6 +21,7 @@ use trellis_self_update::{ReleaseChannel, SelfUpdateTarget};
 mod auth;
 mod config;
 pub mod deploy;
+mod doctor;
 mod enrollment;
 mod events;
 mod native_auth;
@@ -115,6 +116,7 @@ async fn dispatch(command: TopLevelCommand, format: OutputFormat) -> miette::Res
         TopLevelCommand::Resources(command) => resources::run(format, command).await?,
         TopLevelCommand::Events(command) => events::run(format, command).await?,
         TopLevelCommand::Storage => storage::run(format).await?,
+        TopLevelCommand::Doctor => doctor::run(format).await?,
         TopLevelCommand::Keys(command) => match command.command {
             KeysSubcommand::New(args) => runtime::keygen_command(format, &args)?,
         },

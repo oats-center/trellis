@@ -11,6 +11,8 @@ mod broker;
 mod catalog;
 mod config;
 mod deployments;
+mod diagnostics;
+pub(crate) use diagnostics::{register_rpc as register_diagnostics_rpc, Diagnostics};
 mod instances;
 pub(crate) use instances::STARTUP_QUIET_SECONDS;
 mod framework_storage;

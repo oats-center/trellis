@@ -8,6 +8,7 @@ import type {
 } from "../internal_sdk/generated/types/index.js";
 import type { LoggerLike } from "../globals.ts";
 import type { TransportGenerationManager } from "../transport/generations.ts";
+import { Backoff } from "../backoff.ts";
 
 /** What a settings watch needs from the logical connection's transport. */
 type ConfigTransport = Pick<
@@ -355,7 +356,7 @@ export async function loadConfig<
   const abort = () => aborted.reject(signal?.reason);
   signal?.addEventListener("abort", abort, { once: true });
   try {
-    let delay = 1_000;
+    const backoff = new Backoff(1_000, 15_000);
     let shown = "";
     for (;;) {
       signal?.throwIfAborted();
@@ -397,14 +398,13 @@ export async function loadConfig<
       try {
         await Promise.race([
           new Promise<void>((resolve) => {
-            timer = setTimeout(resolve, delay);
+            timer = setTimeout(resolve, backoff.failed());
           }),
           aborted.promise,
         ]);
       } finally {
         clearTimeout(timer);
       }
-      delay = Math.min(delay * 2, 15_000);
     }
   } finally {
     signal?.removeEventListener("abort", abort);

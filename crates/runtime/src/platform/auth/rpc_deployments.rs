@@ -1678,7 +1678,7 @@ pub(super) fn read_instances(
 
 /// What a connected instance waits for: its build's update to be approved, or
 /// required settings its installed build has no value for.
-fn waiting(
+pub(super) fn waiting(
     connection: &Connection,
     storage: &super::OAuthStorage,
     instance: &AuthProvisionedInstance,
