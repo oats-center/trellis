@@ -1630,7 +1630,15 @@ pub(super) async fn lookup_waiting_claim(id: &str) -> miette::Result<Option<Stri
         .into_diagnostic()?
         .into_iter()
         .map(|claim| json!({ "deploymentId": claim.claim_id.to_string(), "title": claim.title }));
-    find_deployment_entry(claims, id)?
+    // A claim ID names only the claim with that ID, never another claim's title.
+    let found = if id.parse::<ulid::Ulid>().is_ok() {
+        claims
+            .into_iter()
+            .find(|claim| claim.get("deploymentId").and_then(Value::as_str) == Some(id))
+    } else {
+        find_deployment_entry(claims, id)?
+    };
+    found
         .map(|claim| {
             claim
                 .get("deploymentId")
@@ -1682,15 +1690,48 @@ pub(super) async fn find_deployment(
         .ok_or_else(|| miette::miette!("deployment not found: {deployment_id}"))
 }
 
+/// The deployment of `kind` that `deployment_id` names, `None` when Trellis
+/// answered without one. A well-formed deployment ID is looked up by ID only:
+/// it never matches another deployment's title, and a failed lookup is
+/// reported as it failed.
 async fn list_deployments(
     connected: &Client,
     deployment_id: &str,
     kind: DeploymentKind,
 ) -> miette::Result<Option<Value>> {
+    use trellis_runtime_apis::apis::trellis_auth_v1::rpc::DeploymentsGetError;
     let kind = match kind {
         DeploymentKind::Service => auth_types::AuthDeploymentKind::Service,
         DeploymentKind::Device => auth_types::AuthDeploymentKind::Device,
     };
+    if deployment_id.parse::<ulid::Ulid>().is_ok() {
+        return match trellis_runtime_apis::apps::trellis_cli::Client::from_generated(
+            connected.clone(),
+        )
+        .trellis_auth_v1()
+        .deployments_get(&auth_types::AuthDeploymentGetRequest {
+            deployment_id: wire(deployment_id)?,
+            extra: Default::default(),
+        })
+        .await
+        {
+            Ok(found) if found.deployment.kind == kind => serde_json::to_value(found.deployment)
+                .into_diagnostic()
+                .map(Some),
+            // A device's ID does not name a service, nor the other way round.
+            Ok(_) => Ok(None),
+            Err(trellis_rs::client::CallError::Declared(error))
+                if matches!(
+                    error.as_ref(),
+                    DeploymentsGetError::AuthError(error)
+                        if error.payload().is_ok_and(|payload| payload.code.as_ref() == "not_found")
+                ) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error).into_diagnostic(),
+        };
+    }
     let entries =
         trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
             .trellis_auth_v1()

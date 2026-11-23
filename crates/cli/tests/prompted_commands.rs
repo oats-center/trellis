@@ -1434,3 +1434,46 @@ async fn an_id_names_only_what_has_that_id() {
     );
     runtime.shutdown().await.unwrap();
 }
+
+/// A deployment ID names only the deployment with that ID. An ID no
+/// deployment has is refused even when it is another deployment's title, so a
+/// command never acts on the deployment that happens to carry it as a name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deployment_id_names_only_the_deployment_with_that_id() {
+    use runtime_trellis::participants::runtime_trellis_provider::Participant;
+
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    // No deployment has this ID, but it is another deployment's title.
+    let missing = ulid::Ulid::generate().to_string();
+    let namesake = runtime
+        .register_service::<Participant>(&missing)
+        .await
+        .unwrap();
+    let cli = Cli::login(&mut runtime, None).await;
+
+    let refused = cli.script(&["svc", &missing, "instances"]).await;
+    assert!(
+        refused_with(&refused, &format!("deployment not found: {missing}")),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let listed = cli
+        .json(&["svc", namesake.deployment_id(), "instances"])
+        .await;
+    assert_eq!(
+        listed["instances"][0]["instanceId"],
+        serde_json::json!(namesake.instance_id())
+    );
+    // A title that is not ID-shaped still names its deployment.
+    let titled = format!("titled-{}", ulid::Ulid::generate()).to_lowercase();
+    let named = runtime
+        .register_service_sharing_apis::<Participant>(&titled)
+        .await
+        .unwrap();
+    let listed = cli.json(&["svc", &titled, "instances"]).await;
+    assert_eq!(
+        listed["instances"][0]["instanceId"],
+        serde_json::json!(named.instance_id())
+    );
+    runtime.shutdown().await.unwrap();
+}

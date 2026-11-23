@@ -1181,7 +1181,8 @@ RPCs acts on the caller's own account.
   `<user>` is a username, email or user ID; roles are named by name or ID,
   as in `trellis roles assign <role> --user <user>`. Input shaped like an
   ID is looked up only as an ID; an unknown ID is refused, never matched as
-  a name. To
+  a name. The same holds for `trellis svc|dev <deployment>`: a deployment
+  ID never matches another deployment's title. To
   migrate users keyed by ID from another system, create each with its
   provider `sub` in `identities` and re-key to the returned `principalId`.
 
