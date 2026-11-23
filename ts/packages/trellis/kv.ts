@@ -5,6 +5,10 @@ import { JetStreamApiCodes } from "@nats-io/jetstream";
 
 import type { Codec } from "./generated.ts";
 import { KVError, TransportError, ValidationError } from "./errors/index.ts";
+import {
+  type ResourceExhaustedError,
+  resourceExhausted,
+} from "./errors/ResourceExhaustedError.ts";
 import type {
   TransportLease,
   TransportRequirement,
@@ -79,12 +83,21 @@ export type KvOpenOptions<T = unknown> = Readonly<{
    * Defaults to 30 seconds.
    */
   acquireTimeoutMs?: number;
+  /**
+   * The name a refused write reports in {@link ResourceExhaustedError}, such
+   * as the service's KV resource name. Defaults to the bucket name.
+   */
+  resourceName?: string;
 }>;
 
 /** Failures a KV read operation can report. */
 export type KVReadError = KVError | ValidationError | TransportError;
-/** Failures a KV mutating or listing operation can report. */
-export type KVOperationError = KVError | TransportError;
+/**
+ * Failures a KV mutating or listing operation can report. A write JetStream
+ * refuses for lack of room is a {@link ResourceExhaustedError}.
+ */
+export type KVOperationError =
+  KVError | ResourceExhaustedError | TransportError;
 
 /** Opens or creates a physical KV bucket with the requested options. */
 async function openKv(
@@ -324,7 +337,11 @@ export class TypedKV<T> {
     this.#options = options;
     this.#acquireTimeoutMs =
       options.acquireTimeoutMs ?? DEFAULT_RESOURCE_ACQUIRE_TIMEOUT_MS;
+    this.#resourceName = options.resourceName ?? name;
   }
+
+  /** The name a write refused for lack of room reports. */
+  readonly #resourceName: string;
 
   /** Opens or creates a typed KV bucket on the current generation. */
   static open<T>(
@@ -504,7 +521,8 @@ export class TypedKV<T> {
             return Result.err(
               cause instanceof TransportError
                 ? cause
-                : kvError("create", key, cause),
+                : (resourceExhausted("kv", this.#resourceName, cause) ??
+                    kvError("create", key, cause)),
             );
           }
         })(),
@@ -539,7 +557,8 @@ export class TypedKV<T> {
             return Result.err(
               cause instanceof TransportError
                 ? cause
-                : kvError("put", key, cause),
+                : (resourceExhausted("kv", this.#resourceName, cause) ??
+                    kvError("put", key, cause)),
             );
           }
         })(),
@@ -579,7 +598,8 @@ export class TypedKV<T> {
             return Result.err(
               cause instanceof TransportError
                 ? cause
-                : kvError("replace", key, cause),
+                : (resourceExhausted("kv", this.#resourceName, cause) ??
+                    kvError("replace", key, cause)),
             );
           }
         })(),
@@ -611,7 +631,8 @@ export class TypedKV<T> {
             return Result.err(
               cause instanceof TransportError
                 ? cause
-                : kvError("delete", key, cause),
+                : (resourceExhausted("kv", this.#resourceName, cause) ??
+                    kvError("delete", key, cause)),
             );
           }
         })(),

@@ -10,6 +10,7 @@ pub(crate) mod authorization;
 mod connection;
 mod error;
 mod events;
+mod exhaustion;
 mod health;
 #[cfg(feature = "http")]
 mod http_error;
@@ -66,6 +67,9 @@ pub use events::{
 pub use events::{PostgresInboxStore, PostgresOutboxStore};
 #[cfg(feature = "event-store-sqlite")]
 pub use events::{SqliteInboxStore, SqliteOutboxStore};
+pub use exhaustion::ResourceExhausted;
+#[doc(hidden)]
+pub use exhaustion::{exhaustion_in, Exhaustion};
 pub use health::{
     HealthCheckRegistration, HealthCheckStatus, ServiceHealth, ServiceHealthCheck,
     ServiceHealthInfo,

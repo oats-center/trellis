@@ -36,6 +36,7 @@ import {
   type TrellisApiFor,
 } from "./contract_types.ts";
 import {
+  type ResourceExhaustedError,
   TransportError,
   UnexpectedError,
   ValidationError,
@@ -259,14 +260,23 @@ export type HandlerTrellis<
   publish(
     event: string,
     data: Record<string, unknown>,
-  ): AsyncResult<void, ValidationError | TransportError | UnexpectedError>;
+  ): AsyncResult<
+    void,
+    | ValidationError
+    | TransportError
+    | ResourceExhaustedError
+    | UnexpectedError
+  >;
   prepare(
     event: string,
     data: Record<string, unknown>,
   ): Result<PreparedTrellisEvent, ValidationError | UnexpectedError>;
   publishPrepared(
     event: PreparedTrellisEvent,
-  ): AsyncResult<void, TransportError | UnexpectedError>;
+  ): AsyncResult<
+    void,
+    TransportError | ResourceExhaustedError | UnexpectedError
+  >;
   /** Stops durable event listener loops owned by this handler runtime. */
   stopEventListeners(): void;
 };

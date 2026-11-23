@@ -12,6 +12,10 @@ import {
   type Result as ResultType,
 } from "@oatscenter/result";
 import { StoreError, TransportError } from "./errors/index.ts";
+import {
+  type ResourceExhaustedError,
+  resourceExhausted,
+} from "./errors/ResourceExhaustedError.ts";
 import type {
   TransportLease,
   TransportRequirement,
@@ -55,10 +59,19 @@ export type StoreOpenOptions = {
    * Defaults to 30 seconds.
    */
   acquireTimeoutMs?: number;
+  /**
+   * The name a refused write reports in {@link ResourceExhaustedError}, such
+   * as the service's store resource name. Defaults to the bucket name.
+   */
+  resourceName?: string;
 };
 
-/** Failures a Store operation can report. */
-export type StoreOperationError = StoreError | TransportError;
+/**
+ * Failures a Store operation can report. A write JetStream refuses for lack
+ * of room is a {@link ResourceExhaustedError}.
+ */
+export type StoreOperationError =
+  StoreError | ResourceExhaustedError | TransportError;
 
 export type StorePutOptions = {
   contentType?: string;
@@ -268,15 +281,13 @@ async function bytesFromStream(
   return merged;
 }
 
-function isNotFoundStoreError(error: StoreError | TransportError): boolean {
+function isNotFoundStoreError(error: StoreOperationError): boolean {
   if (!(error instanceof StoreError)) return false;
   return error.getContext().reason === "not_found";
 }
 
 /** Whether a Store operation failed because transport has not adopted it yet. */
-function isTransportError(
-  error: StoreError | TransportError,
-): error is TransportError {
+function isTransportError(error: StoreOperationError): error is TransportError {
   return error instanceof TransportError;
 }
 
@@ -505,6 +516,9 @@ export class TypedStore {
         ? { maxTotalBytes: options.maxTotalBytes }
         : {}),
       ...(options.bindOnly !== undefined ? { bindOnly: options.bindOnly } : {}),
+      ...(options.resourceName !== undefined
+        ? { resourceName: options.resourceName }
+        : {}),
     };
   }
 
@@ -824,13 +838,19 @@ export class TypedStore {
           return Result.ok(undefined);
         } catch (cause) {
           return Result.err(
-            new StoreError({ operation: "delete", cause, context: { key } }),
+            resourceExhausted("store", this.#resourceName, cause) ??
+              new StoreError({ operation: "delete", cause, context: { key } }),
           );
         } finally {
           acquired.release();
         }
       })(),
     );
+  }
+
+  /** The name a write refused for lack of room reports. */
+  get #resourceName(): string {
+    return this.#options.resourceName ?? this.#name;
   }
 
   list(
@@ -998,7 +1018,8 @@ export class TypedStore {
       return Result.err(
         cause instanceof StoreError
           ? cause
-          : new StoreError({ operation, cause, context: { key } }),
+          : (resourceExhausted("store", this.#resourceName, cause) ??
+              new StoreError({ operation, cause, context: { key } })),
       );
     }
   }

@@ -606,7 +606,10 @@ changed limit is applied to the existing streams at the next start.
 record. `Health.Storage` also reports JetStream storage and memory used and
 reserved against the account's and the server's limits; it is `degraded` at
 85% of a limit or while JetStream refuses a Trellis stream for lack of room,
-with each problem and its numbers. A stream's `max_bytes` is reserved in full
+with each problem and its numbers. A KV, store, State, job or event write
+JetStream refuses for lack of room returns a typed resource-exhausted error
+naming the resource (`kind`, `name` or `resource`, and `reason`); nothing was
+written, so retry only after making room. A stream's `max_bytes` is reserved in full
 when it is created, so Trellis streams set one only where a size bound is the
 requirement (webhook intake, 64 MiB per deployment by default).
 
@@ -2132,6 +2135,13 @@ but retains the entire object in memory. Streams fail on physical disconnect or
 closure. `TypedStore.list(...)` and file metadata lists use the shared keyset
 pagination.
 
+A write JetStream refuses for lack of room fails with `ResourceExhaustedError`
+from `@oatscenter/trellis/errors`, with `kind` (`"kv"`, `"store"`, `"state"`,
+`"jobs"` or `"events"`), `resource` (the resource's name, the job queue, or
+the event's subject) and `reason`. KV and store writes, State `create`, `set`
+and `replace`, job `create` and `submit`, and event `publish` return it in
+their Result.
+
 #### Settings
 
 A participant with `config` fields gets them as `service.config` or
@@ -2680,6 +2690,13 @@ pagination. Store readers and writers support bounded streaming through
 Tokio runtime, including cross-thread drops; cleanup retains the generation
 lease. Whole-buffer helpers consume the same reader but retain the entire
 object in memory.
+
+A write JetStream refuses for lack of room carries a
+`trellis_rs::client::ResourceExhausted { kind, name, reason }`:
+`KvResourceWriteError::ResourceExhausted`, `StateWriteError::ResourceExhausted`,
+`JobsError::ResourceExhausted` from job create or submit,
+`ServerError::ResourceExhausted` from store writes and `EventPublisher`, and
+`TrellisClientError::ResourceExhausted` from generated `publish_*` calls.
 
 #### Settings
 

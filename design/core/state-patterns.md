@@ -35,7 +35,10 @@ opaque CAS tokens. Create requires no live value, replace requires the exact
 revision, set is last-write-wins, and delete may be checked or unconditional.
 Conflicts return the authoritative current optional value. An enabled but
 unwritten resource returns no value; this differs from an unavailable optional
-handle.
+handle. A write JetStream refuses for lack of room is the declared
+`ResourceExhausted` error of `State.Put`, with the `resourceName` and a short
+`reason`; nothing was written, and the SDKs return it as their typed
+resource-exhausted error rather than a backend failure.
 
 Stored values contain generated-codec UTF-8 JSON, a positive u32 representation
 version, revision, and timestamps. The server validates current or accepted

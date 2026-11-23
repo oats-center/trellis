@@ -314,6 +314,11 @@ pub enum TrellisClientError {
     #[error("nats request error: {0}")]
     NatsRequest(String),
 
+    /// JetStream refused an event publication because its stream has no
+    /// room left. Nothing was published.
+    #[error(transparent)]
+    ResourceExhausted(super::ResourceExhausted),
+
     /// The requested service has no responder on the broker.
     #[error(transparent)]
     ServiceUnavailable(#[from] ServiceUnavailableError),

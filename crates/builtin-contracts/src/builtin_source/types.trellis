@@ -1047,6 +1047,13 @@ model StateRepresentationError {
   resourceName: StateResourceName;
 }
 
+/// JetStream refused the write because State has no room left; nothing was written.
+model StateResourceExhausted {
+  resourceName: StateResourceName;
+  /// What JetStream ran out of, in a few words.
+  reason: string;
+}
+
 enum StatePutMode {
   create;
   replace;

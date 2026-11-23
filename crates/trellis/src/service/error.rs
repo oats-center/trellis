@@ -339,6 +339,11 @@ pub enum ServerError {
         max_bytes: u64,
     },
 
+    /// JetStream refused a store write or an event publication because the
+    /// resource has no room left. Nothing was written.
+    #[error(transparent)]
+    ResourceExhausted(crate::client::ResourceExhausted),
+
     /// A bound object-store upload exceeded its configured maximum.
     #[error(
         "store object exceeds configured maximum: attempted {attempted_bytes} \

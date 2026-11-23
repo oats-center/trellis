@@ -133,6 +133,10 @@ import {
   UnexpectedError,
   ValidationError,
 } from "../../errors/index.ts";
+import {
+  type ResourceExhaustedError,
+  resourceExhausted,
+} from "../../errors/ResourceExhaustedError.ts";
 import type { ReceiveTransferGrant } from "../../transfer.ts";
 import {
   ActiveJob as PublicActiveJob,
@@ -517,10 +521,12 @@ class InternalStoreHandle extends StoreHandle {
   readonly binding: ResourceBindingStore;
   readonly #transport: TrellisTransportProvider;
   readonly #acquireTimeoutMs: number;
+  readonly #alias: string;
 
   constructor(
     transport: TrellisTransportProvider,
     acquireTimeoutMs: number,
+    alias: string,
     binding: ResourceBindingStore,
     token: typeof storeHandleConstructorToken,
   ) {
@@ -532,6 +538,7 @@ class InternalStoreHandle extends StoreHandle {
     }
     this.#transport = transport;
     this.#acquireTimeoutMs = acquireTimeoutMs;
+    this.#alias = alias;
     this.binding = binding;
   }
 
@@ -542,6 +549,7 @@ class InternalStoreHandle extends StoreHandle {
       maxTotalBytes: this.binding.maxTotalBytes,
       bindOnly: true,
       acquireTimeoutMs: this.#acquireTimeoutMs,
+      resourceName: this.#alias,
     });
   }
 
@@ -595,6 +603,7 @@ function openServiceKvBindings<TKv extends ParticipantKvMetadata>(args: {
             bindOnly: true,
             isCurrent: () => args.bindings()[alias]?.bucket === binding.bucket,
             acquireTimeoutMs: args.acquireTimeoutMs,
+            resourceName: alias,
           },
         ) as TypedKV<unknown>;
         handles.set(alias, { bucket: binding.bucket, handle });
@@ -1667,6 +1676,7 @@ export function createConnectedService<
         new InternalStoreHandle(
           serviceTransport,
           acquireTimeoutMs,
+          alias,
           binding,
           storeHandleConstructorToken,
         ),
@@ -2677,7 +2687,10 @@ function createJobsFacade<
               ) {
                 return Result.err(cause);
               }
-              return Result.err(toUnexpectedError(cause));
+              return Result.err(
+                resourceExhausted("jobs", queueType, cause) ??
+                  toUnexpectedError(cause),
+              );
             } finally {
               lease?.release();
             }
@@ -2759,7 +2772,10 @@ function createJobsFacade<
               return Result.ok(outcome);
             } catch (cause) {
               if (cause instanceof TransportError) return Result.err(cause);
-              return Result.err(toUnexpectedError(cause));
+              return Result.err(
+                resourceExhausted("jobs", queueType, cause) ??
+                  toUnexpectedError(cause),
+              );
             } finally {
               lease?.release();
             }
@@ -3813,6 +3829,7 @@ export class TrellisServiceSession<
         new InternalStoreHandle(
           transport,
           acquireTimeoutMs,
+          alias,
           binding,
           storeHandleConstructorToken,
         ),
@@ -3868,7 +3885,10 @@ export class TrellisServiceSession<
   /** Publishes a prepared event through the service runtime connection. */
   publishPrepared(
     event: PreparedTrellisEvent,
-  ): AsyncResult<void, TransportError | UnexpectedError> {
+  ): AsyncResult<
+    void,
+    TransportError | ResourceExhaustedError | UnexpectedError
+  > {
     return this.#handlerTrellis.publishPrepared(event);
   }
 

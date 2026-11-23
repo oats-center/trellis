@@ -734,10 +734,17 @@ async fn publish_prepared_event(
             .publish_with_headers(event.subject().to_string(), headers, event.payload_bytes())
             .await
     };
+    // A refusal for lack of room names the event's subject.
+    let refused = |error: String| {
+        super::ResourceExhausted::from_text("events", event.subject(), &error)
+            .map_or(TrellisClientError::NatsRequest(error), |exhausted| {
+                TrellisClientError::ResourceExhausted(exhausted)
+            })
+    };
     let ack = timeout(publish_remaining, publish)
         .await
         .map_err(|_| TrellisClientError::Timeout)?
-        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+        .map_err(|error| refused(error.to_string()))?;
     let ack_remaining = deadline.saturating_duration_since(Instant::now());
     if ack_remaining.is_zero() {
         return Err(TrellisClientError::Timeout);
@@ -745,7 +752,7 @@ async fn publish_prepared_event(
     timeout(ack_remaining, ack)
         .await
         .map_err(|_| TrellisClientError::Timeout)?
-        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+        .map_err(|error| refused(error.to_string()))?;
     Ok(())
 }
 

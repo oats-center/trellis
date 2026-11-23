@@ -49,6 +49,17 @@ used, reserved, and limit (the server's when the process has system-account
 credentials), then every ten minutes while it lasts, and the server starts as
 soon as there is room.
 
+A write a participant makes is refused the same way once there is no room:
+KV, store, State, job and event writes return a typed resource-exhausted
+error naming the resource (its kind, `kv`, `store`, `state`, `jobs` or
+`events`, its name, and what JetStream ran out of) instead of a generic or
+"temporarily unavailable" failure. The SDKs recognize the JetStream codes for
+insufficient storage or memory (10047, 10023, 10002, 10028), the stream and
+consumer limits (10027, 10026) and a full stream (10077), as the runtime does
+for its own streams. Nothing was written, so retrying succeeds only once there
+is room. A managed broker keeps the `max_file_store` and `max_memory_store`
+the authored `nats.conf` sets in its `jetstream` block.
+
 SQL history is removed by hourly loops in the subsystem that owns the database,
 in transactions of at most 1,000 rows, so a backlog never holds the writer for
 long. A failed pass is retried at the next tick and never stops projection.

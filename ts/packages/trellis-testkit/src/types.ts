@@ -78,6 +78,12 @@ export type TrellisTestRuntimeStartOptions = {
    */
   websocketOnly?: boolean;
   /**
+   * The broker's JetStream `max_file_store` in bytes, the file storage it lets
+   * all streams use and reserve, as a small host's broker computes from its
+   * free disk. Unset, NATS sizes it from the sandbox's disk.
+   */
+  jetstreamMaxFileStore?: number;
+  /**
    * Run a development installation: Trellis generates its own certificate,
    * native NATS is plaintext on loopback, and the Trellis port relays NATS
    * WebSockets.

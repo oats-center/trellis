@@ -80,6 +80,10 @@ import {
   ValidationError,
 } from "./errors/index.ts";
 import { RemoteError } from "./errors/RemoteError.ts";
+import {
+  type ResourceExhaustedError,
+  resourceExhausted,
+} from "./errors/ResourceExhaustedError.ts";
 import { logger, type LoggerLike } from "./globals.ts";
 import { type ResourceMigrations, TypedKV } from "./kv.ts";
 import { TrellisErrorDataSchema } from "./errors/RemoteError.ts";
@@ -3232,11 +3236,15 @@ export class Trellis<
 
   /**
    * Publishes a previously prepared event without regenerating its id, time,
-   * subject, payload, or headers.
+   * subject, payload, or headers. An event JetStream refuses for lack of
+   * room is a {@link ResourceExhaustedError} naming its subject.
    */
   publishPrepared(
     event: PreparedTrellisEvent,
-  ): AsyncResult<void, TransportError | UnexpectedError> {
+  ): AsyncResult<
+    void,
+    TransportError | ResourceExhaustedError | UnexpectedError
+  > {
     return AsyncResult.from(
       (async () => {
         const startedAt = performance.now();
@@ -3330,10 +3338,12 @@ export class Trellis<
           return ok(undefined);
         } catch (cause) {
           finish("error");
-          const error = new UnexpectedError({
-            cause,
-            context: { event: event.event },
-          });
+          const error =
+            resourceExhausted("events", event.subject, cause) ??
+            new UnexpectedError({
+              cause,
+              context: { event: event.event },
+            });
           recordRuntimeError(error, {
             surface: "event",
             direction: "publisher",
@@ -3351,12 +3361,18 @@ export class Trellis<
   publish(
     event: string,
     data: Record<string, unknown>,
-  ): AsyncResult<void, ValidationError | TransportError | UnexpectedError> {
+  ): AsyncResult<
+    void,
+    ValidationError | TransportError | ResourceExhaustedError | UnexpectedError
+  > {
     const prepared = this.prepare(event, data).take();
     if (isErr(prepared)) {
       return AsyncResult.from<
         never,
-        ValidationError | TransportError | UnexpectedError
+        | ValidationError
+        | TransportError
+        | ResourceExhaustedError
+        | UnexpectedError
       >(Promise.resolve(prepared));
     }
     return this.publishPrepared(prepared);

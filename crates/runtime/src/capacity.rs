@@ -24,34 +24,7 @@ pub(crate) const DEGRADED_FRACTION: f64 = 0.85;
 /// How often a repeated refusal of the same resource is logged again.
 const LOG_EVERY: Duration = Duration::from_secs(10 * 60);
 
-/// Why JetStream refused to create or write something.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Exhaustion {
-    /// The server or account cannot reserve or store more file storage.
-    Storage,
-    /// The server or account cannot reserve or store more memory.
-    Memory,
-    /// The account has as many streams as its limit allows.
-    Streams,
-    /// The stream or account has as many consumers as its limit allows.
-    Consumers,
-    /// The stream holds as many bytes or messages as its own limits allow and
-    /// refuses new ones.
-    Full,
-}
-
-impl Exhaustion {
-    /// The refusal in a few words, for logs, health, and callers.
-    pub(crate) fn describe(self) -> &'static str {
-        match self {
-            Self::Storage => "JetStream storage is exhausted",
-            Self::Memory => "JetStream memory is exhausted",
-            Self::Streams => "JetStream's stream limit is reached",
-            Self::Consumers => "JetStream's consumer limit is reached",
-            Self::Full => "the stream is full",
-        }
-    }
-}
+pub(crate) use trellis_rs::client::{exhaustion_in, Exhaustion};
 
 /// Recognizes a JetStream refusal for lack of room in an error or its sources.
 ///
@@ -67,35 +40,6 @@ pub(crate) fn exhaustion(error: &(dyn std::error::Error + 'static)) -> Option<Ex
         source = next.source();
     }
     exhaustion_in(&text)
-}
-
-/// [`exhaustion`] for an error the runtime already turned into text.
-pub(crate) fn exhaustion_in(text: &str) -> Option<Exhaustion> {
-    let text = text.to_ascii_lowercase();
-    let code = |code: u32| text.contains(&format!("error code {code})"));
-    if code(10047) || code(10002) || code(10023) {
-        // Account resources (10002) and insufficient resources (10023) are
-        // storage for file streams, which every Trellis stream is.
-        Some(Exhaustion::Storage)
-    } else if code(10028) {
-        Some(Exhaustion::Memory)
-    } else if code(10027) {
-        Some(Exhaustion::Streams)
-    } else if code(10026) {
-        Some(Exhaustion::Consumers)
-    } else if code(10077) && text.contains("maximum") {
-        // "maximum bytes exceeded", "maximum messages exceeded", and
-        // "maximum messages per subject exceeded".
-        Some(Exhaustion::Full)
-    } else if text.contains("insufficient storage resources")
-        || text.contains("insufficient resources")
-    {
-        Some(Exhaustion::Storage)
-    } else if text.contains("insufficient memory resources") {
-        Some(Exhaustion::Memory)
-    } else {
-        None
-    }
 }
 
 /// Bytes in use and reserved against a limit.

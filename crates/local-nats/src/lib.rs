@@ -856,6 +856,23 @@ impl LocalNatsBuilder {
         } else {
             trellis_bootstrap::NatsWebsocket::Loopback
         };
+        // The storage limits an operator sets in the authored `jetstream`
+        // block bound the managed broker too, as on a small host whose disk
+        // NATS would otherwise size them from.
+        let mut in_jetstream = false;
+        let mut limits = String::new();
+        for line in authored_config.lines() {
+            let line = line.trim();
+            if line.starts_with("jetstream") && line.ends_with('{') {
+                in_jetstream = true;
+            } else if in_jetstream && line.starts_with('}') {
+                in_jetstream = false;
+            } else if in_jetstream
+                && (line.starts_with("max_file_store") || line.starts_with("max_memory_store"))
+            {
+                limits.push_str(&format!("  {line}\n"));
+            }
+        }
         let config = state.join("nats.conf");
         fs::write(
             &config,
@@ -870,7 +887,8 @@ impl LocalNatsBuilder {
                 },
                 tls.as_ref(),
                 websocket,
-            ),
+            )
+            .replacen("jetstream {\n", &format!("jetstream {{\n{limits}"), 1),
         )?;
         let binary = NatsServerBinary::resolve(&binary_source, self.cache_dir.as_deref())?;
         let pid_file = self

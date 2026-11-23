@@ -58,6 +58,12 @@ export {
   OperationNotFoundError,
 } from "./OperationLifecycleError.ts";
 export { StoreError } from "./StoreError.ts";
+export {
+  type ExhaustedResourceKind,
+  ResourceExhaustedError,
+  type ResourceExhaustedErrorData,
+  ResourceExhaustedErrorDataSchema,
+} from "./ResourceExhaustedError.ts";
 export { TransportError } from "./TransportError.ts";
 export { TransferError } from "./TransferError.ts";
 

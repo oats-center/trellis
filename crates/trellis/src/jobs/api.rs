@@ -35,6 +35,10 @@ pub enum JobsError {
     EncodeResult(serde_json::Error),
     #[error(transparent)]
     NotEnqueued(#[from] JobNotEnqueued),
+    /// JetStream refused the job because its queue's stream has no room
+    /// left. The job was not submitted.
+    #[error(transparent)]
+    ResourceExhausted(crate::client::ResourceExhausted),
 }
 
 /// Reason a keyed job submission did not enqueue new work.

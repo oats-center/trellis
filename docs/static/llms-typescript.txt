@@ -384,6 +384,13 @@ but retains the entire object in memory. Streams fail on physical disconnect or
 closure. `TypedStore.list(...)` and file metadata lists use the shared keyset
 pagination.
 
+A write JetStream refuses for lack of room fails with `ResourceExhaustedError`
+from `@oatscenter/trellis/errors`, with `kind` (`"kv"`, `"store"`, `"state"`,
+`"jobs"` or `"events"`), `resource` (the resource's name, the job queue, or
+the event's subject) and `reason`. KV and store writes, State `create`, `set`
+and `replace`, job `create` and `submit`, and event `publish` return it in
+their Result.
+
 ### Settings
 
 A participant with `config` fields gets them as `service.config` or

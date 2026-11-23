@@ -7,6 +7,7 @@ import {
   StatePutRequest,
   StatePutResponse,
   StateRepresentationError,
+  StateResourceExhausted,
   StateRegisterRequest,
   StateRegisterResponse,
   StateRegistrationConflict,
@@ -21,6 +22,7 @@ api state@v1 {
   error CorruptRepresentation(StateRepresentationError);
   error UnsupportedRepresentation(StateRepresentationError);
   error RegistrationConflict(StateRegistrationConflict);
+  error ResourceExhausted(StateResourceExhausted);
 
   /// Register the state a program keeps, before using it.
   rpc Register {
@@ -40,7 +42,7 @@ api state@v1 {
   rpc Put {
     input StatePutRequest;
     output StatePutResponse;
-    errors [Conflict, CorruptRepresentation, UnsupportedRepresentation];
+    errors [Conflict, CorruptRepresentation, UnsupportedRepresentation, ResourceExhausted];
   }
 
   /// Delete a stored value.

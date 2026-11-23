@@ -265,6 +265,8 @@ pub enum StateWriteMode {
 pub enum RawStateWriteError {
     #[error("state revision conflict")]
     Conflict(Option<RawStateValue>),
+    #[error(transparent)]
+    ResourceExhausted(super::ResourceExhausted),
     #[error("state backend error: {0}")]
     Backend(String),
 }
@@ -403,6 +405,29 @@ fn state_conflict(
     )
 }
 
+/// The declared `ResourceExhausted` refusal of a State write, when `error` is one.
+fn state_exhausted(error: &super::TrellisClientError) -> Option<super::ResourceExhausted> {
+    let super::TrellisClientError::RpcError(payload) = error else {
+        return None;
+    };
+    if payload.error_type() != Some("trellis.state@v1::ResourceExhausted") {
+        return None;
+    }
+    let value = payload.value()?;
+    let field = |name: &str| {
+        value
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    Some(super::ResourceExhausted {
+        kind: "state".to_owned(),
+        name: field("resourceName"),
+        reason: field("reason"),
+    })
+}
+
 impl<D: 'static> StateResourceClient for BoundStateResourceClient<D> {
     async fn get(&self, resource_name: &str) -> Result<Option<RawStateValue>, String> {
         let response = self
@@ -451,7 +476,10 @@ impl<D: 'static> StateResourceClient for BoundStateResourceClient<D> {
             Err(error) => match state_conflict(&error) {
                 Some(Ok(current)) => Err(RawStateWriteError::Conflict(current)),
                 Some(Err(error)) => Err(RawStateWriteError::Backend(error)),
-                None => Err(RawStateWriteError::Backend(error.to_string())),
+                None => Err(state_exhausted(&error).map_or_else(
+                    || RawStateWriteError::Backend(error.to_string()),
+                    RawStateWriteError::ResourceExhausted,
+                )),
             },
         }
     }
@@ -816,6 +844,10 @@ pub enum StateWriteError<T> {
     /// Encoding, decoding, or migration failed.
     #[error(transparent)]
     Codec(#[from] ResourceCodecError),
+    /// JetStream refused the write because State has no room left. Nothing
+    /// was written.
+    #[error(transparent)]
+    ResourceExhausted(super::ResourceExhausted),
     /// The State transport failed.
     #[error("state backend error: {0}")]
     Backend(String),
@@ -918,6 +950,9 @@ where
             Err(RawStateWriteError::Conflict(current)) => Err(StateWriteError::Conflict {
                 current: self.project_optional(current).await?,
             }),
+            Err(RawStateWriteError::ResourceExhausted(exhausted)) => {
+                Err(StateWriteError::ResourceExhausted(exhausted))
+            }
             Err(RawStateWriteError::Backend(error)) => Err(StateWriteError::Backend(error)),
         }
     }
@@ -944,6 +979,9 @@ where
             Err(RawStateWriteError::Conflict(current)) => Err(StateWriteError::Conflict {
                 current: self.project_optional(current).await?,
             }),
+            Err(RawStateWriteError::ResourceExhausted(exhausted)) => {
+                Err(StateWriteError::ResourceExhausted(exhausted))
+            }
             Err(RawStateWriteError::Backend(error)) => Err(StateWriteError::Backend(error)),
         }
     }

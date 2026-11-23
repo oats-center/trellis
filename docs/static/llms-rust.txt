@@ -355,6 +355,13 @@ Tokio runtime, including cross-thread drops; cleanup retains the generation
 lease. Whole-buffer helpers consume the same reader but retain the entire
 object in memory.
 
+A write JetStream refuses for lack of room carries a
+`trellis_rs::client::ResourceExhausted { kind, name, reason }`:
+`KvResourceWriteError::ResourceExhausted`, `StateWriteError::ResourceExhausted`,
+`JobsError::ResourceExhausted` from job create or submit,
+`ServerError::ResourceExhausted` from store writes and `EventPublisher`, and
+`TrellisClientError::ResourceExhausted` from generated `publish_*` calls.
+
 ### Settings
 
 A participant with `config` fields gets a generated `Config` struct with one

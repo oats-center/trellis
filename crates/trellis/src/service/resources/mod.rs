@@ -157,6 +157,10 @@ pub enum KvResourceWriteError<T> {
     /// Encoding, decoding, or migration failed.
     #[error(transparent)]
     Codec(#[from] crate::client::ResourceCodecError),
+    /// JetStream refused the write because the bucket has no room left.
+    /// Nothing was written.
+    #[error(transparent)]
+    ResourceExhausted(crate::client::ResourceExhausted),
     /// The backend operation failed.
     #[error("KV backend error: {0}")]
     Backend(String),
@@ -304,7 +308,7 @@ where
             Err(ServerError::KvRevisionMismatch { .. }) => Err(KvResourceWriteError::Conflict {
                 current: self.current_for_conflict(key).await?,
             }),
-            Err(error) => Err(KvResourceWriteError::Backend(error.to_string())),
+            Err(error) => Err(self.write_failure(&error)),
         }
     }
 
@@ -389,7 +393,17 @@ where
             Err(ServerError::KvRevisionMismatch { .. }) => Err(KvResourceWriteError::Conflict {
                 current: self.current_for_conflict(key).await?,
             }),
-            Err(error) => Err(KvResourceWriteError::Backend(error.to_string())),
+            Err(error) => Err(self.write_failure(&error)),
+        }
+    }
+
+    /// A failed write as callers see it: a refusal for lack of room names
+    /// this resource, and anything else is a backend failure.
+    fn write_failure(&self, error: &ServerError) -> KvResourceWriteError<T> {
+        let text = error.to_string();
+        match crate::client::ResourceExhausted::from_text("kv", &self.resource_name, &text) {
+            Some(exhausted) => KvResourceWriteError::ResourceExhausted(exhausted),
+            None => KvResourceWriteError::Backend(text),
         }
     }
 
@@ -721,7 +735,15 @@ where
                 actual_bytes,
             }),
             Some(UploadReadFailure::Cancelled) => Err(ServerError::StoreWriteCancelled),
-            None => result,
+            // A refusal for lack of room names this store.
+            None => result.map_err(|error| {
+                crate::client::ResourceExhausted::from_text(
+                    "store",
+                    self.resource_name(),
+                    &error.to_string(),
+                )
+                .map_or(error, ServerError::ResourceExhausted)
+            }),
         }
     }
 

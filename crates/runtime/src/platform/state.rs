@@ -263,7 +263,7 @@ impl StateRuntime {
                         .store
                         .put(key, encode(&envelope)?)
                         .await
-                        .map_err(kv_error),
+                        .map_err(|error| write_failure(&declaration, error)),
                     "replace" => state
                         .store
                         .update(
@@ -274,7 +274,7 @@ impl StateRuntime {
                             })?,
                         )
                         .await
-                        .map_err(kv_error),
+                        .map_err(|error| write_failure(&declaration, error)),
                     "create" => match current {
                         Some(_) => return Err(conflict(current.as_ref(), &declaration)?),
                         None => match state.authoritative_raw(key).await? {
@@ -282,7 +282,7 @@ impl StateRuntime {
                                 .store
                                 .update(key, encode(&envelope)?, tombstone_revision)
                                 .await
-                                .map_err(kv_error),
+                                .map_err(|error| write_failure(&declaration, error)),
                             Some((true, _, _)) => {
                                 let latest = state.authoritative_entry(&declaration).await?;
                                 return Err(conflict(latest.as_ref(), &declaration)?);
@@ -291,7 +291,7 @@ impl StateRuntime {
                                 .store
                                 .create(key, encode(&envelope)?)
                                 .await
-                                .map_err(kv_error),
+                                .map_err(|error| write_failure(&declaration, error)),
                         },
                     },
                     _ => return Err(validation("/mode", "mode is invalid")),
@@ -619,6 +619,27 @@ fn unexpected(error: impl std::fmt::Display) -> ServerError {
 
 fn kv_error(error: impl std::fmt::Display) -> ServerError {
     unexpected(error)
+}
+
+/// A failed State write as the caller sees it: JetStream refusing it for lack
+/// of room is the declared `ResourceExhausted`, naming the resource, and
+/// anything else is unexpected.
+fn write_failure(declaration: &Declaration, error: impl std::fmt::Display) -> ServerError {
+    let text = error.to_string();
+    match crate::capacity::exhaustion_in(&text) {
+        Some(exhaustion) => ServerError::DeclaredRpc(
+            DeclaredRpcError::new(
+                "trellis.state@v1::ResourceExhausted",
+                "State has no room for this write",
+                [
+                    ("resourceName", json!(declaration.resource_name)),
+                    ("reason", json!(exhaustion.describe())),
+                ],
+            )
+            .with_cause(text),
+        ),
+        None => unexpected(text),
+    }
 }
 
 #[cfg(test)]

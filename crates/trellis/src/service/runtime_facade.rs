@@ -938,9 +938,7 @@ impl ServiceHandle {
                 crate::jobs::JobManagerError::NotEnqueued(error) => {
                     JobsError::NotEnqueued(error.into())
                 }
-                error => JobsError::Message {
-                    message: error.to_string(),
-                },
+                error => submit_failure(D::QUEUE_TYPE, &error),
             })?;
         Ok(JobRef::from_runtime(
             job,
@@ -982,9 +980,8 @@ impl ServiceHandle {
             match manager
                 .submit(D::QUEUE_TYPE, payload)
                 .await
-                .map_err(|error| JobsError::Message {
-                    message: error.to_string(),
-                })? {
+                .map_err(|error| submit_failure(D::QUEUE_TYPE, &error))?
+            {
                 Submitted::Accepted { job, key } => JobSubmitOutcome::Accepted {
                     job_ref: job_ref(job),
                     key,
@@ -2889,6 +2886,17 @@ async fn await_service_update<C: crate::generated::ParticipantDescriptor>(
         Err(ServiceRuntimeError::Client(error)) if connection_was_replaced(&error) => Ok(()),
         result => result,
     }
+}
+
+/// A failed job submission to `queue_type` as service code sees it: a
+/// refusal for lack of room names the queue, and anything else is a message.
+fn submit_failure<E: std::fmt::Display>(
+    queue_type: &str,
+    error: &crate::jobs::JobManagerError<E>,
+) -> JobsError {
+    let message = error.to_string();
+    crate::client::ResourceExhausted::from_text("jobs", queue_type, &message)
+        .map_or(JobsError::Message { message }, JobsError::ResourceExhausted)
 }
 
 fn parse_bootstrap_binding(

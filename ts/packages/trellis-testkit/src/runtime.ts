@@ -13,6 +13,7 @@ import {
   copyFile,
   mkdir,
   mkdtemp,
+  readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -910,6 +911,17 @@ export class TrellisTestRuntime implements AsyncDisposable {
         join(configDir, "nats", "nats-1.conf"),
         join(configDir, "nats.conf"),
       );
+      if (options.jetstreamMaxFileStore !== undefined) {
+        const broker = join(configDir, "nats.conf");
+        const generated = await readFile(broker, "utf8");
+        await writeFile(
+          broker,
+          generated.replace(
+            "jetstream {\n",
+            `jetstream {\n  max_file_store: ${options.jetstreamMaxFileStore}\n`,
+          ),
+        );
+      }
       if (!options.development) {
         await mkdir(join(configDir, "tls"), { mode: 0o700 });
         await copyFile(

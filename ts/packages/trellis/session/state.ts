@@ -3,6 +3,7 @@ import { type RuntimeStateStores } from "./contract_types.ts";
 import {
   API as STATE_API,
   Conflict as StateRpcConflict,
+  ResourceExhausted as StateRpcResourceExhausted,
   type DeleteOutput as StateDeleteResponse,
   type GetOutput as StateGetResponse,
   type PutOutput as StateSetResponse,
@@ -14,7 +15,7 @@ import { type LiveSubscription } from "../live/subscription.ts";
 import { type KvRepresentation, type ResourceMigrations } from "../kv.ts";
 import { ulid } from "ulid";
 import { codecs } from "../generated.ts";
-import { UnexpectedError } from "../errors/index.ts";
+import { ResourceExhaustedError, UnexpectedError } from "../errors/index.ts";
 
 /** Decoded current State value and its opaque storage revision. */
 export type StateValue<T> = Readonly<{
@@ -400,6 +401,16 @@ export class StateHandle<T> {
               : { revision: expectedRevision }),
           });
           if (result.isErr()) {
+            if (result.error instanceof StateRpcResourceExhausted) {
+              return Result.err(
+                new ResourceExhaustedError({
+                  kind: "state",
+                  resource: result.error.payload.resourceName,
+                  reason: result.error.payload.reason,
+                  cause: result.error,
+                }),
+              );
+            }
             return result.error instanceof StateRpcConflict
               ? await this.#conflict(result.error)
               : result;
