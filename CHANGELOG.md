@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.54] - 2026-11-23
+
 ### Added
 
 - Device Code sign-in offers account sign-up when the installation and at
@@ -23,6 +25,9 @@ deviceName })`); `trellis login` sends the hostname, and the confirmation
 - `trellis storage` and the Console Health page show JetStream storage and
   memory used and reserved against their limits, degraded at 85%.
 
+- `trellis roles assign ROLE --user USER --revision N` renews an existing assignment,
+  and the Console shows expired roles and permissions with a Renew button.
+
 ### Changed
 
 - Device Code sign-in runs as account, then code, then device, then
@@ -30,6 +35,50 @@ deviceName })`); `trellis login` sends the hostname, and the confirmation
   "Use a different account", you type the device's code, confirm the device
   (app, kind, when and from where it asked) with "Yes, this is my device" or
   "Cancel", then approve its permissions. The server enforces the order.
+
+- Device codes are always typed: Trellis no longer advertises
+  `verification_uri_complete`, the Portal never fills a code from the URL, and
+  `trellis login` prints the plain `/device` link and the code to enter. The
+  SDKs' `verification_uri_complete()` / `verificationUriComplete` are gone. The
+  device consent page shows when and from what address the code was requested.
+- Portal flows that continue with an existing login show "Signed in as" with
+  "Use a different account", which signs in afresh and keeps the original
+  request. Operator-registered web apps such as the Console still sign in
+  silently; third-party apps show "Continue to {app}" first, and
+  `prompt=select_account` asks any app's user to choose.
+- Optional administration on the consent page starts checked unless declined
+  before, and still asks for its separate "Allow management" confirmation.
+- Consent answers are always kept; the "Remember my choices" option is gone. A
+  stored decline doesn't bring the consent page back at sign-in; the page asks
+  again only when an app asks for that item at the moment it's used
+  (`askAgain` on `BrowserOAuthClient.authorize`). Required items have no
+  checkbox, and optional items start checked unless declined before.
+- A role assigned to a user reaches apps registered with that access allowed
+  without asking, like the Console, at the session's next renewal, with no new
+  sign-in.
+- Password setup and reset links an administrator creates last 24 hours and
+  work once, even after the administrator signs out.
+- `trellis roles assign|revoke <ROLE> --user <USER>`, `roles show|edit|delete
+<ROLE>` and `users show|edit|delete|link|unlink <USER>` take a role by name
+  or ID and a user by username, email or ID, and refuse an ambiguous name with
+  the candidates.
+- Creating a user gives a one-time password setup link (Console "Password
+  setup link", CLI "Setup link") instead of a bare token, and says when
+  password sign-in is off, with a way to turn it on.
+- Async webhook endpoints check HMAC before answering, so a wrong secret gets
+  401 and the sender sees the failure; an unset secret gets 503.
+- The TypeScript testkit's `runtime.caCertificate` is the CA's PEM text, as
+  documented, and `runtime.caCertificatePath` is its file.
+- Revocation is eventually consistent. A client whose revocation mirror is
+  down or catching up keeps sending and serving on its last known state;
+  Auth and the broker still enforce revocation, and a revoked session's
+  authority stops verifying within one authority lifetime. The mirror is used
+  only to check other parties' requests, messages and replies.
+- `Issuers.Rotate` announces the new key at once and Auth starts signing with
+  it after `auth.authorization.issuer_activation_delay_seconds` (default 60),
+  so every client has the key before it is used. `trellis issuers rotate`
+  prints when it activates; another rotation or a revoke of the current or
+  announced key is refused until then.
 
 ### Fixed
 
@@ -80,72 +129,6 @@ deviceName })`); `trellis login` sends the hostname, and the confirmation
   with the reason, any reference and "Sign in again" instead of authorizing
   again, and each tab allows at most 3 automatic sign-ins in 30 seconds. An old
   callback link resumes the stored session.
-
-## [0.100.0-rc.54] - 2026-11-22
-
-### Added
-
-- Webhook dedupe templates read the body: `{json:/pointer}` (RFC 6901) and
-  `{form:name}`. A body without the value is delivered with no dedupe key. The
-  Stripe examples dedupe on `{json:/id}`.
-- Each webhook endpoint adds a `webhook:<endpoint>` health check to its
-  service: degraded while the endpoint is disabled, a secret it needs is
-  unset, or its latest request in the last 10 minutes was rejected.
-- Webhook deliveries and decide requests have `text()`, `json()` and `form()`
-  views in TypeScript, and a `WebhookBody` trait in Rust.
-
-### Changed
-
-- Device codes are always typed: Trellis no longer advertises
-  `verification_uri_complete`, the Portal never fills a code from the URL, and
-  `trellis login` prints the plain `/device` link and the code to enter. The
-  SDKs' `verification_uri_complete()` / `verificationUriComplete` are gone. The
-  device consent page shows when and from what address the code was requested.
-- Portal flows that continue with an existing login show "Signed in as" with
-  "Use a different account", which signs in afresh and keeps the original
-  request. Operator-registered web apps such as the Console still sign in
-  silently; third-party apps show "Continue to {app}" first, and
-  `prompt=select_account` asks any app's user to choose.
-- Optional administration on the consent page starts checked unless declined
-  before, and still asks for its separate "Allow management" confirmation.
-- Consent answers are always kept; the "Remember my choices" option is gone. A
-  stored decline doesn't bring the consent page back at sign-in; the page asks
-  again only when an app asks for that item at the moment it's used
-  (`askAgain` on `BrowserOAuthClient.authorize`). Required items have no
-  checkbox, and optional items start checked unless declined before.
-- A role assigned to a user reaches apps registered with that access allowed
-  without asking, like the Console, at the session's next renewal, with no new
-  sign-in.
-- Password setup and reset links an administrator creates last 24 hours and
-  work once, even after the administrator signs out.
-- `trellis roles assign|revoke <ROLE> --user <USER>`, `roles show|edit|delete
-<ROLE>` and `users show|edit|delete|link|unlink <USER>` take a role by name
-  or ID and a user by username, email or ID, and refuse an ambiguous name with
-  the candidates.
-- Creating a user gives a one-time password setup link (Console "Password
-  setup link", CLI "Setup link") instead of a bare token, and says when
-  password sign-in is off, with a way to turn it on.
-- Async webhook endpoints check HMAC before answering, so a wrong secret gets
-  401 and the sender sees the failure; an unset secret gets 503.
-- The TypeScript testkit's `runtime.caCertificate` is the CA's PEM text, as
-  documented, and `runtime.caCertificatePath` is its file.
-- Revocation is eventually consistent. A client whose revocation mirror is
-  down or catching up keeps sending and serving on its last known state;
-  Auth and the broker still enforce revocation, and a revoked session's
-  authority stops verifying within one authority lifetime. The mirror is used
-  only to check other parties' requests, messages and replies.
-- `Issuers.Rotate` announces the new key at once and Auth starts signing with
-  it after `auth.authorization.issuer_activation_delay_seconds` (default 60),
-  so every client has the key before it is used. `trellis issuers rotate`
-  prints when it activates; another rotation or a revoke of the current or
-  announced key is refused until then.
-
-### Added
-
-- `trellis roles assign ROLE --user USER --revision N` renews an existing assignment,
-  and the Console shows expired roles and permissions with a Renew button.
-
-### Fixed
 
 - Auth startup waits out a locked database instead of stopping, the
   configured `busy_timeout_ms` applies to every runtime database (5 s when
