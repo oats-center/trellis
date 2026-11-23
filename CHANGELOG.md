@@ -8,6 +8,16 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- The Console no longer reloads in a loop after the Portal login changes
+  underneath it (a sign-out and sign-in as someone else, or a fresh
+  installation). A stored session that can no longer renew can be taken over by
+  the new sign-in, a failed callback shows "Sign-in could not be completed"
+  with the reason, any reference and "Sign in again" instead of authorizing
+  again, and each tab allows at most 3 automatic sign-ins in 30 seconds. An old
+  callback link resumes the stored session.
+
 ## [0.100.0-rc.54] - 2026-11-22
 
 ### Added
