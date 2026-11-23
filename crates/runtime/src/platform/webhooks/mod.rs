@@ -456,18 +456,23 @@ impl std::fmt::Display for StoreFailure {
 impl Webhooks {
     /// Open the records database and the dedupe bucket and load the endpoints.
     /// The records database waits up to `busy_timeout` for a lock, as the
-    /// Auth database beside it does.
+    /// Auth database beside it does. Endpoints are served on `config`'s
+    /// Trellis origin, never on the Console's own.
     pub(crate) async fn open(
         storage: OAuthStorage,
         records_path: &Path,
         busy_timeout: Duration,
         nats: async_nats::Client,
         publisher: watch::Receiver<Option<trellis_rs::service::EventPublisher>>,
-        origin: &str,
-        console_origin: &str,
+        config: &crate::RuntimeConfig,
         shortages: Arc<crate::capacity::Shortages>,
     ) -> Result<Self, RuntimeError> {
         let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
+        let origin = config.public_origin();
+        let console_origin = config
+            .resolve_console_origin()
+            .map_err(|error| platform(&error))?;
+        let console_origin = console_origin.as_str();
         let path = records_path.to_owned();
         let records =
             tokio::task::spawn_blocking(move || records::Records::open(&path, busy_timeout))

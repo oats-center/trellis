@@ -266,11 +266,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         context.stores.platform()?.busy_timeout(),
         context.trellis_nats.clone(),
         published,
-        &context.config.public_origin(),
-        &context
-            .config
-            .resolve_console_origin()
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+        &context.config,
         Arc::clone(&context.shortages),
     ))
     .await?;
