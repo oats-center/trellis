@@ -60,6 +60,11 @@ for its own streams. Nothing was written, so retrying succeeds only once there
 is room. A managed broker keeps the `max_file_store` and `max_memory_store`
 the authored `nats.conf` sets in its `jetstream` block.
 
+Stopping the server while JetStream has no room still exits 0. Releasing a
+runtime owner lease is a write to the lease bucket; when JetStream refuses it
+for lack of room, the server logs a warning naming the lease and leaves it to
+lapse at the end of its term, so the next owner waits at most that long.
+
 SQL history is removed by hourly loops in the subsystem that owns the database,
 in transactions of at most 1,000 rows, so a backlog never holds the writer for
 long. A failed pass is retried at the next tick and never stops projection.

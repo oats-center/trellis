@@ -52,7 +52,9 @@ don't need, and it recovers by itself. A stream the server needs at startup
 works the same way: the server waits, logs what didn't fit, and starts once
 there is room. A service or app write that doesn't fit fails with a
 resource-exhausted error naming the KV, store, State, job queue or event it
-was for, and nothing is written. A broker Trellis runs itself keeps the
+was for, and nothing is written. Stopping the server while NATS is full still
+exits cleanly: it logs the ownership leases it couldn't release, and those
+lapse on their own. A broker Trellis runs itself keeps the
 `max_file_store` and `max_memory_store` you set in the `jetstream` block of
 `nats.conf`.
 The same numbers go to your metrics as `trellis.storage.bytes`,

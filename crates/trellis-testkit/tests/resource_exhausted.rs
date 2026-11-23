@@ -9,7 +9,7 @@ use runtime_trellis::participants::runtime_trellis_provider::{
 use trellis_rs::client::{ResourceExhausted, StateWriteError, TrellisClientError};
 use trellis_rs::jobs::JobsError;
 use trellis_rs::service::{KvResourceWriteError, ServerError};
-use trellis_testkit::{TestNatsUser, TrellisTestRuntime};
+use trellis_testkit::{TestNatsUser, TrellisTestRuntime, WorkdirRetention};
 
 const MIB: u64 = 1 << 20;
 
@@ -135,4 +135,54 @@ async fn writes_refused_for_lack_of_room_name_the_resource() {
     records.put("after", &large).await.unwrap();
     drop(service);
     runtime.shutdown().await.unwrap();
+}
+
+/// Stopping Trellis while JetStream is full still exits cleanly: the owner
+/// leases it cannot release for lack of room lapse instead, and the log says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trellis_stops_cleanly_while_jetstream_is_full() {
+    let mut runtime = TrellisTestRuntime::builder()
+        .jetstream_max_file_store(256 * MIB)
+        .retention(WorkdirRetention::Always)
+        .start()
+        .await
+        .unwrap();
+    let workdir = runtime.workdir().to_path_buf();
+    let identity = runtime
+        .register_service::<Participant>("full at shutdown")
+        .await
+        .unwrap();
+    let mut service = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let records = Provider::new(&mut service)
+        .client()
+        .records()
+        .await
+        .unwrap();
+    let large = ResourceValue {
+        value: "x".repeat(512 * 1024),
+        extra: Default::default(),
+    };
+    let mut full = false;
+    for index in 0..2_000 {
+        if records.put(&format!("fill.{index}"), &large).await.is_err() {
+            full = true;
+            break;
+        }
+    }
+    assert!(full, "the broker ran out of room");
+    drop(service);
+
+    // Stopping exits 0, and the log says which lease it could not release.
+    let stopped = runtime.shutdown().await;
+    let log = std::fs::read_to_string(workdir.join("logs/trellis-server.log")).unwrap();
+    std::fs::remove_dir_all(&workdir).unwrap();
+    stopped.unwrap_or_else(|error| panic!("{error}\n{log}"));
+    assert!(
+        log.lines().any(|line| line
+            .contains("could not release a runtime owner lease for lack of room")
+            && line.contains("platform.owner")),
+        "{log}"
+    );
 }

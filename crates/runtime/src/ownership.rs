@@ -432,6 +432,22 @@ async fn release_one(
         "release",
         if release.is_ok() { "ok" } else { "error" },
     );
+    // Releasing writes to the lease bucket, which JetStream refuses when it
+    // has no room. The lease then lapses at the end of its term instead, so
+    // the next owner waits at most that long; nothing else is lost.
+    if let Err(error) = &release {
+        if let Some(exhaustion) = crate::capacity::exhaustion_in(&error.to_string()) {
+            tracing::warn!(
+                subsystem = %group.subsystem(),
+                key = ?key,
+                reason = exhaustion.describe(),
+                ttl_secs = manager.ttl.as_secs(),
+                "could not release a runtime owner lease for lack of room; it lapses at the \
+                end of its term"
+            );
+            return Ok(());
+        }
+    }
     release.map_err(|source| RuntimeError::OwnerRelease {
         subsystem: group.subsystem(),
         key,
