@@ -54,6 +54,9 @@ curl http://127.0.0.1:8222/healthz
 - CLI changes: `cargo run -p trellis-cli -- <command>`, or
   `cargo install --path crates/cli` to replace your installed `trellis`.
 - Type checks: `npm run check:sdk` and `npm run check:integration`.
+- Before pushing: `bash scripts/check.sh quick` runs the Pipeline's fast checks
+  (formatting, cargo deny, clippy, type checks and the fixture builds) the way
+  CI runs them.
 - Tests: `npm test` builds once and runs everything the Pipeline checks, in
   parallel (`npm test -- --all` adds packaging and images). `scripts/check.sh <job>`
   runs one job.

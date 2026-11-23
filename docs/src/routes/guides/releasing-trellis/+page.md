@@ -63,8 +63,27 @@ runs use debug builds; the pipeline tests its release build.
 
 `npm test -- --all` adds the slower packaging and container-image jobs: the Rust
 testkit crate bundle and its artifact-only consumer, the npm testkit package,
-and the runtime and Console images with the runtime image's smoke test beside
+the upgrade from the previous release, and the runtime and Console images with the runtime image's smoke test beside
 a NATS container (Docker or Podman). To run one job, use `scripts/check.sh <job>`.
+
+For the pipeline's fast checks alone, run:
+
+```sh
+bash scripts/check.sh quick
+```
+
+It runs `cargo xtask install` and `npm run browser:embedded`, as the pipeline's
+install job does, then the same jobs the pipeline runs, one after another:
+`lint` (rustfmt, cargo deny, Prettier over `ts/packages` and `ts/tools`, and the
+`llms-full.txt` check), `clippy` (the workspace and every `trellis-rs` feature
+set, plus the width check), `typescript-checks` (the SDK, testkit, benchmark,
+integration, Console and Portal type checks) and `build-fixtures` (the
+integration fixture and testkit test binaries). Every job reports even when an
+earlier one fails, and a failure fails the run. The pipeline lints with the
+current stable Rust. When the local `rustc` is a different version, the run
+prints a warning naming the `RUSTUP_TOOLCHAIN=<version>` to rerun with, because
+another compiler's lints can disagree with CI's. The warning does not fail the
+run.
 
 While iterating, run the focused checks that match the files touched. Build the server/CLI and set their paths as described in `integration/README.md`. Each live test owns its real runtime lifecycle:
 
@@ -316,10 +335,9 @@ The phase follows the two versions' semver prerelease parts, so the stable
 rule applies from the first stable release on without a change to the test.
 The test's second case restarts the candidate on an installation it made
 itself and runs the same checks, so the stable checks run on every candidate.
-To run the test locally, build `trellis-server`, then build the test with the
-`cargo test --no-run` command in `scripts/run-testkit-tests.sh` using
-`--test upgrade`, and run the binary with `TRELLIS_TEST_SERVER_BIN` and
-`TRELLIS_TEST_NATS_BIN` set.
+To run the test locally, run `bash scripts/check.sh upgrade`. It builds
+`trellis-server` and the test binary, then runs the test as the Pipeline does;
+`npm test -- --all` includes it.
 
 ## 1. Pick the release
 

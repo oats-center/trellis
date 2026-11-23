@@ -4,6 +4,7 @@
 # this one script, so they cannot drift apart:
 #
 #   scripts/check.sh <job> [args]   run one job; each pipeline job calls this
+#   scripts/check.sh quick          local: CI's fast checking jobs, in order
 #   npm test                        local: build once, run every job concurrently
 #   npm test -- --all               also the packaging and container-image jobs
 #
@@ -22,10 +23,10 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 temp="${RUNNER_TEMP:-$root/target/check-tmp}"
 
-# The fast jobs `npm test` runs by default, and the slower packaging and
-# container-image jobs `--all` adds.
+# The fast jobs `npm test` runs by default, and the slower packaging, upgrade
+# and container-image jobs `--all` adds.
 fast_jobs=(lint clippy rust typescript-checks typescript-tests testkit-tests demos examples browser)
-heavy_jobs=(rust-testkit typescript-testkit images)
+heavy_jobs=(rust-testkit typescript-testkit upgrade images)
 
 # Packages are built once per runner; staged local jobs share one build.
 # Every job that uses them first makes a worktree resolve its own packages.
@@ -103,6 +104,80 @@ job_clippy() {
   cargo xtask rust-width
 }
 
+# The integration fixture helpers, the health_watch example and the testkit
+# test binaries, built into target/debug for the jobs that run them.
+job_build_fixtures() {
+  CARGO_TARGET_DIR="$root/target" cargo build --bins \
+    --manifest-path integration/fixtures/runtime/Cargo.toml \
+    --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
+    --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
+    --config "patch.crates-io.trellis-models.path=\"$root/crates/models\""
+  CARGO_TARGET_DIR="$root/target" cargo build --manifest-path Cargo.toml \
+    -p trellis-runtime --example health_watch
+  mkdir -p "$temp"
+  CARGO_TARGET_DIR="$root/target" cargo test --no-run \
+    --manifest-path integration/fixtures/testkit/Cargo.toml \
+    --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
+    --config "patch.crates-io.trellis-models.path=\"$root/crates/models\"" \
+    --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
+    --config "patch.crates-io.trellis-testkit.path=\"$root/crates/trellis-testkit\"" \
+    --tests \
+    --message-format=json > "$temp/testkit-tests.json"
+  mkdir -p target/debug/testkit-tests
+  local name executable
+  while read -r name executable; do
+    if [[ "$name" == live ]]; then
+      cp "$executable" target/debug/trellis-testkit-live
+    else
+      cp "$executable" "target/debug/testkit-tests/$name"
+    fi
+  done < <(jq -r 'select(.executable != null and .target.kind[0] == "test") |
+    "\(.target.name) \(.executable)"' "$temp/testkit-tests.json")
+  [[ -x target/debug/trellis-testkit-live ]] || {
+    echo "failed to locate the testkit live test binary" >&2
+    exit 1
+  }
+}
+
+# CI installs the current stable Rust; another local compiler can pass lints
+# that CI rejects, or the reverse. This warns rather than fails: the repository
+# supports current stable, and a local toolchain may lag it.
+rust_toolchain_warning() {
+  local stable local_version
+  stable="$(curl -fsS --max-time 10 https://static.rust-lang.org/dist/channel-rust-stable.toml \
+    2>/dev/null | sed -n '/^\[pkg\.rust\]/,/^version/s/^version = "\([0-9.]*\).*/\1/p')" || true
+  local_version="$(rustc --version | cut -d ' ' -f 2)"
+  if [[ -z "$stable" ]]; then
+    echo "warning: could not resolve the current stable Rust that CI uses; this run uses rustc $local_version" >&2
+  elif [[ "$stable" != "$local_version" ]]; then
+    echo "warning: CI uses Rust $stable (current stable) but this run uses rustc $local_version, so lints can differ." >&2
+    echo "warning: rerun with: RUSTUP_TOOLCHAIN=$stable bash scripts/check.sh quick" >&2
+    echo "warning: (install it with: rustup toolchain install $stable --target wasm32-unknown-unknown)" >&2
+  fi
+}
+
+# CI's fast checking jobs, after the same preparation CI's install job runs.
+# Each job runs as its own process and reports even when an earlier one fails.
+job_quick() {
+  rust_toolchain_warning
+  echo "+ cargo xtask install && npm run browser:embedded"
+  cargo xtask install
+  npm run browser:embedded
+  local job status=0 results=()
+  for job in lint clippy typescript-checks build-fixtures; do
+    echo "== $job"
+    if bash "$root/scripts/check.sh" "$job"; then
+      results+=("pass  $job")
+    else
+      status=1
+      results+=("FAIL  $job")
+    fi
+  done
+  printf '%s\n' "${results[@]}"
+  rust_toolchain_warning
+  return "$status"
+}
+
 job_rust() {
   bash scripts/run-rust-tests.sh "$@"
 }
@@ -127,6 +202,27 @@ job_typescript_tests() {
 
 job_testkit_tests() {
   bash scripts/run-testkit-tests.sh "$@"
+}
+
+# Starts the candidate server on an installation the previous published release
+# made. CI passes the producer-built server, NATS and test binary; elsewhere the
+# server is built here and the test as the build-fixtures job builds it. The
+# test lists releases through the GitHub API; GITHUB_TOKEN lifts its rate limit.
+job_upgrade() {
+  local tests="${TRELLIS_TESTKIT_TESTS_DIR:-$root/target/debug/testkit-tests}"
+  if [[ -z "${CI:-}${TRELLIS_TEST_STAGED:-}" ]]; then
+    cargo build -p trellis-server
+    job_build_fixtures
+  fi
+  local nats_version nats_bin
+  nats_version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
+  nats_bin="${TRELLIS_TEST_NATS_BIN:-$root/target/test-nats/$nats_version/nats-server}"
+  [[ -x "$nats_bin" ]] || bash scripts/acquire-test-nats.sh --dest "$(dirname "$nats_bin")"
+  export TRELLIS_TEST_NATS_BIN="$nats_bin"
+  export TRELLIS_TEST_SERVER_BIN="${TRELLIS_TEST_SERVER_BIN:-$root/target/debug/trellis-server}"
+  export TRELLIS_TEST_CACHE_DIR="${TRELLIS_TEST_CACHE_DIR:-$temp/trellis-testkit-cache}"
+  mkdir -p -m 700 "$TRELLIS_TEST_CACHE_DIR"
+  "$tests/upgrade" --test-threads=2 "$@"
 }
 
 job_demos() {
@@ -315,6 +411,8 @@ echo "building executables and test binaries"
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-sdk-tests.sh
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-browser-tests.sh
   TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-testkit-tests.sh
+  # Only build-fixtures builds the test binary the upgrade job runs.
+  [[ "$all" != "--all" ]] || bash scripts/check.sh build-fixtures
 } > "$logs/build.log" 2>&1 || { echo "build failed; see $logs/build.log" >&2; exit 1; }
 # The jobs run copies, as CI jobs run the producer's executables: the rust job
 # still builds into target/debug and re-links what it finds stale there.
