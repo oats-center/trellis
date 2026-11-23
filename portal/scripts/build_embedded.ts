@@ -10,10 +10,30 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  sourceFingerprint,
+  writeFingerprint,
+} from "../../ts/tools/embedded_fingerprint.ts";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const repository = dirname(root);
 const parent = join(root, "../crates/runtime/generated");
 const destination = join(parent, "portal");
+// Everything the Portal build reads; trellis-runtime refuses a development
+// build whose embedded Portal was built from other sources.
+const inputs = [
+  "portal/src",
+  "portal/public",
+  "portal/scripts",
+  "portal/index.html",
+  "portal/package.json",
+  "portal/svelte.config.js",
+  "portal/tsconfig.json",
+  "portal/vite.config.js",
+  "ts/tools/embedded_fingerprint.ts",
+  "package-lock.json",
+];
+const fingerprint = sourceFingerprint(repository, inputs);
 await mkdir(parent, { recursive: true });
 const stage = await mkdtemp(join(parent, ".portal-build-"));
 const backup = `${stage}-previous`;
@@ -57,6 +77,7 @@ try {
   try {
     await rename(stage, destination);
     promoted = true;
+    writeFingerprint(fingerprint, inputs, join(parent, "portal.fingerprint"));
   } catch (error) {
     if (previous) await rename(backup, destination);
     throw error;

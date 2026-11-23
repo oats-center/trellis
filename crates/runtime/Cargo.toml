@@ -77,6 +77,9 @@ trellis-self-update = { path = "../self-update" }
 ulid.workspace = true
 url.workspace = true
 
+[build-dependencies]
+sha2.workspace = true
+
 [dev-dependencies]
 rcgen.workspace = true
 reqwest = { workspace = true, features = ["http2", "cookies"] }
