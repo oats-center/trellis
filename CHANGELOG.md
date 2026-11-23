@@ -8,6 +8,11 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `trellis storage` and the Console Health page show JetStream storage and
+  memory used and reserved against their limits, degraded at 85%.
+
 ### Changed
 
 - Device Code sign-in runs as account, then code, then device, then
@@ -18,6 +23,18 @@ and this project adheres to
 
 ### Fixed
 
+- The CLI treats a well-formed user or role ID as definitive: an ID nobody has
+  is refused, and a lookup error is reported, instead of retrying the input as
+  a username, email or role name.
+- A Portal sign-out returns to the app only once Trellis confirms it; a live
+  login with a mismatched CSRF token gets `invalid_request`, not
+  `access_denied`.
+- JetStream running out of room is handled: `TRELLIS_HEALTH` has no size bound
+  by default (`[health] transport_max_bytes` is optional), webhook intake
+  streams default to 64 MiB, a missing intake stream is re-created, refusals
+  are logged once with the numbers and shown in health, and startup waits for
+  room instead of exiting.
+- The upgrade refusal names the running and installed Trellis versions.
 - Jobs, Events and Health startup wait out a locked database instead of
   stopping the server. Set-aside Auth effects are removed after 30 days. Stuck
   Auth enforcement work shows as a degraded `enforcement` health check and is
