@@ -15,7 +15,7 @@
   "scripts": {
     "install:contracts": "cargo xtask install",
     "protocol:wasm": "cargo xtask protocol-wasm",
-    "browser:embedded": "npm run build:embedded --workspace @trellis/oauth-portal && npm run build:embedded --workspace @trellis/console",
+    "browser:embedded": "node ts/tools/link_checkout_modules.ts && npm run build:embedded --workspace @trellis/oauth-portal && npm run build:embedded --workspace @trellis/console",
     "build:runtime": "npm run install:contracts && npm run browser:embedded",
     "build:packages": "npm run build --workspace @oatscenter/result && npm run build --workspace @oatscenter/trellis && npm run build --workspace @oatscenter/trellis-testkit && npm run build --workspace @oatscenter/trellis-svelte",
     "test:package-version": "node --test ts/tools/package_build/release_build_version_test.ts",
@@ -33,7 +33,7 @@
     "coverage:browser": "node ts/tools/browser_v8_to_lcov.ts",
     "coverage:browser:merge": "node ts/tools/browser_v8_to_lcov.ts --append-to coverage/live-integration/lcov.info",
     "test:integration": "bash scripts/run-ts-integration.sh",
-    "check:integration": "tsc --project ts/integration/tsconfig.json",
+    "check:integration": "node ts/tools/link_checkout_modules.ts && tsc --project ts/integration/tsconfig.json",
     "test:browser": "bash scripts/run-browser-tests.sh",
     "fmt": "prettier --write",
     "fmt:check": "prettier --check"

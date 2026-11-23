@@ -28,7 +28,9 @@ fast_jobs=(lint clippy rust typescript-checks typescript-tests testkit-tests dem
 heavy_jobs=(rust-testkit typescript-testkit images)
 
 # Packages are built once per runner; staged local jobs share one build.
+# Every job that uses them first makes a worktree resolve its own packages.
 build_packages() {
+  node ts/tools/link_checkout_modules.ts
   [[ -n "${TRELLIS_TEST_STAGED:-}" ]] || npm run build:packages
 }
 
