@@ -15,6 +15,8 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+# A worktree resolves its own TypeScript packages, not the main checkout's.
+node ts/tools/link_checkout_modules.ts
 
 cli_bin="${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}"
 server_bin="${TRELLIS_TEST_SERVER_BIN:-$root/target/debug/trellis-server}"

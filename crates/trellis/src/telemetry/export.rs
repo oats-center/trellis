@@ -481,7 +481,11 @@ async fn wait_operation(state: &OperationState, deadline: tokio::time::Instant, 
         }
     };
     if tokio::time::timeout_at(deadline, wait).await.is_err() {
-        eprintln!("trellis telemetry: {what} exceeded the telemetry shutdown budget");
+        eprintln!(
+            "trellis telemetry: {what} exceeded the {}s telemetry budget; spans and \
+             metrics it had not exported by then are not waited for",
+            SHUTDOWN_BUDGET.as_secs()
+        );
     }
 }
 
@@ -575,10 +579,16 @@ pub(crate) async fn shutdown_bounded(providers: &OwnedProviders) {
     // never constructed here and are never shut down by Trellis.
     let work: ExportWork = Box::new(move || {
         if let Some(provider) = tracer {
-            let _ = provider.shutdown();
+            if let Err(error) = provider.shutdown() {
+                eprintln!(
+                    "trellis telemetry: spans still queued at shutdown were not exported: {error}"
+                );
+            }
         }
         if let Some(provider) = meter {
-            let _ = provider.shutdown();
+            if let Err(error) = provider.shutdown() {
+                eprintln!("trellis telemetry: the final metric export at shutdown failed: {error}");
+            }
         }
     });
     let Some(state) = start_shutdown(&providers.operation, deadline, work).await else {

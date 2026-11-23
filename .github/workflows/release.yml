@@ -863,6 +863,46 @@ jobs:
       - name: Run Rust testkit tests
         run: bash scripts/check.sh testkit-tests
 
+  # The candidate's release build starts on an installation the previous
+  # published release made: it must upgrade it once both are stable releases,
+  # and may refuse it, changing nothing, only between release candidates. The
+  # test binary comes from build-fixtures and the server from build; nothing
+  # is rebuilt.
+  upgrade:
+    name: Upgrade from the previous release
+    needs: [install, build, build-fixtures]
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    timeout-minutes: 20
+    steps:
+      - name: Download runtime and fixture binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: check-*-binaries
+          merge-multiple: true
+          path: ${{ runner.temp }}/binaries
+
+      - name: Stage runtime and fixture binaries
+        run: |
+          set -euo pipefail
+          staged="$RUNNER_TEMP/staged"
+          rm -rf "$staged"
+          mkdir -p "$staged"
+          tar -xzf "$RUNNER_TEMP/binaries/runtime-binaries.tar.gz" -C "$staged"
+          tar --zstd -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar.zst" -C "$staged"
+
+      - name: Upgrade the previous release's installation
+        env:
+          # The release list comes from the GitHub API, which rate limits
+          # unauthenticated requests per address.
+          GITHUB_TOKEN: ${{ github.token }}
+          TRELLIS_TEST_SERVER_BIN: ${{ runner.temp }}/staged/trellis-server
+          TRELLIS_TEST_NATS_BIN: ${{ runner.temp }}/staged/nats/nats-server
+          TRELLIS_TEST_CACHE_DIR: ${{ runner.temp }}/trellis-testkit-cache
+        run: |
+          set -euo pipefail
+          mkdir -p -m 700 "$TRELLIS_TEST_CACHE_DIR"
+          "$RUNNER_TEMP/staged/testkit-tests/upgrade" --test-threads=2
+
   examples:
     name: Documented examples
     needs: [install, build]
@@ -1219,6 +1259,7 @@ jobs:
       - browser
       - typescript-tests
       - testkit-tests
+      - upgrade
       - rust-testkit-consumer
       - typescript-testkit-package
       - build-arm64

@@ -1020,6 +1020,13 @@ export class TrellisTestRuntime implements AsyncDisposable {
         startupTimeoutMs: timeouts.startupMs,
         shutdownTimeoutMs: timeouts.shutdownMs,
         portLeases,
+        // A bundle keeps its run files in `var/run` next to its config.
+        brokerPidFile: join(
+          dirname(launch.configPath),
+          "var",
+          "run",
+          "nats-server.pid",
+        ),
       });
       controlPlane = startedControlPlane;
       launch.creds = await printNatsCredentials(
@@ -1374,6 +1381,12 @@ export class TrellisTestRuntime implements AsyncDisposable {
         startupTimeoutMs: this.#timeouts.startupMs,
         shutdownTimeoutMs: this.#timeouts.shutdownMs,
         portLeases: this.#portLeases,
+        brokerPidFile: join(
+          dirname(this.#launch.configPath),
+          "var",
+          "run",
+          "nats-server.pid",
+        ),
       });
       this.#nc = await connect({
         servers: this.natsUrl,
