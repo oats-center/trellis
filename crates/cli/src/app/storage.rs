@@ -16,7 +16,7 @@ const CLASSES: [output::Column<'static>; 5] = [
 ];
 
 /// A decimal byte count in binary units, as in `5.5 MiB`.
-fn bytes(raw: &Value) -> String {
+pub(super) fn bytes(raw: &Value) -> String {
     let Some(count) = raw
         .as_str()
         .and_then(|raw| raw.parse::<u64>().ok())
@@ -39,7 +39,7 @@ fn bytes(raw: &Value) -> String {
 }
 
 /// `used 5.5 MiB, reserved 64.0 MiB of 1.0 GiB`.
-fn usage(usage: &Value) -> String {
+pub(super) fn usage(usage: &Value) -> String {
     let limit = match &usage["limit"] {
         Value::Null => "no limit".to_owned(),
         limit => format!("of {}", bytes(limit)),

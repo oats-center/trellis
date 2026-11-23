@@ -283,6 +283,13 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let provider_roots: Vec<_> = nats.ca_certificate.iter().cloned().collect();
     let provider_server_name = nats.tls_server_name.clone();
     let provider_servers = nats.server_urls();
+    let diagnostics = auth::Diagnostics {
+        config: Arc::new(context.config.clone()),
+        mode: context.mode,
+        nats: context.trellis_nats.clone(),
+        shortages: Arc::clone(&context.shortages),
+        started_at: context.started_at,
+    };
     let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut tasks = tokio::task::JoinSet::new();
@@ -430,6 +437,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 result = Box::pin(bootstrap::connect_platform_provider(
                     provider_store, provider_oauth, provider_operational, provider_servers,
                     provider_roots, provider_server_name, &provider_seed, webhooks,
+                    diagnostics,
                 )) => result?,
             };
             // Webhook intake publishes `Received` events as the platform.

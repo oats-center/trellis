@@ -598,6 +598,143 @@ model AuthRuntimeVersionResponse {
   /// A newer release on the server's channel. Only administrators see it.
   update?: AuthRuntimeUpdate;
 }
+/// How serious a diagnostics finding is. A section's and the report's status
+/// is the worst of the findings under it.
+enum AuthDiagnosticsStatus { ok; warning; problem; }
+/// One thing an operator should look at.
+model AuthDiagnosticsFinding {
+  status: AuthDiagnosticsStatus;
+  message: string;
+}
+/// One report of an installation's state, for diagnosing it without a shell
+/// on its host. Each section lists its findings; the rest is what it measured.
+model AuthRuntimeDiagnosticsResponse {
+  asOf: timestamp;
+  /// The worst status of any section.
+  status: AuthDiagnosticsStatus;
+  server: AuthDiagnosticsServer;
+  health: AuthDiagnosticsHealth;
+  jetstream: AuthDiagnosticsJetStream;
+  disk: AuthDiagnosticsDisk;
+  certificates: AuthDiagnosticsCertificates;
+  failures: AuthDiagnosticsFailures;
+  work: AuthDiagnosticsWork;
+}
+/// The server process that answered.
+model AuthDiagnosticsServer {
+  status: AuthDiagnosticsStatus;
+  findings: list<AuthDiagnosticsFinding>;
+  version: string;
+  installationId: string;
+  /// The `trellis-server` mode the answering process runs, such as `all`.
+  mode: string;
+  startedAt: timestamp;
+  uptimeSeconds: uint64;
+}
+/// Each service deployment with its instances, and every instance or device
+/// that is not healthy, with each failing check.
+model AuthDiagnosticsHealth {
+  status: AuthDiagnosticsStatus;
+  findings: list<AuthDiagnosticsFinding>;
+  deployments: list<AuthDiagnosticsDeployment>;
+}
+model AuthDiagnosticsDeployment {
+  deploymentId: string;
+  participantId: string;
+  title: string;
+  status: AuthDiagnosticsStatus;
+  instances: list<AuthDiagnosticsInstance>;
+}
+model AuthDiagnosticsInstance {
+  instanceId: string;
+  /// `offline`, `waitingForSettings`, `waitingForApproval` or `starting`
+  /// before it reports on its current connection, then the health it reports:
+  /// `healthy`, `degraded`, `unhealthy`, or `unresponsive` once its heartbeats stop.
+  state: string;
+  status: AuthDiagnosticsStatus;
+}
+/// JetStream storage and memory, used and reserved, against their limits.
+/// Absent numbers are ones JetStream did not answer.
+model AuthDiagnosticsJetStream {
+  status: AuthDiagnosticsStatus;
+  findings: list<AuthDiagnosticsFinding>;
+  storage?: AuthDiagnosticsUsage;
+  memory?: AuthDiagnosticsUsage;
+  serverStorage?: AuthDiagnosticsUsage;
+  serverMemory?: AuthDiagnosticsUsage;
+  streams?: uint64;
+  maxStreams?: uint64;
+  consumers?: uint64;
+  maxConsumers?: uint64;
+}
+/// Bytes stored and reserved against a limit.
+model AuthDiagnosticsUsage {
+  used: uint64;
+  reserved: uint64;
+  /// Absent when no limit is set.
+  limit?: uint64;
+}
+/// Free and total space of the file system holding the Auth database.
+model AuthDiagnosticsDisk {
+  status: AuthDiagnosticsStatus;
+  findings: list<AuthDiagnosticsFinding>;
+  path: string;
+  free?: uint64;
+  total?: uint64;
+}
+/// The certificate the Trellis listener serves and the CA that issued a
+/// generated one.
+model AuthDiagnosticsCertificates {
+  status: AuthDiagnosticsStatus;
+  findings: list<AuthDiagnosticsFinding>;
+  /// `tls`, `proxy` (a proxy in front serves the certificate) or
+  /// `loopbackDevelopment` (plain HTTP on loopback).
+  transport: string;
+  certificates: list<AuthDiagnosticsCertificate>;
+}
+model AuthDiagnosticsCertificate {
+  /// `served` or `issuingCa`.
+  role: string;
+  path: string;
+  subject: string;
+  issuer: string;
+  notAfter: timestamp;
+  sha256Fingerprint: string;
+}
+/// The most recent failures this server process logged with a reference,
+/// newest first. The process keeps the last 50 in memory only.
+model AuthDiagnosticsFailures {
+  status: AuthDiagnosticsStatus;
+  findings: list<AuthDiagnosticsFinding>;
+  failures: list<AuthDiagnosticsFailure>;
+}
+model AuthDiagnosticsFailure {
+  /// The reference the caller was shown, and the `error_id` of the log line.
+  id: string;
+  at: timestamp;
+  route?: string;
+  code?: string;
+  error: string;
+}
+/// Background work that cannot finish: enforcement whose pages keep failing,
+/// and effects and health events set aside because trying again cannot help.
+model AuthDiagnosticsWork {
+  status: AuthDiagnosticsStatus;
+  findings: list<AuthDiagnosticsFinding>;
+  stuckEnforcement: list<AuthDiagnosticsStuckWork>;
+  setAside: list<AuthDiagnosticsSetAside>;
+}
+model AuthDiagnosticsStuckWork {
+  workId: string;
+  since: timestamp;
+  error: string;
+}
+model AuthDiagnosticsSetAside {
+  /// The Auth effect's kind, such as `kick`, or `healthStatusEvent`.
+  kind: string;
+  at: timestamp;
+  error: string;
+}
 model AuthRuntimeUpdate {
   /// The newest release's version.
   version: string;

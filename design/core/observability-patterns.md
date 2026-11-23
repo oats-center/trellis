@@ -349,6 +349,12 @@ Reference: <id>` in `error_description`.
   the sign-in page shows.
 - Every such response has the `Trellis-Reference: <id>` header.
 
+`trellis-server` also keeps the 50 most recent `error`-level lines that carry
+an `error_id`, HTTP and RPC alike, in memory: their ID, time, `route`, `code`
+(or `error_type`) and `error`, never `cause` or the caller.
+`Auth.Runtime.Diagnostics` lists them, so an operator can find a reference
+without the host's log. A restart empties the list.
+
 ## Request Correlation
 
 RPCs and jobs include a `requestId` for correlation and audit. Domain events

@@ -686,6 +686,8 @@ pub(crate) struct RuntimeContext {
     groups: GroupStates,
     /// What JetStream refuses this process for lack of room.
     pub(crate) shortages: Arc<crate::capacity::Shortages>,
+    /// When this process began serving its runtime.
+    pub(crate) started_at: time::OffsetDateTime,
 }
 
 impl std::fmt::Debug for RuntimeContext {
@@ -1012,6 +1014,7 @@ pub async fn run_with_stop(
         authorization_store: std::sync::Mutex::default(),
         live_providers: crate::platform::LiveProviderSlots::new(),
         shortages,
+        started_at: time::OffsetDateTime::now_utc(),
     });
     let result = serve(&context, &manager, listener, &origin, &process_stop).await;
     tracing::info!("runtime shutdown finished; flushing NATS");

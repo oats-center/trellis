@@ -42,6 +42,7 @@ export const routeTitles = {
   "/admin/services": "Services",
   "/admin/devices": "Devices",
   "/admin/resources": "Resources",
+  "/admin/diagnostics": "Diagnostics",
   "/admin/sessions/revoke": "Revoke Session",
   "/admin/sessions/kick": "Kick Connection",
   "/admin/services/new": "New Service",
@@ -267,6 +268,22 @@ const navSections: NavSection[] = [
               api: apis.auth.API.identity,
               surface: "rpc",
               name: "Resources.List",
+              action: "call",
+            },
+          },
+        ],
+      },
+      {
+        href: "/admin/diagnostics",
+        label: "Diagnostics",
+        icon: "server",
+        keywords: "doctor problems certificates disk storage failures",
+        requires: [
+          {
+            permission: {
+              api: apis.auth.API.identity,
+              surface: "rpc",
+              name: "Runtime.Diagnostics",
               action: "call",
             },
           },
