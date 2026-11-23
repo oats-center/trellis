@@ -382,6 +382,10 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                             if retired + deleted > 0 {
                                 tracing::info!(retired, deleted, "Retired offline instances");
                             }
+                            let set_aside = pruned.prune_set_aside_effects(now)?;
+                            if set_aside > 0 {
+                                tracing::info!(set_aside, "Removed expired set-aside Auth effects");
+                            }
                         }
                         Ok::<_, auth::AuthError>(())
                     })

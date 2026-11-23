@@ -453,3 +453,83 @@ fn outbox_orders_revocation_before_kicks_and_fences_expired_claims() {
         .unwrap()
         .is_empty());
 }
+
+// Effects set aside because they cannot succeed are kept for inspection for
+// the retention, then removed by the cleanup pass; work still queued is never
+// removed however old. This catches set-aside effects kept forever, and a prune
+// that drops pending work or set-aside effects before their time.
+#[test]
+fn set_aside_effects_are_removed_after_their_retention() {
+    use super::super::revocation::SET_ASIDE_RETENTION_SECONDS as RETENTION;
+    let f = fixture();
+    let ids = f
+        .store
+        .transaction(|connection| {
+            ["early", "late", "pending"]
+                .map(|digest| {
+                    super::super::revocation::enqueue_effect(
+                        connection,
+                        "authority_publish",
+                        &serde_json::json!({"kind":"authority","digest":digest}),
+                        None,
+                        NOW,
+                    )
+                })
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap();
+    let claimed = f.store.claim_effects(256, NOW, 30, false).unwrap();
+    let effect = |id: &str| {
+        claimed
+            .iter()
+            .find(|effect| effect.action_id == id)
+            .unwrap()
+            .clone()
+    };
+    assert!(f
+        .store
+        .set_aside_effect(&effect(&ids[0]), "refused", NOW + 1)
+        .unwrap());
+    assert!(f
+        .store
+        .set_aside_effect(&effect(&ids[1]), "refused", NOW + 20)
+        .unwrap());
+    let remaining = || {
+        f.store
+            .transaction(|connection| {
+                let mut statement =
+                    connection.prepare("SELECT action_id FROM auth_post_commit_actions")?;
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?;
+                Ok(rows)
+            })
+            .unwrap()
+    };
+    // The fixture queued effects of its own; they stay pending throughout.
+    let all = remaining();
+    assert!(all.len() > ids.len());
+    let without = |removed: &[&String]| {
+        let mut kept = all.clone();
+        for id in removed {
+            kept.remove(*id);
+        }
+        kept
+    };
+
+    assert_eq!(f.store.prune_set_aside_effects(NOW + RETENTION).unwrap(), 0);
+    assert_eq!(remaining(), all);
+    assert_eq!(
+        f.store
+            .prune_set_aside_effects(NOW + 1 + RETENTION)
+            .unwrap(),
+        1
+    );
+    assert_eq!(remaining(), without(&[&ids[0]]));
+    assert_eq!(
+        f.store.prune_set_aside_effects(NOW + 365 * 86_400).unwrap(),
+        1
+    );
+    assert_eq!(remaining(), without(&[&ids[0], &ids[1]]));
+}

@@ -129,6 +129,10 @@ pub(super) fn enqueue_scope(
 /// when the revocation publishes.
 const SELF_REVOCATION_GRACE_SECONDS: i64 = 5;
 
+/// How long an effect set aside by [`SqliteAuthorizationStore::set_aside_effect`]
+/// is kept for inspection: 30 days.
+pub(crate) const SET_ASIDE_RETENTION_SECONDS: i64 = 30 * 86_400;
+
 /// A caller whose own request retires its session gets the reply before its
 /// revocation reaches it: verifying that reply reads material over the same
 /// connection and rejects a reply to a session it already knows is revoked.
@@ -811,6 +815,20 @@ impl SqliteAuthorizationStore {
                 )?;
             }
             Ok(true)
+        })
+    }
+
+    /// Deletes up to 1,000 effects and event publications set aside more than
+    /// [`SET_ASIDE_RETENTION_SECONDS`] before `now`, oldest first, and returns
+    /// how many it deleted.
+    pub(crate) fn prune_set_aside_effects(&self, now: i64) -> Result<usize, AuthError> {
+        self.transaction(|connection| {
+            Ok(connection.execute(
+                "DELETE FROM auth_post_commit_actions WHERE action_id IN (\
+                SELECT action_id FROM auth_post_commit_actions \
+                WHERE failed_at<=?1 ORDER BY failed_at,action_id LIMIT 1000)",
+                [now.saturating_sub(SET_ASIDE_RETENTION_SECONDS)],
+            )?)
         })
     }
 
