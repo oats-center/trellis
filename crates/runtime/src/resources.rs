@@ -2,9 +2,7 @@ use std::time::Duration;
 
 use async_nats::jetstream::{self, stream};
 
-use crate::health::{
-    DEFAULT_TRANSPORT_MAX_BYTES, DEFAULT_TRANSPORT_RETENTION_HOURS, HEALTH_STREAM, HEALTH_SUBJECT,
-};
+use crate::health::{DEFAULT_TRANSPORT_RETENTION_HOURS, HEALTH_STREAM, HEALTH_SUBJECT};
 use crate::supervisor::RuntimeError;
 use crate::{RuntimeConfig, RuntimeMode, SubsystemName};
 use trellis_events_runtime::{DLQ_STREAM, DLQ_SUBJECTS, REPLAY_STREAM, REPLAY_SUBJECTS};
@@ -68,38 +66,67 @@ impl ExpectedRuntimeResources {
         &self.streams
     }
 
+    /// Creates each missing stream and converges each existing one, in order.
+    ///
+    /// A stream JetStream refuses for lack of room is reported through
+    /// `shortages`, with the numbers, and fails with
+    /// [`RuntimeError::JetStreamExhausted`], which the caller retries.
     pub(crate) async fn converge_streams(
         &self,
         client: async_nats::Client,
+        shortages: &crate::capacity::Shortages,
     ) -> Result<(), RuntimeError> {
-        let jetstream = jetstream::new(client);
+        let jetstream = jetstream::new(client.clone());
         for expected in &self.streams {
-            match jetstream.get_stream(&expected.name).await {
-                Ok(mut stream) => {
-                    let info = stream
-                        .info()
-                        .await
-                        .map_err(|error| RuntimeError::Nats(error.to_string()))?;
-                    if let Some(update) =
-                        stream_update(&info.config, expected).map_err(|reason| {
-                            RuntimeError::IncompatibleResource {
-                                name: expected.name.clone(),
-                                reason,
-                            }
-                        })?
-                    {
-                        jetstream
-                            .update_stream(update)
-                            .await
-                            .map_err(|error| RuntimeError::Nats(error.to_string()))?;
+            let resource = format!("stream {}", expected.name);
+            match Self::converge_stream(&jetstream, expected).await {
+                Ok(()) => shortages.recovered(&resource),
+                Err(RuntimeError::Nats(error)) => {
+                    let Some(exhaustion) = crate::capacity::exhaustion_in(&error) else {
+                        return Err(RuntimeError::Nats(error));
+                    };
+                    let wanted = u64::try_from(expected.max_bytes)
+                        .ok()
+                        .filter(|bytes| *bytes > 0);
+                    return Err(RuntimeError::JetStreamExhausted(
+                        shortages
+                            .refused(&client, &resource, exhaustion, wanted, &error)
+                            .await,
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    async fn converge_stream(
+        jetstream: &jetstream::Context,
+        expected: &stream::Config,
+    ) -> Result<(), RuntimeError> {
+        match jetstream.get_stream(&expected.name).await {
+            Ok(mut stream) => {
+                let info = stream
+                    .info()
+                    .await
+                    .map_err(|error| RuntimeError::Nats(error.to_string()))?;
+                if let Some(update) = stream_update(&info.config, expected).map_err(|reason| {
+                    RuntimeError::IncompatibleResource {
+                        name: expected.name.clone(),
+                        reason,
                     }
-                }
-                Err(_) => {
+                })? {
                     jetstream
-                        .create_stream(expected.clone())
+                        .update_stream(update)
                         .await
                         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
                 }
+            }
+            Err(_) => {
+                jetstream
+                    .create_stream(expected.clone())
+                    .await
+                    .map_err(|error| RuntimeError::Nats(error.to_string()))?;
             }
         }
         Ok(())
@@ -287,6 +314,11 @@ fn advisory_stream_config() -> stream::Config {
     }
 }
 
+/// The Health stream keeps `[health] transport_retention_hours` of
+/// heartbeats. It has no size bound unless `transport_max_bytes` sets one:
+/// JetStream reserves a bound against the broker's storage whether or not the
+/// stream holds anything, and every heartbeat it holds is also in the event
+/// stream, which keeps them longer with no size bound.
 fn health_stream_config(config: &RuntimeConfig) -> stream::Config {
     let health = config.health.as_ref();
     let max_age = Duration::from_secs(
@@ -299,8 +331,7 @@ fn health_stream_config(config: &RuntimeConfig) -> stream::Config {
     );
     let max_bytes = health
         .and_then(|health| health.transport_max_bytes)
-        .map(|bytes| i64::try_from(bytes).unwrap_or(i64::MAX))
-        .unwrap_or(DEFAULT_TRANSPORT_MAX_BYTES);
+        .map_or(-1, |bytes| i64::try_from(bytes).unwrap_or(i64::MAX));
     stream::Config {
         name: HEALTH_STREAM.to_owned(),
         sources: Some(vec![stream::Source {
@@ -387,7 +418,10 @@ mod tests {
                 stream.max_age = Duration::ZERO;
             }
         }
-        legacy.converge_streams(nats.clone()).await.unwrap();
+        legacy
+            .converge_streams(nats.clone(), &crate::capacity::Shortages::default())
+            .await
+            .unwrap();
         jetstream
             .publish("trellis.jobs.namespace.queue.job.created", "job".into())
             .await
@@ -412,7 +446,7 @@ mod tests {
 
         let policy = "[jobs]\nhistory_retention_days = 3\n[health]\ntransport_max_bytes = 2048\n";
         resources(policy)
-            .converge_streams(nats.clone())
+            .converge_streams(nats.clone(), &crate::capacity::Shortages::default())
             .await
             .unwrap();
 
@@ -531,7 +565,10 @@ mod tests {
         );
 
         // Converging again with the same policy is a no-op that keeps data.
-        resources(policy).converge_streams(nats).await.unwrap();
+        resources(policy)
+            .converge_streams(nats, &crate::capacity::Shortages::default())
+            .await
+            .unwrap();
         assert_eq!(
             info(&jetstream, HEALTH_STREAM).await.state.messages,
             health.state.messages

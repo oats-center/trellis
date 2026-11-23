@@ -27,6 +27,7 @@ mod native_auth;
 mod resources;
 mod runtime;
 mod self_cmd;
+mod storage;
 mod trust;
 mod webhooks;
 
@@ -113,6 +114,7 @@ async fn dispatch(command: TopLevelCommand, format: OutputFormat) -> miette::Res
         TopLevelCommand::Registries(command) => deploy::registries(format, command).await?,
         TopLevelCommand::Resources(command) => resources::run(format, command).await?,
         TopLevelCommand::Events(command) => events::run(format, command).await?,
+        TopLevelCommand::Storage => storage::run(format).await?,
         TopLevelCommand::Keys(command) => match command.command {
             KeysSubcommand::New(args) => runtime::keygen_command(format, &args)?,
         },

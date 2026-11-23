@@ -442,6 +442,15 @@ test("B44 Health renders its real participant query", async () => {
           .getByRole("row")
           .filter({ hasText: "Event history" })
           .waitFor({ state: "visible" });
+        // NATS storage shows what Trellis stores and reserves against the
+        // broker's limit, which a test broker on a large disk keeps healthy.
+        const jetstream = storage.getByTestId("jetstream");
+        await jetstream.waitFor({ state: "visible" });
+        assert.match(
+          await jetstream.innerText(),
+          /Server storage\s+[\d.]+ \w?B used, [\d.]+ \w?B reserved of [\d.]+ \w?B/,
+        );
+        assert.match(await jetstream.innerText(), /Healthy/);
         await assertNoBrowserErrors(errors);
       } finally {
         await context.close();

@@ -146,7 +146,8 @@ Health subsystem rules:
   do not establish contract identity.
 - `TRELLIS_HEALTH` sources only the generated Heartbeat subject from the ordinary
   raw event stream, avoiding overlapping NATS subject capture. It uses file storage, limits
-  retention, a default 24-hour maximum age, a default 1 GiB maximum size, and no
+  retention, a default 24-hour maximum age, no size bound unless
+  `transport_max_bytes` sets one, and no
   inactive threshold on projector durables. Health-only mode owns the raw stream
   but does not require an Events SQL store or Events projector.
 - JetStream ingress time is canonical for freshness. Publisher sample time is

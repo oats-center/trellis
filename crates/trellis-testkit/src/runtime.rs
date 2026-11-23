@@ -61,6 +61,7 @@ pub struct TrellisTestRuntimeBuilder {
     admin_username: Option<String>,
     admin_password: Option<String>,
     issuer_activation_delay: Option<Duration>,
+    jetstream_max_file_store: Option<u64>,
 }
 
 impl Default for TrellisTestRuntimeBuilder {
@@ -76,6 +77,7 @@ impl Default for TrellisTestRuntimeBuilder {
             admin_username: None,
             admin_password: None,
             issuer_activation_delay: None,
+            jetstream_max_file_store: None,
         }
     }
 }
@@ -139,6 +141,14 @@ impl TrellisTestRuntimeBuilder {
         self.issuer_activation_delay = Some(delay);
         self
     }
+    /// Sets the broker's JetStream `max_file_store`, the file storage it lets
+    /// all streams use and reserve, as a small host's broker computes from
+    /// its free disk. Unset, NATS sizes it from the sandbox's disk.
+    #[must_use]
+    pub fn jetstream_max_file_store(mut self, bytes: u64) -> Self {
+        self.jetstream_max_file_store = Some(bytes);
+        self
+    }
 
     /// Starts isolated production executables, acquiring pinned releases when needed.
     ///
@@ -188,6 +198,7 @@ impl TrellisTestRuntimeBuilder {
                 ServerSettings {
                     websocket_only: self.nats_websocket_only,
                     issuer_activation_delay: self.issuer_activation_delay,
+                    jetstream_max_file_store: self.jetstream_max_file_store,
                 },
             )),
         )
@@ -336,6 +347,7 @@ async fn start_broker(
 struct ServerSettings {
     websocket_only: bool,
     issuer_activation_delay: Option<Duration>,
+    jetstream_max_file_store: Option<u64>,
 }
 
 async fn start_once(
@@ -405,6 +417,18 @@ async fn start_once(
             TrellisTestStage::ConfigGeneration,
         )
         .await?;
+        if let Some(bytes) = settings.jetstream_max_file_store {
+            let broker = config_dir.join("nats/nats-1.conf");
+            let generated = std::fs::read_to_string(&broker)?;
+            std::fs::write(
+                &broker,
+                generated.replacen(
+                    "jetstream {\n",
+                    &format!("jetstream {{\n  max_file_store: {bytes}\n"),
+                    1,
+                ),
+            )?;
+        }
         let quoted = |value: &std::path::Path| {
             serde_json::to_string(&value.display().to_string()).unwrap_or_default()
         };
@@ -1154,6 +1178,42 @@ impl TrellisTestRuntime {
         self.ensure_running()?;
         self.admin()?
             .set_config(&service.deployment_id, None, values, secrets)
+            .await
+    }
+
+    /// Sets one runtime setting of a service's webhook endpoint, such as
+    /// `intakeMaxBytes`, as `trellis svc <service> webhooks <endpoint> set`
+    /// does; `None` returns it to its default. Durations are milliseconds and
+    /// sizes bytes.
+    ///
+    /// # Errors
+    /// Returns an error when Auth refuses the setting or its value.
+    pub async fn set_webhook_setting(
+        &self,
+        service: &TestServiceIdentity,
+        endpoint: &str,
+        setting: &str,
+        value: Option<u64>,
+    ) -> Result<(), TrellisTestError> {
+        self.ensure_running()?;
+        self.admin()?
+            .set_webhook_setting(&service.deployment_id, endpoint, setting, value)
+            .await
+    }
+
+    /// The newest request records of a service's webhook endpoint, newest
+    /// first, as an administrator lists them.
+    ///
+    /// # Errors
+    /// Returns an error when the records cannot be read.
+    pub async fn webhook_attempts(
+        &self,
+        service: &TestServiceIdentity,
+        endpoint: &str,
+    ) -> Result<Vec<serde_json::Value>, TrellisTestError> {
+        self.ensure_running()?;
+        self.admin()?
+            .webhook_attempts(&service.deployment_id, endpoint)
             .await
     }
 

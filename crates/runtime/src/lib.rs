@@ -28,6 +28,8 @@ pub mod tls;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 pub mod backup;
 mod blocking;
+#[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
+mod capacity;
 mod clock;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 /// Built-in Events subsystem.

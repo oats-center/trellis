@@ -37,6 +37,20 @@ in place; Trellis reloads them by itself.
 
 The Console's Health page lists how much disk each kind of Trellis data takes,
 how many records it holds, how old the oldest one is, and how long it's kept.
+`trellis storage` prints the same.
+
+Both also show NATS JetStream's storage and memory: what Trellis uses, what
+its streams reserve, and the limits of its account and of the NATS server.
+A stream with a size bound reserves all of it as soon as it exists, so a
+broker can run out of room while holding little. NATS sizes its own limit
+from the free disk when `nats.conf` sets no `max_file_store`, about a gigabyte
+on a small VM. The status turns degraded when anything reaches 85% of a limit,
+and while NATS refuses a stream Trellis needs, with what was refused and the
+numbers. Trellis keeps trying with backoff and logs the refusal once, then
+every ten minutes; free disk, raise `max_file_store`, or remove streams you
+don't need, and it recovers by itself. A stream the server needs at startup
+works the same way: the server waits, logs what didn't fit, and starts once
+there is room.
 The same numbers go to your metrics as `trellis.storage.bytes`,
 `trellis.storage.records` and `trellis.storage.oldest.age`.
 
@@ -54,7 +68,7 @@ history_retention_days = 30      # finished jobs, and how long a job waits for a
 [health]
 history_retention_days = 30
 transport_retention_hours = 24
-transport_max_bytes = 1073741824
+# transport_max_bytes = 268435456  # unset: no size bound
 ```
 
 A change takes effect at the next start, and a shorter time removes what it no

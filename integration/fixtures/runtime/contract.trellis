@@ -157,7 +157,7 @@ service OperationProvider {
 service OperationCaller { use runtime { required capability operations.work; } }
 agent EchoCaller { use runtime { required capability echo.call; } }
 agent Observer {
-  use health { required capability health.observe; required capability health.inspect; }
+  use health { required capability health.observe; required capability health.inspect; required capability metrics.read; }
   use jobs { required capability jobs.observe; required capability summary.read; }
   use eventlog { required capability events.observe; required capability events.query; }
 }

@@ -501,6 +501,9 @@ pub enum RuntimeError {
         /// Configuration incompatibility.
         reason: &'static str,
     },
+    /// JetStream has no room for a runtime stream; the refusal with its numbers.
+    #[error("{0}")]
+    JetStreamExhausted(String),
     /// The final runtime NATS flush failed during shutdown.
     #[error("runtime NATS flush failed during shutdown: {0}")]
     NatsFlush(String),
@@ -681,6 +684,8 @@ pub(crate) struct RuntimeContext {
     pub(crate) live_providers: crate::platform::LiveProviderSlots,
     /// Where each selected owner group stands.
     groups: GroupStates,
+    /// What JetStream refuses this process for lack of room.
+    pub(crate) shortages: Arc<crate::capacity::Shortages>,
 }
 
 impl std::fmt::Debug for RuntimeContext {
@@ -950,14 +955,41 @@ pub async fn run_with_stop(
             process_stop.stop();
         }))
     };
-    // Streams belong to the process, whichever groups it owns.
-    ExpectedRuntimeResources::for_mode(
+    // Streams belong to the process, whichever groups it owns. Each subsystem
+    // needs its streams, so a broker without room for one is waited out, as
+    // a locked database is: the refusal is logged with its numbers, and the
+    // server starts once there is room.
+    let shortages = crate::capacity::Shortages::new();
+    // With the system account, refusals carry the server's own numbers.
+    if let Some(system) = nats.system_creds.as_deref() {
+        shortages.set_system(connect_nats(&nats, system, || process_stop.is_stopped()).await?);
+    }
+    let expected = ExpectedRuntimeResources::for_mode(
         options.mode,
         &config,
         async_nats::jetstream::stream::StorageType::File,
-    )
-    .converge_streams(trellis_nats.clone())
-    .await?;
+    );
+    let mut backoff = crate::storage::Backoff::default();
+    loop {
+        match expected
+            .converge_streams(trellis_nats.clone(), &shortages)
+            .await
+        {
+            Err(RuntimeError::JetStreamExhausted(_)) => {
+                tokio::select! {
+                    () = process_stop.stopped() => {
+                        tracing::info!("runtime stop requested before startup finished");
+                        return Ok(());
+                    }
+                    () = tokio::time::sleep(backoff.failed()) => {}
+                }
+            }
+            result => {
+                result?;
+                break;
+            }
+        }
+    }
     let listener = crate::bind_http_listener(&config).await?;
     let origin = url::Url::parse(&config.public_origin()).map_err(|error| {
         RuntimeError::Config(crate::ConfigError::InvalidPublicOrigin {
@@ -979,6 +1011,7 @@ pub async fn run_with_stop(
         http_ready,
         authorization_store: std::sync::Mutex::default(),
         live_providers: crate::platform::LiveProviderSlots::new(),
+        shortages,
     });
     let result = serve(&context, &manager, listener, &origin, &process_stop).await;
     tracing::info!("runtime shutdown finished; flushing NATS");

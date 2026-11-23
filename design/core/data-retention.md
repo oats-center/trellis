@@ -20,6 +20,18 @@ size, removal when its work completes, or deliberate permanence. A policy never
 removes data that replay, deduplication, or an open workflow still needs. Where
 those needs set a floor, the floor is stated next to the class.
 
+Retention is an age, a message count, or completion wherever that is what the
+data needs. A stream gets a size bound only where the size itself is the
+requirement: the webhook intake stream, which senders outside the installation
+fill, and the Health stream when an operator sets `transport_max_bytes`.
+JetStream reserves a stream's whole size bound against the account and the
+server when the stream is created, whether or not it holds anything, and
+refuses a stream whose reservation does not fit what is left. A broker on a
+small disk computes its storage limit from the free space, about a gigabyte on
+a small VM, so a large default bound would take that budget from every other
+stream. Every runtime stream without a size bound reserves nothing; the intake
+default is 64 MiB per deployment with endpoints.
+
 The configured limits of a runtime-owned stream are its policy. Startup
 converges an existing stream to them in place, in either direction: a shorter
 age or smaller size takes effect at once and JetStream removes only what the
@@ -27,6 +39,15 @@ new policy no longer keeps. Startup still refuses, and never recreates, a stream
 whose name, subjects, retention kind, discard policy, or sources differ.
 JetStream cannot change storage type or retention kind (limits, work queue) in
 place, so those differences need an operator decision, not convergence.
+
+When JetStream refuses to create or resize a runtime stream for lack of room
+(insufficient storage or memory, or the account's stream limit), startup waits
+and tries again with the storage backoff, as it waits out a locked database.
+Every subsystem needs its streams, so nothing is served meanwhile. The refusal
+is logged once with what was asked for and the account's and server's storage
+used, reserved, and limit (the server's when the process has system-account
+credentials), then every ten minutes while it lasts, and the server starts as
+soon as there is room.
 
 SQL history is removed by hourly loops in the subsystem that owns the database,
 in transactions of at most 1,000 rows, so a backlog never holds the writer for
@@ -73,6 +94,15 @@ busy_timeout_ms`, five seconds when unset. A failure is then one of three kinds:
 - The database file is corrupt or not a database. Its subsystem stops, and
   with it trellis-server, with a message naming that database.
 
+`Health.Storage` also reports JetStream capacity: the Trellis account's storage
+and memory used and reserved against its limits, the whole server's from the
+system account's `JSZ` request when the process holds a system-account
+connection (the platform role does), stream and consumer counts, and the
+largest streams by bytes stored or reserved. It is `degraded`, with each
+problem and its numbers, while used or reserved bytes, streams, or consumers
+reach 85% of a limit, and while JetStream refuses a resource this process
+needs. `trellis storage` and the Console Health page show it.
+
 `Health.Storage` and the `trellis.storage.bytes`, `trellis.storage.records`, and
 `trellis.storage.oldest.age` gauges (attribute `trellis.data_class`) report each
 class's size, record count, and oldest retained record from JetStream stream
@@ -85,15 +115,16 @@ estimates of their stored bytes.
 
 ### JetStream streams
 
-| Data class (`Health.Storage` name)        | Stream                     | Default policy                                                            | Setting                                                     | Depends on it                                                                                                                                        |
-| ----------------------------------------- | -------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Event stream (`eventStream`)              | `trellis`                  | 7 days                                                                    | fixed                                                       | Consumer delivery and `replay all`, the Events projector, the Health stream source, dead-letter creation (the original is copied when exhausted)     |
-| Health reports (`healthStream`)           | `TRELLIS_HEALTH`           | 24 hours or 1 GiB                                                         | `[health] transport_retention_hours`, `transport_max_bytes` | The Health projector                                                                                                                                 |
-| Job history (`jobHistory`)                | `JOBS`                     | 30 days plus one                                                          | `[jobs] history_retention_days`                             | Worker lifecycle folding, `Jobs.History`, the Jobs projector; the 2-minute publish deduplication window                                              |
-| Job queue (`jobWork`)                     | `JOBS_WORK` (work queue)   | removed when acknowledged; unclaimed jobs expire after 30 days            | `[jobs] history_retention_days`                             | Workers                                                                                                                                              |
-| Job delivery notices (`jobAdvisories`)    | `JOBS_ADVISORIES`          | 7 days                                                                    | fixed (the event stream's retention)                        | Consumer dead-letter creation                                                                                                                        |
-| Failed delivery log (`deadLetterJournal`) | `trellis_consumer_dlq`     | no age or size limit; resolved and dismissed entries purged after 90 days | `[events] dead_letter_retention_days`                       | Dead-letter projection rebuilds, replay (the revision-one record holds the only copy of the original), command idempotency, exhaustion deduplication |
-| Delivery retries (`replayStream`)         | `trellis_consumer_replays` | 90 days, one envelope per generation                                      | `[events] dead_letter_retention_days`                       | Targeted replay delivery and once-per-generation dispatch                                                                                            |
+| Data class (`Health.Storage` name)        | Stream                          | Default policy                                                                   | Setting                                                     | Depends on it                                                                                                                                        |
+| ----------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Event stream (`eventStream`)              | `trellis`                       | 7 days                                                                           | fixed                                                       | Consumer delivery and `replay all`, the Events projector, the Health stream source, dead-letter creation (the original is copied when exhausted)     |
+| Health reports (`healthStream`)           | `TRELLIS_HEALTH`                | 24 hours, no size bound                                                          | `[health] transport_retention_hours`, `transport_max_bytes` | The Health projector                                                                                                                                 |
+| Webhook intake                            | `TRELLIS_WEBHOOKS_<deployment>` | 7 days or 64 MiB, whichever is reached first; a full stream refuses new requests | deployment settings `intakeRetention`, `intakeMaxBytes`     | `async` endpoints' verification, the request record's stored body                                                                                    |
+| Job history (`jobHistory`)                | `JOBS`                          | 30 days plus one                                                                 | `[jobs] history_retention_days`                             | Worker lifecycle folding, `Jobs.History`, the Jobs projector; the 2-minute publish deduplication window                                              |
+| Job queue (`jobWork`)                     | `JOBS_WORK` (work queue)        | removed when acknowledged; unclaimed jobs expire after 30 days                   | `[jobs] history_retention_days`                             | Workers                                                                                                                                              |
+| Job delivery notices (`jobAdvisories`)    | `JOBS_ADVISORIES`               | 7 days                                                                           | fixed (the event stream's retention)                        | Consumer dead-letter creation                                                                                                                        |
+| Failed delivery log (`deadLetterJournal`) | `trellis_consumer_dlq`          | no age or size limit; resolved and dismissed entries purged after 90 days        | `[events] dead_letter_retention_days`                       | Dead-letter projection rebuilds, replay (the revision-one record holds the only copy of the original), command idempotency, exhaustion deduplication |
+| Delivery retries (`replayStream`)         | `trellis_consumer_replays`      | 90 days, one envelope per generation                                             | `[events] dead_letter_retention_days`                       | Targeted replay delivery and once-per-generation dispatch                                                                                            |
 
 ### SQLite databases
 

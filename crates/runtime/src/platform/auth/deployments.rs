@@ -320,11 +320,42 @@ impl SqliteAuthorizationStore {
                     now,
                 )
                 .map_err(|error| match error {
-                    AuthError::Invalid(reason) => AuthError::Invalid(format!(
-                        "this release candidate can't upgrade the installation's \
-                        built-in {participant}: {reason}. Start it with the server \
-                        version that created it, or create a new installation"
-                    )),
+                    AuthError::Invalid(reason) => {
+                        // The installed build's package names the server
+                        // release that installed it.
+                        let installed = connection
+                            .query_row(
+                                "SELECT json_extract(package.value,'$.version') \
+                                FROM auth_provisioned_identities p \
+                                JOIN auth_instances i ON i.instance_id=p.instance_id \
+                                AND i.deployment_id=p.deployment_id \
+                                JOIN auth_installed_participants s \
+                                ON s.participant_id=p.participant_id \
+                                AND s.revision=i.installed_revision \
+                                JOIN auth_package_evidence_documents e \
+                                ON e.evidence_digest=s.evidence_digest \
+                                JOIN json_each(e.evidence_json,'$.packages') package \
+                                ON json_extract(package.value,'$.name')=\
+                                json_extract(e.evidence_json,'$.rootPackage') \
+                                WHERE p.identity_key_id=?1",
+                                [&source.key_id],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .ok();
+                        let release = env!("CARGO_PKG_VERSION");
+                        AuthError::Invalid(match installed {
+                            Some(installed) => format!(
+                                "Trellis {release} can't upgrade the installation's built-in \
+                                {participant}, installed by Trellis {installed}: {reason}. \
+                                Start it with Trellis {installed}, or create a new installation"
+                            ),
+                            None => format!(
+                                "Trellis {release} can't upgrade the installation's built-in \
+                                {participant}: {reason}. Start it with the server version \
+                                that created it, or create a new installation"
+                            ),
+                        })
+                    }
                     error => error,
                 })?;
                 source.lookup(connection, now).map(Some)

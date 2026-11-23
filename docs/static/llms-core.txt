@@ -594,9 +594,15 @@ and dismissed dead letters, while open ones stay until settled;
 and settled jobs, while failed and dead jobs stay for retry and replay; a job
 no worker claims within it expires with an error saying so. A
 changed limit is applied to the existing streams at the next start.
-`Health.Storage`, the Console Health page, and the `trellis.storage.bytes`,
-`trellis.storage.records` and `trellis.storage.oldest.age` gauges report each
-data class's size and oldest record.
+`Health.Storage`, the Console Health page, `trellis storage`, and the
+`trellis.storage.bytes`, `trellis.storage.records` and
+`trellis.storage.oldest.age` gauges report each data class's size and oldest
+record. `Health.Storage` also reports JetStream storage and memory used and
+reserved against the account's and the server's limits; it is `degraded` at
+85% of a limit or while JetStream refuses a Trellis stream for lack of room,
+with each problem and its numbers. A stream's `max_bytes` is reserved in full
+when it is created, so Trellis streams set one only where a size bound is the
+requirement (webhook intake, 64 MiB per deployment by default).
 
 For several development installations on one machine, give each its own
 `--dev --config <dir>` folder, then its own `[http] port` and `nats.conf`
