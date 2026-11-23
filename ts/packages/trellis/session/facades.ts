@@ -262,10 +262,7 @@ export type HandlerTrellis<
     data: Record<string, unknown>,
   ): AsyncResult<
     void,
-    | ValidationError
-    | TransportError
-    | ResourceExhaustedError
-    | UnexpectedError
+    ValidationError | TransportError | ResourceExhaustedError | UnexpectedError
   >;
   prepare(
     event: string,
