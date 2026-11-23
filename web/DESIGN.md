@@ -148,6 +148,10 @@ nothing else.
   not appear empty and fill in piece by piece.
 - Pages load their data in parallel and show one loading state, not a
   sequence of them.
+- When sign-in can't finish, the Console stops on one page: what happened,
+  the server's reference when it gave one, the exact reason behind
+  "Details", and a "Sign in again" button. It never reloads on its own to
+  retry, and a tab leaves for sign-in by itself at most three times in 30 seconds.
 - Portal pages arrive with what they show (sign-in methods, the consent
   request, the theme), so a form never moves when something loads.
 

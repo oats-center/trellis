@@ -274,6 +274,14 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
         let resumed = callback
           ? (await oauth.complete(currentUrl.href)).take()
           : (await oauth.resume(install)).take();
+        // A callback this tab isn't waiting for, such as an old sign-in link
+        // opened again, is ignored: the app carries on as if it had loaded
+        // without one.
+        const unrelated =
+          callback &&
+          isErr(resumed) &&
+          resumed.error.reason === "OAuthCallbackNotPending";
+        if (unrelated) resumed = (await oauth.resume(install)).take();
         // The consent just given is what the grant asked about.
         if (callback && !isErr(resumed) && "value" in resumed)
           grantAsked = requestedOptional(resumed.value) ?? [];
@@ -286,6 +294,12 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
           const kept = (await oauth.resume(install)).take();
           if (!isErr(kept)) resumed = kept;
         }
+        // A sign-in that came back and still failed would fail the same way
+        // after another authorization, and an app that signs in without
+        // asking would come straight back: a redirect loop. The app reports
+        // it instead.
+        if (callback && !unrelated && isErr(resumed))
+          return Result.err(resumed.error);
         if (!isErr(resumed) && outdated) {
           const revoked = await oauth.revoke();
           if (revoked.isErr()) return Result.err(revoked.error);
@@ -544,7 +558,14 @@ export type ClientSignOutArgs = {
 
 /** Public OAuth app connector. Requests choose local surfaces; signed admission owns authority. */
 export class TrellisClient {
-  /** Open a registered browser application using its generated request descriptor. */
+  /**
+   * Open a registered browser application using its generated request
+   * descriptor. On the app's sign-in callback, a code the token endpoint
+   * refuses, or one that signs in someone other than the user of a stored
+   * session that still renews (`OAuthAccountChanged`), fails the connect with
+   * that error instead of starting another authorization. A callback the tab
+   * isn't waiting for, such as an old link opened again, is ignored.
+   */
   static connect<const T extends AppRequestDescriptor>(
     args: TrellisClientConnectArgs<T>,
   ) {

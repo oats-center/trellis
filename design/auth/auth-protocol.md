@@ -73,6 +73,11 @@ browser custody uses IndexedDB. A browser runtime key lives only in its
 document, so every page load spends a refresh token on a new one. A callback
 page therefore opens the app in the same document on the connection it made,
 as the Console does, rather than loading the app again and exchanging twice.
+A callback whose code exchange fails reports the failure and never starts
+another authorization: a registered app signs in without asking, so it would
+come straight back and fail the same way. A browser credential handle belongs
+to one user while its session renews; a sign-in as someone else takes it over
+only once that session has lapsed, and a page never changes user.
 Bind every token exchange to the correct client,
 grant, proof key, and selected installation. Refresh credentials are one-use:
 transport retry must not replay a spent credential. Reuse a verified, unexpired

@@ -100,6 +100,9 @@ export class BrowserOAuthClient {
   #nonce?: string;
   #runtime?: Promise<{ auth: TrellisAuth; runtimeId: string }>;
   #owner?: SessionAuthorityOwner;
+  // The user this document signed in as. Another tab can rebind a lapsed
+  // stored session to someone else; this document never follows it.
+  #principal?: string;
   // Discovery read while opening. The refresh a page load starts with
   // authenticates it instead of reading the same document again.
   #discovered?: { metadata: BrowserOAuthMetadata; at: number };
@@ -284,7 +287,12 @@ export class BrowserOAuthClient {
     }
   }
 
-  /** Consume this tab's exact callback once; install signed authority before remembering its grant. */
+  /**
+   * Consume this tab's exact callback once; install signed authority before
+   * remembering its grant. A callback for no sign-in this tab is waiting on,
+   * such as an old link opened again, fails with `OAuthCallbackNotPending`
+   * and leaves the tab's own continuation in place.
+   */
   async complete(
     callback: string = location.href,
   ): Promise<
@@ -295,9 +303,10 @@ export class BrowserOAuthClient {
     this.#discovered = undefined;
     try {
       const raw = sessionStorage.getItem(this.#pendingKey());
-      if (!raw) return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
-      const pending = pendingSchema.parse(JSON.parse(raw));
       const url = new URL(callback);
+      const pending = raw ? pendingSchema.parse(JSON.parse(raw)) : undefined;
+      if (!pending || url.searchParams.get("state") !== pending.state)
+        return err(new AuthError({ reason: "OAuthCallbackNotPending" }));
       const redirect = new URL(pending.redirectUri);
       if (
         pending.issuer !== this.scope.issuer ||
@@ -487,19 +496,25 @@ export class BrowserOAuthClient {
       });
       if (response.nonce) this.#nonce = response.nonce;
       // Neither unsigned NATS errors nor transient HTTP failures delete the durable grant/key.
-      if (!response.ok)
+      if (!response.ok) {
+        const refused = z
+          .object({
+            error: z.string().optional(),
+            error_description: z.string().optional(),
+          })
+          .safeParse(response.data).data;
         return err(
           new AuthError({
             // A server failure's description names its reference.
-            message: z
-              .object({ error_description: z.string() })
-              .safeParse(response.data).data?.error_description,
+            message: refused?.error_description,
+            context: { status: response.status, error: refused?.error },
             reason:
               response.status >= 500 || response.status === 429
                 ? "OAuthUnavailable"
                 : "OAuthRecoveryRequired",
           }),
         );
+      }
       const token = tokenSchema.parse(response.data);
       if (form.get("grant_type") === "refresh_token") {
         const saved = await this.store.retainRotatedToken(
@@ -524,6 +539,7 @@ export class BrowserOAuthClient {
       const body = verified.admission.credential;
       const jkt = await dpopThumbprint(publicJwk);
       const grant = this.store.grant;
+      const refresh = form.get("grant_type") === "refresh_token";
       if (
         (this.#owner &&
           this.#owner.trustSnapshot.issuer.keyId !== trust.issuer.keyId) ||
@@ -533,13 +549,25 @@ export class BrowserOAuthClient {
         body.binding.bindingKind !== "browser" ||
         body.binding.browserOrigin !== location.origin ||
         body.binding.browserOrigin !== this.scope.browserOrigin ||
-        (grant &&
+        (this.#principal !== undefined &&
+          body.principalId !== this.#principal) ||
+        (refresh &&
+          grant &&
           (body.principalId !== grant.principalId ||
-            (form.get("grant_type") === "refresh_token" &&
-              (body.oauthGrantId !== grant.oauthGrantId ||
-                body.loginSessionId !== grant.loginSessionId))))
+            body.oauthGrantId !== grant.oauthGrantId ||
+            body.loginSessionId !== grant.loginSessionId))
       )
         return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+      // A new sign-in as someone else takes over a stored session only once
+      // that session can no longer renew; a live one stays its user's.
+      if (
+        !refresh &&
+        grant &&
+        !this.store.lapsed &&
+        body.principalId !== grant.principalId
+      )
+        return err(new AuthError({ reason: "OAuthAccountChanged" }));
+      this.#principal = body.principalId;
       return ok({
         value: {
           auth,
