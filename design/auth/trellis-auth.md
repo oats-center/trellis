@@ -1549,7 +1549,10 @@ Disabling a deployment retires its sessions and denies new admission without
 detaching allocations or clearing resource commitments. Enabling it reuses those
 retained bindings; it does not require contract reapplication or recreate
 storage. Deployment removal and declaration omission still detach allocations
-while preserving physical data for explicit administrator decisions.
+while preserving physical data for explicit administrator decisions. Removal
+deletes only the storage Trellis itself made for the deployment, its Operation
+records and staging store and its webhook intake stream, since removal is final
+(see [data retention](../core/data-retention.md)).
 
 Split roles are independently deployable hosts. Each uses its own provisioned
 identity seed, configured NATS endpoints, and trust established from

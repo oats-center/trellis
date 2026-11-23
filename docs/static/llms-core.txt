@@ -1580,7 +1580,10 @@ state. Declaration omission and deployment Remove detach and retain resource
 data; compatible re-add reattaches the same resource identity. Disable preserves
 bindings but revokes sessions and denies admission; Enable reuses retained
 bindings without reapplying the contract or recreating storage. There is no
-automatic resource deletion. Explicit admin `Resources.Remove` permanently
+automatic resource deletion. Remove is final, so it deletes only the storage
+Trellis made for the deployment itself: its Operation records and staging store
+and its webhook intake stream, which frees the intake stream's reserved size.
+Explicit admin `Resources.Remove` permanently
 deletes only the selected detached owned KV at `expectedRevision` after checking
 its physical ownership marker; shared streams and other queues remain intact.
 Retry the same request after broker failure; startup never resumes deletion.

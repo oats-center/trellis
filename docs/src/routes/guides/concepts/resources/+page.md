@@ -21,7 +21,10 @@ resources belong to the deployment; device resources belong to the device;
 app/agent State belongs to the user and qualified participant.
 
 Removing a declaration performs Detach: it removes runtime authority without
-deleting the allocation or its data. A compatible, newly approved re-add of the
+deleting the allocation or its data. Removing a deployment detaches its
+declared resources the same way. It deletes only the storage Trellis made for
+the deployment itself, its Operation records and webhook intake stream, because
+a removed deployment cannot come back. A compatible, newly approved re-add of the
 same identity reattaches it. Rename or kind change creates a new identity.
 
 An existing provider resource at Trellis's deterministic name must carry the

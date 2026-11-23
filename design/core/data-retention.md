@@ -65,6 +65,35 @@ runtime owner lease is a write to the lease bucket; when JetStream refuses it
 for lack of room, the server logs a warning naming the lease and leaves it to
 lapse at the end of its term, so the next owner waits at most that long.
 
+Removing a deployment is final: `Deployments.Remove` cannot be undone, and a
+removed deployment cannot be enabled or applied again. The streams Trellis made
+for it hold data nothing can read afterwards, and the intake stream holds its
+size bound reserved, so Trellis deletes them:
+
+- The webhook intake stream `TRELLIS_WEBHOOKS_<deployment>`. The webhook
+  runtime stops the deployment's worker and deletes the stream when it reloads
+  its endpoints after the removal, and again at every pass, once a minute and
+  at startup, for any intake stream left for a removed deployment. A stream of
+  that name whose subjects are not the deployment's is left alone. Requests
+  still waiting for verification are recorded as expired. The request records
+  themselves keep expiring under the deployment's record retention, and dedupe
+  IDs under their window; neither reserves storage.
+- The Operation records `KV_trellis_operations_<deployment>` and the upload
+  staging store `OBJ_trellis_operation_staging_<deployment>`. The removal
+  queues an Auth effect in the same transaction, which deletes both and is
+  retried until it succeeds, across restarts. A bucket whose description is
+  not the one Trellis wrote is left in place and the effect set aside.
+
+A server that stops between the removal and the deletion deletes the streams
+after it starts again, since both paths work from Auth's record of the removal,
+not from anything held in memory. There is no grace period, because there is
+nothing to recover a removed deployment into.
+
+Resources the service declared (KV, Store, State, Consumers, Jobs, webhook
+consumers) are not deleted with the deployment. They are detached, keep their
+data, and go only when an administrator runs `trellis resources destroy` on
+each, as with a resource a service update omits.
+
 SQL history is removed by hourly loops in the subsystem that owns the database,
 in transactions of at most 1,000 rows, so a backlog never holds the writer for
 long. A failed pass is retried at the next tick and never stops projection.
@@ -139,16 +168,16 @@ estimates of their stored bytes.
 
 ### JetStream streams
 
-| Data class (`Health.Storage` name)        | Stream                          | Default policy                                                                   | Setting                                                     | Depends on it                                                                                                                                        |
-| ----------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Event stream (`eventStream`)              | `trellis`                       | 7 days                                                                           | fixed                                                       | Consumer delivery and `replay all`, the Events projector, the Health stream source, dead-letter creation (the original is copied when exhausted)     |
-| Health reports (`healthStream`)           | `TRELLIS_HEALTH`                | 24 hours, no size bound                                                          | `[health] transport_retention_hours`, `transport_max_bytes` | The Health projector                                                                                                                                 |
-| Webhook intake                            | `TRELLIS_WEBHOOKS_<deployment>` | 7 days or 64 MiB, whichever is reached first; a full stream refuses new requests | deployment settings `intakeRetention`, `intakeMaxBytes`     | `async` endpoints' verification, the request record's stored body                                                                                    |
-| Job history (`jobHistory`)                | `JOBS`                          | 30 days plus one                                                                 | `[jobs] history_retention_days`                             | Worker lifecycle folding, `Jobs.History`, the Jobs projector; the 2-minute publish deduplication window                                              |
-| Job queue (`jobWork`)                     | `JOBS_WORK` (work queue)        | removed when acknowledged; unclaimed jobs expire after 30 days                   | `[jobs] history_retention_days`                             | Workers                                                                                                                                              |
-| Job delivery notices (`jobAdvisories`)    | `JOBS_ADVISORIES`               | 7 days                                                                           | fixed (the event stream's retention)                        | Consumer dead-letter creation                                                                                                                        |
-| Failed delivery log (`deadLetterJournal`) | `trellis_consumer_dlq`          | no age or size limit; resolved and dismissed entries purged after 90 days        | `[events] dead_letter_retention_days`                       | Dead-letter projection rebuilds, replay (the revision-one record holds the only copy of the original), command idempotency, exhaustion deduplication |
-| Delivery retries (`replayStream`)         | `trellis_consumer_replays`      | 90 days, one envelope per generation                                             | `[events] dead_letter_retention_days`                       | Targeted replay delivery and once-per-generation dispatch                                                                                            |
+| Data class (`Health.Storage` name)        | Stream                          | Default policy                                                                                                           | Setting                                                     | Depends on it                                                                                                                                        |
+| ----------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Event stream (`eventStream`)              | `trellis`                       | 7 days                                                                                                                   | fixed                                                       | Consumer delivery and `replay all`, the Events projector, the Health stream source, dead-letter creation (the original is copied when exhausted)     |
+| Health reports (`healthStream`)           | `TRELLIS_HEALTH`                | 24 hours, no size bound                                                                                                  | `[health] transport_retention_hours`, `transport_max_bytes` | The Health projector                                                                                                                                 |
+| Webhook intake                            | `TRELLIS_WEBHOOKS_<deployment>` | 7 days or 64 MiB, whichever is reached first; a full stream refuses new requests; deleted when the deployment is removed | deployment settings `intakeRetention`, `intakeMaxBytes`     | `async` endpoints' verification, the request record's stored body                                                                                    |
+| Job history (`jobHistory`)                | `JOBS`                          | 30 days plus one                                                                                                         | `[jobs] history_retention_days`                             | Worker lifecycle folding, `Jobs.History`, the Jobs projector; the 2-minute publish deduplication window                                              |
+| Job queue (`jobWork`)                     | `JOBS_WORK` (work queue)        | removed when acknowledged; unclaimed jobs expire after 30 days                                                           | `[jobs] history_retention_days`                             | Workers                                                                                                                                              |
+| Job delivery notices (`jobAdvisories`)    | `JOBS_ADVISORIES`               | 7 days                                                                                                                   | fixed (the event stream's retention)                        | Consumer dead-letter creation                                                                                                                        |
+| Failed delivery log (`deadLetterJournal`) | `trellis_consumer_dlq`          | no age or size limit; resolved and dismissed entries purged after 90 days                                                | `[events] dead_letter_retention_days`                       | Dead-letter projection rebuilds, replay (the revision-one record holds the only copy of the original), command idempotency, exhaustion deduplication |
+| Delivery retries (`replayStream`)         | `trellis_consumer_replays`      | 90 days, one envelope per generation                                                                                     | `[events] dead_letter_retention_days`                       | Targeted replay delivery and once-per-generation dispatch                                                                                            |
 
 ### SQLite databases
 
@@ -163,16 +192,17 @@ estimates of their stored bytes.
 
 ### Other runtime data
 
-| Data                           | Store                                                 | Policy                                                 |
-| ------------------------------ | ----------------------------------------------------- | ------------------------------------------------------ |
-| Verification material          | KV `TRELLIS_AUTH_MATERIAL`                            | permanent, immutable                                   |
-| Session revocations            | KV `TRELLIS_AUTH_REVOCATIONS`                         | each entry expires with the last context it can affect |
-| Platform identity              | KV `TRELLIS_PLATFORM_IDENTITY`                        | one key                                                |
-| State values                   | KV `trellis_state`                                    | kept until the resource is deleted                     |
-| Runtime leases                 | KV `trellis_runtime_leases`                           | `[leases] ttl_ms`                                      |
-| Job key coordination           | KV `JOBS_KEYS_<namespace>`                            | current key state only                                 |
-| Service KV and Store resources | `TRELLIS_RESOURCE_*`                                  | the contract's history and TTL                         |
-| Operation staging              | object store `trellis_operation_staging_<deployment>` | deleted after settlement; 512 MiB per upload           |
+| Data                           | Store                                                 | Policy                                                                |
+| ------------------------------ | ----------------------------------------------------- | --------------------------------------------------------------------- |
+| Verification material          | KV `TRELLIS_AUTH_MATERIAL`                            | permanent, immutable                                                  |
+| Session revocations            | KV `TRELLIS_AUTH_REVOCATIONS`                         | each entry expires with the last context it can affect                |
+| Platform identity              | KV `TRELLIS_PLATFORM_IDENTITY`                        | one key                                                               |
+| State values                   | KV `trellis_state`                                    | kept until the resource is deleted                                    |
+| Runtime leases                 | KV `trellis_runtime_leases`                           | `[leases] ttl_ms`                                                     |
+| Job key coordination           | KV `JOBS_KEYS_<namespace>`                            | current key state only                                                |
+| Service KV and Store resources | `TRELLIS_RESOURCE_*`                                  | the contract's history and TTL                                        |
+| Operation records              | KV `trellis_operations_<deployment>`                  | deleted with the deployment                                           |
+| Operation staging              | object store `trellis_operation_staging_<deployment>` | deleted after settlement, and with the deployment; 512 MiB per upload |
 
 ## Reasoning per class
 
@@ -243,8 +273,8 @@ expires unprocessed records missing history, as before.
 
 These grow with use and have no policy yet; `Health.Storage` shows their size:
 
-- `trellis_operations_<deployment>` KV: terminal Operation records are never
-  deleted.
+- `trellis_operations_<deployment>` KV: terminal Operation records are deleted
+  only with the deployment.
 - Auth database: `auth_session_authorities` gains a permanent row per issued
   authorization context, and authorization sessions, login sessions, grants,
   idempotency results, and resource history have no removal.

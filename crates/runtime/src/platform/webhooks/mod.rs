@@ -18,7 +18,7 @@ mod records;
 mod request;
 mod verify;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -801,8 +801,15 @@ impl Webhooks {
                     if let Err(error) = self.reload().await {
                         tracing::warn!(%error, "webhook endpoints could not be reloaded");
                     }
+                    // A deployment no longer served loses its worker before
+                    // its stream goes, so the worker cannot create it again.
+                    workers.retain(|deployment, _| {
+                        self.directory().deployments().contains_key(deployment)
+                    });
+                    self.release_removed().await;
                 }
                 _ = sweep.tick() => {
+                    self.release_removed().await;
                     self.sweep().await;
                     if let Ok(count) = self.inner.records.pending().await {
                         pending.store(count, std::sync::atomic::Ordering::Relaxed);
@@ -966,6 +973,91 @@ impl Webhooks {
             .collect();
         if let Err(error) = self.inner.records.sweep(now_ms(), retention).await {
             tracing::warn!(%error, "webhook record retention failed");
+        }
+    }
+
+    /// Delete the intake streams of removed deployments, which releases the
+    /// storage JetStream reserves for them.
+    ///
+    /// Removal is final, and only Auth's record of it says a stream can go,
+    /// so this runs after every reload and at every sweep, the first one at
+    /// startup: a removal the server stopped before acting on, or a stream a
+    /// request in flight created again, goes at the next pass. A stream of
+    /// that name whose subjects are not the deployment's is left alone.
+    async fn release_removed(&self) {
+        use futures_util::TryStreamExt as _;
+        let served: BTreeSet<String> = self
+            .directory()
+            .deployments()
+            .keys()
+            .map(|deployment| stream_name(deployment))
+            .collect();
+        let unserved: BTreeSet<String> = match self
+            .inner
+            .jetstream
+            .stream_names()
+            .try_filter(|name| {
+                std::future::ready(name.starts_with("TRELLIS_WEBHOOKS_") && !served.contains(name))
+            })
+            .try_collect()
+            .await
+        {
+            Ok(names) => names,
+            Err(error) => {
+                tracing::warn!(%error, "webhook intake streams could not be listed");
+                return;
+            }
+        };
+        if unserved.is_empty() {
+            return;
+        }
+        let storage = self.inner.storage.clone();
+        let removed = match super::auth::blocking(move || {
+            super::auth::webhooks::removed_deployments(&storage)
+        })
+        .await
+        {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::warn!(%error, "removed deployments could not be read");
+                return;
+            }
+        };
+        for deployment in removed {
+            let name = stream_name(&deployment);
+            if !unserved.contains(&name) {
+                continue;
+            }
+            let deleted = async {
+                let stream = self.inner.jetstream.get_stream(&name).await?;
+                if stream.cached_info().config.subjects
+                    != [format!("{}.>", stream_subject(&deployment))]
+                {
+                    return Ok(false);
+                }
+                self.inner.jetstream.delete_stream(&name).await?;
+                Ok::<_, async_nats::Error>(true)
+            }
+            .await;
+            match deleted {
+                Ok(true) => {
+                    tracing::info!(
+                        %deployment,
+                        stream = %name,
+                        "Deleted the intake stream of a removed deployment"
+                    );
+                    if let Err(error) = self.inner.records.stream_deleted(&deployment).await {
+                        tracing::warn!(%deployment, %error, "webhook records could not be updated");
+                    }
+                }
+                Ok(false) => (),
+                Err(error) => tracing::warn!(
+                    %deployment,
+                    stream = %name,
+                    %error,
+                    "the intake stream of a removed deployment could not be deleted"
+                ),
+            }
         }
     }
 

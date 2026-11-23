@@ -660,6 +660,22 @@ pub(super) fn change_deployment(
                     WHERE deployment_id=?1",
                     [&deployment],
                 )?;
+                // Removal is final, so the Operation storage Trellis made for
+                // the deployment goes once this commits; the effect is retried
+                // until it has, across restarts.
+                connection.execute(
+                    "DELETE FROM auth_resource_binding_evidence \
+                    WHERE owner_kind='deployment' AND owner_id=?1 \
+                    AND resource_kind='framework_operation'",
+                    [&deployment],
+                )?;
+                super::revocation::enqueue_effect(
+                    connection,
+                    "operation_storage_delete",
+                    &serde_json::json!({ "deploymentId": deployment }),
+                    None,
+                    now,
+                )?;
                 connection.execute(
                     "INSERT OR IGNORE INTO auth_identity_tombstones(identity_key_id,kind,\
                     outcome,recorded_at) SELECT identity_key_id,kind,'removed',?2 \

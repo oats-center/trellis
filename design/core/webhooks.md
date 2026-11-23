@@ -861,6 +861,9 @@ policy:
 Retention follows the deployment, not its endpoints. Records of a deployment
 whose last endpoint was removed keep expiring under its record and intake
 retention settings, and under the defaults once the deployment is gone.
+Removing the deployment deletes its intake stream and records its requests
+still waiting for verification as expired; see
+[data retention](data-retention.md).
 
 When a deployment's intake stream is full, Trellis refuses new requests with 503 rather
 than remove old ones, so a flood cannot push out requests still waiting for

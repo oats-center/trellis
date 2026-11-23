@@ -225,6 +225,17 @@ fn check_setting(name: &str, value: i64) -> Result<(), AuthError> {
     Ok(())
 }
 
+/// The deployments an administrator removed. Removal is final, so their
+/// intake streams can go.
+pub(crate) fn removed_deployments(storage: &OAuthStorage) -> Result<Vec<String>, AuthError> {
+    storage.authority.read(|connection| {
+        Ok(connection
+            .prepare("SELECT deployment_id FROM auth_deployments WHERE state='revoked'")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    })
+}
+
 /// Every deployment's own deployment-wide webhook settings, by deployment,
 /// whether or not it still has an endpoint, so its records keep expiring.
 pub(crate) fn load_retention(

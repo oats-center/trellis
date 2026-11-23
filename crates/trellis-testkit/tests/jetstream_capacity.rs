@@ -4,6 +4,9 @@ use std::time::Duration;
 
 use futures_util::StreamExt as _;
 use runtime_trellis::participants::runtime_trellis_webhook_service::{Participant, Provider};
+use runtime_trellis::participants::{
+    runtime_trellis_echo_provider, runtime_trellis_native_optional_provider,
+};
 use serde_json::{json, Value};
 use trellis_runtime_apis::apis::trellis_health_v1;
 use trellis_runtime_apis::types::{
@@ -23,6 +26,32 @@ fn intake_stream(identity: &TestServiceIdentity) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
     format!("TRELLIS_WEBHOOKS_{token}")
+}
+
+/// The Operation records and staging streams Trellis makes for a deployment
+/// whose service provides Operations.
+fn operation_streams(identity: &TestServiceIdentity) -> [String; 2] {
+    let deployment = identity.deployment_id();
+    [
+        format!("KV_trellis_operations_{deployment}"),
+        format!("OBJ_trellis_operation_staging_{deployment}"),
+    ]
+}
+
+/// Wait until JetStream has, or no longer has, `stream`.
+async fn await_stream(jetstream: &async_nats::jetstream::Context, stream: &str, present: bool) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while jetstream.get_stream(stream).await.is_ok() != present {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "stream {stream} is still {}",
+            if present { "missing" } else { "there" }
+        )
+    });
 }
 
 /// The service's latest `webhook:token` check once `accept` takes it.
@@ -322,10 +351,49 @@ async fn a_small_broker_holds_every_stream_and_webhook_intake_recovers() {
         "the remaining deployment's refusal stays: {last}"
     );
 
-    // Once there is room, the worker creates the stream, the check clears,
-    // and requests flow.
-    jetstream.delete_stream("FILLER").await.unwrap();
+    // Removing a deployment deletes the streams Trellis made for it: the
+    // first deployment's intake stream, and the Operation storage of a
+    // provider. What JetStream reserved for the intake stream is free again,
+    // so the crowded deployment's stream fits. The other deployments keep
+    // theirs.
+    let removed_provider = runtime
+        .register_service::<runtime_trellis_echo_provider::Participant>("operations removed")
+        .await
+        .unwrap();
+    let removed_service =
+        runtime_trellis_echo_provider::Participant::connect(removed_provider.connect_options())
+            .await
+            .unwrap();
+    let kept_provider = runtime
+        .register_service::<runtime_trellis_native_optional_provider::Participant>(
+            "operations kept",
+        )
+        .await
+        .unwrap();
+    let kept_service = runtime_trellis_native_optional_provider::Participant::connect(
+        kept_provider.connect_options(),
+    )
+    .await
+    .unwrap();
+    for provider in [&removed_provider, &kept_provider] {
+        for stream in operation_streams(provider) {
+            await_stream(&jetstream, &stream, true).await;
+        }
+    }
+    runtime.remove_service(&identity).await.unwrap();
+    runtime.remove_service(&removed_provider).await.unwrap();
+    await_stream(&jetstream, &billing, false).await;
+    for stream in operation_streams(&removed_provider) {
+        await_stream(&jetstream, &stream, false).await;
+    }
+    for stream in operation_streams(&kept_provider) {
+        jetstream.get_stream(&stream).await.unwrap();
+    }
+
+    // The worker creates the stream in the room the removal left, the check
+    // clears, and requests flow.
     token_check(&health, &crowded, |check| check["status"] == "ok").await;
+    jetstream.get_stream(&stream).await.unwrap();
     let response = send(crowded_urls["token"].clone(), "room").await.unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let delivery = tokio::time::timeout(Duration::from_secs(20), crowded_deliveries.next())
@@ -334,6 +402,7 @@ async fn a_small_broker_holds_every_stream_and_webhook_intake_recovers() {
         .unwrap()
         .unwrap();
     assert_eq!(delivery.body.0, b"room");
+    jetstream.delete_stream("FILLER").await.unwrap();
     let recovered = jetstream_storage(&health).await;
     assert_eq!(recovered["status"], "ok", "{recovered}");
 
@@ -485,5 +554,7 @@ async fn a_small_broker_holds_every_stream_and_webhook_intake_recovers() {
     drop(crowded_service);
     drop(deliveries);
     drop(service);
+    drop(kept_service);
+    drop(removed_service);
     runtime.shutdown().await.unwrap();
 }

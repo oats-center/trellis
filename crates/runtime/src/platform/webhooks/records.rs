@@ -394,6 +394,26 @@ impl Records {
         .await
     }
 
+    /// A removed deployment's intake stream is gone: its requests still
+    /// waiting for verification expire, and no record points into the stream.
+    pub(crate) async fn stream_deleted(&self, deployment_id: &str) -> Result<()> {
+        let deployment_id = deployment_id.to_owned();
+        self.with(move |connection| {
+            connection.execute(
+                "UPDATE webhook_attempts SET outcome='expired',updated_at=?2 \
+                WHERE deployment_id=?1 AND outcome='pending'",
+                params![deployment_id, now_ms()],
+            )?;
+            connection.execute(
+                "UPDATE webhook_attempts SET stream_sequence=NULL \
+                WHERE deployment_id=?1 AND stream_sequence IS NOT NULL",
+                [&deployment_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     /// Requests still waiting for verification, for the pending gauge.
     pub(crate) async fn pending(&self) -> Result<u64> {
         self.with(|connection| {

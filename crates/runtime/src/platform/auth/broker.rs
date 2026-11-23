@@ -208,7 +208,8 @@ impl SqliteAuthorizationStore {
     /// physical closure completes only after exact system-account evidence.
     /// Advance one bounded enforcement page and deliver committed broker effects.
     /// Count progress in both phases so drains cannot stop at effect-free pages.
-    /// `notices` is a connection in the account sessions live in.
+    /// `notices` is a connection in the account sessions and deployments'
+    /// Operation storage live in.
     pub(crate) async fn process_effects(
         self: &Arc<Self>,
         material: &kv::Store,
@@ -350,6 +351,12 @@ impl SqliteAuthorizationStore {
                                 .ok_or(AuthError::Denied)?,
                         )
                         .await
+                    }
+                    "operation_storage_delete" => {
+                        let deployment = effect.payload["deploymentId"]
+                            .as_str()
+                            .ok_or(AuthError::Denied)?;
+                        super::framework_storage::delete_operations(notices, deployment).await
                     }
                     _ => Err(AuthError::Invalid("unknown committed effect".into())),
                 }

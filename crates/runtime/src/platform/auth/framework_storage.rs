@@ -18,6 +18,71 @@ pub(super) struct OperationStorage {
     pub(super) staging: String,
 }
 
+impl OperationStorage {
+    /// The buckets Trellis makes for `deployment`'s Operations.
+    fn of(deployment: &str) -> Self {
+        Self {
+            repository: format!("trellis_operations_{deployment}"),
+            staging: format!("trellis_operation_staging_{deployment}"),
+        }
+    }
+}
+
+/// The description that marks a bucket as the one Trellis made.
+fn marker(deployment: &str, object_store: bool) -> String {
+    format!(
+        "trellis.framework.operation.v1:{deployment}:{}",
+        if object_store {
+            "staging"
+        } else {
+            "repository"
+        }
+    )
+}
+
+/// Delete the Operation storage Trellis made for a removed deployment: its
+/// Operation records and staged uploads. A bucket already gone counts as
+/// deleted; one Trellis did not make is left in place.
+pub(super) async fn delete_operations(
+    operational: &async_nats::Client,
+    deployment: &str,
+) -> Result<(), AuthError> {
+    use async_nats::jetstream::context::GetStreamErrorKind;
+    let jetstream = async_nats::jetstream::new(operational.clone());
+    let buckets = OperationStorage::of(deployment);
+    for (bucket, object_store) in [(&buckets.repository, false), (&buckets.staging, true)] {
+        let stream_name = format!("{}_{bucket}", if object_store { "OBJ" } else { "KV" });
+        let mut stream = match jetstream.get_stream(&stream_name).await {
+            Ok(stream) => stream,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    GetStreamErrorKind::JetStream(error)
+                        if error.error_code()==async_nats::jetstream::ErrorCode::STREAM_NOT_FOUND
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(AuthError::Broker(error.to_string())),
+        };
+        let info = stream
+            .info()
+            .await
+            .map_err(|error| AuthError::Broker(error.to_string()))?;
+        if info.config.description.as_deref() != Some(marker(deployment, object_store).as_str()) {
+            return Err(AuthError::Invalid(format!(
+                "stream {stream_name} is not the one Trellis made for deployment {deployment}, so \
+                Trellis leaves it in place"
+            )));
+        }
+        jetstream
+            .delete_stream(&stream_name)
+            .await
+            .map_err(|error| AuthError::Broker(error.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Provision existing Operation storage before admitting an implemented provider.
 pub(super) async fn materialize_operations(
     store: &Arc<SqliteAuthorizationStore>,
@@ -88,20 +153,10 @@ pub(super) async fn materialize_operations(
     let Some((participant, installed_revision, binding_revision, materialized)) = plan else {
         return Ok(());
     };
-    let bindings = OperationStorage {
-        repository: format!("trellis_operations_{deployment}"),
-        staging: format!("trellis_operation_staging_{deployment}"),
-    };
+    let bindings = OperationStorage::of(deployment);
     let jetstream = async_nats::jetstream::new(operational.clone());
     for (bucket, object_store) in [(&bindings.repository, false), (&bindings.staging, true)] {
-        let marker = format!(
-            "trellis.framework.operation.v1:{deployment}:{}",
-            if object_store {
-                "staging"
-            } else {
-                "repository"
-            }
-        );
+        let marker = marker(deployment, object_store);
         let stream_name = format!("{}_{bucket}", if object_store { "OBJ" } else { "KV" });
         match jetstream.get_stream(&stream_name).await {
             Ok(_) => (),
