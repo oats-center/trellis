@@ -486,9 +486,21 @@ fn a_builtin_this_server_cant_install_leaves_every_builtin_unchanged() {
         ],
         NOW + 1,
     );
+    // The refusal names the API and both releases: this one, and the one that
+    // installed the built-in, which the operator can start instead.
+    let installed = health_shipped
+        .packages
+        .iter()
+        .find(|package| package.name == health_shipped.root_package)
+        .map(|package| package.version.to_string())
+        .unwrap();
     assert!(
         matches!(&refused, Err(AuthError::Invalid(reason))
-            if reason.contains(trellis_health_runtime::Participant::ID)),
+            if reason.contains(trellis_health_runtime::Participant::ID)
+                && reason.contains("API trellis.health@v1 changed incompatibly")
+                && reason.contains(&format!("Trellis {} can't upgrade", env!("CARGO_PKG_VERSION")))
+                && reason.contains(&format!("installed by Trellis {installed}"))
+                && reason.contains(&format!("Start it with Trellis {installed}"))),
         "{refused:?}"
     );
     assert_eq!(state(), before);
