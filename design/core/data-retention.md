@@ -99,11 +99,12 @@ busy_timeout_ms`, five seconds when unset. A failure is then one of three kinds:
   Health status event is kept with `set_aside_at_ns` until retention removes
   it; a heartbeat or coverage gap is dropped. An Auth enforcement page that
   fails this way is deferred a minute rather than dropped, since its sessions
-  still need enforcing, so the work queued after it proceeds. Its work is
-  marked stuck: the error is logged when it first fails and then once an hour
-  while it keeps failing, and Auth's `enforcement` health check reports
-  degraded, naming the work, the time it first failed and the latest error,
-  until a page of it succeeds. Startup work that fails this way, such as a
+  still need enforcing, so the work queued after it proceeds. That work, the
+  one the failed page selected even if other work has since moved ahead of it
+  in the queue, is marked stuck: the error is logged when it first fails and
+  then once an hour while it keeps failing, and Auth's `enforcement` health
+  check reports degraded, naming the work, the time it first failed and the
+  latest error, until a page of it succeeds. Startup work that fails this way, such as a
   migration whose checksum differs, stops startup with a message naming the
   work. A failure that is not tied to one item, such as a projector's batch
   bookkeeping, is retried and logged at error.

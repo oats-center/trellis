@@ -353,6 +353,62 @@ fn targeted_enforcement_preempts_a_queued_broad_scan_and_wakes_workers() {
     assert!(!queued.has_changed().unwrap(), "reads never wake workers");
 }
 
+// A broad scan's page fails for good, and before its failure is recorded an
+// administrator's targeted revocation takes the head of the queue. Health
+// must name the scan, with its error, and never the revocation, which still
+// runs at once.
+#[test]
+fn a_failed_page_marks_its_own_work_stuck_after_the_queue_changes() {
+    let f = fixture();
+    drain(&f.store, NOW);
+    let broad = f
+        .store
+        .transaction(|connection| {
+            super::super::revocation::enqueue_scope(connection, &EnforcementScope::All, NOW)
+        })
+        .unwrap();
+    f.store
+        .transaction(|connection| {
+            connection.execute(
+                &format!(
+                    "CREATE TRIGGER refuse_page BEFORE UPDATE OF state ON auth_enforcement_work \
+                    WHEN NEW.work_id='{broad}' BEGIN SELECT RAISE(ABORT,'page refused'); END"
+                ),
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut selected = None;
+    let error = f.store.enforce_page(NOW, &mut selected).unwrap_err();
+    assert_eq!(selected.as_deref(), Some(broad.as_str()));
+    let targeted = f
+        .store
+        .transaction(|connection| {
+            super::super::revocation::enqueue_scope(
+                connection,
+                &EnforcementScope::Session(id()),
+                NOW,
+            )
+        })
+        .unwrap();
+    f.store
+        .mark_stuck(&broad, &error.to_string(), NOW)
+        .unwrap()
+        .expect("the scan is still queued");
+
+    let stuck = f.store.stuck_enforcement(5).unwrap();
+    assert_eq!(stuck.len(), 1, "{stuck:?}");
+    assert_eq!(stuck[0].0, broad);
+    assert!(stuck[0].2.contains("page refused"), "{stuck:?}");
+    assert_eq!(
+        f.store.enforce_next_page(NOW).unwrap(),
+        Some(targeted),
+        "the revocation is not pushed back a minute"
+    );
+    assert_eq!(f.store.enforce_next_page(NOW).unwrap(), None);
+}
+
 #[test]
 fn identical_effects_behind_different_predecessors_keep_both_edges() {
     let f = fixture();

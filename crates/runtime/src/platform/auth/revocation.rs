@@ -523,55 +523,69 @@ impl SqliteAuthorizationStore {
     /// One bounded page commits retirements, effects and its cursor atomically.
     /// A crashed transaction replays its page; a committed page resumes by ID.
     pub(crate) fn enforce_next_page(&self, now: i64) -> Result<Option<String>, AuthError> {
-        match self.enforce_page(now) {
+        let mut selected = None;
+        match self.enforce_page(now, &mut selected) {
             Err(error) if error.storage_failure() == crate::storage::StorageFailure::Permanent => {
                 // A page that fails the same way every time must not hold back
                 // the enforcement work queued after it. It is tried again in a
                 // minute, since its sessions still need enforcing, and marked
                 // stuck until a page succeeds, for the Auth health check. The
                 // error is logged when the work first fails, then hourly.
-                let reason = error.to_string();
-                let stuck = self.transaction(|connection| {
-                    Ok(connection
-                        .query_row(
-                            "UPDATE auth_enforcement_work SET next_attempt_at=?1+60,\
-                            stuck_since=coalesce(stuck_since,?1),stuck_error=?2,\
-                            stuck_logged_at=CASE WHEN stuck_logged_at IS NULL \
-                            OR stuck_logged_at<=?1-?3 THEN ?1 ELSE stuck_logged_at END \
-                            WHERE work_id=(SELECT work_id FROM auth_enforcement_work \
-                            WHERE state IN ('queued','running') AND next_attempt_at<=?1 \
-                            ORDER BY lane,created_at,work_id LIMIT 1) \
-                            RETURNING work_id,stuck_since,stuck_logged_at=?1",
-                            params![now, reason, STUCK_LOG_INTERVAL_SECONDS],
-                            |row| {
-                                Ok((
-                                    row.get::<_, String>(0)?,
-                                    row.get::<_, i64>(1)?,
-                                    row.get::<_, bool>(2)?,
-                                ))
-                            },
-                        )
-                        .optional()?)
-                })?;
-                match &stuck {
-                    Some((work, since, true)) => tracing::error!(
+                let Some(work) = selected else {
+                    tracing::error!(%error, "Auth enforcement page failed");
+                    return Ok(None);
+                };
+                match self.mark_stuck(&work, &error.to_string(), now)? {
+                    Some((since, true)) => tracing::error!(
                         work_id = %work,
                         stuck_since = since,
                         %error,
                         "Auth enforcement page failed; its work runs again every minute \
                         and this is logged hourly while it fails"
                     ),
-                    Some((work, _, false)) => tracing::debug!(
+                    Some((_, false)) => tracing::debug!(
                         work_id = %work,
                         %error,
                         "Auth enforcement page failed again"
                     ),
-                    None => tracing::error!(%error, "Auth enforcement page failed"),
+                    None => tracing::debug!(
+                        work_id = %work,
+                        %error,
+                        "Auth enforcement page failed, and its work has finished since"
+                    ),
                 }
-                Ok(stuck.map(|(work, _, _)| work))
+                Ok(Some(work))
             }
             result => result,
         }
+    }
+
+    /// Marks the work whose page failed stuck, while it is still queued or
+    /// running, and puts its next attempt a minute out. Returns since when it
+    /// is stuck and whether to log the error now.
+    ///
+    /// The failed page rolled back, so `work` is the row it selected; the
+    /// queue can change before this runs, so this never selects again.
+    pub(super) fn mark_stuck(
+        &self,
+        work: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<Option<(i64, bool)>, AuthError> {
+        self.transaction(|connection| {
+            Ok(connection
+                .query_row(
+                    "UPDATE auth_enforcement_work SET next_attempt_at=?1+60,\
+                    stuck_since=coalesce(stuck_since,?1),stuck_error=?2,\
+                    stuck_logged_at=CASE WHEN stuck_logged_at IS NULL \
+                    OR stuck_logged_at<=?1-?3 THEN ?1 ELSE stuck_logged_at END \
+                    WHERE work_id=?4 AND state IN ('queued','running') \
+                    RETURNING stuck_since,stuck_logged_at=?1",
+                    params![now, reason, STUCK_LOG_INTERVAL_SECONDS, work],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, bool>(1)?)),
+                )
+                .optional()?)
+        })
     }
 
     /// Enforcement work whose pages fail in a way trying again cannot fix,
@@ -596,7 +610,13 @@ impl SqliteAuthorizationStore {
         })
     }
 
-    fn enforce_page(&self, now: i64) -> Result<Option<String>, AuthError> {
+    /// Enforces the next eligible page. `selected` names the work it picked,
+    /// even when the page then fails and rolls back.
+    pub(super) fn enforce_page(
+        &self,
+        now: i64,
+        selected: &mut Option<String>,
+    ) -> Result<Option<String>, AuthError> {
         let page = self.transaction(|connection| {
             let next: Option<(String, String, Option<String>, Option<i64>)> = connection
                 .query_row(
@@ -613,6 +633,7 @@ impl SqliteAuthorizationStore {
             let Some((work, encoded, cursor, stuck_since)) = next else {
                 return Ok(None);
             };
+            *selected = Some(work.clone());
             let scope: EnforcementScope = decode(&encoded)?;
             let (predicate, key) = session_scope(&scope);
             let sql = format!(
