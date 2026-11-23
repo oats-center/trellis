@@ -953,6 +953,101 @@ model AuthPackagePullResponse {
 model AuthDeploymentGetRequest { deploymentId: ulid; }
 model AuthDeploymentGetResponse { deployment: AuthDeployment; }
 type AuthDeploymentsListResponse = CursorPage<AuthDeployment>;
+/// Which service deployment to export.
+model AuthDeploymentExportRequest { deploymentId: ulid; }
+/// How far an export or import has come.
+model AuthServiceBundleProgress {
+  /// What is being done, in plain words.
+  step: string;
+  /// Bundle bytes written or read so far.
+  bytes: uint64;
+}
+/// One instance a bundle carries: its identity, never its seed.
+model AuthServiceBundleInstance {
+  instanceId: ulid;
+  title: string;
+  state: AuthInstanceState;
+  /// The public half of the instance's identity key.
+  identityPublicKey: string;
+}
+/// One resource a bundle carries, with the data it holds.
+model AuthServiceBundleResource {
+  kind: AuthResourceKind;
+  name: string;
+  /// Stored entries: KV revisions, store chunks, or unfinished jobs.
+  messages: uint64;
+  bytes: uint64;
+}
+/// One webhook endpoint a bundle carries. Its random URL ID moves with it.
+model AuthServiceBundleWebhook {
+  endpoint: string;
+  /// The URL path, the same in every installation.
+  path: string;
+  /// The full URL in this installation.
+  url: string;
+}
+/// A role in the exporting installation that holds a capability of an API the service provides.
+model AuthServiceBundleRole {
+  name: string;
+  capabilities: list<AuthCapabilityId>;
+  /// How many users and apps hold the role there.
+  assignments: uint64;
+}
+/// A capability of the service's APIs granted directly to principals in the exporting installation.
+model AuthServiceBundleGrant {
+  capability: AuthCapabilityId;
+  /// How many principals hold it directly there.
+  principals: uint64;
+}
+/// What a service bundle holds, what stayed behind, and what an administrator recreates by hand.
+model AuthServiceBundleReport {
+  deploymentId: ulid;
+  title: string;
+  participantId: string;
+  /// The installation the bundle was exported from.
+  sourceInstallationId: string;
+  sourceOrigin: string;
+  /// SHA-256 of the bundle's content, recorded in both installations' audit entries.
+  contentDigest: AuthDigest;
+  exportedAt: timestamp;
+  instances: list<AuthServiceBundleInstance>;
+  /// How many enrollment secrets moved, revoked ones included.
+  enrollmentSecrets: uint64;
+  resources: list<AuthServiceBundleResource>;
+  webhooks: list<AuthServiceBundleWebhook>;
+  /// Roles to recreate: import creates none.
+  roles: list<AuthServiceBundleRole>;
+  /// Direct grants to recreate: import creates none.
+  grants: list<AuthServiceBundleGrant>;
+  /// What stayed in the exporting installation, in plain words.
+  leftBehind: list<string>;
+}
+/// A finished export, ready to download until it expires.
+model AuthDeploymentExportResult {
+  exportId: ulid;
+  /// Size of the bundle's content in bytes.
+  size: uint64;
+  expiresAt: timestamp;
+  report: AuthServiceBundleReport;
+}
+/// Which finished export to download.
+model AuthDeploymentExportDownloadRequest { exportId: ulid; }
+model AuthDeploymentExportDownloadResponse { exportId: ulid; size: uint64; }
+/// How to import the bundle content sent with the operation.
+model AuthDeploymentImportRequest {
+  /// Verify the bundle and report what the import would do, changing nothing.
+  check?: bool;
+  acknowledgeSharedApis?: bool;
+  /// Confirms importing webhook endpoints that check nothing (`verify none`).
+  acknowledgeUnauthenticatedWebhooks?: bool;
+}
+model AuthDeploymentImportResult {
+  /// Whether the import changed anything: false for a check.
+  applied: bool;
+  /// Whether this run finished an earlier import of the same bundle that failed partway.
+  resumed: bool;
+  report: AuthServiceBundleReport;
+}
 model AuthDeploymentApplyRequest {
   deploymentId: ulid;
   packageEvidence: AuthPackageEvidence;

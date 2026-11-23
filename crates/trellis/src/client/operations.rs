@@ -100,6 +100,10 @@ pub struct OperationSnapshot<TProgress = Value, TOutput = Value> {
     pub transfer: Option<OperationTransferProgress>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<TOutput>,
+    /// Why a `failed` Operation failed: its declared error's type, message
+    /// and fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<trellis_protocol::operation_record::OperationError>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

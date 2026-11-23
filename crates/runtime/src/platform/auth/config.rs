@@ -911,6 +911,71 @@ fn current(connection: &Connection, key: &str) -> Result<Option<Stored>, AuthErr
     stored(connection, key, None)
 }
 
+/// One target's current settings with its secrets opened, as a service
+/// bundle carries them. Only the current revision moves: deleting older
+/// revisions is how a replaced secret stops existing.
+#[derive(serde::Deserialize, serde::Serialize)]
+pub(super) struct BundledSettings {
+    pub(super) values: Map<String, Value>,
+    pub(super) secrets: Map<String, Value>,
+}
+
+/// The current settings of `deployment`, or of its `instance`'s overrides,
+/// opened with this installation's storage key for a service bundle.
+pub(super) fn export_settings(
+    connection: &Connection,
+    storage: &OAuthStorage,
+    deployment: &str,
+    instance: Option<&str>,
+) -> Result<Option<BundledSettings>, AuthError> {
+    let key = match instance {
+        Some(instance) => format!("instance:{instance}"),
+        None => format!("deployment:{deployment}"),
+    };
+    current(connection, &key)?
+        .map(|stored| {
+            Ok(BundledSettings {
+                secrets: open_secrets(storage, &key, stored.sealed.as_deref())?,
+                values: stored.values,
+            })
+        })
+        .transpose()
+}
+
+/// Store a bundle's settings as the first revision of an imported target,
+/// sealing its secrets with this installation's storage key.
+pub(super) fn import_settings(
+    connection: &Connection,
+    storage: &OAuthStorage,
+    deployment: &str,
+    instance: Option<&str>,
+    settings: &BundledSettings,
+    actor: &str,
+    now: i64,
+) -> Result<(), AuthError> {
+    let target = match instance {
+        Some(instance) => Target::Instance {
+            deployment: deployment.to_owned(),
+            instance: instance.to_owned(),
+        },
+        None => Target::Deployment {
+            deployment: deployment.to_owned(),
+        },
+    };
+    write_revision(
+        connection,
+        storage,
+        &target,
+        1,
+        &settings.values,
+        &settings.secrets,
+        &settings.values.keys().cloned().collect(),
+        &settings.secrets.keys().cloned().collect(),
+        actor,
+        now,
+    )
+}
+
 /// Secrets are bound to their target, never to one revision, so a rollback
 /// can carry an earlier revision's sealed values forward unchanged.
 fn open_secrets(

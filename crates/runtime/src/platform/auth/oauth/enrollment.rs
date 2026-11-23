@@ -1004,6 +1004,7 @@ pub(crate) fn provision(
                     &deployment,
                     input.identity_public_key.as_ref().map(|key| key.as_ref()),
                     &input.title,
+                    None,
                     now,
                 )?;
                 let secret = if input.identity_public_key.is_none() {

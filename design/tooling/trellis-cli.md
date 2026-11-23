@@ -170,6 +170,9 @@ trellis svc <deployment-id> provision [--public-key <key>] [--new]
 trellis svc enable|disable|remove ...
 trellis svc <deployment-id> updates
 trellis svc <deployment-id> approve|reject [<update-id>] [--acknowledge-shared-apis]
+trellis svc <id> export [--out <file>] [--passphrase-file <path|->]
+trellis svc import <file> [--digest <sha256>] [--passphrase-file <path|->] [--check]
+                   [--acknowledge-shared-apis] [--acknowledge-unauthenticated-webhooks]
 
 trellis dev <name> create --source <project> | --package <release> ...
 trellis dev <id> apply --source <project> | --package <release> ...
@@ -255,6 +258,22 @@ checks. The states follow `design/auth/service-updates.md`.
 another deployment serves requires `--acknowledge-shared-apis`; without it the
 CLI explains that requests would be split between the services and stops. See `design/auth/service-updates.md`. There are
 no authority show/plan/reconcile commands.
+
+`svc <id> export` and `svc import` move one service to another installation;
+see `design/auth/service-export.md`. Export starts the
+`Auth.Deployments.Export` Operation, downloads the content with
+`Auth.Deployments.Exports.Download`, and encrypts it with a passphrase as it
+arrives, writing `<file>.partial` and renaming it once whole. It prints the
+file's SHA-256. Import refuses a file whose SHA-256 differs from `--digest`;
+without `--digest` it asks a terminal to confirm the digest and fails
+elsewhere. It checks the passphrase against the bundle's header before it
+connects, then streams the decrypted content as the `Auth.Deployments.Import`
+Operation's byte stream and prints the report: webhook URLs at the new
+origin, roles and direct grants to recreate, and what stayed behind. The
+passphrase comes from `--passphrase-file` (`-` for standard input), a
+terminal question (asked twice for export), or piped standard input, and is
+never sent to Auth. With `--format json`, export prints `{ file, size,
+digest, deploymentId, report }` and import `{ digest, import }`.
 
 Provisioning returns one-use service/device material once. The CLI does not
 persist returned private identity material unless the caller explicitly directs

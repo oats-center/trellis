@@ -282,6 +282,10 @@
         "to": "/guides/enroll-service-instances"
       },
       {
+        "title": "Moving a service to another installation",
+        "to": "/guides/move-a-service"
+      },
+      {
         "title": "Administer Jobs",
         "to": "/guides/administering-jobs"
       }

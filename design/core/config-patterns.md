@@ -353,6 +353,15 @@ band to check them. A secret is now shown on explicit request to holders of
   to standard output with a warning on standard error when that is a
   terminal.
 
+Exporting a service for another installation
+([service-export.md](../auth/service-export.md)) also opens its secrets: the
+current revision's secrets travel in the passphrase-encrypted bundle and are
+sealed again with the importing installation's storage key. Export needs
+`config.manageSecrets` as well as `users.manage`, and its audit record
+(`deployment.exported`) names the secrets without their values. It is not
+counted against the reveal limit, which covers reading secrets one at a
+time.
+
 The CLI follows the target-first shape: `trellis svc <ID> config` (or
 `trellis dev <ID> config` for a device type) shows the settings, `reveal
 FIELD` prints a secret, and `set FIELD=VALUE`, `set-secret FIELD --from-file

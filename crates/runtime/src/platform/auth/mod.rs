@@ -41,6 +41,7 @@ mod rpc_policy_aggregates;
 mod rpc_resource_bindings;
 mod rpc_resources;
 mod rpc_users;
+mod service_bundles;
 mod service_updates;
 mod sign_in;
 pub(crate) mod webhooks;

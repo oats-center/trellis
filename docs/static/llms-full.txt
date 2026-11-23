@@ -309,6 +309,29 @@ JetStream store. An interrupted restore is run again (restore, then start),
 which replaces the streams the interrupted one loaded. Leases only pick which
 server runs a role: a standby needs the same NATS and, for Auth, the same database, issuer keys and `secrets.toml`.
 
+`trellis svc <id> export [--out <file>] [--passphrase-file <path|->]` moves
+one service to another installation: it writes the installed build, the
+deployment, active and disabled instances' public keys (no seeds),
+enrollment secret hashes, current settings with their secrets, webhook
+endpoints with their URL IDs, KV and store snapshots, and the lifecycle of
+jobs not yet settled, encrypted by the CLI with the operator's passphrase
+(Argon2id and ChaCha20-Poly1305; the passphrase never reaches Auth), and
+prints the file's SHA-256. Export changes nothing in the old installation;
+stop the service's processes first, and disable then remove the old
+deployment once it runs in the new one. `trellis svc import <file> --digest
+<sha256> [--check]` refuses a file with another digest, a wrong passphrase, a
+deployment ID or participant already deployed, or an instance key,
+enrollment secret or webhook URL already in use; it keeps the deployment,
+instance and resource IDs, so KV revisions, job subjects and webhook paths
+are unchanged, and a run that stopped while loading data finishes when run
+again. It creates no roles or grants: its report lists the roles and direct
+grants of the service's APIs to recreate, the webhook URLs at the new origin,
+and what stayed behind (job and settings history, unconsumed events,
+Operations). Both need `users.manage` and `config.manageSecrets`
+(`platform.manage` for an administrative service) and are audited. Processes
+reconnect with their existing seed once their Trellis URL points at the new
+installation; restart each one.
+
 `trellis-server --dev` runs a development installation in
 `<user data>/trellis/dev` (or `--config <dir>`), creating it the first time:
 plain HTTP on `localhost:3000`, or with `--host <name>` generated TLS for that
@@ -2625,7 +2648,8 @@ owner reference; restore it with the invoker's `control(reference)` without
 starting another execution. To cancel a reserved invocation that may not yet be
 admitted, use `start_cancelled_with_invocation_id(id, &input)` with its original
 input; the returned reference does not imply finished cleanup, so `wait()` for
-the terminal result.
+the terminal result. `wait()` returns a `failed` snapshot as success; its
+`error` holds the declared error's `error_type`, `message` and fields.
 
 For explicit pre-acceptance owner selection, persist deployment, invocation
 ULID, and frozen input before sending, then use

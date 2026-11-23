@@ -19,6 +19,7 @@ use trellis_rs::telemetry::{
 use trellis_self_update::{ReleaseChannel, SelfUpdateTarget};
 
 mod auth;
+mod bundle;
 mod config;
 pub mod deploy;
 mod enrollment;

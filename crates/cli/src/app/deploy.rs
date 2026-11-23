@@ -16,6 +16,10 @@ use crate::output;
 pub(super) async fn run_svc(format: OutputFormat, command: SvcCommand) -> miette::Result<()> {
     match (command.id, command.command) {
         (None, SvcSubcommand::List(args)) => list_services(format, &args).await,
+        (None, SvcSubcommand::Import(args)) => super::bundle::import(format, &args).await,
+        (Some(_), SvcSubcommand::Import(_)) => Err(miette::miette!(
+            "`import` is a top-level service command; use `trellis svc import <FILE>`"
+        )),
         (Some(id), SvcSubcommand::Resource(action)) => {
             run_svc_resource(format, SvcResourceCommand { id, action }).await
         }
@@ -71,6 +75,7 @@ async fn run_svc_resource(format: OutputFormat, command: SvcResourceCommand) -> 
             decide_service_update(format, &command.id, &args, false).await
         }
         SvcResourceAction::Webhooks(args) => super::webhooks::run(format, &command.id, args).await,
+        SvcResourceAction::Export(args) => super::bundle::export(format, &command.id, &args).await,
         SvcResourceAction::Config(args) => {
             super::config::run(
                 format,

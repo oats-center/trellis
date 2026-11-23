@@ -501,6 +501,7 @@ impl SqliteAuthorizationStore {
                 &deployment,
                 Some(&input.identity_public_key),
                 title,
+                None,
                 now,
             )
         })
@@ -936,11 +937,14 @@ impl SqliteAuthorizationStore {
 
     /// Provision one immutable credential/principal/instance aggregate against
     /// the exact installed deployment revision and approved capability selection.
+    /// `identity` gives the principal and instance their IDs, as an import
+    /// keeps them; without it both are new.
     pub(super) fn provision_instance_in_transaction(
         connection: &crate::platform::auth::sqlite::Connection,
         deployment: &str,
         public_key: Option<&str>,
         title: &str,
+        identity: Option<(&str, &str)>,
         now: i64,
     ) -> Result<ProvisionedDeployment, AuthError> {
         if title.trim().is_empty() {
@@ -1035,11 +1039,14 @@ impl SqliteAuthorizationStore {
             }
         }
         let optional: Vec<String> = decode(&optional)?;
+        let (principal_id, instance_id) = identity
+            .map(|(principal, instance)| (principal.to_owned(), instance.to_owned()))
+            .unwrap_or_else(|| (id(), id()));
         let result = ProvisionedDeployment {
             participant_id: participant,
-            principal_id: id(),
+            principal_id,
             deployment_id: deployment.into(),
-            instance_id: id(),
+            instance_id,
             identity_key_id: identity_key_id.unwrap_or_default(),
         };
         let known: bool = connection.query_row(

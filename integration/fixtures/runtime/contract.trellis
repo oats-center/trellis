@@ -590,3 +590,26 @@ agent DownloadGrowthCaller {
   use runtime { required capability transfers.download; }
   use transport_growth { capability growth.extend; }
 }
+
+// A service moved to another installation with everything Trellis keeps for it.
+api moving@v1 {
+  title "Moving";
+  description "The API a moved service provides, so its access can be listed.";
+  rpc Ping { input Value; output Value; }
+  capabilities {
+    capability moving.ping { title "Ping"; description "Reach the moved service."; grants "The caller can reach the moved service."; allows { rpc Ping; } }
+  }
+}
+service MovingService {
+  implements moving;
+  config label { title "Label"; description "Shown beside the service's records."; type string; }
+  config apiKey { title "API key"; description "Key senders present to the token endpoint."; type string; secret; }
+  kv records { title "Records"; description "Records that move with the service."; schema ResourceValue; version 1; history 4; ttl 0ms; }
+  store files { title "Files"; description "Files that move with the service."; ttl 0; desired_max_object 1MiB; desired_max_total 8MiB; }
+  job work { title "Work"; description "Work that moves while still waiting."; payload Value; result Value; }
+  webhook token {
+    title "Token";
+    description "A fixed token in a header.";
+    verify token { secret config apiKey; header "X-Hook-Token"; }
+  }
+}

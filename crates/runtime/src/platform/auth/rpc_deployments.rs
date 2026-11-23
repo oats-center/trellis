@@ -739,6 +739,7 @@ pub(super) fn provision_instance(
                 &deployment,
                 Some(public_key.as_ref()),
                 &input.title,
+                None,
                 now,
             )?;
             Ok(AuthInstanceProvisionResponse {
