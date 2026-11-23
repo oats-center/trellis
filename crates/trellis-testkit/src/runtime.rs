@@ -687,12 +687,62 @@ pub struct TrellisTestRuntime {
 }
 
 impl TrellisTestRuntime {
+    /// Stop the server and leave it stopped, with its broker running and its
+    /// installation in place, as an operator does before replacing the
+    /// server's binary. [`Self::restart`] or [`Self::restart_with_server`]
+    /// starts it again; until then the runtime serves nothing.
+    ///
+    /// # Errors
+    /// Returns a stopped-runtime or shutdown failure.
+    pub async fn stop_server(&mut self) -> Result<(), TrellisTestError> {
+        if self.stopped {
+            return Err(self.stopped_error());
+        }
+        self.infrastructure.starting = true;
+        self.admin = None;
+        if let Some(server) = self.infrastructure.server.as_mut() {
+            server.stop(self.timeouts.shutdown).await?;
+        }
+        Ok(())
+    }
+
     /// Restart the ordinary runtime against its existing persistent data and broker.
     /// Existing callers must reconnect; no credentials or platform state are reseeded.
     ///
     /// # Errors
     /// Returns shutdown, startup, readiness, or administrator reconnect failures.
     pub async fn restart(&mut self) -> Result<(), TrellisTestError> {
+        self.restart_runtime(false, None).await
+    }
+
+    /// Stop the server and start `server`, another `trellis-server` build, on
+    /// the same installation and broker, as an operator who replaces the
+    /// server's binary does. An upgrade test starts a runtime from a
+    /// published release and restarts it with the build under test; a refused
+    /// upgrade is rolled back by restarting with the earlier release again.
+    ///
+    /// When the new server exits before it is ready, this returns its failure
+    /// and the runtime stays stopped until a later restart; the server's
+    /// output, a refusal included, is in the work directory's
+    /// `logs/trellis-server.log`. Existing callers must reconnect.
+    ///
+    /// # Errors
+    /// Returns acquisition, shutdown, startup, readiness, or administrator
+    /// reconnect failures.
+    pub async fn restart_with_server(
+        &mut self,
+        server: NativeSource,
+    ) -> Result<(), TrellisTestError> {
+        if self.stopped {
+            return Err(self.stopped_error());
+        }
+        let resolved = crate::distribution::resolve(
+            Some(server),
+            &NatsSource::Path(self.distribution.nats.clone()),
+        )
+        .await?;
+        self.distribution.server = resolved.server;
+        self.distribution.version = resolved.version;
         self.restart_runtime(false, None).await
     }
 
@@ -933,6 +983,12 @@ impl TrellisTestRuntime {
     #[must_use]
     pub fn monitor_url(&self) -> &str {
         &self.monitor_url
+    }
+    /// The version of the running `trellis-server`, as it reports it,
+    /// without build metadata.
+    #[must_use]
+    pub fn server_version(&self) -> &str {
+        &self.distribution.version
     }
     /// Sandbox work directory.
     #[must_use]

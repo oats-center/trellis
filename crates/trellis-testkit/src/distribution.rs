@@ -25,11 +25,19 @@ pub enum NativeSource {
     /// the latest stable release (the newest prerelease before the first stable
     /// one), each checked against the checksum published with it.
     Release,
+    /// Acquire the newest published release no newer than this version: the
+    /// release a build of this version upgrades, which an upgrade test
+    /// installs first. A stable version takes the newest such stable release
+    /// when there is one. It is checked against the checksum published with
+    /// it; `TRELLIS_TEST_VERSION` does not apply.
+    PreviousRelease(String),
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct Distribution {
     pub server: PathBuf,
+    /// The version the server reports, without build metadata.
+    pub version: String,
     pub nats: PathBuf,
 }
 
@@ -82,13 +90,32 @@ async fn get(url: &str) -> Result<Vec<u8>, TrellisTestError> {
 
 /// The release version to test against: `TRELLIS_TEST_VERSION`, or the latest
 /// stable release, falling back to the newest prerelease before the first
-/// stable one. A recent answer is reused, and an unreachable GitHub falls back
-/// to the last answer.
-async fn release_version(cache: &Path) -> Result<String, TrellisTestError> {
-    if let Ok(version) = std::env::var("TRELLIS_TEST_VERSION") {
-        return Ok(version.trim_start_matches('v').to_owned());
-    }
-    let record = cache.join("latest-release.json");
+/// stable one. With `upgraded`, the newest release no newer than it instead,
+/// a stable `upgraded` taking the newest such stable release when there is
+/// one.
+/// A recent answer is reused, and an unreachable GitHub falls back to the last
+/// answer.
+async fn release_version(cache: &Path, upgraded: Option<&str>) -> Result<String, TrellisTestError> {
+    let upgraded = match upgraded {
+        None => {
+            if let Ok(version) = std::env::var("TRELLIS_TEST_VERSION") {
+                return Ok(version.trim_start_matches('v').to_owned());
+            }
+            None
+        }
+        Some(upgraded) => Some(
+            semver::Version::parse(upgraded.trim_start_matches('v')).map_err(|cause| {
+                error(
+                    TrellisTestErrorKind::InvalidConfiguration,
+                    format!("{upgraded} is not a release version: {cause}"),
+                )
+            })?,
+        ),
+    };
+    let record = cache.join(match &upgraded {
+        None => "latest-release.json".to_owned(),
+        Some(upgraded) => format!("release-upgraded-by-{upgraded}.json"),
+    });
     let cached = std::fs::read(&record)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<LatestRelease>(&bytes).ok());
@@ -115,16 +142,35 @@ async fn release_version(cache: &Path) -> Result<String, TrellisTestError> {
             Err(cause) => return cached.map(|cached| cached.version).ok_or(cause),
         };
     // GitHub lists releases newest first.
-    let published = releases.iter().filter(|release| !release.draft);
+    let mut published: Vec<_> = releases
+        .iter()
+        .filter(|release| !release.draft)
+        .filter_map(|release| {
+            let tag = release.tag_name.trim_start_matches('v');
+            Some((semver::Version::parse(tag).ok()?, release.prerelease))
+        })
+        .collect();
+    if let Some(upgraded) = &upgraded {
+        published.retain(|(version, _)| version <= upgraded);
+        published.sort_by(|a, b| b.0.cmp(&a.0));
+    }
+    let stable = upgraded
+        .as_ref()
+        .is_none_or(|upgraded| upgraded.pre.is_empty());
     let version = published
-        .clone()
-        .find(|release| !release.prerelease)
-        .or_else(|| published.clone().next())
-        .map(|release| release.tag_name.trim_start_matches('v').to_owned())
+        .iter()
+        .find(|(_, prerelease)| stable && !prerelease)
+        .or_else(|| published.first())
+        .map(|(version, _)| version.to_string())
         .ok_or_else(|| {
             error(
                 TrellisTestErrorKind::MissingBinary,
-                "oats-center/trellis has no published release",
+                match &upgraded {
+                    None => "oats-center/trellis has no published release".to_owned(),
+                    Some(upgraded) => {
+                        format!("oats-center/trellis has no published release up to {upgraded}")
+                    }
+                },
             )
         })?;
     let latest = LatestRelease {
@@ -154,13 +200,17 @@ pub(crate) async fn resolve(
         },
     };
     let mut expected = None;
-    let server = match source {
-        NativeSource::Path { server } => executable(&server)?,
-        NativeSource::Release => {
+    let server = match &source {
+        NativeSource::Path { server } => executable(server)?,
+        NativeSource::Release | NativeSource::PreviousRelease(_) => {
             let _ = target()?;
             let cache = cache_dir()?;
             private_dir(&cache)?;
-            let version = release_version(&cache).await?;
+            let upgraded = match &source {
+                NativeSource::PreviousRelease(upgraded) => Some(upgraded.as_str()),
+                _ => None,
+            };
+            let version = release_version(&cache, upgraded).await?;
             let platform = if cfg!(target_os = "linux") {
                 "unknown-linux-gnu"
             } else {
@@ -200,7 +250,7 @@ pub(crate) async fn resolve(
             installed
         }
     };
-    {
+    let version = {
         let path = &server;
         let output = tokio::time::timeout(
             Duration::from_secs(10),
@@ -246,7 +296,8 @@ pub(crate) async fn resolve(
         ANNOUNCED.call_once(|| {
             eprintln!("trellis-testkit: testing against trellis-server {actual}");
         });
-    }
+        actual
+    };
     let nats = match nats {
         NatsSource::Path(path) => executable(path)?,
         NatsSource::PathLookup => {
@@ -286,7 +337,11 @@ pub(crate) async fn resolve(
                 &[&format!("nats-server-v{}-{target}/nats-server", pin.version)], &cache_dir()?).await?.remove(0)
         }
     };
-    Ok(Distribution { server, nats })
+    Ok(Distribution {
+        server,
+        version,
+        nats,
+    })
 }
 
 fn target() -> Result<String, TrellisTestError> {
