@@ -43,7 +43,6 @@ pub(crate) const HEALTH_STREAM: &str = "TRELLIS_HEALTH";
 pub(crate) const HEALTH_SUBJECT: &str = Heartbeat::SUBJECT;
 const INVALIDATION_PREFIX: &str = "health.v1.invalidation";
 pub(crate) const DEFAULT_TRANSPORT_RETENTION_HOURS: u64 = 24;
-pub(crate) const DEFAULT_TRANSPORT_MAX_BYTES: i64 = 1_073_741_824;
 const DEFAULT_HISTORY_RETENTION_DAYS: i64 = 30;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

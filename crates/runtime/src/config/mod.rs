@@ -831,10 +831,7 @@ impl RuntimeConfig {
                 &mut self.jobs,
                 (Some(DEFAULT_JOBS_HISTORY_DAYS), None, None, None),
             ),
-            (
-                &mut self.health,
-                (Some(30), Some(24), Some(1_073_741_824), None),
-            ),
+            (&mut self.health, (Some(30), Some(24), None, None)),
             (
                 &mut self.events,
                 (
@@ -1529,7 +1526,8 @@ pub struct SubsystemConfig {
     /// Health transport replay retention in hours. Read by `[health]` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport_retention_hours: Option<u32>,
-    /// Health transport maximum retained bytes. Read by `[health]` only.
+    /// Health transport maximum retained bytes. Unset, the stream has no size
+    /// bound, so JetStream reserves no storage for it. Read by `[health]` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport_max_bytes: Option<u64>,
     /// Days a resolved or dismissed dead letter, and an unconsumed replay, is

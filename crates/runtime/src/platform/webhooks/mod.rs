@@ -53,6 +53,14 @@ pub(crate) fn health_subject(deployment: &str, endpoint: &str) -> String {
 /// How far back an endpoint's health looks for a rejected request.
 const HEALTH_WINDOW_MS: i64 = 10 * 60_000;
 
+/// A deployment's intake stream size when `intakeMaxBytes` is unset.
+///
+/// JetStream reserves the whole size against the broker's storage when the
+/// stream is created, for every deployment with endpoints, so the default is
+/// small: at the default body limit it still holds a few hundred requests
+/// waiting for verification.
+const DEFAULT_INTAKE_MAX_BYTES: u64 = 64 << 20;
+
 /// The dedupe KV bucket shared by every endpoint.
 const DEDUPE_BUCKET: &str = "trellis_webhook_dedupe";
 /// The longest dedupe window a deployment may choose, which is also how long
@@ -128,7 +136,7 @@ impl Settings {
                 .unwrap_or(records::Retention::default().records_ms),
             intake_retention_ms: set("intakeRetention")
                 .unwrap_or(records::Retention::default().intake_ms),
-            intake_max_bytes: set("intakeMaxBytes").unwrap_or(1 << 30),
+            intake_max_bytes: set("intakeMaxBytes").unwrap_or(DEFAULT_INTAKE_MAX_BYTES),
         }
     }
 

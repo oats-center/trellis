@@ -54,7 +54,7 @@ history_retention_days = 30      # finished jobs, and how long a job waits for a
 [health]
 history_retention_days = 30
 transport_retention_hours = 24
-transport_max_bytes = 1073741824
+# transport_max_bytes = 268435456  # unset: no size bound
 ```
 
 A change takes effect at the next start, and a shorter time removes what it no

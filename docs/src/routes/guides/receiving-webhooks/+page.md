@@ -235,6 +235,13 @@ Durations take `ms`, `s`, `m`, `h`, or `d`, sizes take `B`, `KiB`, `MiB`, or
 `GiB`, and counts are plain numbers; `set max-body 5m` is refused. `rotate-url`
 gives the endpoint a new URL and keeps the old one working until `retire-url`.
 
+Requests to `async` endpoints wait for verification in the deployment's intake
+stream, which keeps them 7 days and holds at most 64 MiB by default. A full
+stream answers new requests with 503 rather than drop ones still waiting.
+`set intake-max-bytes 256MiB` raises the size, but NATS reserves the whole size
+on its disk as soon as the stream exists, so keep it well inside what the
+broker has.
+
 ## Testing
 
 Tests send real HTTPS requests to the endpoint URL of a service the testkit

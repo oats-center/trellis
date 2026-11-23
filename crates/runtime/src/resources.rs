@@ -2,9 +2,7 @@ use std::time::Duration;
 
 use async_nats::jetstream::{self, stream};
 
-use crate::health::{
-    DEFAULT_TRANSPORT_MAX_BYTES, DEFAULT_TRANSPORT_RETENTION_HOURS, HEALTH_STREAM, HEALTH_SUBJECT,
-};
+use crate::health::{DEFAULT_TRANSPORT_RETENTION_HOURS, HEALTH_STREAM, HEALTH_SUBJECT};
 use crate::supervisor::RuntimeError;
 use crate::{RuntimeConfig, RuntimeMode, SubsystemName};
 use trellis_events_runtime::{DLQ_STREAM, DLQ_SUBJECTS, REPLAY_STREAM, REPLAY_SUBJECTS};
@@ -287,6 +285,11 @@ fn advisory_stream_config() -> stream::Config {
     }
 }
 
+/// The Health stream keeps `[health] transport_retention_hours` of
+/// heartbeats. It has no size bound unless `transport_max_bytes` sets one:
+/// JetStream reserves a bound against the broker's storage whether or not the
+/// stream holds anything, and every heartbeat it holds is also in the event
+/// stream, which keeps them longer with no size bound.
 fn health_stream_config(config: &RuntimeConfig) -> stream::Config {
     let health = config.health.as_ref();
     let max_age = Duration::from_secs(
@@ -299,8 +302,7 @@ fn health_stream_config(config: &RuntimeConfig) -> stream::Config {
     );
     let max_bytes = health
         .and_then(|health| health.transport_max_bytes)
-        .map(|bytes| i64::try_from(bytes).unwrap_or(i64::MAX))
-        .unwrap_or(DEFAULT_TRANSPORT_MAX_BYTES);
+        .map_or(-1, |bytes| i64::try_from(bytes).unwrap_or(i64::MAX));
     stream::Config {
         name: HEALTH_STREAM.to_owned(),
         sources: Some(vec![stream::Source {

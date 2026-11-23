@@ -691,7 +691,7 @@ or the count, and a value in another setting's units is refused.
 | `async` decide deadline                                               | 30 s, at most 60 s           | `decide`           |
 | Secret change overlap                                                 | 24 hours                     | `rotation_overlap` |
 | Request record retention                                              | 30 days                      |                    |
-| Intake retention                                                      | 7 days or 1 GiB              |                    |
+| Intake retention                                                      | 7 days or 64 MiB             |                    |
 
 A value set on the deployment wins over the IDL member, and the IDL member wins
 over the Trellis default in the table. Two limits apply:
