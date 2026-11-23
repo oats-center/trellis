@@ -2360,19 +2360,27 @@ async fn all_roles(
     }
 }
 
-/// The one role `typed` names, by its ID or its name. A name several roles
-/// share is refused with each of them, so the caller can give an ID instead.
+/// The one role `typed` names, by its ID or its name. An ID names only the
+/// role with that ID. A name several roles share is refused with each of
+/// them, so the caller can give an ID instead.
 async fn resolve_role(
     auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
     typed: &str,
 ) -> miette::Result<auth_types::AuthRole> {
     let roles = all_roles(auth).await?;
     let typed = typed.trim();
-    if let Some(role) = roles
-        .iter()
-        .find(|role| role.role_id.to_string().eq_ignore_ascii_case(typed))
-    {
-        return Ok(role.clone());
+    // A role ID is definitive: an ID no role has is refused rather than
+    // matched against role names.
+    if typed.parse::<Ulid>().is_ok() {
+        return roles
+            .into_iter()
+            .find(|role| role.role_id.to_string().eq_ignore_ascii_case(typed))
+            .ok_or_else(|| {
+                miette::miette!(
+                    help = "`trellis roles list` shows every role.",
+                    "no role {typed}"
+                )
+            });
     }
     let name = typed.to_lowercase();
     let mut named = roles
@@ -2398,24 +2406,41 @@ async fn resolve_role(
     }
 }
 
-/// The one user `typed` names, by their ID, username or email address. An
-/// email address several users share is refused with each of them, so the
-/// caller can give an ID instead.
+/// The one user `typed` names, by their ID, username or email address. An ID
+/// names only the user with that ID, and a failed ID lookup is reported as
+/// it failed. An email address several users share is refused with each of
+/// them, so the caller can give an ID instead.
 async fn resolve_user(
     auth: &trellis_runtime_apis::apps::trellis_cli::trellis_auth_v1::Client,
     typed: &str,
 ) -> miette::Result<auth_types::AuthUser> {
+    use trellis_runtime_apis::apis::trellis_auth_v1::rpc::UsersGetError;
     let typed = typed.trim();
+    // A user ID is definitive: it is looked up by ID only, so neither a
+    // missing user nor a failed lookup turns it into a username or email.
     if typed.parse::<Ulid>().is_ok() {
-        if let Ok(found) = auth
+        return match auth
             .users_get(&auth_types::AuthUserGetRequest {
                 user_id: wire(typed)?,
                 extra: Default::default(),
             })
             .await
         {
-            return Ok(found.user);
-        }
+            Ok(found) => Ok(found.user),
+            Err(trellis_rs::client::CallError::Declared(error))
+                if matches!(
+                    error.as_ref(),
+                    UsersGetError::AuthError(error)
+                        if error.payload().is_ok_and(|payload| payload.code.as_ref() == "not_found")
+                ) =>
+            {
+                Err(miette::miette!(
+                    help = "`trellis users list` shows every user.",
+                    "no user {typed}"
+                ))
+            }
+            Err(error) => Err(error).into_diagnostic(),
+        };
     }
     let name = typed.to_lowercase();
     let mut named = Vec::new();
@@ -2451,7 +2476,7 @@ async fn resolve_user(
     match named.len() {
         0 => Err(miette::miette!(
             help = "`trellis users list` shows every user.",
-            "no user has the ID, username or email {typed}"
+            "no user has the username or email {typed}"
         )),
         1 => Ok(named.remove(0)),
         _ => Err(miette::miette!(

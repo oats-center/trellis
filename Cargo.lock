@@ -6181,6 +6181,7 @@ dependencies = [
  "reqwest",
  "rexpect",
  "runtime-trellis",
+ "rusqlite",
  "rustls",
  "semver",
  "serde",

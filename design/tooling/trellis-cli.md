@@ -298,7 +298,11 @@ trellis clients sign-up <client> [--[no-]password] [--[no-]providers]
 A `<user>` is a username, an email address or a user ID, and a `<role>` is a
 role's name (any case) or its ID. A name that fits more than one user or role
 is refused with their IDs, and the command changes nothing; give an ID then.
-The CLI resolves names with `Auth.Users.List` and `Auth.Roles.List` and sends
+Input shaped like an ID is only ever an ID: an ID no user or role has is
+refused even when it is someone's username or a role's name, and a failed ID
+lookup is reported as it failed rather than retried as a name. A deployment
+name moves on to waiting claims only when the deployment list answered without
+it. The CLI resolves names with `Auth.Users.List` and `Auth.Roles.List` and sends
 IDs to Auth. User commands use generated Auth account operations. `users create
 --provider --subject` links that OIDC sign-in in the creating call and prints
 no password setup link. Otherwise it prints the one-time setup link,
