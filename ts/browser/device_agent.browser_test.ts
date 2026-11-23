@@ -106,12 +106,22 @@ test("an enrolled device uses an independently browser-consented native companio
       ).orThrow();
       const context = await launchProfile(runtime);
       try {
-        const flow = (await custody.startDevice(request)).orThrow();
+        // The companion names its device, and the Portal shows that name
+        // when the person confirms it.
+        const flow = (
+          await custody.startDevice(request, { deviceName: "Field sensor 7" })
+        ).orThrow();
         const page = await context.newPage();
-        await enterDeviceCode(page, flow.verificationUri, flow.userCode, {
-          username: runtime.adminUsername,
-          password: runtime.adminPassword,
-        });
+        await enterDeviceCode(
+          page,
+          flow.verificationUri,
+          flow.userCode,
+          {
+            username: runtime.adminUsername,
+            password: runtime.adminPassword,
+          },
+          "Field sensor 7",
+        );
         await page
           .getByRole("heading", { name: /wants to use your account/ })
           .waitFor();

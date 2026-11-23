@@ -136,10 +136,19 @@ export class NativeOAuthClient {
     return this.#lease.trust;
   }
 
-  /** Begin RFC 8628 using the generated native application's finite RAR selections. */
+  /**
+   * Begin RFC 8628 using the generated native application's finite RAR selections.
+   *
+   * `deviceName` names this device, such as the machine's hostname. The
+   * Portal shows it on the step where the person confirms the device,
+   * labelled as what the device says it is. RFC 8628 has no such field, so it
+   * travels as the Trellis parameter `trellis_device_name`. Trellis keeps at
+   * most 64 characters, without control characters, and trusts it for
+   * nothing: anyone starting a sign-in can claim any name.
+   */
   startDevice(
     request: AppRequestDescriptor,
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; deviceName?: string } = {},
   ): Promise<Result<NativeDeviceAuthorization, AuthError>> {
     return this.#serial(async () => {
       if (request.kind !== "native")
@@ -160,7 +169,12 @@ export class NativeOAuthClient {
       const data = deviceSchema.parse(
         await this.#exchange(
           "/device_authorization",
-          { authorization_details: details },
+          {
+            authorization_details: details,
+            ...(options.deviceName === undefined
+              ? {}
+              : { trellis_device_name: options.deviceName }),
+          },
           options.signal,
         ),
       );

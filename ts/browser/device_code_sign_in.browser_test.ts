@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
@@ -87,8 +88,9 @@ async function checkDetails(page: Page, userCode: string): Promise<void> {
   assert.match(await detail("Kind"), /^Installed app/);
   assert.equal(await detail("Code"), userCode);
   assert.match(await detail("Requested"), /^(Just now|1 minute ago)$/);
-  // The CLI asked from this machine.
+  // The CLI asked from this machine, and names it by its hostname.
   assert.match(await detail("From"), /^(127\.0\.0\.1|::1)$/);
+  assert.equal(await detail("Device says it is"), hostname());
 }
 
 /** Allows what the consent page offers and waits for the done page. */

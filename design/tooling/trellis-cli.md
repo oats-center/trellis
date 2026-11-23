@@ -339,7 +339,9 @@ every authorization request sent to the provider, such as Auth0's
 `organization=<org id>`; `edit` replaces the list when any are given, and
 `--clear-authorization-params` empties it. `clients sign-up` chooses whether people may create their own account while signing in to one app. The separately originated
 OAuth portal owns interactive login, device-code confirmation and consent;
-authenticated administration remains on NATS.
+authenticated administration remains on NATS. `trellis login` names its device
+by the machine's hostname, which the Portal's confirmation step shows as what
+the device says it is.
 
 Fresh administrator initialization uses `trellis-server admin [--config <path>]`.
 `--username` defaults to `admin`; `--password` or `--password-stdin` sets initial

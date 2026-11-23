@@ -149,7 +149,10 @@ browser-kind OAuth client fails with `OAuthUnauthorizedClient` and the server's
 message naming both kinds. `NativeOAuthClient.open` reports a malformed scope,
 such as a `credentialHandle` that is not a ULID, as `InvalidScope` with a
 message naming the field. For Device Code, show `verificationUri` and `userCode`: the
-person opens the page and types the code; no link carries it. The entrypoint is Node/npm-only and defaults to process-local
+person opens the page and types the code; no link carries it.
+`startDevice(request, { deviceName })` names the device, such as its hostname;
+the Portal shows it on the confirmation step as "Device says it is", cut to 64
+characters, and trusts it for nothing. The entrypoint is Node/npm-only and defaults to process-local
 memory, with no credential files or SQLite requirement. Retain an explicit
 `MemoryNativeOAuthCustody` object to resume the same family across connections
 within one process. For remembered login across process restarts, supply an

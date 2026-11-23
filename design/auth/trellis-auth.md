@@ -586,8 +586,14 @@ server enforces the order:
    unverified), the code, when the device asked, and the network address its
    `/device_authorization` request came from (the trusted proxy's forwarded
    client, as for request budgets), beside a warning to cancel if someone else
-   sent the code or link. The request carries nothing else, such as a device
-   name. `POST /portal/device/confirm` with `decision=confirm` marks the
+   sent the code or link. When the request named the device, the page also
+   shows "Device says it is" with that name. RFC 8628 has no field for it, so
+   the device sends the Trellis parameter `trellis_device_name` with
+   `/device_authorization` (the CLI sends its hostname; native apps and
+   agents may set one). Trellis stores it with the device request after
+   turning control characters and bidirectional marks into spaces, collapsing
+   whitespace and cutting it to 64 characters, and trusts it for nothing: it
+   is only the device's claim, shown as such. `POST /portal/device/confirm` with `decision=confirm` marks the
    transaction confirmed and goes to `/consent`; `decision=cancel` refuses the
    device grant, so the device gets `access_denied`, and shows the done page.
 4. **Consent.** The ordinary consent page, with the rules above; native and

@@ -184,7 +184,10 @@ authorization origin; an `agent` request's generated `Request::KIND` is
 endpoints to `UserConnectOptions::new(nats_servers, timeout_ms, session)`. Use
 Authorization Code with PKCE or Device Code according to the registered native
 client's flow. For Device Code, show `verification_uri()` and `user_code()`:
-the person opens the page and types the code; no link carries it. Do not persist a bare session seed as a substitute for OAuth
+the person opens the page and types the code; no link carries it.
+`NativeOAuthClient::with_device_name(name)` before `start_device` names the
+device, such as its hostname; the Portal shows it on the confirmation step as
+"Device says it is", cut to 64 characters, and trusts it for nothing. Do not persist a bare session seed as a substitute for OAuth
 custody. The SDK retains credential custody and renews admission with the same
 runtime identity and key, using its owner's authenticated issuer pin. Recovery
 failure closes application transport without deleting the durable credential

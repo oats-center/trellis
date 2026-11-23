@@ -411,6 +411,8 @@ pub struct NativeOAuthClient {
     issuer_rotations: Vec<SignedIssuerRotation>,
     /// Token-endpoint nonce learned from discovery, used for the first proof.
     dpop_nonce: Option<String>,
+    /// The name [`Self::start_device`] reports for this device, if any.
+    device_name: Option<String>,
 }
 
 /// An outstanding RFC 8628 flow. Only the user-facing code and verification URI
@@ -490,11 +492,27 @@ impl NativeOAuthClient {
             runtime_id: URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>()),
             issuer_rotations: Vec::new(),
             dpop_nonce: None,
+            device_name: None,
         })
+    }
+
+    /// Name this device in the Device Code request [`Self::start_device`]
+    /// sends, such as the machine's hostname.
+    ///
+    /// The Portal shows the name on the step where the person confirms the
+    /// device, labelled as what the device says it is. RFC 8628 has no such
+    /// field, so it travels as the Trellis parameter `trellis_device_name`.
+    /// Trellis keeps at most 64 characters, without control characters, and
+    /// trusts it for nothing: anyone starting a sign-in can claim any name.
+    #[must_use]
+    pub fn with_device_name(mut self, name: impl Into<String>) -> Self {
+        self.device_name = Some(name.into());
+        self
     }
 
     /// Start the server's RFC 8628 user flow with the generated app's standard RAR
     /// details. No browser-origin shortcut or implied native consent is requested.
+    /// The name from [`Self::with_device_name`], when set, goes with it.
     pub async fn start_device(
         self,
         authorization_details: &serde_json::Value,
@@ -504,11 +522,12 @@ impl NativeOAuthClient {
         if details.len() > 32 * 1024 {
             return Err(NativeOAuthError::InvalidResponse);
         }
+        let mut fields = vec![("authorization_details", details)];
+        if let Some(name) = &self.device_name {
+            fields.push(("trellis_device_name", name.clone()));
+        }
         let bytes = self
-            .exchange(
-                "/device_authorization",
-                &[("authorization_details", details)],
-            )
+            .exchange("/device_authorization", &fields)
             .await
             .map_err(exchange_error)?;
         let response: DeviceResponse =

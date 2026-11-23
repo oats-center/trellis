@@ -129,6 +129,7 @@ import {
   discoverNativeOAuth,
   NativeOAuthClient,
 } from "@oatscenter/trellis/native";
+import { hostname } from "node:os";
 import { ulid } from "ulid";
 import { apps } from "./trellis/index.js";
 
@@ -148,7 +149,10 @@ const login = (
     trust: server.trust,
   })
 ).orThrow();
-const device = (await login.startDevice(request)).orThrow();
+// The Portal shows the name when the person confirms the device.
+const device = (
+  await login.startDevice(request, { deviceName: hostname() })
+).orThrow();
 console.log(`Open ${device.verificationUri} and enter ${device.userCode}`);
 const session = (await device.complete()).orThrow();
 const client = await connectNativeClient({

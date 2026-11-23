@@ -1363,8 +1363,8 @@ async fn consent_data(
                 "email":signed_in["email"],
                 "redirectUri":validated.redirect_uri,
                 "deviceUserCode":validated.device_user_code,
-                "deviceRequestedAt":validated.device_requested.as_ref().map(|(at, _)| at),
-                "deviceRequestedFrom":validated.device_requested.as_ref().and_then(|(_, from)| from.as_deref()),
+                "deviceRequestedAt":validated.device_requested.as_ref().map(|(at, _, _)| at),
+                "deviceRequestedFrom":validated.device_requested.as_ref().and_then(|(_, from, _)| from.as_deref()),
                 "browser":browser,
                 "capabilities":capabilities,
                 "confirmAdministration":administration.confirm_on_consent

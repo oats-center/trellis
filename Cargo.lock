@@ -6208,6 +6208,7 @@ dependencies = [
  "trellis-testkit",
  "ulid",
  "url",
+ "whoami",
 ]
 
 [[package]]

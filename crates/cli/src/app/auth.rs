@@ -2893,9 +2893,13 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
         nats_sentinel: server.trust.nats_sentinel,
     };
     type Request = trellis_runtime_apis::apps::trellis_cli::Request;
-    let challenge = selection
-        .open()
-        .await?
+    let mut client = selection.open().await?;
+    // The confirmation step shows it, so the person can tell this machine's
+    // sign-in from another's.
+    if let Ok(hostname) = whoami::hostname() {
+        client = client.with_device_name(hostname);
+    }
+    let challenge = client
         .start_device(&json!([{
             "type": "trellis_capabilities",
             "required": Request::REQUIRED_CAPABILITIES,

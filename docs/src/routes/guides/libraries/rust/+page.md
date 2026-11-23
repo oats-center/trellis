@@ -186,7 +186,9 @@ let scope = NativeCredentialScope {
 };
 let login = NativeOAuthClient::open(PathBuf::from("orders-agent-login"), scope, server.trust.clone())
     .await?;
+// The Portal shows the name when the person confirms the device.
 let device = login
+    .with_device_name("orders-agent on build-7")
     .start_device(&serde_json::json!([{
         "type": "trellis_capabilities",
         "required": Request::REQUIRED_CAPABILITIES,

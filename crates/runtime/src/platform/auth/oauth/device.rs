@@ -30,6 +30,42 @@ pub(super) struct DeviceSelection {
     /// The network address the device asked from, shown beside its code so
     /// the person can tell their own device's request from someone else's.
     pub(super) requested_from: Option<String>,
+    /// The name the device reported for itself (`trellis_device_name`),
+    /// shown on the confirmation step as the device's own claim. Nothing
+    /// trusts it.
+    pub(super) device_name: Option<String>,
+}
+
+/// The longest device name kept, in characters.
+const DEVICE_NAME_MAX_CHARS: usize = 64;
+
+/// A device's reported name as the confirmation step shows it: control
+/// characters and bidirectional formatting marks (which could reorder what
+/// the page shows) become spaces, runs of whitespace collapse, and it is cut
+/// to [`DEVICE_NAME_MAX_CHARS`]. A name with nothing left is no name.
+fn device_name(reported: &str) -> Option<String> {
+    let cleaned = reported
+        .chars()
+        .map(|c| {
+            if c.is_control()
+                || matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let name = cleaned
+        .chars()
+        .take(DEVICE_NAME_MAX_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 pub(super) async fn start(
@@ -67,6 +103,9 @@ pub(super) async fn start(
             runtime,
             key,
             peer.map(|axum::Extension(peer)| peer.0.ip()),
+            fields
+                .get("trellis_device_name")
+                .and_then(|name| device_name(name)),
         )
         .await
     {
@@ -272,7 +311,8 @@ async fn step(
                     "its client could not be read",
                 ));
             };
-            let (requested_at, requested_from) = intent.device_requested.unwrap_or((0, None));
+            let (requested_at, requested_from, device_name) =
+                intent.device_requested.unwrap_or((0, None, None));
             serde_json::json!({
                 "step": "confirm",
                 "transaction": transaction,
@@ -284,6 +324,7 @@ async fn step(
                     "userCode": intent.device_user_code,
                     "requestedAt": requested_at,
                     "requestedFrom": requested_from,
+                    "deviceName": device_name,
                 },
             })
         }
@@ -514,6 +555,7 @@ impl OAuthEngine {
         runtime_id: &str,
         ephemeral_nkey: &str,
         requested_from: Option<std::net::IpAddr>,
+        device_name: Option<String>,
     ) -> Result<DeviceAuthorizationResponse, ErrorResponse> {
         let requested = RequestedAuthority::parse(details)?;
         self.prepare_client(client_id).await?;
@@ -616,6 +658,7 @@ impl OAuthEngine {
             persistent_dpop_jkt: binding.persistent_dpop_jkt,
             public_jwk: binding.public_jwk,
             requested_from: requested_from.map(|address| address.to_string()),
+            device_name,
         };
         blocking(move || store.store_device_selection(&grant, &selection))
             .await
@@ -673,5 +716,31 @@ impl OAuthEngine {
             .approve_device(user_code, grant)
             .await
             .map_err(|_| ErrorResponse::new(ErrorCode::InvalidGrant).into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_name;
+
+    /// A reported name cannot break the page's layout or reorder what it
+    /// shows, and cannot fill it: control characters and bidirectional
+    /// marks go, whitespace collapses, and the name is cut to its limit.
+    #[test]
+    fn a_reported_device_name_is_cleaned_and_bounded() {
+        assert_eq!(
+            device_name("  build\tbox\r\n7\u{0}  ").as_deref(),
+            Some("build box 7")
+        );
+        assert_eq!(
+            device_name("laptop\u{202e}txt.exe").as_deref(),
+            Some("laptop txt.exe")
+        );
+        assert_eq!(device_name("\u{7}\n \u{2066}"), None);
+        let long = "é".repeat(200);
+        assert_eq!(
+            device_name(&long).map(|name| name.chars().count()),
+            Some(64)
+        );
     }
 }

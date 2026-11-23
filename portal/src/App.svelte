@@ -55,6 +55,8 @@
       requestedAt: number;
       /** The network address the device asked from. */
       requestedFrom: string | null;
+      /** The name the device reported for itself; nothing vouches for it. */
+      deviceName: string | null;
     };
   }
 
@@ -969,6 +971,8 @@
       </dd>
       {#if request.requestedFrom}<dt>From</dt>
         <dd><code>{request.requestedFrom}</code></dd>{/if}
+      {#if request.deviceName}<dt>Device says it is</dt>
+        <dd>{request.deviceName}</dd>{/if}
     </dl>
     <p class="alert warn">
       If someone sent you this code or link, cancel: continuing gives them

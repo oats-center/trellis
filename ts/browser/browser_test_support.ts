@@ -169,13 +169,15 @@ export async function confirmAdministrationIfAsked(
  * Takes a device's Device Code sign-in through the Portal as a person does:
  * opens `verificationUri`, signs in with `credentials` when asked or else
  * continues as the account already signed in, types `userCode`, and confirms
- * the device is theirs. The page is then on the consent step.
+ * the device is theirs. With `deviceName`, the confirmation step must show it
+ * as the name the device gave. The page is then on the consent step.
  */
 export async function enterDeviceCode(
   page: Page,
   verificationUri: string,
   userCode: string,
   credentials: { username: string; password: string },
+  deviceName?: string,
 ): Promise<void> {
   await page.goto(verificationUri);
   const signIn = page.getByLabel("Username", { exact: true });
@@ -195,6 +197,15 @@ export async function enterDeviceCode(
   }
   await page.getByLabel("Code", { exact: true }).fill(userCode);
   await page.getByRole("button", { name: "Continue", exact: true }).click();
+  if (deviceName !== undefined) {
+    await page.getByRole("heading", { name: "Is this your device?" }).waitFor();
+    assert.equal(
+      await page
+        .locator('.device-details dt:text-is("Device says it is") + dd')
+        .innerText(),
+      deviceName,
+    );
+  }
   await page
     .getByRole("button", { name: "Yes, this is my device", exact: true })
     .click();
