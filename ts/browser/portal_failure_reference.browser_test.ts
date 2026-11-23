@@ -178,6 +178,86 @@ test(
   },
 );
 
+// The browser kept its Portal login cookie but lost the CSRF cookie the
+// sign-out page sends with it. Signing out of the Console must not return to
+// the app until Trellis confirms the login ended: the page asks Trellis, which
+// still has the login and refuses the request, and the page stays on its retry
+// screen with the login intact. With the cookie back, signing out ends the
+// login and returns. This catches a sign-out page that returns to the app
+// without asking, and a refusal answered as "no login left".
+test(
+  "a sign-out Trellis has not confirmed does not return to the app",
+  { timeout: 300_000 },
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const browser = await chromium.launch({
+        headless: true,
+        env: browserTrustEnvironment(),
+      });
+      try {
+        const context = await browser.newContext();
+        const page = await context.newPage();
+        page.setDefaultTimeout(30_000);
+        await openConsoleAsRuntimeAdmin(page, runtime);
+
+        const files = await readdir(runtime.workdir, { recursive: true });
+        const path = files.find((file) => basename(file) === "platform.sqlite");
+        assert(path, files.join("\n"));
+        const database = new DatabaseSync(join(runtime.workdir, path), {
+          timeout: 10_000,
+        });
+        const liveLogins = () =>
+          (
+            database
+              .prepare(
+                "SELECT count(*) AS live FROM auth_login_sessions WHERE revoked_at IS NULL",
+              )
+              .get() as { live: number }
+          ).live;
+        try {
+          const signedIn = liveLogins();
+          const csrf = (await context.cookies(runtime.trellisUrl)).find(
+            (cookie) => cookie.name === "__Host-trellis-portal-csrf",
+          );
+          assert(csrf, "the Portal login has a CSRF cookie");
+          await context.clearCookies({ name: "__Host-trellis-portal-csrf" });
+
+          const refused = page.waitForResponse(
+            (response) => new URL(response.url()).pathname === "/portal/logout",
+          );
+          await page.getByLabel("Open user menu", { exact: true }).click();
+          await page
+            .getByRole("button", { name: "Sign out", exact: true })
+            .click();
+          // Not access_denied, which would say no login is left to end.
+          assert.equal(
+            ((await (await refused).json()) as { error: string }).error,
+            "invalid_request",
+          );
+          await page.getByRole("button", { name: "Try again" }).waitFor();
+          assert.equal(new URL(page.url()).pathname, "/logout");
+          assert.equal(liveLogins(), signedIn, "the login is still there");
+
+          await context.addCookies([csrf]);
+          const ended = page.waitForResponse(
+            (response) => new URL(response.url()).pathname === "/portal/logout",
+          );
+          await page.reload({ waitUntil: "domcontentloaded" });
+          assert.equal((await ended).status(), 200);
+          await page.waitForURL((url) =>
+            url.href.startsWith(`${runtime.consoleUrl}/console`),
+          );
+          assert.equal(liveLogins(), signedIn - 1);
+        } finally {
+          database.close();
+        }
+      } finally {
+        await browser.close();
+      }
+    }, browserRuntimeOptions());
+  },
+);
+
 // Revoking an app's token also revokes its refresh family, which ends the
 // app's sessions. When the database refuses that part, the revocation must
 // not answer success, with a reference to its one log line, and must leave the

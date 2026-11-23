@@ -1029,7 +1029,12 @@ Sign-out reports success only once the server has ended what it was asked to
 end. `/portal/logout` answers `access_denied` only when no Portal login is left,
 which the page treats as signed out; when ending the login fails on the server
 it answers `server_error`, the login stays valid, and the page keeps its
-"Try again" screen with the request's reference. `/revoke` revokes a refresh
+"Try again" screen with the request's reference. A live login sent without its
+CSRF token is refused as `invalid_request`, not `access_denied`, since it was
+not ended. The page always asks the server, even with no CSRF cookie to read,
+and returns to the app only on success or `access_denied`; an answer that
+fails or does not arrive within 30 seconds keeps the "Try again" screen.
+`/revoke` revokes a refresh
 token's family before the OAuth library takes the token. When revoking the
 family fails it answers `server_error` and leaves the token in place, so the
 browser app keeps its stored session, reports the failure, and a retry revokes

@@ -1919,11 +1919,19 @@ async fn portal_logout(
     let logged_out = blocking(move || {
         // Only a login that is gone is answered `access_denied`, which the
         // Portal takes as signed out. A login the server failed to end stays
-        // valid, so the sign-out reports the failure and can be retried.
+        // valid, so the sign-out reports the failure and can be retried. A
+        // login that is still there, sent without its CSRF token, is refused
+        // as an invalid request: it was not ended.
         let login = authority
             .portal_login(&cookie, &csrf, now)
             .map_err(|cause| match cause {
-                super::super::AuthError::Denied => ErrorCode::AccessDenied,
+                super::super::AuthError::Denied => {
+                    match authority.portal_cookie_signed_in(&cookie, now) {
+                        Ok(false) => ErrorCode::AccessDenied,
+                        Ok(true) => ErrorCode::InvalidRequest,
+                        Err(cause) => failed("could not read the Portal login", cause),
+                    }
+                }
                 cause => failed("could not read the Portal login", cause),
             })?;
         let identity = super::super::Mutation {
