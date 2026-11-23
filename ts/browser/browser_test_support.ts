@@ -45,33 +45,41 @@ export function browserRuntimeOptions(
   };
 }
 
-/** A service a test starts, connected or still connecting. */
-type StartedService = Promise<{ stop(): Promise<void> }>;
+/** A service a test started: connected, or `undefined` if its connect failed. */
+type StartedService = Promise<{ stop(): Promise<void> } | undefined>;
 
 /**
  * Tracks the services a test connects so a failed step cannot leave one
  * running. Pass `signal` to each `TrellisService.connect` and `add` the
  * result; `stop` aborts the connects still waiting, for approval or settings,
- * and stops the ones that connected.
+ * and stops the ones that connected. Call `stop` while the runtime is still
+ * up, so connected services stop against a live Trellis.
  */
 export function startedServices() {
   const abort = new AbortController();
   const started: StartedService[] = [];
   return {
     signal: abort.signal,
-    /** Records a connect and returns it unchanged. */
+    /**
+     * Records a connect and returns it unchanged. The connect is observed
+     * here, so one that fails before `stop`, such as a connect still waiting
+     * for settings when the runtime shuts down, is never an unhandled
+     * rejection. A caller that awaits the returned promise still sees the
+     * failure.
+     */
     add<T extends { stop(): Promise<void> }>(connecting: Promise<T>) {
-      started.push(connecting);
+      started.push(
+        connecting.then(
+          (service) => service,
+          () => undefined,
+        ),
+      );
       return connecting;
     },
     /** Aborts unfinished connects, then stops every connected service. */
     async stop() {
       abort.abort(new Error("The test ended before this service connected"));
-      for (const connecting of started)
-        await connecting.then(
-          (service) => service.stop(),
-          () => {},
-        );
+      for (const service of await Promise.all(started)) await service?.stop();
     },
   };
 }
