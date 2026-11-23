@@ -444,8 +444,10 @@ headerless tab-separated rows with raw values when piped, for `cut` and `awk`.
 lines, and is the interface for scripts; the human layout may change between
 releases. Color follows the terminal, `NO_COLOR`, `TERM=dumb` and
 `CLICOLOR_FORCE`. A secret the CLI prints, such as an instance seed, root
-secret, or setup link, is shown once and not kept. `svc|dev <name> remove` asks for the name unless given `-f`,
-and refuses without a terminal or with `--format json` unless given `-f`.
+secret, or setup link, is shown once and not kept. `svc|dev <name> remove` shows the title and ID of the
+deployment the name resolved to and asks for the name unless given `-f`, refuses
+without a terminal or with `--format json` unless given `-f`, and reports the
+removed deployment's ID and title.
 
 Commands that need several values (`clients add|edit`, `apis force-replace
 --source`, `roles create`, `users create|find`, `sign-in providers add`, and the

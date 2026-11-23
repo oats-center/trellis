@@ -978,11 +978,16 @@ async fn remove_deployment(
         "refusing to remove {} without confirmation in JSON mode",
         ref_label(kind, id)
     );
-    if !args.force {
-        output::confirm_typed(id, "remove", "-f")?;
-    }
     let (_state, connected) = connect_authenticated_cli_client().await?;
     let current = find_deployment(&connected, id, kind).await?;
+    // The prompt and the report name the deployment the selector resolved
+    // to, so a stale selector never removes a deployment the operator did not see.
+    let deployment_id = output::field(&current, "deploymentId");
+    let title = output::field(&current, "title");
+    let target = format!("{} {title} ({deployment_id})", kind_noun(kind));
+    if !args.force {
+        output::confirm_typed(&target, id, "remove", "-f")?;
+    }
     let response =
         trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
             .trellis_auth_v1()
@@ -996,12 +1001,16 @@ async fn remove_deployment(
             .into_diagnostic()?;
     output::emit(
         format,
-        &json!({ "success": serde_json::to_value(response).is_ok(), "deploymentId": id }),
+        &json!({
+            "success": serde_json::to_value(response).is_ok(),
+            "deploymentId": deployment_id,
+            "title": title,
+        }),
         |_| {
             output::success(format!(
-                "Removed {} {}",
+                "Removed {} {} ({deployment_id})",
                 kind_noun(kind),
-                output::strong(id)
+                output::strong(&title)
             ));
             Ok(())
         },

@@ -589,21 +589,22 @@ pub fn not_kept(what: &str, advice: &str) {
     ));
 }
 
-/// Ask a person to type `identifier` before an irreversible change.
+/// Ask a person to type `identifier` before an irreversible change to
+/// `target`, the resolved thing the change acts on.
 ///
 /// Without a terminal on stdin, or with `--no-input`, there is nobody to ask,
 /// so this refuses and names `flag`, the option that skips the question.
-pub fn confirm_typed(identifier: &str, what: &str, flag: &str) -> miette::Result<()> {
+pub fn confirm_typed(target: &str, identifier: &str, what: &str, flag: &str) -> miette::Result<()> {
     if !std::io::stdin().is_terminal() || crate::prompt::no_input() {
         return Err(miette::miette!(
             help = format!("Pass {flag} to {what} without being asked."),
-            "refusing to {what} {identifier} without confirmation"
+            "refusing to {what} {target} without confirmation"
         ));
     }
     anstream::eprint!(
         "{} This will {what} {}. Type {} to confirm: ",
         "?".yellow().bold(),
-        strong(identifier),
+        strong(target),
         code(identifier)
     );
     std::io::stderr().flush().into_diagnostic()?;

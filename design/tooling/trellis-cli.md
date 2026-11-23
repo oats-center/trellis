@@ -548,8 +548,11 @@ layout in `crates/cli/src/output.rs`:
 - Color appears on terminals unless `NO_COLOR` is set or `TERM=dumb`, even
   when `CI` is set; `CLICOLOR_FORCE=1` keeps it when piped or on a dumb
   terminal.
-- `svc|dev <name> remove` asks for the name before removing; `-f` skips the
-  question, and without a terminal on stdin the command refuses and names `-f`.
+- `svc|dev <name> remove` resolves the name first, then shows the title and
+  ID of the deployment it resolved to and asks for the name before removing;
+  `-f` skips the question, and without a terminal on stdin the command refuses
+  and names `-f`. The result reports the removed deployment's ID and title,
+  not the name it was given.
 
 JSON mode emits one documented value to stdout, pretty-printed (and colored on a
 terminal), silences status lines and hints, and sends tracing/progress to

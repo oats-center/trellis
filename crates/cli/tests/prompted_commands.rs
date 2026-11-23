@@ -1477,3 +1477,46 @@ async fn a_deployment_id_names_only_the_deployment_with_that_id() {
     );
     runtime.shutdown().await.unwrap();
 }
+
+/// Removing by a stale deployment ID fails and removes nothing, even when the
+/// ID is another deployment's title, and a removal by name reports the
+/// deployment it actually removed rather than the name it was given.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removal_acts_only_on_the_deployment_it_reports() {
+    use runtime_trellis::participants::runtime_trellis_provider::Participant;
+
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let missing = ulid::Ulid::generate().to_string();
+    let namesake = runtime
+        .register_service::<Participant>(&missing)
+        .await
+        .unwrap();
+    let cli = Cli::login(&mut runtime, None).await;
+
+    let refused = cli.script(&["svc", &missing, "remove", "-f"]).await;
+    assert!(
+        refused_with(&refused, &format!("deployment not found: {missing}")),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    let kept = cli.json(&["svc", namesake.deployment_id(), "show"]).await;
+    assert_eq!(kept["deployment"]["title"], serde_json::json!(missing));
+    assert_eq!(kept["deployment"]["state"], serde_json::json!("enabled"));
+
+    let titled = format!("titled-{}", ulid::Ulid::generate()).to_lowercase();
+    let named = runtime
+        .register_service_sharing_apis::<Participant>(&titled)
+        .await
+        .unwrap();
+    let removed = cli.json(&["svc", &titled, "remove", "-f"]).await;
+    assert_eq!(
+        removed["deploymentId"],
+        serde_json::json!(named.deployment_id())
+    );
+    assert_eq!(removed["title"], serde_json::json!(titled));
+    let gone = cli.json(&["svc", named.deployment_id(), "show"]).await;
+    assert_eq!(gone["deployment"]["state"], serde_json::json!("removed"));
+    let kept = cli.json(&["svc", namesake.deployment_id(), "show"]).await;
+    assert_eq!(kept["deployment"]["state"], serde_json::json!("enabled"));
+    runtime.shutdown().await.unwrap();
+}
