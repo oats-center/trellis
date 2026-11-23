@@ -12,7 +12,7 @@ mod package;
 mod runner;
 mod versioning;
 
-use changelog::{check_changelog, write_release_notes};
+use changelog::{check_changelog, release_changelog, write_release_notes};
 use github::run_pretag_check;
 use versioning::{
     bump_versions, check_versions, display_repo_path, parse_release_tag, prepare_release,
@@ -50,7 +50,9 @@ pub(crate) enum ReleaseCommand {
         #[arg(long)]
         packages: PathBuf,
     },
-    /// Move release-managed versions to the tag's version. The protocol,
+    /// Move release-managed versions to the tag's version, and the
+    /// changelog's Unreleased entries into the tag's dated section (merged
+    /// ahead of that section's entries when it already exists). The protocol,
     /// models and built-in contracts move only when their contents changed
     /// since they were published.
     #[command(name = "prepare")]
@@ -158,8 +160,13 @@ pub(crate) fn run_release(repo_root: &Path, command: ReleaseCommand) -> Result<(
                 return Ok(());
             };
             let release = parse_release_tag(&tag)?;
+            let date = time::OffsetDateTime::now_utc().date().to_string();
+            let changelog = release_changelog(repo_root, &release.version, &date)?;
             let components = components::changed_components(repo_root)?;
-            let changed = prepare_with_components(repo_root, &release, &components)?;
+            let mut changed = prepare_with_components(repo_root, &release, &components)?;
+            if changelog {
+                changed.push(repo_root.join("CHANGELOG.md"));
+            }
             for component in [
                 components::CONTRACTS,
                 components::PROTOCOL,

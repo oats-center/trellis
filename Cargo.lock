@@ -7336,6 +7336,7 @@ dependencies = [
  "sha2 0.11.1",
  "tar",
  "tempfile",
+ "time",
  "tokio",
  "toml_edit",
  "trellis-builtin-contracts",

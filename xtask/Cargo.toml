@@ -23,3 +23,4 @@ trellis-protocol = { path = "../crates/protocol" }
 wasm-bindgen-cli-support = "=0.2.130"
 wasm-opt = "=0.116.1"
 tempfile.workspace = true
+time.workspace = true
