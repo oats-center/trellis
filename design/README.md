@@ -90,6 +90,7 @@ These headings are intentionally named for fast human and AI lookup.
 | `core/type-system-patterns.md`      | You are changing schemas, Result, or error modeling                       | Shared type-system and validation rules                                                       |
 | `core/service-development.md`       | You are implementing service code or service runtime ergonomics           | Service layout, lifecycle, jobs vs operations                                                 |
 | `core/live-observation-sessions.md` | You are changing Live or Operation live transport, activation, or closure | Signed live observation sessions: ownership, credit, liveness, and observation-vs-execution   |
+| `core/engineering-patterns.md`      | You are writing or reviewing runtime, SDK, CLI or test code               | The patterns review enforces: transactions, IDs, retries, logging, effects, test resources    |
 | `core/testing-patterns.md`          | You are adding, moving, or deleting tests for Trellis behavior            | Smallest real test boundaries, live integration discovery, and infrastructure                 |
 | `core/observability-patterns.md`    | You are changing telemetry, correlation, health, or docs guidance         | Observability and request-correlation rules                                                   |
 | `core/frontend-svelte-patterns.md`  | You are changing Svelte frontend conventions                              | Trellis frontend state patterns                                                               |
@@ -166,8 +167,9 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
 ### Add, move, or delete tests for Trellis behavior
 
 1. `core/testing-patterns.md`
-2. relevant subsystem design doc
-3. `docs/src/routes/guides/releasing-trellis/+page.md` for verification
+2. `core/engineering-patterns.md`
+3. relevant subsystem design doc
+4. `docs/src/routes/guides/releasing-trellis/+page.md` for verification
    commands
 
 ### Work on KV resources or projections

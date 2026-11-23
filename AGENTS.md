@@ -89,6 +89,11 @@ inventories, or evidence ledgers to enforce this section.
 ## Repo-Wide Engineering Rules
 
 - Keep changes minimal and aligned with the existing architecture.
+- Check new code, and review changes, against the patterns in
+  `design/core/engineering-patterns.md` (decisions inside the acting
+  transaction, definitive IDs, code-based test assertions, classified retries
+  with the shared backoff, rate-limited failure logs, durable effects, tests
+  owning their resources).
 - Do not add small or narrowly scoped helper functions that are rarely called.
   Inline the logic until it is repeated enough to justify extraction.
 - Before adding aliases, migration code, compatibility shims, or dual-read or
