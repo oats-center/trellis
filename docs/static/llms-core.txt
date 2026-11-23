@@ -1035,7 +1035,10 @@ People can create their
 own account only where the installation allows it and the app they are signing
 in to does too (`trellis clients sign-up <app> --password|--providers`, the
 Console app form, or `Auth.OAuthClients.SignUp.Update`). New accounts get the
-roles marked for new users.
+roles marked for new users. A Device Code sign-in asks for the account before
+the code, so it offers sign-up when any native app allows it; once the code
+names the app, an account just created for an app that doesn't allow that
+sign-up is refused there and gets nothing for it, though the account stays.
 
 ### Administrative capabilities
 

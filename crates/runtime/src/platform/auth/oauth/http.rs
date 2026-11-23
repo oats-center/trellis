@@ -1882,9 +1882,27 @@ async fn portal_sign_up(
         {
             return Err(super::super::AuthError::Denied);
         }
+        // A Device Code sign-in learns its app only from the code, so it
+        // records the account it is creating before creating it, for the
+        // code step to check.
+        let principal = super::super::sqlite::id();
+        let session = store
+            .authority
+            .portal_session_identity(&cookie, &login_csrf, now)?;
+        store
+            .note_device_sign_up(
+                &login_transaction,
+                &session,
+                super::portal::DeviceSignUp {
+                    principal_id: principal.clone(),
+                    method: super::portal::SignUpMethod::Password,
+                },
+                now,
+            )
+            .map_err(|_| super::super::AuthError::Unavailable)?;
         store
             .authority
-            .portal_local_sign_up(&cookie, &login_csrf, &account, now)?;
+            .portal_local_sign_up(&cookie, &login_csrf, &account, &principal, now)?;
         store.authority.portal_local_login(
             &cookie,
             &login_csrf,

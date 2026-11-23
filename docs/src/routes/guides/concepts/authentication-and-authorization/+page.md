@@ -168,6 +168,13 @@ passwords, not existing ones. OIDC sign-in is on while at least one provider is,
 and each provider turns on and off by itself. Trellis refuses a change that
 would leave nobody able to sign in.
 
+Self sign-up also needs the app to allow it (`trellis clients sign-up`). A
+device signing in with a code is different: the Portal asks for the account
+before the code, when it doesn't know the app yet, so it offers sign-up if
+any native app allows it. After the code is typed, an account created for an
+app that doesn't allow sign-up is refused with "This app doesn't allow new
+accounts". The account remains, with no access to that app.
+
 Configure upstream providers with `openid profile email` when you want standard
 profile claims; Trellis preserves explicitly configured scope choices. Optional
 UserInfo fills missing signed-token profile fields only when its `sub` matches.

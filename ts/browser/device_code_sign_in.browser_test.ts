@@ -1,20 +1,29 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { ulid } from "ulid";
-import type { Page } from "playwright";
+import { chromium, type Page } from "playwright";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
+import { codecs } from "@oatscenter/trellis/generated";
+import {
+  discoverNativeOAuth,
+  NativeOAuthClient,
+} from "../packages/trellis/native.ts";
+import { apps } from "../packages/trellis-testkit/trellis/index.js";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
   browserRuntimeOptions,
   createOrdinaryUserWithPassword,
   launchProfile,
+  loginCliAsAdministrator,
 } from "./browser_test_support.ts";
 
 /** Starts `trellis login` in its own configuration and reads its challenge. */
@@ -218,6 +227,140 @@ test("a Device Code sign-in takes the account, then the code, then the device's 
     } finally {
       for (const login of logins) login.stop();
       await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
+/** Creates an account from the Portal's sign-in page, with a fresh username. */
+async function createAccount(page: Page, name: string): Promise<string> {
+  const username = `${name.toLowerCase()}-${ulid().toLowerCase()}`;
+  await page
+    .getByRole("button", { name: "Create an account", exact: true })
+    .click();
+  await page.getByLabel("Name", { exact: true }).fill(name);
+  await page.getByLabel("Username", { exact: true }).fill(username);
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("a newcomer's portal password");
+  await page
+    .getByRole("button", { name: "Create account", exact: true })
+    .click();
+  return username;
+}
+
+// The account step comes before the code, so it can't know the device's app.
+// It offers sign-up when the installation allows it and some Device Code app
+// does; the code then names the app, and an app that doesn't allow sign-up is
+// refused for the account just created, which gets nothing for that app. This
+// catches sign-up that is never offered to a device, and an account created
+// for one app that slips through to another that doesn't allow sign-up.
+test("a Device Code sign-in offers sign-up when a Device Code app allows it, and the code step refuses an app that doesn't", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const browser = await chromium.launch({
+      headless: true,
+      env: browserTrustEnvironment(),
+    });
+    const logins: { stop(): void }[] = [];
+    try {
+      const fresh = async () => {
+        const page = await (await browser.newContext()).newPage();
+        page.setDefaultTimeout(30_000);
+        return page;
+      };
+      const { run } = await loginCliAsAdministrator(runtime, await fresh());
+      await run("sign-in", "set", "--local-sign-up");
+      // A Device Code app that never lets people create an account.
+      await runtime.callAdminRpc("authOAuthClientsPut", {
+        clientId: "acme.closed-tool",
+        kind: "native",
+        title: "Closed Tool",
+        description: "A tool for existing accounts only",
+        redirectUris: [],
+        development: false,
+        impliedConsent: [],
+        expectedRevision: 0n,
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      });
+
+      // No Device Code app allows sign-up yet, so none is offered.
+      const closed = await startCliLogin(runtime);
+      logins.push(closed);
+      const nobody = await fresh();
+      await nobody.goto(closed.loginUrl);
+      await nobody.getByLabel("Username", { exact: true }).waitFor();
+      assert.equal(
+        await nobody.getByRole("button", { name: "Create an account" }).count(),
+        0,
+      );
+      closed.stop();
+
+      // The CLI allows it: a newcomer creates an account and connects it.
+      await run("clients", "sign-up", "trellis.cli", "--password");
+      const open = await startCliLogin(runtime);
+      logins.push(open);
+      const newcomer = await fresh();
+      await newcomer.goto(open.loginUrl);
+      const username = await createAccount(newcomer, "Newcomer");
+      await typeCode(newcomer, open.userCode);
+      await checkDetails(newcomer, open.userCode);
+      await newcomer
+        .getByRole("button", { name: "Yes, this is my device", exact: true })
+        .click();
+      await allow(newcomer);
+      const created = (await run("users", "show", username)).principalId;
+      assert.equal(await open.principal(), created);
+
+      // The closed tool doesn't: the code step refuses the account created
+      // for it, and the account stays with nothing granted for the tool.
+      const server = (await discoverNativeOAuth(runtime.trellisUrl)).orThrow();
+      const tool = (
+        await NativeOAuthClient.open({
+          scope: {
+            issuer: server.issuer,
+            instanceId: server.trust.instanceId,
+            account: server.trust.account,
+            clientId: "acme.closed-tool",
+            credentialHandle: ulid(),
+          },
+          trust: server.trust,
+        })
+      ).orThrow();
+      try {
+        const device = (await tool.startDevice(apps.cli.request)).orThrow();
+        const latecomer = await fresh();
+        await latecomer.goto(device.verificationUri);
+        const refusedName = await createAccount(latecomer, "Latecomer");
+        await typeCode(latecomer, device.userCode);
+        await latecomer
+          .getByRole("heading", { name: "This app doesn't allow new accounts" })
+          .waitFor();
+        await latecomer
+          .getByText(/^Closed Tool doesn't let people create an account/)
+          .waitFor();
+        const refused = (await run("users", "show", refusedName)).principalId;
+        const files = await readdir(runtime.workdir, { recursive: true });
+        const path = files.find((file) => basename(file) === "platform.sqlite");
+        assert(path, files.join("\n"));
+        const database = new DatabaseSync(join(runtime.workdir, path), {
+          timeout: 10_000,
+        });
+        try {
+          const grants = database
+            .prepare(
+              "SELECT count(*) AS grants FROM auth_oauth_grants WHERE principal_id=?",
+            )
+            .get(refused) as { grants: number };
+          assert.equal(grants.grants, 0);
+        } finally {
+          database.close();
+        }
+      } finally {
+        await tool.close();
+      }
+    } finally {
+      for (const login of logins) login.stop();
+      await browser.close();
     }
   }, browserRuntimeOptions());
 });

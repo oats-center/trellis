@@ -653,6 +653,11 @@ impl OAuthStorage {
     /// what its active registered client allows, with password sign-up also
     /// needing the installation to allow local users and local sign-up.
     /// Provider sign-up needs an active provider, which the callback checks.
+    ///
+    /// A Device Code sign-in asks for the account before the code, so its app
+    /// is not known yet: it offers each way that at least one active Device
+    /// Code (native) app allows. Entering the code then checks that app with
+    /// [`Self::app_sign_up`].
     pub(super) fn authorization_sign_up(
         &self,
         id: &str,
@@ -664,19 +669,72 @@ impl OAuthStorage {
         let client = self
             .authorization_client(id, now)
             .map_err(|_| super::super::AuthError::Unavailable)?;
-        let metadata: Option<String> = match &client {
-            Some(client) => self
-                .authority
-                .reader()?
-                .query_row(
-                    "SELECT metadata_json FROM auth_oauth_clients \
-                    WHERE client_id=?1 AND state='active'",
-                    [client],
-                    |row| row.get(0),
-                )
-                .optional()?,
-            None => None,
+        if let Some(client) = client {
+            return self.app_sign_up(&client);
+        }
+        let flow = {
+            let connection = self.authority.writer()?;
+            self.read::<super::portal::PortalAuthorization>(
+                Connection::new(&connection),
+                "authorization",
+                id,
+            )
+            .map_err(|_| super::super::AuthError::Unavailable)?
         };
+        let awaiting_code = flow.is_some_and(|flow| {
+            flow.expires_at > now
+                && matches!(
+                    flow.request,
+                    super::portal::ConsentRequest::Device {
+                        device_code: None,
+                        ..
+                    }
+                )
+        });
+        let mut sign_up = trellis_runtime_apis::__types::trellis::AuthOAuthClientSignUp {
+            password: false,
+            providers: false,
+            extra: Default::default(),
+        };
+        if awaiting_code {
+            let connection = self.authority.reader()?;
+            let mut statement = connection.prepare(
+                "SELECT metadata_json FROM auth_oauth_clients \
+                WHERE kind='native' AND state='active'",
+            )?;
+            for metadata in statement.query_map([], |row| row.get::<_, String>(0))? {
+                let app = super::super::rpc_credentials::client_sign_up(&serde_json::from_str(
+                    &metadata?,
+                )?)?;
+                sign_up.password |= app.password;
+                sign_up.providers |= app.providers;
+            }
+        }
+        let settings = super::super::sign_in::read(&*self.authority.reader()?)?;
+        sign_up.password &= settings.local_users && settings.local_sign_up;
+        Ok(sign_up)
+    }
+
+    /// How the active registered app `client` lets people create an account
+    /// while signing in to it, with password sign-up also needing the
+    /// installation to allow local users and local sign-up.
+    pub(super) fn app_sign_up(
+        &self,
+        client: &str,
+    ) -> Result<
+        trellis_runtime_apis::__types::trellis::AuthOAuthClientSignUp,
+        super::super::AuthError,
+    > {
+        let metadata: Option<String> = self
+            .authority
+            .reader()?
+            .query_row(
+                "SELECT metadata_json FROM auth_oauth_clients \
+                WHERE client_id=?1 AND state='active'",
+                [client],
+                |row| row.get(0),
+            )
+            .optional()?;
         let mut sign_up = super::super::rpc_credentials::client_sign_up(
             &metadata
                 .map(|metadata| serde_json::from_str(&metadata))
@@ -686,6 +744,42 @@ impl OAuthStorage {
         let settings = super::super::sign_in::read(&*self.authority.reader()?)?;
         sign_up.password &= settings.local_users && settings.local_sign_up;
         Ok(sign_up)
+    }
+
+    /// Records, on the Device Code sign-in `id` this browser's Portal
+    /// `session` holds, that the account `principal` is being created by
+    /// `method` while it waits for its code, so entering the code can check
+    /// that the device's app allows that. Any other flow is left as it is.
+    pub(super) fn note_device_sign_up(
+        &self,
+        id: &str,
+        session: &str,
+        sign_up: super::portal::DeviceSignUp,
+        now: i64,
+    ) -> Result<(), StorageError> {
+        let Ok(flow) = self.authorization(id, session, now) else {
+            return Ok(());
+        };
+        let super::portal::ConsentRequest::Device {
+            device_code: None,
+            confirmed,
+            ..
+        } = flow.request
+        else {
+            return Ok(());
+        };
+        let next = super::portal::PortalAuthorization {
+            presentation: None,
+            session_id: flow.session_id.clone(),
+            request: super::portal::ConsentRequest::Device {
+                device_code: None,
+                confirmed,
+                signed_up: Some(sign_up),
+            },
+            public_jwk: flow.public_jwk.clone(),
+            expires_at: flow.expires_at,
+        };
+        self.advance_authorization(id, &flow, &next, None, now)
     }
 
     /// Save the displayed meaning in the same transaction that reads its policy.

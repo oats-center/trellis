@@ -573,14 +573,23 @@ server enforces the order:
    goes to `/login?transaction=…`. Signing in by password or OIDC returns to
    `/consent?transaction=…`, which sends an unfinished device transaction back
    to `/device?transaction=…`, so a fresh sign-in lands on the code step.
-   Sign-up isn't offered there: the app, whose client settings allow it, is
-   only known from the code.
+   The app is only known from the code, so the sign-in page offers sign-up
+   by each method that the installation allows (local users and local
+   sign-up, for a password) and at least one active Device Code (native) app
+   allows in its own sign-up settings. Creating an account records, on the
+   transaction, the new account's principal and the method, before the
+   account is created.
 2. **Code.** `/device?transaction=…` asks for the code, formatted as
    `XXXX-XXXX` while typed. `POST /portal/device` takes the CSRF token, the
    transaction and the code, requires the Portal login the transaction is bound
    to, spends the user-code entry rate limit, and moves the transaction on to
    that device grant. Unknown, expired and used codes keep the one answer
-   described above.
+   described above. When the person is signed in as the account this
+   transaction created, the device's app must allow sign-up by the method
+   used; if it doesn't, the step answers "This app doesn't allow new
+   accounts" and the transaction does not move on, so nothing is granted to
+   that app. The account stays, as an ordinary account with no access to the
+   app; the device code stays pending for another account to enter.
 3. **Device.** The same URL then shows what the device's request carries: the
    app's name and kind (an installed app, registered by the administrator or
    unverified), the code, when the device asked, and the network address its

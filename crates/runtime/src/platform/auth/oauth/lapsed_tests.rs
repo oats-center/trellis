@@ -84,6 +84,7 @@ async fn browsers_get_portal_pages_for_unusable_flows_and_one_answer_for_every_u
                 request: super::portal::ConsentRequest::Device {
                     device_code: None,
                     confirmed: false,
+                    signed_up: None,
                 },
                 public_jwk: serde_json::Value::Null,
                 expires_at: now + 600,

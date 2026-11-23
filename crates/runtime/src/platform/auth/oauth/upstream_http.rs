@@ -899,13 +899,31 @@ pub(super) async fn callback(
             && store
                 .authorization_sign_up(&flow.authorization_transaction, now)?
                 .providers;
+        let principal = sign_up.then(super::super::sqlite::id);
+        if let Some(principal) = &principal {
+            // A Device Code sign-in learns its app only from the code, so it
+            // records the account it may create here for the code step to
+            // check. A provider account already linked keeps its own account,
+            // which this principal then never names.
+            store
+                .note_device_sign_up(
+                    &flow.authorization_transaction,
+                    &flow.session_id,
+                    super::portal::DeviceSignUp {
+                        principal_id: principal.clone(),
+                        method: super::portal::SignUpMethod::Provider,
+                    },
+                    now,
+                )
+                .map_err(|_| super::super::AuthError::Unavailable)?;
+        }
         store.authority.portal_upstream_login(
             &flow,
             &identity,
             &cookie,
             &login_csrf,
             &login_cookie,
-            sign_up,
+            principal.as_deref(),
             now,
         )
     })

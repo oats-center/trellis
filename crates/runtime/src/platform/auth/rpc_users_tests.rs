@@ -1336,6 +1336,7 @@ fn the_sign_in_settings_minimum_governs_created_changed_and_signed_up_passwords(
                 name: "Newcomer".into(),
                 email: String::new(),
             },
+            &ulid::Ulid::generate().to_string(),
             NOW,
         )
     };
@@ -1390,6 +1391,7 @@ fn the_password_minimum_counts_characters_not_bytes() {
                 name: "Newcomer".into(),
                 email: String::new(),
             },
+            &ulid::Ulid::generate().to_string(),
             NOW,
         )
     };

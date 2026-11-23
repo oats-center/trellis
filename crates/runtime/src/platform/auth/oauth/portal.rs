@@ -93,7 +93,29 @@ pub(super) enum ConsentRequest {
     Device {
         device_code: Option<String>,
         confirmed: bool,
+        /// The account this sign-in created before its code was entered,
+        /// when it did. Sign-up is offered then without knowing the app, so
+        /// entering the code checks that the device's app allows it.
+        signed_up: Option<DeviceSignUp>,
     },
+}
+
+/// An account a Device Code sign-in created while it waited for its code.
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct DeviceSignUp {
+    /// The new account's principal.
+    pub(super) principal_id: String,
+    /// How it was created.
+    pub(super) method: SignUpMethod,
+}
+
+/// The ways someone creates their own account while signing in.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub(super) enum SignUpMethod {
+    /// A local username and password.
+    Password,
+    /// An OIDC provider's sign-in.
+    Provider,
 }
 
 impl ConsentRequest {
@@ -105,6 +127,7 @@ impl ConsentRequest {
             Self::Device {
                 device_code,
                 confirmed,
+                ..
             } => device_code.is_some() && *confirmed,
         }
     }
@@ -478,14 +501,16 @@ impl SqliteAuthorizationStore {
         })
     }
 
-    /// Creates the local account someone chose on the Portal, while their portal
-    /// session is still signing in. The caller has already checked that the
-    /// app and installation allow it; the person then signs in as usual.
+    /// Creates the local account someone chose on the Portal, as `principal`,
+    /// while their portal session is still signing in. The caller has already
+    /// checked that the app and installation allow it; the person then signs
+    /// in as usual.
     pub(crate) fn portal_local_sign_up(
         &self,
         cookie: &str,
         csrf: &str,
         account: &LocalSignUp,
+        principal: &str,
         now: i64,
     ) -> Result<(), AuthError> {
         let username = account.username.to_lowercase();
@@ -503,7 +528,7 @@ impl SqliteAuthorizationStore {
         let hash = super::super::rpc_users::hash_password(&account.password, minimum.0)?;
         let cookie_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes()));
         let csrf_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes()));
-        let principal = id();
+        let principal = principal.to_owned();
         // Keep the password and its hash out of the audited input.
         let input = (&username, name, email);
         let request = trellis_protocol::model::Ulid::generate();

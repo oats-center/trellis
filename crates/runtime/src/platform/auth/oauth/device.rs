@@ -208,6 +208,7 @@ async fn start_sign_in(
             request: super::portal::ConsentRequest::Device {
                 device_code: None,
                 confirmed: false,
+                signed_up: None,
             },
             public_jwk: serde_json::Value::Null,
             expires_at: now + 600,
@@ -387,20 +388,24 @@ pub(super) async fn begin(
         return super::http::error(ErrorCode::InvalidRequest);
     }
     let now = crate::clock::unix_now();
-    let flow =
+    let (login, flow) =
         match super::http::login_and_flow(&engine, cookie, csrf.clone(), transaction, now).await {
-            Ok((_, flow)) => flow,
+            Ok(found) => found,
             Err(code) => return super::http::error(code),
         };
-    if !matches!(
-        flow.request,
-        super::portal::ConsentRequest::Device {
-            device_code: None,
-            ..
-        }
-    ) {
+    let super::portal::ConsentRequest::Device {
+        device_code: None,
+        signed_up,
+        ..
+    } = &flow.request
+    else {
         return super::http::error(ErrorCode::InvalidRequest);
-    }
+    };
+    // The account this sign-in created, if the person is still signed in as it.
+    let signed_up = signed_up
+        .as_ref()
+        .filter(|signed_up| signed_up.principal_id == login.principal_id)
+        .map(|signed_up| signed_up.method);
     if !matches!(
         engine.device_entries.check(Attempt::DeviceUserCodeEntry),
         RateLimitDecision::Allow
@@ -421,6 +426,46 @@ pub(super) async fn begin(
     {
         return super::http::error(ErrorCode::InvalidRequest);
     }
+    // Sign-up was offered before the app was known, for any Device Code app
+    // that allows it. Now that the code names the app, an account created
+    // here goes on only if this app allows creating one that way; otherwise
+    // the account stays, as an ordinary account with nothing granted for
+    // this app.
+    if let Some(method) = signed_up {
+        let store = engine.server.store().clone();
+        let client = grant.client_id.as_str().to_owned();
+        let allowed = match blocking(move || store.app_sign_up(&client)).await {
+            Ok(app) => match method {
+                super::portal::SignUpMethod::Password => app.password,
+                super::portal::SignUpMethod::Provider => app.providers,
+            },
+            Err(cause) => {
+                return super::http::error(super::http::failed(
+                    "could not read whether the device's app allows sign-up",
+                    cause,
+                ))
+            }
+        };
+        if !allowed {
+            let app = match engine.server.store().get_client(&grant.client_id).await {
+                Ok(Some(client)) => client.name.clone(),
+                _ => None,
+            }
+            .unwrap_or_else(|| grant.client_id.as_str().to_owned());
+            return super::http::failure_page(
+                &engine,
+                axum::http::StatusCode::FORBIDDEN,
+                "This app doesn't allow new accounts",
+                &format!(
+                    "{} doesn't let people create an account while connecting a device. \
+                    Your account was created, but it can't connect this device. Ask your \
+                    administrator for access, or sign in with another account.",
+                    super::http::escape(&app)
+                ),
+                None,
+            );
+        }
+    }
     let store = engine.server.store().clone();
     let id = transaction.clone();
     let entered = blocking(move || {
@@ -433,6 +478,7 @@ pub(super) async fn begin(
             request: super::portal::ConsentRequest::Device {
                 device_code: Some(grant.device_code),
                 confirmed: false,
+                signed_up: None,
             },
             public_jwk: selection.public_jwk,
             expires_at: grant
@@ -487,6 +533,7 @@ pub(super) async fn confirm(
     let super::portal::ConsentRequest::Device {
         device_code: Some(device_code),
         confirmed: false,
+        ..
     } = &flow.request
     else {
         return super::http::error(ErrorCode::InvalidRequest);
@@ -505,6 +552,7 @@ pub(super) async fn confirm(
                 request: super::portal::ConsentRequest::Device {
                     device_code: Some(device.device_code.clone()),
                     confirmed: true,
+                    signed_up: None,
                 },
                 public_jwk: flow.public_jwk.clone(),
                 expires_at: flow.expires_at,

@@ -600,7 +600,8 @@ impl super::super::SqliteAuthorizationStore {
 
     /// The verified upstream subject resolves only through an existing identity
     /// link; matching an email never selects another user. With `sign_up`, an
-    /// unlinked subject gets a new account linked to it instead of a refusal.
+    /// unlinked subject gets a new account with that principal ID, linked to
+    /// it, instead of a refusal.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn portal_upstream_login(
         &self,
@@ -609,7 +610,7 @@ impl super::super::SqliteAuthorizationStore {
         cookie: &str,
         csrf: &str,
         replacement: &str,
-        sign_up: bool,
+        sign_up: Option<&str>,
         now: i64,
     ) -> Result<super::portal::PortalLogin, AuthError> {
         let linked = {
@@ -625,12 +626,12 @@ impl super::super::SqliteAuthorizationStore {
                 .optional()?
         };
         let created = linked.is_none();
-        let principal = match linked {
-            Some(principal) => principal,
-            None if sign_up => super::super::sqlite::id(),
+        let principal = match (linked, sign_up) {
+            (Some(principal), _) => principal,
+            (None, Some(principal)) => principal.to_owned(),
             // No account has this provider identity, and this app does not let
             // people create one by signing in.
-            None => {
+            (None, None) => {
                 return Err(AuthError::NotFound(
                     "no account is linked to this provider account".into(),
                 ))
