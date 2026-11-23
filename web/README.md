@@ -14,7 +14,9 @@ Vite dev server. To try a change in the real runtime:
 
 1. Run `npm ci` at the repository root (Node 24 or 26, tested on 26, and npm 11).
 2. Run `npm run browser:embedded` at the repository root. It builds this app and
-   the OAuth portal into `crates/runtime/generated/`.
+   the OAuth portal into `crates/runtime/generated/`, with a fingerprint of
+   their sources. A development build of `trellis-server` fails while that
+   fingerprint no longer matches the sources.
 3. Rebuild and restart the server: `cargo build -p trellis-server`.
 4. Open `http://localhost:3000/console`.
 

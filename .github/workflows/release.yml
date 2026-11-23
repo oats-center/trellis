@@ -396,45 +396,8 @@ jobs:
       # Cross-language helper/provider executables for the TypeScript integration
       # tests, the testkit live test binary and the health_watch example. Built
       # once here so the tests do not compile Rust while they run.
-      - name: Build integration fixture helpers
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
-        run: |
-          set -euo pipefail
-          cargo build --bins \
-            --manifest-path integration/fixtures/runtime/Cargo.toml \
-            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
-            --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
-            --config "patch.crates-io.trellis-models.path=\"$GITHUB_WORKSPACE/crates/models\""
-          cargo build --manifest-path Cargo.toml -p trellis-runtime --example health_watch
-
-      - name: Build the testkit test binaries
-        env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/target
-        run: |
-          set -euo pipefail
-          cargo test --no-run \
-            --manifest-path integration/fixtures/testkit/Cargo.toml \
-            --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
-            --config "patch.crates-io.trellis-models.path=\"$GITHUB_WORKSPACE/crates/models\"" \
-            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
-            --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-testkit\"" \
-            --tests \
-            --message-format=json > "$RUNNER_TEMP/testkit-tests.json"
-          mkdir -p target/debug/testkit-tests
-          jq -r 'select(.executable != null and .target.kind[0] == "test") | "\(.target.name) \(.executable)"' \
-            "$RUNNER_TEMP/testkit-tests.json" > "$RUNNER_TEMP/testkit-tests.txt"
-          while read -r name executable; do
-            if [ "$name" = live ]; then
-              cp "$executable" target/debug/trellis-testkit-live
-            else
-              cp "$executable" "target/debug/testkit-tests/$name"
-            fi
-          done < "$RUNNER_TEMP/testkit-tests.txt"
-          [ -x target/debug/trellis-testkit-live ] || {
-            echo "failed to locate the testkit live test binary" >&2
-            exit 1
-          }
+      - name: Build integration fixture helpers and testkit test binaries
+        run: bash scripts/check.sh build-fixtures
 
       # Multithreaded zstd instead of the upload's single-threaded compression;
       # the tar preserves executable modes.
@@ -874,6 +837,9 @@ jobs:
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
     timeout-minutes: 20
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Download runtime and fixture binaries
         uses: actions/download-artifact@v8
         with:
@@ -897,11 +863,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           TRELLIS_TEST_SERVER_BIN: ${{ runner.temp }}/staged/trellis-server
           TRELLIS_TEST_NATS_BIN: ${{ runner.temp }}/staged/nats/nats-server
-          TRELLIS_TEST_CACHE_DIR: ${{ runner.temp }}/trellis-testkit-cache
-        run: |
-          set -euo pipefail
-          mkdir -p -m 700 "$TRELLIS_TEST_CACHE_DIR"
-          "$RUNNER_TEMP/staged/testkit-tests/upgrade" --test-threads=2
+          TRELLIS_TESTKIT_TESTS_DIR: ${{ runner.temp }}/staged/testkit-tests
+        run: bash scripts/check.sh upgrade
 
   examples:
     name: Documented examples

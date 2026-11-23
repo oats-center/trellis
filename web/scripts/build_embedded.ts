@@ -10,9 +10,31 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  sourceFingerprint,
+  writeFingerprint,
+} from "../../ts/tools/embedded_fingerprint.ts";
 
 const webDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const destination = join(webDir, "../crates/runtime/generated/web");
+// Everything the Console build reads, including the SDK sources
+// svelte.config.js aliases; trellis-runtime refuses a development build whose
+// embedded Console was built from other sources.
+const inputs = [
+  "web/src",
+  "web/static",
+  "web/scripts",
+  "web/package.json",
+  "web/svelte.config.js",
+  "web/tsconfig.json",
+  "web/vite.config.js",
+  "ts/packages/result",
+  "ts/packages/trellis",
+  "ts/packages/trellis-svelte",
+  "ts/tools/embedded_fingerprint.ts",
+  "package-lock.json",
+];
+const fingerprint = sourceFingerprint(dirname(webDir), inputs);
 
 const parent = dirname(destination);
 await mkdir(parent, { recursive: true });
@@ -92,6 +114,7 @@ try {
   try {
     await rename(buildDir, destination);
     promoted = true;
+    writeFingerprint(fingerprint, inputs, join(parent, "web.fingerprint"));
   } catch (error) {
     if (previous) await rename(backup, destination);
     throw error;

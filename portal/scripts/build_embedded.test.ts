@@ -27,6 +27,13 @@ test("failed compilation and unowned output cannot replace the last-good portal 
       new URL("./build_embedded.ts", import.meta.url),
       join(app, "scripts/build_embedded.ts"),
     );
+    // The build fingerprints its sources from the repository's Git listing.
+    await mkdir(join(root, "ts/tools"), { recursive: true });
+    await copyFile(
+      new URL("../../ts/tools/embedded_fingerprint.ts", import.meta.url),
+      join(root, "ts/tools/embedded_fingerprint.ts"),
+    );
+    strictEqual(spawnSync("git", ["init", "--quiet", root]).status, 0);
     await symlink(
       new URL("../../node_modules", import.meta.url),
       join(app, "node_modules"),

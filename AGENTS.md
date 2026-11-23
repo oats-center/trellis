@@ -142,9 +142,14 @@ inventories, or evidence ledgers to enforce this section.
   known, or `rustfmt --edition 2021 <changed .rs files>` for narrow file-scoped
   edits. Generated implementations are disposable build artifacts: do not commit
   or enforce formatting on them. Trellis-owned Rust libraries generate bindings
-  into Cargo `OUT_DIR`; project SDKs are generated before consumption. Verify
-  authored Rust with `cargo fmt --manifest-path Cargo.toml --all --check`. Do not bulk-format
-  unrelated drift unless the user asks for that cleanup; report it separately.
+  into Cargo `OUT_DIR`; project SDKs are generated before consumption. Do not
+  bulk-format unrelated drift unless the user asks for that cleanup; report it
+  separately.
+- Before reporting work done, run `bash scripts/check.sh quick`: it runs the
+  Pipeline's fast checks exactly as CI does (formatting, cargo deny, Prettier,
+  `llms-full.txt`, clippy for every feature set, the TypeScript, Console and
+  Portal type checks, and the integration fixture builds). If it warns that the
+  local Rust differs from CI's, rerun with the `RUSTUP_TOOLCHAIN` it names.
 - When changes affect contracts, generated SDKs, or runtime surfaces that depend
   on generated artifacts, run `cargo xtask install` as part of verification.
 - Follow `docs/src/routes/guides/releasing-trellis/+page.md` for testing and

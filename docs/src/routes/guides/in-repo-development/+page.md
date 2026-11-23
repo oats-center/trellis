@@ -49,11 +49,17 @@ curl http://127.0.0.1:8222/healthz
   again.
 - Console or sign-in changes under `web/` or `portal/`: run
   `npm run browser:embedded`, then restart the server. It serves the copies
-  compiled into it, never the source folders.
+  compiled into it, never the source folders. A development build of the
+  server refuses to compile while those copies are older than their sources
+  (`web/`, `portal/` and the TypeScript SDK packages the Console uses), and
+  names the command to run.
 - Contract changes: run `cargo xtask install`.
 - CLI changes: `cargo run -p trellis-cli -- <command>`, or
   `cargo install --path crates/cli` to replace your installed `trellis`.
 - Type checks: `npm run check:sdk` and `npm run check:integration`.
+- Before pushing: `bash scripts/check.sh quick` runs the Pipeline's fast checks
+  (formatting, cargo deny, clippy, type checks and the fixture builds) the way
+  CI runs them.
 - Tests: `npm test` builds once and runs everything the Pipeline checks, in
   parallel (`npm test -- --all` adds packaging and images). `scripts/check.sh <job>`
   runs one job.
