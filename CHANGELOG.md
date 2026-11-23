@@ -10,6 +10,10 @@ and this project adheres to
 
 ### Fixed
 
+- Jobs, Events and Health startup wait out a locked database instead of
+  stopping the server. Set-aside Auth effects are removed after 30 days. Stuck
+  Auth enforcement work shows as a degraded `enforcement` health check and is
+  logged hourly instead of every minute.
 - The Console no longer reloads in a loop after the Portal login changes
   underneath it (a sign-out and sign-in as someone else, or a fresh
   installation). A stored session that can no longer renew can be taken over by
