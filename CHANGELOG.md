@@ -33,6 +33,9 @@ deviceName })`); `trellis login` sends the hostname, and the confirmation
 
 ### Fixed
 
+- Removing a deployment deletes its webhook intake stream and its Operation
+  records and staging buckets, releasing their JetStream reservations; the
+  cleanup survives a restart.
 - Health reporting: a failed enforcement page marks its own work stuck, a
   removed webhook deployment's storage warning clears, a failed stream listing
   omits `largestStreams` (now optional) instead of looking complete, and in a
