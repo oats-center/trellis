@@ -111,6 +111,10 @@ npm run test:integration
 
 For focused Rust diagnostics, pass a native test-filter substring to Cargo.
 
+### Testing in a git worktree
+
+A git worktree has no `node_modules` of its own, so Node and TypeScript would find the main checkout's install and load its `@oatscenter/*` packages instead of the worktree's `ts/packages/*`. The test runners in `scripts/`, `scripts/check.sh` jobs that use the packages, `npm run browser:embedded` (and with it `cargo xtask install`) and `npm run check:integration` first run `node ts/tools/link_checkout_modules.ts`. In a worktree without its own install, it fills the worktree's `node_modules` with links: each workspace package points at the worktree's own directory, and each third-party module points at the main checkout's install. A checkout that npm installed itself, such as the main checkout or CI, is left unchanged. Run `npm ci` in the main checkout first. A branch that changes `package-lock.json` needs its own `npm ci` in the worktree.
+
 ## Formatting policy
 
 Formatting is part of the normal implementation loop, not just release verification. After editing source, docs, styles, generated-artifact inputs, or workflow files, format the changed files before running type checks and tests.
