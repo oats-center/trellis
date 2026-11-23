@@ -302,18 +302,37 @@ button.link:hover {
   font-size: 1.25rem;
   font-weight: 650;
 }
-.device-code {
+.account {
   display: flex;
-  justify-content: space-between;
+  gap: 0.75rem;
   align-items: center;
-  background: var(--soft);
-  border-radius: 0.5rem;
+  margin-top: 0.6rem;
   padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
 }
-.device-code code {
-  font-size: 1.125rem;
-  letter-spacing: 0.12em;
-  font-weight: 600;
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--soft);
+  color: var(--ink);
+  font-weight: 650;
+}
+.account-names {
+  display: grid;
+  min-width: 0;
+}
+.account-names > * {
+  overflow-wrap: anywhere;
+}
+.account-names .muted {
+  margin: 0;
+  font-size: 0.875rem;
 }
 .check {
   display: flex;

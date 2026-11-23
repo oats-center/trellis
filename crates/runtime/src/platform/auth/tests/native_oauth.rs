@@ -303,19 +303,11 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
                 .unwrap()
                 .to_owned()
         };
+        // The device's link signs the browser in first.
         let entry = http.get(flow.verification_uri()).send().await.unwrap();
-        assert_eq!(entry.status(), reqwest::StatusCode::OK);
+        assert_eq!(entry.status(), reqwest::StatusCode::SEE_OTHER);
         let mut cookies = cookie_header(&entry);
         let mut csrf = csrf_cookie(&cookies);
-        let entry = http
-            .post(format!("{origin}/portal/device"))
-            .header("Origin", &origin)
-            .header("Cookie", cookies.join("; "))
-            .form(&[("csrf", csrf.as_str()), ("user_code", flow.user_code())])
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(entry.status(), reqwest::StatusCode::SEE_OTHER);
         let login = url::Url::parse(&origin)
             .unwrap()
             .join(entry.headers()["location"].to_str().unwrap())
@@ -343,6 +335,24 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
         assert_eq!(login.status(), reqwest::StatusCode::SEE_OTHER);
         cookies = cookie_header(&login);
         csrf = csrf_cookie(&cookies);
+        for (path, form) in [
+            ("/portal/device", ("user_code", flow.user_code())),
+            ("/portal/device/confirm", ("decision", "confirm")),
+        ] {
+            let step = http
+                .post(format!("{origin}{path}"))
+                .header("Origin", &origin)
+                .header("Cookie", cookies.join("; "))
+                .form(&[
+                    ("csrf", csrf.as_str()),
+                    ("transaction", transaction.as_str()),
+                    form,
+                ])
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(step.status(), reqwest::StatusCode::SEE_OTHER, "{path}");
+        }
         let consent = http
             .get(format!("{origin}/portal/authorization/{transaction}"))
             .header("Cookie", cookies.join("; "))

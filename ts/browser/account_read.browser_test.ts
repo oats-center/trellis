@@ -11,6 +11,7 @@ import { apps } from "../../integration/fixtures/runtime/packages/runtime-trelli
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
   browserRuntimeOptions,
+  enterDeviceCode,
   launchProfile,
 } from "./browser_test_support.ts";
 
@@ -71,21 +72,11 @@ test(
           const flow = (
             await custody.startDevice(request, { signal: t.signal })
           ).orThrow();
-          await page.goto(flow.verificationUri);
-          await page.getByLabel("Code", { exact: true }).fill(flow.userCode);
-          await page
-            .getByRole("button", { name: "Continue", exact: true })
-            .click();
-          if (decision === "denied") {
-            phase = `${decision}: sign in`;
-            await page
-              .getByLabel("Username", { exact: true })
-              .fill("self-profile-reader");
-            await page.getByLabel("Password", { exact: true }).fill(password);
-            await page
-              .getByRole("button", { name: "Sign in", exact: true })
-              .click();
-          }
+          phase = `${decision}: sign in and enter the code`;
+          await enterDeviceCode(page, flow.verificationUri, flow.userCode, {
+            username: "self-profile-reader",
+            password,
+          });
           phase = `${decision}: present consent`;
           await page
             .getByRole("heading", { name: /wants to use your account/ })

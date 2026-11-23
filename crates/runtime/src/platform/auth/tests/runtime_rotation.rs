@@ -574,19 +574,23 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
             })
             .collect::<Vec<_>>()
     };
-    let response = http
-        .post(format!("{issuer}/portal/session"))
-        .header("Origin", &origin)
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_success(), "{}", response.status());
+    let response = http.get(format!("{issuer}/device")).send().await.unwrap();
+    assert!(response.status().is_redirection(), "{}", response.status());
     let session_cookies = cookies(&response);
     let csrf = session_cookies
         .iter()
         .find_map(|cookie| cookie.strip_prefix("__Host-trellis-portal-csrf="))
         .unwrap()
         .to_owned();
+    let transaction = url::Url::parse(&issuer)
+        .unwrap()
+        .join(response.headers()["location"].to_str().unwrap())
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "transaction")
+        .unwrap()
+        .1
+        .into_owned();
     let response = http
         .post(format!("{issuer}/portal/login"))
         .header("Origin", &origin)
@@ -595,32 +599,31 @@ async fn development_mode_signs_in_and_relays_nats_on_the_trellis_port() {
             ("csrf", csrf.as_str()),
             ("username", "admin"),
             ("password", "a strong bootstrap password"),
-            ("request_id", &ulid::Ulid::generate().to_string()),
+            ("request_id", transaction.as_str()),
         ])
         .send()
         .await
         .unwrap();
     assert!(response.status().is_success(), "{}", response.status());
     let cookie = cookies(&response).join("; ");
-    let response = http
-        .post(format!("{issuer}/portal/device"))
-        .header("Origin", &origin)
-        .header("Cookie", &cookie)
-        .form(&[("csrf", csrf.as_str()), ("user_code", device.user_code())])
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_redirection(), "{}", response.status());
-    let location = url::Url::parse(&issuer)
-        .unwrap()
-        .join(response.headers()["location"].to_str().unwrap())
-        .unwrap();
-    let transaction = location
-        .query_pairs()
-        .find(|(key, _)| key == "transaction")
-        .unwrap()
-        .1
-        .into_owned();
+    for (path, field) in [
+        ("/portal/device", ("user_code", device.user_code())),
+        ("/portal/device/confirm", ("decision", "confirm")),
+    ] {
+        let response = http
+            .post(format!("{issuer}{path}"))
+            .header("Origin", &origin)
+            .header("Cookie", &cookie)
+            .form(&[
+                ("csrf", csrf.as_str()),
+                ("transaction", transaction.as_str()),
+                field,
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection(), "{}", response.status());
+    }
     let view: serde_json::Value = http
         .get(format!("{issuer}/portal/authorization/{transaction}"))
         .header("Cookie", &cookie)
@@ -1583,19 +1586,23 @@ async fn admin_approves_device(origin: &str, user_code: &str, capability: &str) 
             })
             .collect::<Vec<_>>()
     };
-    let response = http
-        .post(format!("{origin}/portal/session"))
-        .header("Origin", origin)
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_success());
+    let response = http.get(format!("{origin}/device")).send().await.unwrap();
+    assert!(response.status().is_redirection());
     let cookie = cookies(&response);
     let csrf = cookie
         .iter()
         .find_map(|cookie| cookie.strip_prefix("__Host-trellis-portal-csrf="))
         .unwrap()
         .to_owned();
+    let transaction = url::Url::parse(origin)
+        .unwrap()
+        .join(response.headers()["location"].to_str().unwrap())
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "transaction")
+        .unwrap()
+        .1
+        .into_owned();
     let response = http
         .post(format!("{origin}/portal/login"))
         .header("Origin", origin)
@@ -1604,32 +1611,31 @@ async fn admin_approves_device(origin: &str, user_code: &str, capability: &str) 
             ("csrf", csrf.as_str()),
             ("username", "admin"),
             ("password", "a strong bootstrap password"),
-            ("request_id", &ulid::Ulid::generate().to_string()),
+            ("request_id", transaction.as_str()),
         ])
         .send()
         .await
         .unwrap();
     assert!(response.status().is_success());
     let cookie = cookies(&response).join("; ");
-    let response = http
-        .post(format!("{origin}/portal/device"))
-        .header("Origin", origin)
-        .header("Cookie", cookie.as_str())
-        .form(&[("csrf", csrf.as_str()), ("user_code", user_code)])
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_redirection());
-    let location = url::Url::parse(origin)
-        .unwrap()
-        .join(response.headers()["location"].to_str().unwrap())
-        .unwrap();
-    let transaction = location
-        .query_pairs()
-        .find(|(key, _)| key == "transaction")
-        .unwrap()
-        .1
-        .into_owned();
+    for (path, field) in [
+        ("/portal/device", ("user_code", user_code)),
+        ("/portal/device/confirm", ("decision", "confirm")),
+    ] {
+        let response = http
+            .post(format!("{origin}{path}"))
+            .header("Origin", origin)
+            .header("Cookie", cookie.as_str())
+            .form(&[
+                ("csrf", csrf.as_str()),
+                ("transaction", transaction.as_str()),
+                field,
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection());
+    }
     let response = http
         .get(format!("{origin}/portal/authorization/{transaction}"))
         .header("Cookie", cookie.as_str())

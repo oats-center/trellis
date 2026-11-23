@@ -83,43 +83,16 @@ async fn login(
             })
             .collect::<Vec<_>>()
     };
-    let response = http
-        .post(format!("{origin}/portal/session"))
-        .header("Origin", origin)
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_success());
+    // The device's link signs in first, then takes the code, then the
+    // person's confirmation that the device is theirs.
+    let response = http.get(format!("{origin}/device")).send().await.unwrap();
+    assert!(response.status().is_redirection());
     let initial = cookies(&response);
     let csrf = initial
         .iter()
         .find_map(|cookie| cookie.strip_prefix("__Host-trellis-portal-csrf="))
         .unwrap()
         .to_owned();
-    let response = http
-        .post(format!("{origin}/portal/login"))
-        .header("Origin", origin)
-        .header("Cookie", initial.join("; "))
-        .form(&[
-            ("csrf", csrf.as_str()),
-            ("username", username),
-            ("password", password),
-            ("request_id", &ulid::Ulid::generate().to_string()),
-        ])
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_success());
-    let cookie = cookies(&response).join("; ");
-    let response = http
-        .post(format!("{origin}/portal/device"))
-        .header("Origin", origin)
-        .header("Cookie", &cookie)
-        .form(&[("csrf", csrf.as_str()), ("user_code", device.user_code())])
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_redirection());
     let location = reqwest::Url::parse(origin)
         .unwrap()
         .join(response.headers()["location"].to_str().unwrap())
@@ -131,6 +104,39 @@ async fn login(
         .unwrap()
         .1
         .into_owned();
+    let response = http
+        .post(format!("{origin}/portal/login"))
+        .header("Origin", origin)
+        .header("Cookie", initial.join("; "))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("username", username),
+            ("password", password),
+            ("request_id", transaction.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let cookie = cookies(&response).join("; ");
+    for (path, field) in [
+        ("/portal/device", ("user_code", device.user_code())),
+        ("/portal/device/confirm", ("decision", "confirm")),
+    ] {
+        let response = http
+            .post(format!("{origin}{path}"))
+            .header("Origin", origin)
+            .header("Cookie", &cookie)
+            .form(&[
+                ("csrf", csrf.as_str()),
+                ("transaction", transaction.as_str()),
+                field,
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection());
+    }
     let view: Json = http
         .get(format!("{origin}/portal/authorization/{transaction}"))
         .header("Cookie", &cookie)
@@ -148,7 +154,6 @@ async fn login(
         ("transaction", transaction.as_str()),
         ("presentation", view["presentationId"].as_str().unwrap()),
         ("decision", "approve"),
-        ("confirm_device", device.user_code()),
     ];
     let mut administrative = false;
     for item in view["capabilities"].as_array().unwrap() {

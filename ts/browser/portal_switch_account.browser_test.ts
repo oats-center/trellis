@@ -21,7 +21,7 @@ import {
 
 /**
  * Starts `trellis login` in its own configuration and opens its printed link
- * in `page`, up to the point the Portal shows what comes after the code.
+ * in `page`, which shows the account step first.
  */
 async function openCliLogin(runtime: TrellisTestRuntime, page: Page) {
   const binary = process.env.TRELLIS_TEST_CLI_BIN;
@@ -52,9 +52,16 @@ async function openCliLogin(runtime: TrellisTestRuntime, page: Page) {
   }
   assert.ok(challenge);
   await page.goto(challenge.loginUrl);
-  await page.getByLabel("Code", { exact: true }).fill(challenge.userCode);
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  const { userCode } = challenge;
   return {
+    /** Types the CLI's code and confirms the device, up to the consent. */
+    async enterCode(): Promise<void> {
+      await page.getByLabel("Code", { exact: true }).fill(userCode);
+      await page.getByRole("button", { name: "Continue", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Yes, this is my device", exact: true })
+        .click();
+    },
     /** The principal the CLI signed in as, once it finishes. */
     async principal(): Promise<string> {
       try {
@@ -163,9 +170,12 @@ test("someone already signed in to the Portal sees who, and can sign a CLI in as
 
       // Another CLI link shows the signed-in administrator. Choosing another
       // account signs in again for the same request, which the CLI receives.
+      // Its account step names the administrator; using a different account
+      // signs in afresh and returns to the code step of the same sign-in.
       const switched = await openCliLogin(runtime, page);
-      await page
-        .getByText(new RegExp(`^Signed in as .*\\b${runtime.adminUsername}\\b`))
+      const account = page.locator(".account");
+      await account
+        .getByText(runtime.adminUsername, { exact: true })
         .waitFor({ state: "visible" });
       await page
         .getByRole("button", { name: "Use a different account" })
@@ -176,12 +186,20 @@ test("someone already signed in to the Portal sees who, and can sign a CLI in as
       await page
         .getByText("Signed in as Dana Other (dana)")
         .waitFor({ state: "visible" });
+      await switched.enterCode();
+      await page
+        .getByText("Signed in as Dana Other (dana)")
+        .waitFor({ state: "visible" });
       await allow(page);
       assert.equal(await switched.principal(), danaId);
 
       // Without choosing, the next sign-in shows and continues as whoever is
       // signed in now.
       const kept = await openCliLogin(runtime, page);
+      await account.getByText("Dana Other", { exact: true }).waitFor();
+      await account.getByText("dana", { exact: true }).waitFor();
+      await page.getByRole("link", { name: "Continue", exact: true }).click();
+      await kept.enterCode();
       await page
         .getByText("Signed in as Dana Other (dana)")
         .waitFor({ state: "visible" });

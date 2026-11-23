@@ -10,12 +10,17 @@ import type { Page } from "playwright";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
   browserRuntimeOptions,
+  enterDeviceCode,
   launchProfile,
 } from "./browser_test_support.ts";
 
-/** Submits the device code page and returns the answer the browser showed. */
+/**
+ * Continues as the signed-in account, submits the code page, and returns the
+ * answer the browser showed.
+ */
 async function enterCode(page: Page, url: string, code: string) {
   await page.goto(url);
+  await page.getByRole("link", { name: "Continue", exact: true }).click();
   await page.getByLabel("Code", { exact: true }).fill(code);
   const answer = page.waitForResponse(
     (response) =>
@@ -71,16 +76,10 @@ test("expired, used and unknown Portal links answer a browser with a page, and A
       const { loginUrl, userCode } = challenge;
       const page = await context.newPage();
       page.setDefaultTimeout(30_000);
-      await page.goto(loginUrl);
-      await page.getByLabel("Code", { exact: true }).fill(userCode);
-      await page.getByRole("button", { name: "Continue", exact: true }).click();
-      await page
-        .getByLabel("Username", { exact: true })
-        .fill(runtime.adminUsername);
-      await page
-        .getByLabel("Password", { exact: true })
-        .fill(runtime.adminPassword);
-      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await enterDeviceCode(page, loginUrl, userCode, {
+        username: runtime.adminUsername,
+        password: runtime.adminPassword,
+      });
       await page.getByRole("button", { name: "Allow", exact: true }).click();
       const management = page.getByRole("button", {
         name: "Allow management",
@@ -111,7 +110,7 @@ test("expired, used and unknown Portal links answer a browser with a page, and A
       );
       assert.deepEqual(unknown, used);
       await page.getByRole("link", { name: "Enter a code" }).click();
-      await page.getByLabel("Code", { exact: true }).waitFor();
+      await page.getByRole("heading", { name: "Device activation" }).waitFor();
 
       // A sign-in link whose transaction is gone explains itself in a page.
       const gone = await page.goto(
@@ -130,6 +129,7 @@ test("expired, used and unknown Portal links answer a browser with a page, and A
 
       // The same refusals still answer the Portal's own API calls with JSON.
       await page.goto(`${runtime.trellisUrl}/device`);
+      await page.getByRole("heading", { name: "Device activation" }).waitFor();
       const api = await page.evaluate(async (transaction) => {
         const csrf =
           document.cookie
@@ -138,7 +138,12 @@ test("expired, used and unknown Portal links answer a browser with a page, and A
             ?.split("=")[1] ?? "";
         const device = await fetch("/portal/device", {
           method: "POST",
-          body: new URLSearchParams({ csrf, user_code: "ZZZZ-ZZZZ" }),
+          body: new URLSearchParams({
+            csrf,
+            transaction:
+              new URL(location.href).searchParams.get("transaction") ?? "",
+            user_code: "ZZZZ-ZZZZ",
+          }),
         });
         const consent = await fetch(`/portal/authorization/${transaction}`);
         return [

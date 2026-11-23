@@ -1091,41 +1091,38 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         rejected.json::<serde_json::Value>().await.unwrap()["error"],
         "invalid_grant"
     );
+    let set_cookies = |response: &reqwest::Response| -> Vec<String> {
+        response
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .map(|value| {
+                value
+                    .to_str()
+                    .unwrap()
+                    .split(';')
+                    .next()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    };
+    let location = |response: &reqwest::Response| {
+        response.headers()[reqwest::header::LOCATION]
+            .to_str()
+            .unwrap()
+            .to_owned()
+    };
+    // Someone not signed in opens the device's link: they sign in first.
     let entry = http.get(format!("{origin}/device")).send().await.unwrap();
-    assert_eq!(entry.status(), reqwest::StatusCode::OK);
-    let mut cookies: Vec<String> = entry
-        .headers()
-        .get_all(reqwest::header::SET_COOKIE)
-        .iter()
-        .map(|value| {
-            value
-                .to_str()
-                .unwrap()
-                .split(';')
-                .next()
-                .unwrap()
-                .to_owned()
-        })
-        .collect();
+    assert_eq!(entry.status(), reqwest::StatusCode::SEE_OTHER);
+    let mut cookies = set_cookies(&entry);
     let mut csrf = cookies
         .iter()
         .find_map(|value| value.strip_prefix("__Host-trellis-portal-csrf="))
         .unwrap()
         .to_owned();
-    let entry = http
-        .post(format!("{origin}/portal/device"))
-        .header("Origin", &origin)
-        .header("Cookie", cookies.join("; "))
-        .form(&[
-            ("csrf", csrf.as_str()),
-            ("user_code", device.user_code.as_str()),
-        ])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(entry.status(), reqwest::StatusCode::SEE_OTHER);
-    let location = entry.headers()[reqwest::header::LOCATION].to_str().unwrap();
-    let login_url = url::Url::parse(&format!("{origin}{location}")).unwrap();
+    let login_url = url::Url::parse(&format!("{origin}{}", location(&entry))).unwrap();
     assert_eq!(login_url.path(), "/login");
     let transaction = login_url
         .query_pairs()
@@ -1148,25 +1145,79 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         .await
         .unwrap();
     assert_eq!(login.status(), reqwest::StatusCode::SEE_OTHER);
-    cookies = login
-        .headers()
-        .get_all(reqwest::header::SET_COOKIE)
-        .iter()
-        .map(|value| {
-            value
-                .to_str()
-                .unwrap()
-                .split(';')
-                .next()
-                .unwrap()
-                .to_owned()
-        })
-        .collect();
+    cookies = set_cookies(&login);
     csrf = cookies
         .iter()
         .find_map(|value| value.strip_prefix("__Host-trellis-portal-csrf="))
         .unwrap()
         .to_owned();
+    let post = |path: &str, transaction: &str, field: (&'static str, String)| {
+        http.post(format!("{origin}{path}"))
+            .header("Origin", &origin)
+            .header("Cookie", cookies.join("; "))
+            .form(&[
+                ("csrf", csrf.clone()),
+                ("transaction", transaction.to_owned()),
+                (field.0, field.1),
+            ])
+            .send()
+    };
+    // Signing in leads to the code step, never past it.
+    let after_login = http
+        .get(format!("{origin}{}", location(&login)))
+        .header("Cookie", cookies.join("; "))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        location(&after_login),
+        format!("/device?transaction={transaction}")
+    );
+    let entered = post(
+        "/portal/device",
+        &transaction,
+        ("user_code", device.user_code.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        location(&entered),
+        format!("/device?transaction={transaction}")
+    );
+    // Until the person confirms the device is theirs, there is no consent to
+    // read or approve, and the consent page sends them back to confirm it.
+    let unconfirmed = http
+        .get(format!("{origin}/portal/authorization/{transaction}"))
+        .header("Cookie", cookies.join("; "))
+        .send()
+        .await
+        .unwrap();
+    assert!(unconfirmed.status().is_client_error());
+    let skipped = post("/portal/approve", &transaction, ("decision", "deny".into()))
+        .await
+        .unwrap();
+    assert_eq!(skipped.status(), reqwest::StatusCode::BAD_REQUEST);
+    let consent_page = http
+        .get(format!("{origin}/consent?transaction={transaction}"))
+        .header("Cookie", cookies.join("; "))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        location(&consent_page),
+        format!("/device?transaction={transaction}")
+    );
+    let confirmed = post(
+        "/portal/device/confirm",
+        &transaction,
+        ("decision", "confirm".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        location(&confirmed),
+        format!("/consent?transaction={transaction}")
+    );
     let consent = http
         .get(format!("{origin}/portal/authorization/{transaction}"))
         .header("Cookie", cookies.join("; "))
@@ -1195,27 +1246,40 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         reqwest::StatusCode::BAD_REQUEST
     );
     // The invalid UI request did not consume the engine's device grant. A fresh
-    // continuation still permits the actual user to confirm and approve it.
-    let entry = http
-        .post(format!("{origin}/portal/device"))
-        .header("Origin", &origin)
+    // device sign-in, as the person signed in, still lets them confirm and
+    // approve it.
+    let fresh = http
+        .get(format!("{origin}/device"))
         .header("Cookie", cookies.join("; "))
-        .form(&[
-            ("csrf", csrf.as_str()),
-            ("user_code", device.user_code.as_str()),
-        ])
         .send()
         .await
         .unwrap();
-    let location = entry.headers()[reqwest::header::LOCATION].to_str().unwrap();
-    let consent_url = url::Url::parse(&format!("{origin}{location}")).unwrap();
-    assert_eq!(consent_url.path(), "/consent");
-    let transaction = consent_url
+    let account = url::Url::parse(&format!("{origin}{}", location(&fresh))).unwrap();
+    assert_eq!(account.path(), "/device");
+    let transaction = account
         .query_pairs()
         .find(|(name, _)| name == "transaction")
         .unwrap()
         .1
         .into_owned();
+    post(
+        "/portal/device",
+        &transaction,
+        ("user_code", device.user_code.clone()),
+    )
+    .await
+    .unwrap();
+    let confirmed = post(
+        "/portal/device/confirm",
+        &transaction,
+        ("decision", "confirm".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        location(&confirmed),
+        format!("/consent?transaction={transaction}")
+    );
     let consent: serde_json::Value = http
         .get(format!("{origin}/portal/authorization/{transaction}"))
         .header("Cookie", cookies.join("; "))

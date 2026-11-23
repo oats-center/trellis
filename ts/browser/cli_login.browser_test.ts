@@ -17,7 +17,6 @@ import {
   approveConsentIfRequired,
   browserRuntimeOptions,
   launchProfile,
-  signInIfPrompted,
 } from "./browser_test_support.ts";
 
 function cliBinary(): string {
@@ -147,6 +146,13 @@ test("CLI login keeps one durable login that later commands connect with", async
           const forged = new URL(loginUrl);
           forged.searchParams.set("user_code", challenge.userCode);
           await page.goto(forged.href, { waitUntil: "domcontentloaded" });
+          await page
+            .getByLabel("Username", { exact: true })
+            .fill(runtime.adminUsername);
+          await page
+            .getByLabel("Password", { exact: true })
+            .fill(runtime.adminPassword);
+          await page.getByRole("button", { name: "Sign in" }).click();
           const code = page.getByLabel("Code", { exact: true });
           await page
             .getByRole("heading", { name: "Connect a device" })
@@ -157,11 +163,10 @@ test("CLI login keeps one durable login that later commands connect with", async
             challenge.userCode.replace("-", "").toLowerCase(),
           );
           assert.equal(await code.inputValue(), challenge.userCode);
-          await page.getByRole("button", { name: /continue|review/i }).click();
-          await signInIfPrompted(page, {
-            username: runtime.adminUsername,
-            password: runtime.adminPassword,
-          });
+          await page.getByRole("button", { name: "Continue" }).click();
+          await page
+            .getByRole("button", { name: "Yes, this is my device" })
+            .click();
           await approveConsentIfRequired(page, 15_000);
           assert.deepEqual(pageErrors, []);
         } finally {

@@ -154,13 +154,26 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
-    let response = http
-        .post(format!("{origin}/portal/session"))
-        .header("Origin", origin)
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_success());
+    // The device's link signs in first, then takes the code, then the
+    // person's confirmation that the device is theirs.
+    let response = http.get(format!("{origin}/device")).send().await.unwrap();
+    assert!(response.status().is_redirection());
+    let transaction = url::Url::parse(origin)
+        .unwrap()
+        .join(
+            response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "transaction")
+        .unwrap()
+        .1
+        .into_owned();
     let cookies: Vec<_> = response
         .headers()
         .get_all(reqwest::header::SET_COOKIE)
@@ -188,7 +201,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
             ("csrf", csrf.clone()),
             ("username", "mirror-user".into()),
             ("password", "ordinary mirror user password".into()),
-            ("request_id", ulid::Ulid::generate().to_string()),
+            ("request_id", transaction.clone()),
         ])
         .send()
         .await
@@ -209,32 +222,24 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         })
         .collect();
     let cookie = cookies.join("; ");
-    let response = http
-        .post(format!("{origin}/portal/device"))
-        .header("Origin", origin)
-        .header(reqwest::header::COOKIE, &cookie)
-        .form(&[("csrf", csrf.as_str()), ("user_code", login.user_code())])
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_redirection());
-    let consent = url::Url::parse(origin)
-        .unwrap()
-        .join(
-            response
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .unwrap()
-                .to_str()
-                .unwrap(),
-        )
-        .unwrap();
-    let transaction = consent
-        .query_pairs()
-        .find(|(key, _)| key == "transaction")
-        .unwrap()
-        .1
-        .into_owned();
+    for (path, field) in [
+        ("/portal/device", ("user_code", login.user_code())),
+        ("/portal/device/confirm", ("decision", "confirm")),
+    ] {
+        let response = http
+            .post(format!("{origin}{path}"))
+            .header("Origin", origin)
+            .header(reqwest::header::COOKIE, &cookie)
+            .form(&[
+                ("csrf", csrf.as_str()),
+                ("transaction", transaction.as_str()),
+                field,
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection());
+    }
     let view: serde_json::Value = http
         .get(format!("{origin}/portal/authorization/{transaction}"))
         .header(reqwest::header::COOKIE, &cookie)

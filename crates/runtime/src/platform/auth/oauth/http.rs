@@ -158,7 +158,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         .merge(public)
         .route("/profile/avatars/{token}", get(avatar))
         .route("/authorize", get(authorize))
-        .route("/device", get(super::device::page))
+        .route("/device", get(super::device::entry))
         .route(
             "/device/complete",
             get(|State(engine): State<Arc<OAuthEngine>>| async move {
@@ -166,6 +166,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
             }),
         )
         .route("/portal/device", post(super::device::begin))
+        .route("/portal/device/confirm", post(super::device::confirm))
         .route("/device-enrollment", get(super::device::page))
         .route("/device-enrollment/complete", get(super::device::page))
         .route(
@@ -364,7 +365,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                     .flat_map(|value| value.split(','))
                     .any(|part| part.split(';').next().map(str::trim) == Some("text/html"))
                     || (request.method() == axum::http::Method::GET
-                        && (["/authorize", "/login", "/consent", "/logout"]
+                        && (["/authorize", "/device", "/login", "/consent", "/logout"]
                             .contains(&path.as_str())
                             || path.starts_with("/account/")
                             || path.starts_with("/portal/oidc/")));
@@ -722,7 +723,7 @@ async fn authorize(
             expires_at: now + 600,
         };
         store
-            .store_authorization(&flow_transaction, &flow, &client_id)
+            .store_authorization(&flow_transaction, &flow, Some(&client_id))
             .map_err(|cause| failed("could not save the authorization", cause))?;
         Ok((authenticated, guest))
     })
@@ -890,6 +891,18 @@ async fn consent_page(
     else {
         return error(ErrorCode::InvalidRequest);
     };
+    // A device sign-in reaches its consent only through its earlier steps,
+    // which the device page shows. Signing in for one returns here.
+    if let Some((cookie, csrf)) = portal_cookie(&headers, "__Host-trellis-portal")
+        .zip(portal_cookie(&headers, "__Host-trellis-portal-csrf"))
+    {
+        let now = crate::clock::unix_now();
+        if let Ok((_, flow)) = login_and_flow(&engine, cookie, csrf, transaction, now).await {
+            if !flow.request.consentable() {
+                return Redirect::to(&format!("/device?transaction={transaction}")).into_response();
+            }
+        }
+    }
     let view = match consent_data(&engine, &headers, transaction).await {
         Ok(view) => view,
         Err(code) => return lapsed(&engine, transaction, code).await,
@@ -931,7 +944,7 @@ async fn consent_view_page(
 /// An authorization whose request is still kept can start again in this
 /// browser; a device sign-in starts again on the device; anything else gets
 /// the failure page for `code`.
-async fn lapsed(engine: &OAuthEngine, transaction: &str, code: ErrorCode) -> Response {
+pub(super) async fn lapsed(engine: &OAuthEngine, transaction: &str, code: ErrorCode) -> Response {
     if code == ErrorCode::ServerError {
         return error(code);
     }
@@ -1079,7 +1092,7 @@ async fn consent(
 }
 
 /// Authenticate the portal login and load its pending authorization flow.
-async fn login_and_flow(
+pub(super) async fn login_and_flow(
     engine: &OAuthEngine,
     cookie: String,
     csrf: String,
@@ -1120,6 +1133,9 @@ async fn consent_data(
     };
     let now = crate::clock::unix_now();
     let (login, flow) = login_and_flow(engine, cookie, csrf, transaction, now).await?;
+    if !flow.request.consentable() {
+        return Err(ErrorCode::InvalidRequest);
+    }
     let store = engine.server.store().clone();
     let transaction = transaction.to_owned();
     let validated = match engine.consent_intent(&flow.request).await {
@@ -1424,6 +1440,11 @@ async fn approve(
             Ok(found) => found,
             Err(code) => return error(code),
         };
+    // A device is approved or refused here only once its code was entered and
+    // the person confirmed it; until then the device page owns the decision.
+    if !flow.request.consentable() {
+        return error(ErrorCode::InvalidRequest);
+    }
     let validated = match engine.consent_intent(&flow.request).await {
         Ok(request) => request,
         Err(response) => return error(response.error),
@@ -1449,7 +1470,10 @@ async fn approve(
                     Err(response) => authorization_error(response),
                 }
             }
-            super::portal::ConsentRequest::Device { device_code } => {
+            super::portal::ConsentRequest::Device { device_code, .. } => {
+                let Some(device_code) = device_code else {
+                    return error(ErrorCode::InvalidRequest);
+                };
                 let device = match engine.server.store().get_device_grant(device_code).await {
                     Ok(Some(device)) => device,
                     _ => return error(ErrorCode::InvalidRequest),
@@ -1610,7 +1634,10 @@ async fn complete_approval(
                 Err(super::portal::ApprovalError::Protocol(response)) => error(response.error),
             }
         }
-        super::portal::ConsentRequest::Device { device_code } => {
+        super::portal::ConsentRequest::Device { device_code, .. } => {
+            let Some(device_code) = device_code else {
+                return error(ErrorCode::InvalidRequest);
+            };
             let device = match engine.server.store().get_device_grant(&device_code).await {
                 Ok(Some(device)) => device,
                 _ => return error(ErrorCode::InvalidRequest),
