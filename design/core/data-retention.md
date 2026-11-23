@@ -75,9 +75,13 @@ size bound reserved, so Trellis deletes them:
   its endpoints after the removal, and again at every pass, once a minute and
   at startup, for any intake stream left for a removed deployment. A stream of
   that name whose subjects are not the deployment's is left alone. Requests
-  still waiting for verification are recorded as expired. The request records
-  themselves keep expiring under the deployment's record retention, and dedupe
-  IDs under their window; neither reserves storage.
+  still waiting for verification are recorded as expired, and no record keeps
+  a reference into the stream. Every pass does this for each removed
+  deployment whose stream is gone, not only the pass that deleted it, so a
+  server that stopped between deleting the stream and updating the records
+  finishes the update at its next pass. The request records themselves keep
+  expiring under the deployment's record retention, and dedupe IDs under their
+  window; neither reserves storage.
 - The Operation records `KV_trellis_operations_<deployment>` and the upload
   staging store `OBJ_trellis_operation_staging_<deployment>`. The removal
   queues an Auth effect in the same transaction, which deletes both and is

@@ -977,40 +977,20 @@ impl Webhooks {
     }
 
     /// Delete the intake streams of removed deployments, which releases the
-    /// storage JetStream reserves for them.
+    /// storage JetStream reserves for them, and update their records.
     ///
     /// Removal is final, and only Auth's record of it says a stream can go,
     /// so this runs after every reload and at every sweep, the first one at
     /// startup: a removal the server stopped before acting on, or a stream a
     /// request in flight created again, goes at the next pass. A stream of
     /// that name whose subjects are not the deployment's is left alone.
+    ///
+    /// Each pass updates the records of every removed deployment whose stream
+    /// is gone, whether this pass deleted it or an earlier one did, so a pass
+    /// that stopped between the two leaves no request pending and no record
+    /// pointing into the deleted stream after the next.
     async fn release_removed(&self) {
         use futures_util::TryStreamExt as _;
-        let served: BTreeSet<String> = self
-            .directory()
-            .deployments()
-            .keys()
-            .map(|deployment| stream_name(deployment))
-            .collect();
-        let unserved: BTreeSet<String> = match self
-            .inner
-            .jetstream
-            .stream_names()
-            .try_filter(|name| {
-                std::future::ready(name.starts_with("TRELLIS_WEBHOOKS_") && !served.contains(name))
-            })
-            .try_collect()
-            .await
-        {
-            Ok(names) => names,
-            Err(error) => {
-                tracing::warn!(%error, "webhook intake streams could not be listed");
-                return;
-            }
-        };
-        if unserved.is_empty() {
-            return;
-        }
         let storage = self.inner.storage.clone();
         let removed = match super::auth::blocking(move || {
             super::auth::webhooks::removed_deployments(&storage)
@@ -1023,9 +1003,33 @@ impl Webhooks {
                 return;
             }
         };
+        if removed.is_empty() {
+            return;
+        }
+        let existing: BTreeSet<String> = match self
+            .inner
+            .jetstream
+            .stream_names()
+            .try_filter(|name| std::future::ready(name.starts_with("TRELLIS_WEBHOOKS_")))
+            .try_collect()
+            .await
+        {
+            Ok(names) => names,
+            Err(error) => {
+                tracing::warn!(%error, "webhook intake streams could not be listed");
+                return;
+            }
+        };
+        let directory = self.directory();
+        let mut released = Vec::new();
         for deployment in removed {
+            // Still served until the reload that follows its removal.
+            if directory.deployments().contains_key(&deployment) {
+                continue;
+            }
             let name = stream_name(&deployment);
-            if !unserved.contains(&name) {
+            if !existing.contains(&name) {
+                released.push(deployment);
                 continue;
             }
             let deleted = async {
@@ -1046,9 +1050,7 @@ impl Webhooks {
                         stream = %name,
                         "Deleted the intake stream of a removed deployment"
                     );
-                    if let Err(error) = self.inner.records.stream_deleted(&deployment).await {
-                        tracing::warn!(%deployment, %error, "webhook records could not be updated");
-                    }
+                    released.push(deployment);
                 }
                 Ok(false) => (),
                 Err(error) => tracing::warn!(
@@ -1058,6 +1060,9 @@ impl Webhooks {
                     "the intake stream of a removed deployment could not be deleted"
                 ),
             }
+        }
+        if let Err(error) = self.inner.records.streams_deleted(released).await {
+            tracing::warn!(%error, "webhook records of removed deployments could not be updated");
         }
     }
 
@@ -1242,5 +1247,102 @@ mod tests {
         assert!(refused(trellis, console, "console.example:8443"));
         // The Console at /console on the Trellis origin refuses nothing.
         assert!(!refused(trellis, trellis, "trellis.example"));
+    }
+
+    #[tokio::test]
+    async fn a_restart_finishes_a_removal_whose_intake_stream_is_already_gone() {
+        use std::time::Duration;
+        use tokio::io::AsyncBufReadExt;
+        let (directory, store, removed, kept) =
+            crate::platform::auth::tests::removed_and_kept_deployments();
+        // Held until the broker's listener is up; see ReservedPort.
+        let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+        let port = reservation.port();
+        let mut server = tokio::process::Command::new(
+            std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into()),
+        )
+        .args(["-js", "-a", "127.0.0.1", "-p", &port.to_string(), "-sd"])
+        .arg(directory.path().join("nats"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+        let mut logs = tokio::io::BufReader::new(server.stderr.take().unwrap()).lines();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(line) = logs.next_line().await.unwrap() {
+                if line.contains("Server is ready") {
+                    return;
+                }
+            }
+            panic!("NATS exited before readiness");
+        })
+        .await
+        .unwrap();
+        let nats = async_nats::connect(format!("nats://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+
+        // An earlier server deleted the removed deployment's intake stream
+        // and stopped before it updated the deployment's records. Each
+        // deployment has one request stored in its stream, waiting for
+        // verification.
+        let path = directory.path().join("webhooks.sqlite");
+        let records = super::records::Records::open(&path, Duration::from_secs(5)).unwrap();
+        for (attempt, deployment) in [
+            ("01JA0000000000000000000001", &removed),
+            ("01JA0000000000000000000002", &kept),
+        ] {
+            records
+                .insert(
+                    super::records::NewAttempt {
+                        attempt_id: attempt,
+                        deployment_id: deployment,
+                        endpoint: "signed",
+                        received_at_ms: super::now_ms(),
+                        client_address: "127.0.0.1",
+                        method: "POST",
+                        body_size: 2,
+                        body_sha256: "",
+                    },
+                    super::records::Outcome {
+                        outcome: "pending",
+                        ..super::records::Outcome::default()
+                    },
+                )
+                .await
+                .unwrap();
+            records.set_stream_sequence(attempt, 1).await.unwrap();
+        }
+        drop(records);
+
+        // The restarted server's first pass finishes the removal.
+        let webhooks = super::Webhooks::open(
+            crate::platform::auth::OAuthStorage::open(store, &[7; 32]).unwrap(),
+            &path,
+            Duration::from_secs(5),
+            nats,
+            tokio::sync::watch::channel(None).1,
+            &crate::RuntimeConfig::from_toml_str(
+                "[auth]\ninstance_id = \"01ARZ3NDEKTSV4RRFFQ69G5FAV\"\n",
+            )
+            .unwrap(),
+            std::sync::Arc::default(),
+        )
+        .await
+        .unwrap();
+        webhooks.release_removed().await;
+        let record = |attempt: &'static str| {
+            let webhooks = webhooks.clone();
+            async move { webhooks.inner.records.get(attempt).await.unwrap().unwrap() }
+        };
+        let gone = record("01JA0000000000000000000001").await;
+        assert_eq!(gone.outcome, "expired");
+        assert!(!gone.stored, "a record points into a deleted stream");
+        let other = record("01JA0000000000000000000002").await;
+        assert_eq!(other.outcome, "pending");
+        assert_eq!(other.stream_sequence, Some(1));
+        assert_eq!(webhooks.inner.records.pending().await.unwrap(), 1);
+        server.kill().await.unwrap();
     }
 }

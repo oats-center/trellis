@@ -394,21 +394,27 @@ impl Records {
         .await
     }
 
-    /// A removed deployment's intake stream is gone: its requests still
-    /// waiting for verification expire, and no record points into the stream.
-    pub(crate) async fn stream_deleted(&self, deployment_id: &str) -> Result<()> {
-        let deployment_id = deployment_id.to_owned();
+    /// Removed deployments' intake streams are gone: their requests still
+    /// waiting for verification expire, and no record points into a stream.
+    /// Records already updated stay as they are.
+    pub(crate) async fn streams_deleted(&self, deployments: Vec<String>) -> Result<()> {
+        if deployments.is_empty() {
+            return Ok(());
+        }
+        let now = now_ms();
         self.with(move |connection| {
-            connection.execute(
-                "UPDATE webhook_attempts SET outcome='expired',updated_at=?2 \
-                WHERE deployment_id=?1 AND outcome='pending'",
-                params![deployment_id, now_ms()],
-            )?;
-            connection.execute(
-                "UPDATE webhook_attempts SET stream_sequence=NULL \
-                WHERE deployment_id=?1 AND stream_sequence IS NOT NULL",
-                [&deployment_id],
-            )?;
+            for deployment_id in &deployments {
+                connection.execute(
+                    "UPDATE webhook_attempts SET outcome='expired',updated_at=?2 \
+                    WHERE deployment_id=?1 AND outcome='pending'",
+                    params![deployment_id, now],
+                )?;
+                connection.execute(
+                    "UPDATE webhook_attempts SET stream_sequence=NULL \
+                    WHERE deployment_id=?1 AND stream_sequence IS NOT NULL",
+                    [deployment_id],
+                )?;
+            }
             Ok(())
         })
         .await

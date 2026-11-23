@@ -578,6 +578,66 @@ pub(super) fn fixture() -> Fixture {
     }
 }
 
+/// An Auth store with two service deployments, the first removed through
+/// `Deployments.Remove`, as `(directory, store, removed, kept)`, for the
+/// subsystems that act on a removal.
+pub(crate) fn removed_and_kept_deployments() -> (
+    tempfile::TempDir,
+    Arc<SqliteAuthorizationStore>,
+    String,
+    String,
+) {
+    use trellis_runtime_apis::types::{AuthDeploymentCreateRequest, AuthDeploymentMutationRequest};
+    let f = fixture();
+    let package = package_evidence("hooks", "service Hooks { }");
+    let graph = trellis_idl::compile_evidence(package.clone()).unwrap();
+    let participant = graph
+        .root_package()
+        .participants()
+        .keys()
+        .next()
+        .unwrap()
+        .to_string();
+    let [removed, kept] = ["Removed", "Kept"].map(|title| {
+        let create: AuthDeploymentCreateRequest = serde_json::from_value(serde_json::json!({
+            "packageEvidence": package,
+            "participantId": participant,
+            "kind": "service",
+            "title": title,
+            "idempotencyKey": ulid::Ulid::generate().to_string()
+        }))
+        .unwrap();
+        super::rpc_deployments::create_deployment(
+            &f.store,
+            &mutation(&f.admin, &create),
+            &create,
+            NOW,
+        )
+        .unwrap()
+        .deployment
+    });
+    let remove: AuthDeploymentMutationRequest = serde_json::from_value(serde_json::json!({
+        "deploymentId": removed.deployment_id,
+        "expectedRevision": removed.revision,
+        "idempotencyKey": ulid::Ulid::generate().to_string()
+    }))
+    .unwrap();
+    super::rpc_deployments::change_deployment(
+        &f.store,
+        &mutation(&f.admin, &remove),
+        &remove,
+        "revoked",
+        NOW + 1,
+    )
+    .unwrap();
+    (
+        f.directory,
+        f.store,
+        removed.deployment_id.to_string(),
+        kept.deployment_id.to_string(),
+    )
+}
+
 fn drain(store: &SqliteAuthorizationStore, now: i64) {
     while store.enforce_next_page(now).unwrap().is_some() {}
 }
