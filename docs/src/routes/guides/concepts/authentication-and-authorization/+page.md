@@ -101,7 +101,8 @@ trellis users unlink ada --provider <provider id> --subject 'auth0|1234'
 Commands that take a user accept a username, an email address or a user ID,
 and role commands take a role's name or ID (`trellis roles assign Auditors
 --user ada`). A name that fits several users or roles is refused with their
-IDs. An account created with `--provider` gets no password setup link. In the
+IDs. Something shaped like an ID is looked up only as an ID, so an ID nobody
+has is refused, even when it is someone's username. An account created with `--provider` gets no password setup link. In the
 Console, the **OIDC sign-ins** panel of a user's page lists their sign-ins and
 links or unlinks one.
 

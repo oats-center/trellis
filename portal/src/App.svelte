@@ -526,25 +526,28 @@
     };
   }
 
-  /** Ends the Portal login on this browser, then returns to the app. */
+  /**
+   * Ends the Portal login on this browser, then returns to the app. Only the
+   * server says the login is gone, so the page asks it even without a CSRF
+   * cookie, and an answer that fails or never comes keeps the retry screen.
+   */
   async function endPortalLogin(): Promise<void> {
     signOutFailed = false;
     signOutReference = null;
     try {
-      if (csrf) {
-        const response = await fetch(`/portal/logout`, {
-          method: "POST",
-          credentials: "same-origin",
-          body: new URLSearchParams({ csrf, request_id: decisionKey }),
-        });
-        // access_denied: no Portal login is left to end.
-        if (
-          !response.ok &&
-          (await response.json().catch(() => null))?.error !== "access_denied"
-        ) {
-          signOutReference = response.headers.get("Trellis-Reference");
-          throw new Error("logout_failed");
-        }
+      const response = await fetch(`/portal/logout`, {
+        method: "POST",
+        credentials: "same-origin",
+        body: new URLSearchParams({ csrf, request_id: decisionKey }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      // access_denied: no Portal login is left to end.
+      if (
+        !response.ok &&
+        (await response.json().catch(() => null))?.error !== "access_denied"
+      ) {
+        signOutReference = response.headers.get("Trellis-Reference");
+        throw new Error("logout_failed");
       }
       window.location.replace(returnTo);
     } catch {

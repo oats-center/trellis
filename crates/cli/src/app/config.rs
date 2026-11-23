@@ -7,7 +7,7 @@ use futures_util::TryStreamExt as _;
 use miette::IntoDiagnostic;
 use serde_json::{json, Value};
 
-use super::deploy::{resolve_deployment_id, resolve_waiting_claim, DeploymentKind};
+use super::deploy::{lookup_deployment_id, lookup_waiting_claim, DeploymentKind};
 use crate::app::{connect_authenticated_cli_client, wire};
 use crate::cli::{ConfigArgs, ConfigCommand, OutputFormat};
 use crate::{output, prompt};
@@ -26,22 +26,24 @@ pub(super) async fn run(
 ) -> miette::Result<()> {
     let (mut target, prefix, id) = match scope {
         Scope::Deployment(kind, id) => {
-            let target = match resolve_deployment_id(kind, id).await {
-                Ok(deployment) => json!({ "deploymentId": deployment }),
+            let target = match lookup_deployment_id(kind, id).await? {
+                Some(deployment) => json!({ "deploymentId": deployment }),
                 // A service added without its IDL takes settings before its
                 // service connects; approving it carries them over.
-                Err(error) => match kind {
-                    DeploymentKind::Service => match resolve_waiting_claim(id).await {
-                        Ok(claim) => {
+                None => match kind {
+                    DeploymentKind::Service => match lookup_waiting_claim(id).await? {
+                        Some(claim) => {
                             miette::ensure!(
                                 args.instance.is_none(),
                                 "{id} has no instances until its service connects and is approved; leave out --instance"
                             );
                             json!({ "claimId": claim })
                         }
-                        Err(_) => return Err(error),
+                        None => return Err(miette::miette!("deployment not found: {id}")),
                     },
-                    DeploymentKind::Device => return Err(error),
+                    DeploymentKind::Device => {
+                        return Err(miette::miette!("deployment not found: {id}"))
+                    }
                 },
             };
             (

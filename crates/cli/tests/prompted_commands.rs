@@ -1178,7 +1178,7 @@ async fn role_changes_say_why_they_are_refused() {
     let missing = ulid::Ulid::generate().to_string();
     let unknown = cli.script(&["roles", "delete", &missing]).await;
     assert!(
-        refused_with(&unknown, &format!("no role is named {missing}")),
+        refused_with(&unknown, &format!("no role {missing}")),
         "{}",
         String::from_utf8_lossy(&unknown.stderr)
     );
@@ -1301,10 +1301,136 @@ async fn role_and_user_commands_take_names() {
     assert!(
         refused_with(
             &missing,
-            "no user has the ID, username or email nobody-by-this-name"
+            "no user has the username or email nobody-by-this-name"
         ),
         "{}",
         String::from_utf8_lossy(&missing.stderr)
+    );
+    runtime.shutdown().await.unwrap();
+}
+
+/// The platform database of `runtime`, opened beside the running server.
+fn platform_database(runtime: &TrellisTestRuntime) -> rusqlite::Connection {
+    let mut pending = vec![runtime.workdir().to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name == "platform.sqlite")
+            {
+                let connection = rusqlite::Connection::open(&path).unwrap();
+                connection.busy_timeout(Duration::from_secs(10)).unwrap();
+                return connection;
+            }
+        }
+    }
+    panic!("the runtime has no platform database");
+}
+
+/// An ID names only what has that ID. An ID no user or role has, even one
+/// that is another user's username or another role's name, is refused, and a
+/// failed ID lookup is reported as it failed; neither acts on the account or
+/// role that happens to have that name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_id_names_only_what_has_that_id() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime, None).await;
+    let enabled = |shown: Value| shown["account"]["principal"]["enabled"].clone();
+
+    // No user has this ID, but it is another user's username.
+    let missing = ulid::Ulid::generate().to_string();
+    let namesake = cli
+        .json(&["users", "create", "--username", &missing.to_lowercase()])
+        .await["user"]["principalId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for command in [
+        &["users", "edit", &missing, "--inactive"][..],
+        &["users", "delete", &missing][..],
+    ] {
+        let refused = cli.script(command).await;
+        assert!(
+            refused_with(&refused, &format!("no user {missing}")),
+            "{command:?}: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+    assert_eq!(
+        enabled(cli.json(&["users", "show", &namesake]).await),
+        serde_json::json!(true)
+    );
+
+    // No role has this ID, but it is another role's name.
+    let missing_role = ulid::Ulid::generate().to_string();
+    let named = cli
+        .json(&[
+            "roles",
+            "create",
+            "--title",
+            &missing_role,
+            "--no-new-users",
+        ])
+        .await["role"]["roleId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused = cli.script(&["roles", "delete", &missing_role]).await;
+    assert!(
+        refused_with(&refused, &format!("no role {missing_role}")),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(
+        cli.json(&["roles", "show", &named]).await["role"]["title"],
+        serde_json::json!(missing_role)
+    );
+
+    // A user Auth cannot read, while another user's username is that user's
+    // ID: the failed lookup is reported and the other user is left alone.
+    let unreadable = cli
+        .json(&[
+            "users",
+            "create",
+            "--username",
+            &format!("unreadable-{}", ulid::Ulid::generate()).to_lowercase(),
+        ])
+        .await["user"]["principalId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other = cli
+        .json(&["users", "create", "--username", &unreadable.to_lowercase()])
+        .await["user"]["principalId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A stored given name that is not text makes the user's record
+    // unreadable; the display name keeps a search for the ID from listing
+    // that user.
+    let changed = platform_database(&runtime)
+        .execute(
+            "UPDATE auth_user_profiles SET display_name='Unreadable', \
+            display_name_source='manual', given_name=X'41', given_name_source='manual' \
+            WHERE principal_id=?1",
+            [&unreadable],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    let failed = cli
+        .script(&["users", "edit", &unreadable, "--inactive"])
+        .await;
+    let reported = squashed(&String::from_utf8_lossy(&failed.stderr));
+    assert!(
+        !failed.status.success() && !reported.contains("nouser"),
+        "{reported}"
+    );
+    assert_eq!(
+        enabled(cli.json(&["users", "show", &other]).await),
+        serde_json::json!(true)
     );
     runtime.shutdown().await.unwrap();
 }

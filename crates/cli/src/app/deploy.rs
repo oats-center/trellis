@@ -1596,20 +1596,21 @@ fn cli_idempotency_key() -> String {
     ulid::Ulid::generate().to_string()
 }
 
-/// Resolve a CLI deployment identifier to a concrete deployment ID. The identifier may be a
-/// deployment ID or an exact display name. The lookup runs on its own connection so callers keep
-/// one client per connection.
 /// The service deployment, or the waiting service claim, `id` names by ID or
 /// title: a claim's first update belongs to the claim until it is approved.
+/// Only a deployment list that answered without a match moves on to claims.
 async fn resolve_update_owner(id: &str) -> miette::Result<String> {
-    if let Ok(deployment) = resolve_deployment_id(DeploymentKind::Service, id).await {
+    if let Some(deployment) = lookup_deployment_id(DeploymentKind::Service, id).await? {
         return Ok(deployment);
     }
-    resolve_waiting_claim(id).await
+    lookup_waiting_claim(id)
+        .await?
+        .ok_or_else(|| miette::miette!("deployment not found: {id}"))
 }
 
-/// The waiting service claim `id` names by ID or title.
-pub(super) async fn resolve_waiting_claim(id: &str) -> miette::Result<String> {
+/// The waiting service claim `id` names by ID or title, or `None` when the
+/// claim list answered without one.
+pub(super) async fn lookup_waiting_claim(id: &str) -> miette::Result<Option<String>> {
     let (_state, connected) = connect_authenticated_cli_client().await?;
     let claims = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
         .trellis_auth_v1()
@@ -1630,23 +1631,45 @@ pub(super) async fn resolve_waiting_claim(id: &str) -> miette::Result<String> {
         .into_iter()
         .map(|claim| json!({ "deploymentId": claim.claim_id.to_string(), "title": claim.title }));
     find_deployment_entry(claims, id)?
-        .get("deploymentId")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| miette::miette!("service claim has no id"))
+        .map(|claim| {
+            claim
+                .get("deploymentId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| miette::miette!("service claim has no id"))
+        })
+        .transpose()
 }
 
+/// Resolve a CLI deployment identifier, a deployment ID or an exact display
+/// name, to a concrete deployment ID. The lookup runs on its own connection so
+/// callers keep one client per connection.
 pub(super) async fn resolve_deployment_id(
     kind: DeploymentKind,
     id: &str,
 ) -> miette::Result<String> {
-    let (_state, connected) = connect_authenticated_cli_client().await?;
-    find_deployment(&connected, id, kind)
+    lookup_deployment_id(kind, id)
         .await?
-        .get("deploymentId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| miette::miette!("deployment has no id"))
-        .map(str::to_owned)
+        .ok_or_else(|| miette::miette!("deployment not found: {id}"))
+}
+
+/// The deployment ID `id` names, or `None` when the deployment list answered
+/// without one. A failed list or an ambiguous name is an error.
+pub(super) async fn lookup_deployment_id(
+    kind: DeploymentKind,
+    id: &str,
+) -> miette::Result<Option<String>> {
+    let (_state, connected) = connect_authenticated_cli_client().await?;
+    list_deployments(&connected, id, kind)
+        .await?
+        .map(|deployment| {
+            deployment
+                .get("deploymentId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| miette::miette!("deployment has no id"))
+        })
+        .transpose()
 }
 
 pub(super) async fn find_deployment(
@@ -1654,6 +1677,16 @@ pub(super) async fn find_deployment(
     deployment_id: &str,
     kind: DeploymentKind,
 ) -> miette::Result<Value> {
+    list_deployments(connected, deployment_id, kind)
+        .await?
+        .ok_or_else(|| miette::miette!("deployment not found: {deployment_id}"))
+}
+
+async fn list_deployments(
+    connected: &Client,
+    deployment_id: &str,
+    kind: DeploymentKind,
+) -> miette::Result<Option<Value>> {
     let kind = match kind {
         DeploymentKind::Service => auth_types::AuthDeploymentKind::Service,
         DeploymentKind::Device => auth_types::AuthDeploymentKind::Device,
@@ -1680,10 +1713,12 @@ pub(super) async fn find_deployment(
     find_deployment_entry(entries, deployment_id)
 }
 
+/// The entry `deployment_id` names by ID or exact title, `None` when none
+/// does, and an error when several share the title.
 fn find_deployment_entry(
     entries: impl IntoIterator<Item = Value>,
     deployment_id: &str,
-) -> miette::Result<Value> {
+) -> miette::Result<Option<Value>> {
     // The identifier may be a deployment ID or an exact display name: `svc <name> create` takes
     // a display name, so `apply`/`show`/`remove` accept the same value instead of failing with a
     // remote not-found for a name that was never an ID.
@@ -1692,15 +1727,15 @@ fn find_deployment_entry(
         .iter()
         .find(|entry| entry.get("deploymentId").and_then(Value::as_str) == Some(deployment_id))
     {
-        return Ok(entry.clone());
+        return Ok(Some(entry.clone()));
     }
-    let matches = entries
+    let mut matches = entries
         .into_iter()
         .filter(|entry| entry.get("title").and_then(Value::as_str) == Some(deployment_id))
         .collect::<Vec<_>>();
     match matches.len() {
-        0 => Err(miette::miette!("deployment not found: {deployment_id}")),
-        1 => Ok(matches.into_iter().next().expect("exactly one match")),
+        0 => Ok(None),
+        1 => Ok(matches.pop()),
         count => Err(miette::miette!(
             "deployment name '{deployment_id}' is ambiguous: {count} deployments \
             match; use a deployment ID"
@@ -1716,7 +1751,9 @@ mod tests {
     fn deployment_lookup_reaches_items_after_the_first_page() {
         let entries = (0..101).map(|index| json!({ "deploymentId": format!("svc-{index}") }));
 
-        let deployment = find_deployment_entry(entries, "svc-100").expect("deployment found");
+        let deployment = find_deployment_entry(entries, "svc-100")
+            .expect("deployment lookup")
+            .expect("deployment found");
 
         assert_eq!(deployment["deploymentId"], "svc-100");
     }
@@ -1727,9 +1764,13 @@ mod tests {
             json!({ "deploymentId": "dep_1", "title": "survey" }),
             json!({ "deploymentId": "dep_2", "title": "camera" }),
         ];
-        let found = find_deployment_entry(entries.clone(), "survey").expect("named lookup");
+        let found = find_deployment_entry(entries.clone(), "survey")
+            .expect("named lookup")
+            .expect("named deployment");
         assert_eq!(found["deploymentId"], "dep_1");
-        assert!(find_deployment_entry(entries, "missing").is_err());
+        assert!(find_deployment_entry(entries, "missing")
+            .expect("lookup")
+            .is_none());
 
         let ambiguous = vec![
             json!({ "deploymentId": "dep_1", "title": "survey" }),

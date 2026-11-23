@@ -585,4 +585,29 @@ impl SqliteAuthorizationStore {
             .optional()?
             .ok_or(AuthError::Denied)
     }
+
+    /// Whether `cookie` still names a live login, whatever CSRF token came
+    /// with it. A sign-out refused for its CSRF token is then not one with no
+    /// login left to end.
+    pub(crate) fn portal_cookie_signed_in(
+        &self,
+        cookie: &str,
+        now: i64,
+    ) -> Result<bool, AuthError> {
+        let cookie_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes()));
+        Ok(self
+            .reader()?
+            .query_row(
+                "SELECT 1 FROM auth_portal_sessions p \
+                JOIN auth_login_sessions l ON l.login_session_id=p.login_session_id \
+                JOIN auth_principals u ON u.principal_id=l.principal_id \
+                WHERE p.cookie_hash=?1 AND p.expires_at>?2 \
+                AND l.expires_at>?2 AND l.revoked_at IS NULL \
+                AND u.state='active'",
+                params![cookie_hash, now],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
 }
