@@ -33,6 +33,8 @@ deviceName })`); `trellis login` sends the hostname, and the confirmation
 
 ### Fixed
 
+- `trellis svc|dev <name> remove` resolves the deployment before asking, names
+  it with its ID in the prompt, and reports the deployment it removed.
 - Generated Rust `publish_*` calls published events on the subject template
   (for example `…Changed.{/value}`) instead of the filled-in subject, so
   consumers filtering on a parameter value never received them. They now
