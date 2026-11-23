@@ -250,7 +250,7 @@ async fn only_the_operators_own_apps_sign_a_signed_in_person_in_without_showing_
                     public_jwk: serde_json::to_value(key.public_jwk()).unwrap(),
                     expires_at: now + 600,
                 },
-                client,
+                Some(client),
             )
             .unwrap();
         transaction

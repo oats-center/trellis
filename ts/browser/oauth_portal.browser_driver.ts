@@ -20,10 +20,9 @@ test("real OAuth portal signs in and approves the requesting device", async () =
     page.setDefaultNavigationTimeout(10000);
     const failures: string[] = [];
     page.on("pageerror", (error) => failures.push(error.message));
+    // The device's link signs in first, then takes the code, then asks
+    // whether the device is the person's own.
     await page.goto(verification);
-    await page.getByRole("heading", { name: "Connect a device" }).waitFor();
-    await page.getByLabel("Code", { exact: true }).fill(userCode);
-    await page.getByRole("button", { name: "Continue", exact: true }).click();
     await page
       .getByRole("heading", { name: "Sign in", exact: true })
       .waitFor()
@@ -40,6 +39,13 @@ test("real OAuth portal signs in and approves the requesting device", async () =
       .getByLabel("Password", { exact: true })
       .fill("a strong bootstrap password");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByRole("heading", { name: "Connect a device" }).waitFor();
+    await page.getByLabel("Code", { exact: true }).fill(userCode);
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await page.getByRole("heading", { name: "Is this your device?" }).waitFor();
+    await page
+      .getByRole("button", { name: "Yes, this is my device", exact: true })
+      .click();
     await page
       .getByRole("heading", { name: "Native client wants to use your account" })
       .waitFor();

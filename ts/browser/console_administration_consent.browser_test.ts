@@ -14,7 +14,10 @@ import { apps } from "../packages/trellis-testkit/trellis/index.js";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
-import { browserRuntimeOptions } from "./browser_test_support.ts";
+import {
+  browserRuntimeOptions,
+  enterDeviceCode,
+} from "./browser_test_support.ts";
 
 // Consent for an app that asks, here the CLI signing in with a device code.
 // Administration starts selected like any other optional access. "kept"
@@ -83,19 +86,10 @@ for (const selection of ["kept", "declined"] as const) {
           .getByRole("group", { name: "Manage this Trellis", exact: true })
           .getByRole("checkbox", { name: /^Allow all: / });
         const device = (await client.startDevice(apps.cli.request)).orThrow();
-        await page.goto(device.verificationUri);
-        await page.getByLabel("Code", { exact: true }).fill(device.userCode);
-        await page
-          .getByRole("button", { name: "Continue", exact: true })
-          .click();
-        await page
-          .getByRole("heading", { name: "Sign in", exact: true })
-          .waitFor();
-        await page.getByLabel("Username", { exact: true }).fill(username);
-        await page.getByLabel("Password", { exact: true }).fill(password);
-        await page
-          .getByRole("button", { name: "Sign in", exact: true })
-          .click();
+        await enterDeviceCode(page, device.verificationUri, device.userCode, {
+          username,
+          password,
+        });
         await page
           .getByRole("heading", { name: /wants to use your account/ })
           .waitFor();

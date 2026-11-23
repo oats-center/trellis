@@ -294,14 +294,20 @@ pub(super) async fn start(
             Ok((authorization, false)) => authorization,
             Err(code) => return error(code),
         };
-        let intent = match engine.consent_intent(&authorization.request).await {
-            Ok(intent) => intent,
-            Err(response) => return error(response.error),
+        // A device sign-in has no app yet: its code comes after the sign-in.
+        let client_id = match &authorization.request {
+            super::portal::ConsentRequest::Device {
+                device_code: None, ..
+            } => "device-sign-in".to_owned(),
+            request => match engine.consent_intent(request).await {
+                Ok(intent) => intent.client_id.as_str().to_owned(),
+                Err(response) => return error(response.error),
+            },
         };
         (
             transaction.clone(),
             authorization.expires_at,
-            intent.client_id.as_str().to_owned(),
+            client_id,
             None,
         )
     };

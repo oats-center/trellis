@@ -87,7 +87,27 @@ impl From<AuthError> for ApprovalError {
 #[derive(Serialize, Deserialize)]
 pub(super) enum ConsentRequest {
     Authorization(Vec<(String, String)>),
-    Device { device_code: String },
+    /// A Device Code sign-in, in the order the Portal takes it: the person
+    /// signs in, then enters the device's code (`device_code`), then confirms
+    /// the device is theirs (`confirmed`), and only then sees the consent.
+    Device {
+        device_code: Option<String>,
+        confirmed: bool,
+    },
+}
+
+impl ConsentRequest {
+    /// Whether the consent page may show, and approve, this request: a device
+    /// sign-in only once its code was entered and the device confirmed.
+    pub(super) fn consentable(&self) -> bool {
+        match self {
+            Self::Authorization(_) => true,
+            Self::Device {
+                device_code,
+                confirmed,
+            } => device_code.is_some() && *confirmed,
+        }
+    }
 }
 
 pub(super) struct ConsentIntent {
@@ -138,7 +158,13 @@ impl super::OAuthEngine {
                         .into_owned(),
                 })
             }
-            ConsentRequest::Device { device_code } => {
+            ConsentRequest::Device {
+                device_code: None, ..
+            } => Err(invalid()),
+            ConsentRequest::Device {
+                device_code: Some(device_code),
+                ..
+            } => {
                 let device = self
                     .server
                     .store()

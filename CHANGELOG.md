@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Device Code sign-in runs as account, then code, then device, then
+  permissions: `/device` shows who you're signed in as with "Continue" and
+  "Use a different account", you type the device's code, confirm the device
+  (app, kind, when and from where it asked) with "Yes, this is my device" or
+  "Cancel", then approve its permissions. The server enforces the order.
+
 ### Fixed
 
 - Jobs, Events and Health startup wait out a locked database instead of

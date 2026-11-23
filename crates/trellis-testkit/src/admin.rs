@@ -109,32 +109,47 @@ pub(crate) async fn approve_device(
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|error| failure(stage, error))?;
+    let cookies_of = |response: &reqwest::Response| -> Vec<String> {
+        response
+            .headers()
+            .get_all(SET_COOKIE)
+            .iter()
+            .filter_map(|header| {
+                header
+                    .to_str()
+                    .ok()
+                    .and_then(|value| value.split(';').next())
+                    .map(str::to_owned)
+            })
+            .collect()
+    };
+    let location_of = |response: &reqwest::Response| {
+        response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    // The verification page opens a device sign-in on a new Portal session,
+    // which signs in first, as a person without a Portal login does.
     let response = http
-        .post(format!("{oauth_origin}/portal/session"))
-        .header("Origin", oauth_origin)
+        .get(format!("{oauth_origin}/device"))
         .send()
         .await
         .map_err(|error| failure(stage, error))?;
-    if !response.status().is_success() {
-        return Err(failure(stage, "portal session denied"));
-    }
-    let cookies: Vec<String> = response
-        .headers()
-        .get_all(SET_COOKIE)
-        .iter()
-        .filter_map(|header| {
-            header
-                .to_str()
-                .ok()
-                .and_then(|value| value.split(';').next())
-                .map(str::to_owned)
-        })
-        .collect();
+    let cookies = cookies_of(&response);
     let csrf = cookies
         .iter()
         .find_map(|cookie| cookie.strip_prefix("__Host-trellis-portal-csrf="))
-        .ok_or_else(|| failure(stage, "portal session omitted CSRF cookie"))?
+        .ok_or_else(|| failure(stage, "device page omitted CSRF cookie"))?
         .to_owned();
+    let transaction = location_of(&response)
+        .and_then(|location| {
+            location
+                .strip_prefix("/login?transaction=")
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| failure(stage, "device page did not ask to sign in"))?;
     let response = http
         .post(format!("{oauth_origin}/portal/login"))
         .header("Origin", oauth_origin)
@@ -143,7 +158,7 @@ pub(crate) async fn approve_device(
             ("csrf", csrf.clone()),
             ("username", username.into()),
             ("password", password.into()),
-            ("request_id", ulid::Ulid::generate().to_string()),
+            ("request_id", transaction.clone()),
         ])
         .send()
         .await
@@ -151,46 +166,39 @@ pub(crate) async fn approve_device(
     if !response.status().is_success() {
         return Err(failure(stage, "portal login denied"));
     }
-    let cookies: Vec<String> = response
-        .headers()
-        .get_all(SET_COOKIE)
-        .iter()
-        .filter_map(|header| {
-            header
-                .to_str()
-                .ok()
-                .and_then(|value| value.split(';').next())
-                .map(str::to_owned)
-        })
-        .collect();
-    let cookie = cookies.join("; ");
+    let cookie = cookies_of(&response).join("; ");
+    // The code step, then the step confirming the device is this person's.
+    let step = format!("/device?transaction={transaction}");
     let response = http
         .post(format!("{oauth_origin}/portal/device"))
         .header("Origin", oauth_origin)
         .header(COOKIE, &cookie)
-        .form(&[("csrf", csrf.as_str()), ("user_code", user_code)])
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("transaction", transaction.as_str()),
+            ("user_code", user_code),
+        ])
         .send()
         .await
         .map_err(|error| failure(stage, error))?;
-    if !response.status().is_redirection() {
+    if location_of(&response).as_deref() != Some(step.as_str()) {
+        return Err(failure(stage, "device code denied"));
+    }
+    let response = http
+        .post(format!("{oauth_origin}/portal/device/confirm"))
+        .header("Origin", oauth_origin)
+        .header(COOKIE, &cookie)
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("transaction", transaction.as_str()),
+            ("decision", "confirm"),
+        ])
+        .send()
+        .await
+        .map_err(|error| failure(stage, error))?;
+    if location_of(&response).as_deref() != Some(&format!("/consent?transaction={transaction}")) {
         return Err(failure(stage, "device confirmation denied"));
     }
-    let location = response
-        .headers()
-        .get(LOCATION)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| failure(stage, "device confirmation omitted consent location"))?;
-    let location = url::Url::parse(oauth_origin)
-        .and_then(|origin| origin.join(location))
-        .map_err(|error| failure(stage, error))?;
-    if location.origin().ascii_serialization() != oauth_origin {
-        return Err(failure(stage, "consent origin mismatch"));
-    }
-    let transaction = location
-        .query_pairs()
-        .find(|(key, _)| key == "transaction")
-        .map(|(_, value)| value.into_owned())
-        .ok_or_else(|| failure(stage, "device confirmation omitted transaction"))?;
     let response = http
         .get(format!("{oauth_origin}/portal/authorization/{transaction}"))
         .header(COOKIE, &cookie)

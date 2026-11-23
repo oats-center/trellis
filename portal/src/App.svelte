@@ -32,14 +32,30 @@
     clientName: string | null;
     registered: boolean;
     redirectUri: string | null;
-    deviceUserCode: string | null;
-    /** When the device asked, in epoch milliseconds. */
-    deviceRequestedAt: number | null;
-    /** The network address the device asked from. */
-    deviceRequestedFrom: string | null;
     capabilities: Capability[];
     /** Administration needs a separate confirmation step. */
     confirmAdministration: boolean;
+  }
+
+  /**
+   * One step of a Device Code sign-in: continuing as the signed-in account,
+   * typing the device's code, then confirming the device's details.
+   */
+  interface DeviceStep {
+    step: "account" | "code" | "confirm";
+    transaction: string;
+    signedInAs: SignedInAs & { avatar: string | null };
+    /** What the device's request carries, once its code was entered. */
+    request?: {
+      clientId: string;
+      clientName: string | null;
+      registered: boolean;
+      userCode: string;
+      /** When the device asked, in epoch milliseconds. */
+      requestedAt: number;
+      /** The network address the device asked from. */
+      requestedFrom: string | null;
+    };
   }
 
   interface Provider {
@@ -112,6 +128,7 @@
   const served = ((): {
     signIn?: SignIn | null;
     consent?: Consent;
+    device?: DeviceStep;
     theme?: Theme | null;
     /** Someone was already signed in: ask before continuing as them. */
     confirmAccount?: boolean;
@@ -139,6 +156,17 @@
   const transaction = query.get("transaction") ?? "";
   const login = path === "/login";
   const device = path === "/device";
+  const deviceStep = served.device ?? null;
+
+  /** Up to two initials of a name, for an account without a picture. */
+  function initials(name: string): string {
+    return name
+      .split(/[\s@._-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join("");
+  }
   const deviceComplete = path === "/device/complete";
   const enrollment = path === "/device-enrollment";
   const enrollmentComplete = path === "/device-enrollment/complete";
@@ -558,7 +586,11 @@
         .catch(() => {});
       return;
     }
-    if (deviceComplete || (device && csrf)) return;
+    if (deviceComplete) return;
+    if (device) {
+      if (!deviceStep || !csrf) error = true;
+      return;
+    }
     if (!transaction || !csrf) {
       error = true;
       return;
@@ -839,15 +871,98 @@
   <main class="card narrow center">
     <span class={["status-icon", approved ? "ok" : "denied"]} aria-hidden="true"
     ></span>
-    <h1>{approved ? "Your device is connected" : "Request denied"}</h1>
-    <p class="muted">You can close this window and return to your device.</p>
+    <h1>{approved ? "Your device is connected" : "Device not connected"}</h1>
+    <p class="muted">
+      {approved
+        ? "You can close this window."
+        : "The device didn't get access. You can close this window."}
+    </p>
   </main>
-{:else if device}
+{:else if device && deviceStep?.step === "account"}
+  {@const person = deviceStep.signedInAs}
+  {@const names = knownAs(person)}
+  <main class="card narrow">
+    <h1>Device activation</h1>
+    <p class="muted">Signed in as</p>
+    <div class="account">
+      {#if person.avatar}<img
+          class="avatar"
+          src={person.avatar}
+          alt=""
+        />{:else}<span class="avatar" aria-hidden="true"
+          >{initials(names[0] ?? "")}</span
+        >{/if}
+      <div class="account-names">
+        <strong>{names[0] ?? "You"}</strong>
+        {#if names[1]}<span class="muted">{names[1]}</span>{/if}
+      </div>
+    </div>
+    <a
+      class="button primary block"
+      href={`/device?transaction=${encodeURIComponent(deviceStep.transaction)}`}
+      >Continue</a
+    >
+    {@render switchAccount("transaction", deviceStep.transaction, true)}
+  </main>
+{:else if device && deviceStep?.step === "confirm" && deviceStep.request}
+  {@const request = deviceStep.request}
+  {@const minutes = Math.max(
+    0,
+    Math.round((Date.now() - request.requestedAt) / 60_000),
+  )}
+  <main class="card narrow">
+    <h1>Is this your device?</h1>
+    {@render signedIn(knownAs(deviceStep.signedInAs))}
+    <p class="muted">
+      Check that these details match the device in front of you.
+    </p>
+    <dl class="device-details">
+      <dt>App</dt>
+      <dd>{request.clientName ?? request.clientId}</dd>
+      <dt>Kind</dt>
+      <dd>
+        Installed app{request.registered
+          ? ", registered by your administrator"
+          : ", unverified"}
+      </dd>
+      <dt>Code</dt>
+      <dd><code>{request.userCode}</code></dd>
+      <dt>Requested</dt>
+      <dd>
+        <time datetime={new Date(request.requestedAt).toISOString()}
+          >{minutes === 0
+            ? "Just now"
+            : minutes === 1
+              ? "1 minute ago"
+              : `${minutes} minutes ago`}</time
+        >
+      </dd>
+      {#if request.requestedFrom}<dt>From</dt>
+        <dd><code>{request.requestedFrom}</code></dd>{/if}
+    </dl>
+    <p class="alert warn">
+      If someone sent you this code or link, cancel: continuing gives them
+      access as you.
+    </p>
+    <form method="post" action="/portal/device/confirm">
+      <input type="hidden" name="csrf" value={csrf} />
+      <input type="hidden" name="transaction" value={deviceStep.transaction} />
+      <div class="actions">
+        <button name="decision" value="cancel" type="submit">Cancel</button>
+        <button name="decision" value="confirm" type="submit" class="primary"
+          >Yes, this is my device</button
+        >
+      </div>
+    </form>
+  </main>
+{:else if device && deviceStep?.step === "code"}
   <main class="card narrow">
     <h1>Connect a device</h1>
+    {@render signedIn(knownAs(deviceStep.signedInAs))}
     <p class="muted">Enter the code shown on your device.</p>
     <form method="post" action={`/portal/device`}>
       <input type="hidden" name="csrf" value={csrf} />
+      <input type="hidden" name="transaction" value={deviceStep.transaction} />
       <label class="field" for="user-code">Code</label>
       <input
         id="user-code"
@@ -1092,31 +1207,6 @@
           />
         {/if}
       {/each}
-
-      {#if view.deviceUserCode}
-        <div class="device-code">
-          <span class="muted">Code</span>
-          <code>{view.deviceUserCode}</code>
-        </div>
-        {#if view.deviceRequestedAt}
-          {@const minutes = Math.max(
-            0,
-            Math.round((Date.now() - view.deviceRequestedAt) / 60_000),
-          )}
-          <p class="muted device-request">
-            Requested {minutes === 0
-              ? "just now"
-              : minutes === 1
-                ? "1 minute ago"
-                : `${minutes} minutes ago`}{#if view.deviceRequestedFrom}{" "}from
-              <code>{view.deviceRequestedFrom}</code>{/if}
-          </p>
-        {/if}
-        <p class="alert warn">
-          Make sure this code matches the one on your device. If someone sent
-          you this code or link, stop here: approving gives them access as you.
-        </p>
-      {/if}
 
       <div hidden={confirming}>
         {#if needed.length}

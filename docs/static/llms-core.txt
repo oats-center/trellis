@@ -373,7 +373,12 @@ straight in; it can ask for the choice with `prompt=select_account` ("Continue
 as" or "Use a different account") or for a fresh sign-in with `prompt=login`.
 A third-party app always gets that choice while someone is signed in. Device Code sign-ins
 never carry the code in a link: show the plain verification URL and the code,
-which the person types. The portal answers
+which the person types. The portal takes a Device Code sign-in in a fixed
+order: the account (continue as whoever is signed in, use a different account,
+or sign in), then the code, then the device's details to confirm (the app's
+name and kind, when the device asked and from which address; "Cancel" refuses
+the device, which gets `access_denied`), then the ordinary consent page. A
+device's request carries no other detail, such as a device name. The portal answers
 browsers with pages, never raw JSON, when a sign-in, device code or account link
 has expired or was used; unknown, expired and used device codes all get the
 same answer. API callers still get OAuth JSON errors.
