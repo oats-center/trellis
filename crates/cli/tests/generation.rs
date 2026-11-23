@@ -99,7 +99,10 @@ fn generated_rust_sdk_reuses_the_trellis_models_cargo_resolves() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    let target = repository.join("target/codegen-consumers");
+    // Its own Cargo home gives every registry crate another source path,
+    // which Cargo treats as a change; in a target directory shared with other
+    // fixtures each would rebuild the other's dependencies in place.
+    let target = repository.join("target/codegen-consumers/cli-models");
     let cli_version = env!("CARGO_PKG_VERSION");
     // trellis-models keeps its own version, which a release need not bump.
     let models_version = toml::from_str::<toml::Table>(
