@@ -50,6 +50,38 @@ pub(crate) async fn connect_platform_provider(
     )
     .await
     .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    // Enforcement work whose pages keep failing is retried, so nothing else
+    // shows it; Auth reports degraded, naming it, until a page succeeds.
+    let enforcement = store.clone();
+    provider.health().add("enforcement", move || {
+        let store = enforcement.clone();
+        async move {
+            use trellis_rs::client::ServiceHealthCheck;
+            match super::auth::blocking(move || store.stuck_enforcement(5)).await {
+                Ok(stuck) if stuck.is_empty() => ServiceHealthCheck::ok(),
+                Ok(stuck) => ServiceHealthCheck::degraded(
+                    stuck
+                        .iter()
+                        .map(|(work, since, error)| {
+                            format!(
+                                "enforcement work {work} has failed since {}: {error}",
+                                time::OffsetDateTime::from_unix_timestamp(*since)
+                                    .ok()
+                                    .and_then(|at| at
+                                        .format(&time::format_description::well_known::Rfc3339)
+                                        .ok())
+                                    .unwrap_or_else(|| since.to_string())
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                ),
+                Err(error) => ServiceHealthCheck::failed(format!(
+                    "cannot read Auth enforcement work: {error}"
+                )),
+            }
+        }
+    });
     Box::pin(super::state::StateRuntime::start(
         operational.clone(),
         store.clone(),

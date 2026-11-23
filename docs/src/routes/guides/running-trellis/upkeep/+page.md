@@ -90,7 +90,10 @@ holds jobs, events, KV buckets and stored files.
 - One item fails the same way every time it is tried: Trellis logs it once at
   error with its ID and goes on with the rest. An Auth step that can't finish,
   such as publishing a revocation or an event, is set aside in the platform
-  database and kept for 30 days for you to inspect.
+  database and kept for 30 days for you to inspect. Access enforcement
+  that keeps failing is tried again every minute, logged once an hour, and
+  shows as degraded Auth health on the Console's Health page, naming the work,
+  until it succeeds.
 - The machine loses power or its kernel crashes: SQLite loses nothing it
   committed. JetStream flushes to disk every two minutes by default, so writes
   from the last two minutes can be gone. `sync_interval: always` in the

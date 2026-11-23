@@ -129,6 +129,9 @@ pub(super) fn enqueue_scope(
 /// when the revocation publishes.
 const SELF_REVOCATION_GRACE_SECONDS: i64 = 5;
 
+/// How often an enforcement page that keeps failing the same way is logged.
+const STUCK_LOG_INTERVAL_SECONDS: i64 = 3_600;
+
 /// How long an effect set aside by [`SqliteAuthorizationStore::set_aside_effect`]
 /// is kept for inspection: 30 days.
 pub(crate) const SET_ASIDE_RETENTION_SECONDS: i64 = 30 * 86_400;
@@ -524,46 +527,90 @@ impl SqliteAuthorizationStore {
             Err(error) if error.storage_failure() == crate::storage::StorageFailure::Permanent => {
                 // A page that fails the same way every time must not hold back
                 // the enforcement work queued after it. It is tried again in a
-                // minute, since its sessions still need enforcing.
-                let work = self.transaction(|connection| {
+                // minute, since its sessions still need enforcing, and marked
+                // stuck until a page succeeds, for the Auth health check. The
+                // error is logged when the work first fails, then hourly.
+                let reason = error.to_string();
+                let stuck = self.transaction(|connection| {
                     Ok(connection
                         .query_row(
-                            "UPDATE auth_enforcement_work SET next_attempt_at=?1+60 \
+                            "UPDATE auth_enforcement_work SET next_attempt_at=?1+60,\
+                            stuck_since=coalesce(stuck_since,?1),stuck_error=?2,\
+                            stuck_logged_at=CASE WHEN stuck_logged_at IS NULL \
+                            OR stuck_logged_at<=?1-?3 THEN ?1 ELSE stuck_logged_at END \
                             WHERE work_id=(SELECT work_id FROM auth_enforcement_work \
                             WHERE state IN ('queued','running') AND next_attempt_at<=?1 \
                             ORDER BY lane,created_at,work_id LIMIT 1) \
-                            RETURNING work_id",
-                            [now],
-                            |row| row.get::<_, String>(0),
+                            RETURNING work_id,stuck_since,stuck_logged_at=?1",
+                            params![now, reason, STUCK_LOG_INTERVAL_SECONDS],
+                            |row| {
+                                Ok((
+                                    row.get::<_, String>(0)?,
+                                    row.get::<_, i64>(1)?,
+                                    row.get::<_, bool>(2)?,
+                                ))
+                            },
                         )
                         .optional()?)
                 })?;
-                tracing::error!(
-                    work_id = work.as_deref(),
-                    %error,
-                    "Auth enforcement page failed; its work runs again in a minute"
-                );
-                Ok(work)
+                match &stuck {
+                    Some((work, since, true)) => tracing::error!(
+                        work_id = %work,
+                        stuck_since = since,
+                        %error,
+                        "Auth enforcement page failed; its work runs again every minute \
+                        and this is logged hourly while it fails"
+                    ),
+                    Some((work, _, false)) => tracing::debug!(
+                        work_id = %work,
+                        %error,
+                        "Auth enforcement page failed again"
+                    ),
+                    None => tracing::error!(%error, "Auth enforcement page failed"),
+                }
+                Ok(stuck.map(|(work, _, _)| work))
             }
             result => result,
         }
     }
 
+    /// Enforcement work whose pages fail in a way trying again cannot fix,
+    /// longest stuck first, at most `limit`: its ID, since when, and the latest
+    /// error.
+    pub(crate) fn stuck_enforcement(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(String, i64, String)>, AuthError> {
+        self.read(|connection| {
+            Ok(connection
+                .prepare(
+                    "SELECT work_id,stuck_since,coalesce(stuck_error,'') \
+                    FROM auth_enforcement_work \
+                    WHERE stuck_since IS NOT NULL AND state IN ('queued','running') \
+                    ORDER BY stuck_since,work_id LIMIT ?1",
+                )?
+                .query_map([limit as u64], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
     fn enforce_page(&self, now: i64) -> Result<Option<String>, AuthError> {
-        self.transaction(|connection| {
-            let next: Option<(String, String, Option<String>)> = connection
+        let page = self.transaction(|connection| {
+            let next: Option<(String, String, Option<String>, Option<i64>)> = connection
                 .query_row(
-                    "SELECT work_id,scope_json,cursor \
+                    "SELECT work_id,scope_json,cursor,stuck_since \
                     FROM auth_enforcement_work \
                     WHERE state IN ('queued','running') \
                     AND next_attempt_at<=?1 \
                     ORDER BY lane,created_at,work_id \
                     LIMIT 1",
                     [now],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()?;
-            let Some((work, encoded, cursor)) = next else {
+            let Some((work, encoded, cursor, stuck_since)) = next else {
                 return Ok(None);
             };
             let scope: EnforcementScope = decode(&encoded)?;
@@ -635,7 +682,8 @@ impl SqliteAuthorizationStore {
                 scanned_sessions=scanned_sessions+?3,\
                 retired_sessions=retired_sessions+?4,completed_at=CASE \
                 WHEN ?1='completed' THEN ?5 \
-                END WHERE work_id=?6",
+                END,stuck_since=NULL,stuck_error=NULL,stuck_logged_at=NULL \
+                WHERE work_id=?6",
                 params![
                     if completed { "completed" } else { "running" },
                     sessions.last(),
@@ -645,8 +693,16 @@ impl SqliteAuthorizationStore {
                     work
                 ],
             )?;
-            Ok(Some(work))
-        })
+            Ok(Some((work, stuck_since)))
+        })?;
+        if let Some((work, Some(since))) = &page {
+            tracing::info!(
+                work_id = %work,
+                stuck_since = since,
+                "Auth enforcement page succeeded; its work is no longer stuck"
+            );
+        }
+        Ok(page.map(|(work, _)| work))
     }
 
     /// Claim leases prevent duplicate workers from acknowledging each other's
