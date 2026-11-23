@@ -40,14 +40,67 @@ fn marker(deployment: &str, object_store: bool) -> String {
     )
 }
 
+/// Marks a deployment's Operation storage as being prepared until dropped.
+///
+/// Preparation checks that the deployment is active, then creates its
+/// buckets, then checks again. A removal can commit in between, and its
+/// deletion could then find no buckets and finish before they are created, so
+/// [`delete_operations`] waits while this is held. Removal is final, so a
+/// preparation that starts after the removal commits creates nothing. A server
+/// that stops mid-preparation holds nothing after it starts again, and the
+/// removal's deletion, retried until done, finds what was created.
+struct Preparing<'a> {
+    store: &'a SqliteAuthorizationStore,
+    deployment: &'a str,
+}
+
+impl<'a> Preparing<'a> {
+    fn start(store: &'a SqliteAuthorizationStore, deployment: &'a str) -> Self {
+        *store
+            .preparing_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(deployment.to_owned())
+            .or_default() += 1;
+        Self { store, deployment }
+    }
+}
+
+impl Drop for Preparing<'_> {
+    fn drop(&mut self) {
+        let mut preparing = self
+            .store
+            .preparing_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = preparing.get_mut(self.deployment) {
+            *count -= 1;
+            if *count == 0 {
+                preparing.remove(self.deployment);
+            }
+        }
+    }
+}
+
 /// Delete the Operation storage Trellis made for a removed deployment: its
 /// Operation records and staged uploads. A bucket already gone counts as
-/// deleted; one Trellis did not make is left in place.
+/// deleted; one Trellis did not make is left in place. While the deployment's
+/// storage is still being prepared this fails, to be retried, so a bucket
+/// created after the removal is not left behind.
 pub(super) async fn delete_operations(
+    store: &SqliteAuthorizationStore,
     operational: &async_nats::Client,
     deployment: &str,
 ) -> Result<(), AuthError> {
     use async_nats::jetstream::context::GetStreamErrorKind;
+    if store
+        .preparing_operations
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(deployment)
+    {
+        return Err(AuthError::Unavailable);
+    }
     let jetstream = async_nats::jetstream::new(operational.clone());
     let buckets = OperationStorage::of(deployment);
     for (bucket, object_store) in [(&buckets.repository, false), (&buckets.staging, true)] {
@@ -90,6 +143,8 @@ pub(super) async fn materialize_operations(
     deployment: &str,
     now: i64,
 ) -> Result<(), AuthError> {
+    // Held from before the first check until the last.
+    let _preparing = Preparing::start(store, deployment);
     let selected = deployment.to_owned();
     let plan = store
         .transaction_blocking(move |connection| {

@@ -356,7 +356,7 @@ impl SqliteAuthorizationStore {
                         let deployment = effect.payload["deploymentId"]
                             .as_str()
                             .ok_or(AuthError::Denied)?;
-                        super::framework_storage::delete_operations(notices, deployment).await
+                        super::framework_storage::delete_operations(self, notices, deployment).await
                     }
                     _ => Err(AuthError::Invalid("unknown committed effect".into())),
                 }

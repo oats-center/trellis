@@ -862,3 +862,200 @@ blobs\"; ttl 0; }}{}",
     assert_eq!(bytes, b"store-data");
     server.kill().await.unwrap();
 }
+
+#[tokio::test]
+async fn removal_during_operation_storage_preparation_leaves_no_storage_behind() {
+    use std::time::Duration;
+    use tokio::io::AsyncBufReadExt;
+    let f = fixture();
+    let package = super::super::tests::package_evidence(
+        "works",
+        "model WorkValue { value: string; } api work@v1 { title \"Work\"; \
+        description \"Work to do\"; operation Work { input WorkValue; output WorkValue; } \
+        capabilities { capability work.run { title \"Run\"; description \"Run work\"; \
+        grants \"Runs work\"; allows { operation Work; } } } } \
+        service WorkProvider { implements work; }",
+    );
+    let graph = trellis_idl::compile_evidence(package.clone()).unwrap();
+    let participant = graph
+        .root_package()
+        .participants()
+        .keys()
+        .next()
+        .unwrap()
+        .to_string();
+    // Two deployments of a service that provides Operations, each with an
+    // instance, as enrollment leaves them.
+    let deploy = |title: &str, key: u8| {
+        let create: AuthDeploymentCreateRequest = serde_json::from_value(serde_json::json!({
+            "packageEvidence": package,
+            "participantId": participant,
+            "kind": "service",
+            "acknowledgeSharedApis": true,
+            "title": title,
+            "idempotencyKey": ulid::Ulid::generate().to_string()
+        }))
+        .unwrap();
+        let created = super::super::rpc_deployments::create_deployment(
+            &f.store,
+            &mutation(&f.admin, &create),
+            &create,
+            NOW,
+        )
+        .unwrap()
+        .deployment;
+        let provision: AuthInstanceProvisionRequest = serde_json::from_value(serde_json::json!({
+            "deploymentId": created.deployment_id,
+            "identityPublicKey": URL_SAFE_NO_PAD.encode(
+                SigningKey::from_bytes(&[key; 32]).verifying_key().as_bytes()
+            ),
+            "title": title,
+            "idempotencyKey": ulid::Ulid::generate().to_string()
+        }))
+        .unwrap();
+        super::super::rpc_deployments::provision_instance(
+            &f.store,
+            &mutation(&f.admin, &provision),
+            &provision,
+            "service",
+            NOW,
+        )
+        .unwrap();
+        created
+    };
+    let removed = deploy("Removed", 93);
+    let kept = deploy("Kept", 94);
+    let streams = |deployment: &str| {
+        [
+            format!("KV_trellis_operations_{deployment}"),
+            format!("OBJ_trellis_operation_staging_{deployment}"),
+        ]
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    // Held until the broker's listener is up; see ReservedPort.
+    let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
+    let port = reservation.port();
+    let mut server = tokio::process::Command::new(
+        std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into()),
+    )
+    .args(["-js", "-a", "127.0.0.1", "-p", &port.to_string(), "-sd"])
+    .arg(directory.path())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::piped())
+    .kill_on_drop(true)
+    .spawn()
+    .unwrap();
+    let mut logs = tokio::io::BufReader::new(server.stderr.take().unwrap()).lines();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(line) = logs.next_line().await.unwrap() {
+            if line.contains("Server is ready") {
+                return;
+            }
+        }
+        panic!("NATS exited before readiness");
+    })
+    .await
+    .unwrap();
+    let nats = async_nats::connect(format!("nats://127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let js = async_nats::jetstream::new(nats.clone());
+    let material = js
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: super::super::MATERIAL_BUCKET.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let revocations = js
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: super::super::REVOCATION_BUCKET.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // Effects run until none is left that can run at `now`.
+    let drain = |now: i64| {
+        let (store, material, revocations, nats) =
+            (f.store.clone(), &material, &revocations, &nats);
+        async move {
+            for _ in 0..32 {
+                if let Ok(0) = store
+                    .process_effects(material, revocations, nats, nats, now)
+                    .await
+                {
+                    return;
+                }
+            }
+            panic!("effects kept making progress");
+        }
+    };
+
+    let kept_id = kept.deployment_id.to_string();
+    super::super::resources::materialize_native_kv(&f.store, &nats, &kept_id, NOW)
+        .await
+        .unwrap();
+    let removed_id = removed.deployment_id.to_string();
+    // The removed deployment's preparation has checked that it is active and
+    // is about to create its Operation records bucket.
+    let (delayed_nats, pending, release, forwarding) = delay_request(
+        port,
+        format!("$JS.API.STREAM.CREATE.{}", streams(&removed_id)[0]),
+    )
+    .await;
+    let (preparing_store, preparing_id) = (f.store.clone(), removed_id.clone());
+    let preparing = tokio::spawn(async move {
+        super::super::resources::materialize_native_kv(
+            &preparing_store,
+            &delayed_nats,
+            &preparing_id,
+            NOW + 1,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    // Removal commits and its effects run before the bucket exists.
+    let remove: AuthDeploymentMutationRequest = serde_json::from_value(serde_json::json!({
+        "deploymentId": removed.deployment_id,
+        "expectedRevision": removed.revision,
+        "idempotencyKey": ulid::Ulid::generate().to_string()
+    }))
+    .unwrap();
+    super::super::rpc_deployments::change_deployment(
+        &f.store,
+        &mutation(&f.admin, &remove),
+        &remove,
+        "revoked",
+        NOW + 2,
+    )
+    .unwrap();
+    drain(NOW + 2).await;
+    // The preparation creates the buckets, then finds the deployment removed.
+    release.send(()).unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(5), preparing)
+            .await
+            .unwrap()
+            .unwrap(),
+        Err(AuthError::Conflict(_))
+    ));
+    // The removal's deletion, retried, finds them and deletes them, so the
+    // storage JetStream reserved for them is free again. The other
+    // deployment keeps its own.
+    drain(NOW + 600).await;
+    for stream in streams(&removed_id) {
+        assert!(
+            js.get_stream(&stream).await.is_err(),
+            "{stream} outlived its deployment's removal"
+        );
+    }
+    for stream in streams(&kept_id) {
+        js.get_stream(&stream).await.unwrap();
+    }
+    forwarding.abort();
+    server.kill().await.unwrap();
+}

@@ -83,6 +83,13 @@ size bound reserved, so Trellis deletes them:
   queues an Auth effect in the same transaction, which deletes both and is
   retried until it succeeds, across restarts. A bucket whose description is
   not the one Trellis wrote is left in place and the effect set aside.
+  Enrollment prepares this storage after its own transaction: it checks that
+  the deployment is active, creates the buckets, and checks again. A removal
+  can commit between the checks, so while a preparation for the deployment is
+  under way the deletion waits and is retried. A preparation that starts after
+  the removal commits creates nothing, and one that finishes after it fails
+  and leaves the buckets to the deletion. A server that stops mid-preparation
+  has nothing under way after it starts again, so the deletion runs then.
 
 A server that stops between the removal and the deletion deletes the streams
 after it starts again, since both paths work from Auth's record of the removal,

@@ -194,6 +194,9 @@ pub(crate) struct SqliteAuthorizationStore {
     /// The issuer chain is in the material registry up to this rotation
     /// sequence; see `publish_issuer_chain`.
     pub(super) published_rotation: std::sync::atomic::AtomicU64,
+    /// Deployments whose Operation storage is being prepared, with how many
+    /// preparations are under way; see `framework_storage`.
+    pub(super) preparing_operations: Mutex<std::collections::BTreeMap<String, usize>>,
     pub(crate) settings: AuthSettings,
 }
 
@@ -655,6 +658,7 @@ impl SqliteAuthorizationStore {
             webhook_signal: tokio::sync::watch::Sender::new(0),
             avatar_signer: std::sync::OnceLock::new(),
             published_rotation: std::sync::atomic::AtomicU64::new(0),
+            preparing_operations: Mutex::default(),
             settings,
         })
     }
