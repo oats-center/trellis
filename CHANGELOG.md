@@ -10,6 +10,16 @@ and this project adheres to
 
 ### Added
 
+- Device Code sign-in offers account sign-up when the installation and at
+  least one Device Code app allow it; an app that doesn't allow the method
+  refuses at the code step and grants nothing.
+- Devices can report a name (`trellis_device_name`; Rust
+  `NativeOAuthClient::with_device_name`, TypeScript `startDevice(..., {
+deviceName })`); `trellis login` sends the hostname, and the confirmation
+  step shows it as "Device says it is".
+- Writes refused because JetStream is full return a typed resource-exhausted
+  error naming the kind and resource, in both SDKs; `State.Put` declares
+  `ResourceExhausted`.
 - `trellis storage` and the Console Health page show JetStream storage and
   memory used and reserved against their limits, degraded at 85%.
 
@@ -23,6 +33,11 @@ and this project adheres to
 
 ### Fixed
 
+- A browser that lost its Portal CSRF cookie can still sign out; the page
+  renews the token for the live login and retries.
+- A CLI argument shaped like a deployment ID names only that deployment.
+- Managed NATS keeps `max_file_store` and `max_memory_store` when it rewrites
+  its config.
 - The CLI treats a well-formed user or role ID as definitive: an ID nobody has
   is refused, and a lookup error is reported, instead of retrying the input as
   a username, email or role name.
