@@ -33,6 +33,12 @@ deviceName })`); `trellis login` sends the hostname, and the confirmation
 
 ### Fixed
 
+- Generated Rust `publish_*` calls published events on the subject template
+  (for example `…Changed.{/value}`) instead of the filled-in subject, so
+  consumers filtering on a parameter value never received them. They now
+  publish on the filled-in subject.
+- Stopping Trellis while JetStream is full exits 0; an owner lease that can't
+  be released for lack of room is logged and lapses at the end of its term.
 - A browser that lost its Portal CSRF cookie can still sign out; the page
   renews the token for the live login and retries.
 - A CLI argument shaped like a deployment ID names only that deployment.
