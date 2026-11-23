@@ -11,15 +11,20 @@ import { ulid } from "ulid";
 import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-/** Lines trellis-server logs each time a pass of Auth `work` fails. */
-function failures(runtime: TrellisTestRuntime, work: string): number {
+/**
+ * Lines trellis-server logs each time a pass of Auth `work` fails, in the
+ * background or, with `message`, at startup.
+ */
+function failures(
+  runtime: TrellisTestRuntime,
+  work: string,
+  message = "Auth work failed; it will run again",
+): number {
   return runtime
     .controlPlaneOutput()
     .split("\n")
     .filter(
-      (line) =>
-        line.includes("Auth work failed; it will run again") &&
-        line.includes(`"work":"${work}"`),
+      (line) => line.includes(message) && line.includes(`"work":"${work}"`),
     ).length;
 }
 
@@ -30,7 +35,8 @@ async function authDatabase(
   const files = await readdir(runtime.workdir, { recursive: true });
   const path = files.find((file) => basename(file) === "platform.sqlite");
   assert(path, files.join("\n"));
-  return new DatabaseSync(join(runtime.workdir, path));
+  // The running server writes it too, so taking the lock can wait for it.
+  return new DatabaseSync(join(runtime.workdir, path), { timeout: 10_000 });
 }
 
 /** Connects an admin client to the runtime. */
@@ -118,7 +124,11 @@ test(
       }
       await restarted;
       assert(
-        failures(runtime, "Auth startup") > 0,
+        failures(
+          runtime,
+          "Auth startup",
+          "startup storage work failed; it will run again",
+        ) > 0,
         "the restarted server reported waiting for the locked database",
       );
       const client = await connectAdmin(runtime, "started-after-lock");

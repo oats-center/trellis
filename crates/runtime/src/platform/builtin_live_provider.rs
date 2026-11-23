@@ -252,32 +252,32 @@ pub(crate) async fn prepare_builtin_live_provider(
     operational: &async_nats::Client,
     identity_seed: &str,
 ) -> Result<super::auth::ProvisionedDeployment, RuntimeError> {
-    match role {
+    Ok(match role {
         LiveProviderRole::Platform => {
             super::bootstrap::prepare_builtin_provider::<
                 trellis_runtime_apis::participants::trellis_platform::Participant,
             >(store, operational, identity_seed)
-            .await
+            .await?
         }
         LiveProviderRole::Health => {
             super::bootstrap::prepare_builtin_provider::<
                 trellis_runtime_apis::participants::trellis_health_runtime::Participant,
             >(store, operational, identity_seed)
-            .await
+            .await?
         }
         LiveProviderRole::Jobs => {
             super::bootstrap::prepare_builtin_provider::<
                 trellis_runtime_apis::participants::trellis_jobs_runtime::Participant,
             >(store, operational, identity_seed)
-            .await
+            .await?
         }
         LiveProviderRole::Events => {
             super::bootstrap::prepare_builtin_provider::<
                 trellis_runtime_apis::participants::trellis_events_runtime::Participant,
             >(store, operational, identity_seed)
-            .await
+            .await?
         }
-    }
+    })
 }
 
 /// The build of `role`'s built-in this server ships, as its participant ID and

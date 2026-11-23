@@ -211,22 +211,29 @@ impl OAuthStorage {
     pub(crate) fn open(
         authority: Arc<SqliteAuthorizationStore>,
         key: &[u8; 32],
-    ) -> Result<Self, StorageError> {
-        let storage = Self::new(authority, key)?;
+    ) -> Result<Self, AuthError> {
+        let storage =
+            Self::new(authority, key).map_err(|error| AuthError::Invalid(error.to_string()))?;
+        let unsealed = |error: StorageError| {
+            AuthError::Invalid(format!(
+                "the OAuth storage key does not open stored secrets: {error}"
+            ))
+        };
         // Authenticate real persisted ciphertext before accepting new secrets.
         // A replaced but well-formed key must not silently split installation
         // custody between two keys. No synthetic key-check record is needed.
-        storage.transaction(|connection| {
+        storage.authority.transaction(|connection| {
             let artifact: Option<(String, String, Vec<u8>)> = connection
                 .query_row(
                     "SELECT kind,lookup_hash,sealed_record FROM auth_oauth_artifacts LIMIT 1",
                     [],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
-                .optional()
-                .map_err(failure)?;
+                .optional()?;
             if let Some((kind, lookup, bytes)) = artifact {
-                storage.decode::<serde_json::Value>(&kind, &lookup, &bytes)?;
+                storage
+                    .decode::<serde_json::Value>(&kind, &lookup, &bytes)
+                    .map_err(unsealed)?;
             } else {
                 let provider: Option<(String, Vec<u8>)> = connection
                     .query_row(
@@ -237,10 +244,11 @@ impl OAuthStorage {
                         [],
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )
-                    .optional()
-                    .map_err(failure)?;
+                    .optional()?;
                 if let Some((provider, bytes)) = provider {
-                    storage.decode::<String>("upstreamSecret", &hash(&provider), &bytes)?;
+                    storage
+                        .decode::<String>("upstreamSecret", &hash(&provider), &bytes)
+                        .map_err(unsealed)?;
                 }
             }
             Ok(())

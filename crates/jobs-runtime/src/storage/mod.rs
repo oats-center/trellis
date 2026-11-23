@@ -479,17 +479,22 @@ impl SqliteJobsStore {
             .connection
             .lock()
             .map_err(|_| SqliteJobsStoreError::Poisoned)?;
+        let select = "SELECT value FROM projection_metadata WHERE name = 'projection_id'";
+        // Once established, the identity is only read, so a lock another
+        // connection holds does not hold it up.
+        if let Some(id) = connection
+            .query_row(select, [], |row| row.get(0))
+            .optional()?
+        {
+            return Ok(id);
+        }
         connection.execute(
             "INSERT OR IGNORE INTO projection_metadata (name, value) \
             VALUES ('projection_id', lower(hex(randomblob(16))))",
             [],
         )?;
         connection
-            .query_row(
-                "SELECT value FROM projection_metadata WHERE name = 'projection_id'",
-                [],
-                |row| row.get(0),
-            )
+            .query_row(select, [], |row| row.get(0))
             .map_err(SqliteJobsStoreError::from)
     }
 

@@ -276,6 +276,12 @@ pub(super) fn timestamp(seconds: i64) -> Result<trellis_rs::generated::Timestamp
     trellis_rs::generated::Timestamp::from_unix_seconds(seconds).map_err(|_| AuthError::Unavailable)
 }
 
+impl crate::storage::ClassifiedFailure for AuthError {
+    fn storage_failure(&self) -> crate::storage::StorageFailure {
+        AuthError::storage_failure(self)
+    }
+}
+
 impl From<AuthError> for crate::supervisor::RuntimeError {
     fn from(error: AuthError) -> Self {
         Self::Platform(error.to_string())

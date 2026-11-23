@@ -389,6 +389,50 @@ pub(crate) fn sqlite_failure(error: &rusqlite::Error) -> StorageFailure {
     }
 }
 
+/// A failure of work on a runtime database that tells what it calls for.
+pub(crate) trait ClassifiedFailure: std::fmt::Display {
+    /// What this failure calls for (see [`StorageFailure`]).
+    fn storage_failure(&self) -> StorageFailure;
+}
+
+impl ClassifiedFailure for StoreError {
+    /// A migration that fails on the database's own error, such as a lock,
+    /// is classified by that error; one refinery refuses, such as a changed
+    /// checksum, fails the same way again.
+    fn storage_failure(&self) -> StorageFailure {
+        match self {
+            Self::OpenSqlite { source, .. } | Self::ConfigureSqlite { source, .. } => {
+                sqlite_failure(source)
+            }
+            Self::MigrateSqlite { source, .. } => match source.kind() {
+                refinery::error::Kind::Connection(_, cause) => cause
+                    .downcast_ref::<rusqlite::Error>()
+                    .map_or(StorageFailure::Permanent, sqlite_failure),
+                _ => StorageFailure::Permanent,
+            },
+            _ => StorageFailure::Permanent,
+        }
+    }
+}
+
+impl ClassifiedFailure for trellis_jobs_runtime::SqliteJobsStoreError {
+    fn storage_failure(&self) -> StorageFailure {
+        match self {
+            Self::Sqlite(error) => sqlite_failure(error),
+            _ => StorageFailure::Permanent,
+        }
+    }
+}
+
+impl ClassifiedFailure for trellis_events_runtime::storage::EventsStoreError {
+    fn storage_failure(&self) -> StorageFailure {
+        match self {
+            Self::Sqlite(error) => sqlite_failure(error),
+            _ => StorageFailure::Permanent,
+        }
+    }
+}
+
 /// Lets a log line that repeats through at most once a minute, so a failure a
 /// loop retries several times a second does not flood the log.
 #[derive(Debug, Default)]
