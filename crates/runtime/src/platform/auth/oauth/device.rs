@@ -47,9 +47,10 @@ fn device_name(reported: &str) -> Option<String> {
     let cleaned = reported
         .chars()
         .map(|c| {
-            if c.is_control()
-                || matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-            {
+            let bidi = matches!(c, '\u{200e}' | '\u{200f}')
+                || ('\u{202a}'..='\u{202e}').contains(&c)
+                || ('\u{2066}'..='\u{2069}').contains(&c);
+            if c.is_control() || bidi {
                 ' '
             } else {
                 c
@@ -595,6 +596,7 @@ pub(super) async fn confirm(
 impl OAuthEngine {
     /// Issue a real engine-owned device/user-code pair only after authenticated
     /// DPoP extension validation and a durable single-use proof claim.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn device_authorization(
         &self,
         client_id: &ClientId,
