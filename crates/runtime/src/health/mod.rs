@@ -101,6 +101,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         invalidation_tx.clone(),
         context.config.clone(),
         context.trellis_nats.clone(),
+        std::sync::Arc::clone(&context.shortages),
     );
     let stop = StopHandle::new();
     let task_stop = stop.clone();
@@ -183,20 +184,59 @@ fn build_router(
     invalidations: broadcast::Sender<Invalidation>,
     config: crate::RuntimeConfig,
     nats: async_nats::Client,
+    shortages: std::sync::Arc<crate::capacity::Shortages>,
 ) -> Router {
     let mut router = Router::new();
     let storage_config = std::sync::Arc::new(config);
     router.register_rpc::<HealthStorageRpc, _, _>(move |_context, _input| {
         let config = std::sync::Arc::clone(&storage_config);
         let nats = nats.clone();
+        let shortages = std::sync::Arc::clone(&shortages);
         async move {
             let classes = storage::collect(&config, &nats).await;
             let format = |at: OffsetDateTime| {
                 at.format(&time::format_description::well_known::Rfc3339)
                     .unwrap_or_default()
             };
+            // 64-bit integers travel as decimal strings.
+            let usage = |usage: &crate::capacity::Usage| {
+                json!({
+                    "used": usage.used.to_string(),
+                    "reserved": usage.reserved.to_string(),
+                    "limit": usage.limit.map(|limit| limit.to_string()),
+                })
+            };
+            let jetstream = match crate::capacity::Capacity::read(&nats, shortages.system()).await {
+                Ok(capacity) => {
+                    let mut problems = capacity.pressure();
+                    problems.extend(shortages.outstanding());
+                    Some(json!({
+                        "status": if problems.is_empty() { "ok" } else { "degraded" },
+                        "problems": problems,
+                        "storage": usage(&capacity.storage),
+                        "memory": usage(&capacity.memory),
+                        "serverStorage": capacity.server_storage.as_ref().map(usage),
+                        "serverMemory": capacity.server_memory.as_ref().map(usage),
+                        "streams": capacity.streams.to_string(),
+                        "maxStreams": capacity.max_streams.map(|max| max.to_string()),
+                        "consumers": capacity.consumers.to_string(),
+                        "maxConsumers": capacity.max_consumers.map(|max| max.to_string()),
+                        "largestStreams": capacity.largest.iter().map(|stream| json!({
+                            "name": stream.name,
+                            "bytes": stream.bytes.to_string(),
+                            "messages": stream.messages.to_string(),
+                            "maxBytes": stream.max_bytes.map(|bytes| bytes.to_string()),
+                        })).collect::<Vec<_>>(),
+                    }))
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "JetStream usage could not be read");
+                    None
+                }
+            };
             serde_json::from_value(json!({
                 "asOf": format(OffsetDateTime::now_utc()),
+                "jetstream": jetstream,
                 "classes": classes
                     .into_iter()
                     .map(|class| {

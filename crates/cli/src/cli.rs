@@ -101,6 +101,9 @@ pub enum TopLevelCommand {
     /// Query and administer Events.
     #[command(subcommand)]
     Events(EventsCommand),
+    /// Show the disk each kind of Trellis data takes, and how close
+    /// JetStream is to its storage and memory limits.
+    Storage,
     /// Generate or derive Trellis keys.
     Keys(KeysCommand),
     /// Check for or install CLI updates.
@@ -140,6 +143,7 @@ impl TopLevelCommand {
             Self::Registries(_) => "registries",
             Self::Resources(_) => "resources",
             Self::Events(_) => "events",
+            Self::Storage => "storage",
             Self::Keys(_) => "keys",
             Self::Upgrade(_) => "upgrade",
             Self::Version | Self::Completion { .. } => return None,

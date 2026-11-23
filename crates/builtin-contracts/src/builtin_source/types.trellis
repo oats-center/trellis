@@ -437,6 +437,54 @@ model HealthStorageRequest {
 model HealthStorageResponse {
   asOf: string;
   classes: list<HealthStorageClass>;
+  /// JetStream usage against its limits, when JetStream answers.
+  jetstream?: HealthStorageJetStream;
+}
+
+/// JetStream storage and memory that Trellis uses and reserves, against the
+/// broker's limits. A stream's size bound is reserved in full when the stream
+/// is created, so reservations can run out while little is stored.
+model HealthStorageJetStream {
+  consumers: uint64;
+  /// The account's largest streams by bytes stored or reserved.
+  largestStreams: list<HealthStorageJetStreamStream>;
+  maxConsumers?: uint64;
+  maxStreams?: uint64;
+  /// Memory storage of the Trellis NATS account.
+  memory: HealthStorageJetStreamUsage;
+  /// Each limit that is close, and each refusal, with the numbers.
+  problems: list<string>;
+  /// Memory storage of the whole NATS server, when Trellis can ask it.
+  serverMemory?: HealthStorageJetStreamUsage;
+  /// File storage of the whole NATS server, when Trellis can ask it.
+  serverStorage?: HealthStorageJetStreamUsage;
+  /// `degraded` while used or reserved storage or memory, streams, or
+  /// consumers reach 85% of a limit, or JetStream refuses a Trellis resource.
+  status: HealthStorageJetStreamStatus;
+  /// File storage of the Trellis NATS account.
+  storage: HealthStorageJetStreamUsage;
+  streams: uint64;
+}
+
+enum HealthStorageJetStreamStatus {
+  ok;
+  degraded;
+}
+
+model HealthStorageJetStreamStream {
+  bytes: uint64;
+  /// The stream's size bound, which JetStream reserves.
+  maxBytes?: uint64;
+  messages: uint64;
+  name: string;
+}
+
+/// Bytes stored and reserved against a limit.
+model HealthStorageJetStreamUsage {
+  /// Absent when no limit is set.
+  limit?: uint64;
+  reserved: uint64;
+  used: uint64;
 }
 
 model HealthStorageClass {

@@ -76,6 +76,15 @@ busy_timeout_ms`, five seconds when unset. A failure is then one of three kinds:
 - The database file is corrupt or not a database. Its subsystem stops, and
   with it trellis-server, with a message naming that database.
 
+`Health.Storage` also reports JetStream capacity: the Trellis account's storage
+and memory used and reserved against its limits, the whole server's from the
+system account's `JSZ` request when the process holds a system-account
+connection (the platform role does), stream and consumer counts, and the
+largest streams by bytes stored or reserved. It is `degraded`, with each
+problem and its numbers, while used or reserved bytes, streams, or consumers
+reach 85% of a limit, and while JetStream refuses a resource this process
+needs. `trellis storage` and the Console Health page show it.
+
 `Health.Storage` and the `trellis.storage.bytes`, `trellis.storage.records`, and
 `trellis.storage.oldest.age` gauges (attribute `trellis.data_class`) report each
 class's size, record count, and oldest retained record from JetStream stream

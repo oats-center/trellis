@@ -1,6 +1,10 @@
 import {
   HealthStorageClass,
   HealthStorageClassName,
+  HealthStorageJetStream,
+  HealthStorageJetStreamStatus,
+  HealthStorageJetStreamStream,
+  HealthStorageJetStreamUsage,
   HealthStorageRequest,
   HealthStorageResponse,
   HealthSummaryRequest,
@@ -429,7 +433,8 @@ api health@v1 {
     errors [UnexpectedError, ValidationError];
     pagination cursor;
   }
-  /// How much disk each kind of Trellis data uses and how old it is.
+  /// How much disk each kind of Trellis data uses and how old it is, and how
+  /// close JetStream is to its limits.
   rpc Storage {
     input HealthStorageRequest;
     output HealthStorageResponse;

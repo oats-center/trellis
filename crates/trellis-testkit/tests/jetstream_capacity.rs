@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use trellis_runtime_apis::apis::trellis_health_v1;
 use trellis_runtime_apis::types::{
     HealthInspectRequest, HealthInspectRequestContractId, HealthInspectRequestParticipantKind,
+    HealthStorageRequest,
 };
 use trellis_testkit::{TestNatsUser, TestServiceIdentity, TrellisTestRuntime};
 
@@ -63,6 +64,17 @@ async fn token_check(
     })
     .await;
     found.unwrap_or_else(|_| panic!("no accepted webhook:token check; the last was {last}"))
+}
+
+/// The `jetstream` section of `Health.Storage`.
+async fn jetstream_storage(health: &trellis_health_v1::Client) -> Value {
+    let storage = health
+        .storage(&HealthStorageRequest {
+            extra: Default::default(),
+        })
+        .await
+        .unwrap();
+    serde_json::to_value(storage).unwrap()["jetstream"].clone()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -149,6 +161,22 @@ async fn a_small_broker_holds_every_stream_and_webhook_intake_recovers() {
         .unwrap();
     assert_eq!(delivery.body.0, b"second");
 
+    // Health.Storage shows the broker's budget, and nothing is near it.
+    let caller = runtime
+        .register_client::<runtime_trellis::apps::runtime_trellis_observer::Request>(
+            "capacity health reader",
+        )
+        .await
+        .unwrap();
+    let client = trellis_rs::generated::Client::connect_user(caller.connect_options())
+        .await
+        .unwrap();
+    let health = trellis_health_v1::Client::from_generated(client.clone());
+    let room = jetstream_storage(&health).await;
+    assert_eq!(room["status"], "ok", "{room}");
+    assert_eq!(room["serverStorage"]["limit"], GIB.to_string(), "{room}");
+    assert_eq!(room["problems"], json!([]), "{room}");
+
     // Another stream takes all but a few MiB of the broker's storage, so a
     // new deployment's 64 MiB intake stream does not fit.
     let reserved = jetstream.query_account().await.unwrap().reserved_storage as i64;
@@ -181,16 +209,6 @@ async fn a_small_broker_holds_every_stream_and_webhook_intake_recovers() {
     let crowded_provider = Provider::new(&mut crowded_service);
     let mut crowded_deliveries = crowded_provider.token().unwrap().subscribe().await.unwrap();
     let crowded_urls = runtime.webhook_urls(&crowded).await.unwrap();
-    let caller = runtime
-        .register_client::<runtime_trellis::apps::runtime_trellis_observer::Request>(
-            "capacity health reader",
-        )
-        .await
-        .unwrap();
-    let client = trellis_rs::generated::Client::connect_user(caller.connect_options())
-        .await
-        .unwrap();
-    let health = trellis_health_v1::Client::from_generated(client.clone());
 
     // The endpoint's health says why, with the numbers, and requests get 503
     // rather than being lost. Until Trellis serves the new endpoint, its
@@ -238,6 +256,29 @@ async fn a_small_broker_holds_every_stream_and_webhook_intake_recovers() {
         "the worker's restarts are logged at most once a minute"
     );
 
+    // Health.Storage says the broker is nearly full and what it refuses.
+    let crowded_storage = jetstream_storage(&health).await;
+    assert_eq!(crowded_storage["status"], "degraded", "{crowded_storage}");
+    let problems: Vec<&str> = crowded_storage["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.starts_with("JetStream server storage is")
+                && problem.contains("% committed")),
+        "{problems:?}"
+    );
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains(&format!("intake stream {stream} asks for"))),
+        "{problems:?}"
+    );
+
     // Once there is room, the worker creates the stream, the check clears,
     // and requests flow.
     jetstream.delete_stream("FILLER").await.unwrap();
@@ -250,6 +291,8 @@ async fn a_small_broker_holds_every_stream_and_webhook_intake_recovers() {
         .unwrap()
         .unwrap();
     assert_eq!(delivery.body.0, b"room");
+    let recovered = jetstream_storage(&health).await;
+    assert_eq!(recovered["status"], "ok", "{recovered}");
 
     drop(health);
     drop(client);

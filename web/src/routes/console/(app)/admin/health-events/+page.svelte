@@ -142,6 +142,32 @@
     return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   }
 
+  type JetStream = NonNullable<apis.health.StorageOutput["jetstream"]>;
+  type Usage = JetStream["storage"];
+
+  function describeUsage(usage: Usage): string {
+    const limit =
+      usage.limit === undefined ? "no limit" : `of ${formatBytes(usage.limit)}`;
+    return `${formatBytes(usage.used)} used, ${formatBytes(usage.reserved)} reserved ${limit}`;
+  }
+
+  /** The broker's storage and memory, the server's when Trellis can see it. */
+  function usageRows(jetstream: JetStream): { label: string; text: string }[] {
+    const rows = [{ label: "Storage", text: describeUsage(jetstream.storage) }];
+    if (jetstream.serverStorage)
+      rows.push({
+        label: "Server storage",
+        text: describeUsage(jetstream.serverStorage),
+      });
+    rows.push({ label: "Memory", text: describeUsage(jetstream.memory) });
+    if (jetstream.serverMemory)
+      rows.push({
+        label: "Server memory",
+        text: describeUsage(jetstream.serverMemory),
+      });
+    return rows;
+  }
+
   function formatAvailability(value: number | null | undefined): string {
     return value == null ? "Not enough data" : `${(value * 100).toFixed(2)}%`;
   }
@@ -694,7 +720,7 @@
       </div>
     </div>
 
-    {#if storage && storage.classes.length > 0}
+    {#if storage && (storage.classes.length > 0 || storage.jetstream)}
       <div class="trellis-section min-w-0" data-testid="storage">
         <div class="flex flex-wrap items-center justify-between gap-3 p-4">
           <h2 class="text-base font-semibold">Storage</h2>
@@ -702,6 +728,26 @@
             >Measured {formatRelativeTime(storage.asOf)}</span
           >
         </div>
+        {#if storage.jetstream}
+          {@const jetstream = storage.jetstream}
+          <div class="space-y-3 px-4 pb-4" data-testid="jetstream">
+            <dl class="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[auto_1fr]">
+              <dt class="text-base-content/60">NATS</dt>
+              <dd>
+                <HealthStatus
+                  status={jetstream.status === "ok" ? "healthy" : "degraded"}
+                />
+              </dd>
+              {#each usageRows(jetstream) as row (row.label)}
+                <dt class="text-base-content/60">{row.label}</dt>
+                <dd class="tabular-nums">{row.text}</dd>
+              {/each}
+            </dl>
+            {#each jetstream.problems as problem (problem)}
+              <Notice variant="warning">{problem}</Notice>
+            {/each}
+          </div>
+        {/if}
         <DataTable>
           <thead>
             <tr>
