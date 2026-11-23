@@ -177,7 +177,7 @@ pub(super) fn register<P: ParticipantDescriptor>(
                     json!({ "exportId": export_id, "size": size.to_string() }),
                 )
                 .map_err(|error| ServerError::Internal(error.to_string()))?,
-                transfer: Some(grant.into()),
+                transfer: Some(grant),
             })
         }
     });

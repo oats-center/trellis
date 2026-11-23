@@ -121,12 +121,7 @@ impl<W: Write> Encryptor<W> {
             URL_SAFE_NO_PAD.encode(nonce)
         );
         let mac = hmac::sign(&keys.header, header.as_bytes());
-        write!(
-            out,
-            "{header}mac={}\n",
-            URL_SAFE_NO_PAD.encode(mac.as_ref())
-        )
-        .into_diagnostic()?;
+        writeln!(out, "{header}mac={}", URL_SAFE_NO_PAD.encode(mac.as_ref())).into_diagnostic()?;
         Ok(Self {
             out,
             key: keys.payload,
