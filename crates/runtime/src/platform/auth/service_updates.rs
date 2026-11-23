@@ -1590,6 +1590,7 @@ fn approve_claim(
         &deployment,
         Some(&public_key),
         &instance_title,
+        None,
         now,
     )?
     .instance_id;

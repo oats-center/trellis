@@ -4,7 +4,9 @@ use clap::{Args, Subcommand};
 
 /// Manage service deployments.
 #[derive(Debug, Args)]
-#[command(override_usage = "trellis svc list [OPTIONS]\n       trellis svc <ID> <COMMAND>")]
+#[command(
+    override_usage = "trellis svc list [OPTIONS]\n       trellis svc import <FILE> [OPTIONS]\n       trellis svc <ID> <COMMAND>"
+)]
 pub struct SvcCommand {
     /// Deployment ID or title; creation uses this as the title.
     #[arg(value_name = "ID", hide = true)]
@@ -17,8 +19,53 @@ pub struct SvcCommand {
 #[derive(Debug, Subcommand)]
 pub enum SvcSubcommand {
     List(SvcListArgs),
+    /// Add a service exported from another installation, keeping its
+    /// deployment ID, instances, settings, secrets and data. An import never
+    /// replaces a deployment that already exists here.
+    Import(SvcImportArgs),
     #[command(flatten)]
     Resource(SvcResourceAction),
+}
+
+/// Import a service bundle written by `trellis svc <ID> export`.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct SvcImportArgs {
+    /// The bundle file.
+    #[arg(value_name = "FILE")]
+    pub file: PathBuf,
+    /// The bundle's SHA-256, as its export printed it. Without it, a terminal
+    /// shows the file's digest and asks whether it matches.
+    #[arg(long, value_name = "SHA256")]
+    pub digest: Option<String>,
+    /// Read the bundle's passphrase from this file, or `-` for standard
+    /// input. Without it, a terminal asks for it, and otherwise it is read
+    /// from standard input.
+    #[arg(long, value_name = "PATH")]
+    pub passphrase_file: Option<PathBuf>,
+    /// Check the bundle and show what the import would do, changing nothing.
+    #[arg(long)]
+    pub check: bool,
+    /// Import even though another deployment here already serves an API the
+    /// service provides; requests then go to either.
+    #[arg(long)]
+    pub acknowledge_shared_apis: bool,
+    /// Import webhook endpoints that check nothing (`verify none`).
+    #[arg(long)]
+    pub acknowledge_unauthenticated_webhooks: bool,
+}
+
+/// Export a service for another installation.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct SvcExportArgs {
+    /// Where to write the bundle. Without it, `<ID>.trellis-service` in the
+    /// current folder.
+    #[arg(long, value_name = "PATH")]
+    pub out: Option<PathBuf>,
+    /// Read the passphrase that encrypts the bundle from this file, or `-`
+    /// for standard input. Without it, a terminal asks for it twice, and
+    /// otherwise it is read from standard input.
+    #[arg(long, value_name = "PATH")]
+    pub passphrase_file: Option<PathBuf>,
 }
 
 /// Include disabled deployments in the service listing.
@@ -94,6 +141,11 @@ pub enum SvcResourceAction {
     /// or change an endpoint: enable or disable it, rotate its URL, or set a
     /// runtime setting.
     Webhooks(WebhooksArgs),
+    /// Write the service, with its build, instances, settings, secrets and
+    /// data, to a bundle encrypted with a passphrase, for `trellis svc
+    /// import` in another installation. Nothing changes here: stop or remove
+    /// the service yourself once it runs in the other installation.
+    Export(SvcExportArgs),
 }
 
 /// A service's webhook endpoints; with an endpoint, that one.

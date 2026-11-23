@@ -40,6 +40,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
         oauth.clone(),
         operational.clone(),
     );
+    super::service_bundles::register(provider, oauth.clone(), operational.clone());
     super::rpc_deployments::register_deployment_rpc(provider, store.clone(), operational, oauth);
     let users = store.clone();
     provider.register_users_list(move |context, input| {

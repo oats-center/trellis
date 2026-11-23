@@ -22,7 +22,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -405,7 +405,65 @@ async fn snapshot_stream(
     stream: &str,
     file: &Path,
 ) -> Result<(serde_json::Value, serde_json::Value), BackupError> {
-    let failed = || nats_error(format!("snapshot of stream {stream}"));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut output = options.open(file).map_err(file_error("write", file))?;
+    let answer = snapshot_stream_into(client, stream, true, &mut output)
+        .await
+        .map_err(|error| error.at("write", file))?;
+    output.sync_all().map_err(file_error("write", file))?;
+    Ok(answer)
+}
+
+/// Why a stream could not be copied out of or into the broker.
+#[derive(Debug)]
+pub(crate) enum SnapshotError {
+    /// NATS could not be reached or refused the snapshot or restore.
+    Nats(BackupError),
+    /// The snapshot's bytes could not be written or read.
+    Io(std::io::Error),
+}
+
+impl SnapshotError {
+    fn at(self, action: &'static str, path: &Path) -> BackupError {
+        match self {
+            Self::Nats(error) => error,
+            Self::Io(source) => BackupError::File {
+                action,
+                path: path.to_path_buf(),
+                source,
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for SnapshotError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nats(error) => error.fmt(f),
+            Self::Io(error) => error.fmt(f),
+        }
+    }
+}
+
+/// Streams a consistent snapshot of `stream` into `output`, with its durable
+/// consumers when `consumers` is set. Returns the stream's configuration and
+/// state, which [`restore_stream_from`] needs to load it again.
+pub(crate) async fn snapshot_stream_into(
+    client: &async_nats::Client,
+    stream: &str,
+    consumers: bool,
+    output: &mut impl std::io::Write,
+) -> Result<(serde_json::Value, serde_json::Value), SnapshotError> {
+    let failed = || {
+        let what = format!("snapshot of stream {stream}");
+        move |error: String| SnapshotError::Nats(nats_error(what)(error))
+    };
     let inbox = client.new_inbox();
     let mut chunks = client
         .subscribe(inbox.clone())
@@ -413,7 +471,7 @@ async fn snapshot_stream(
         .map_err(|error| failed()(error.to_string()))?;
     let request = serde_json::json!({
         "deliver_subject": inbox,
-        "no_consumers": false,
+        "no_consumers": !consumers,
         "chunk_size": CHUNK,
     });
     let answer = jetstream_api(
@@ -424,14 +482,6 @@ async fn snapshot_stream(
     )
     .await
     .map_err(failed())?;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut output = options.open(file).map_err(file_error("write", file))?;
     loop {
         let chunk = tokio::time::timeout(NATS_TIMEOUT, chunks.next())
             .await
@@ -450,7 +500,7 @@ async fn snapshot_stream(
         }
         output
             .write_all(&chunk.payload)
-            .map_err(file_error("write", file))?;
+            .map_err(SnapshotError::Io)?;
         if let Some(reply) = chunk.reply {
             client
                 .publish(reply, Bytes::new())
@@ -458,7 +508,6 @@ async fn snapshot_stream(
                 .map_err(|error| failed()(error.to_string()))?;
         }
     }
-    output.sync_all().map_err(file_error("write", file))?;
     Ok((answer["config"].clone(), answer["state"].clone()))
 }
 
@@ -470,7 +519,25 @@ async fn restore_stream(
     state: &serde_json::Value,
     file: &Path,
 ) -> Result<(), BackupError> {
-    let failed = || nats_error(format!("restoring stream {stream}"));
+    let mut input = fs::File::open(file).map_err(file_error("read", file))?;
+    restore_stream_from(client, stream, config, state, &mut input)
+        .await
+        .map_err(|error| error.at("read", file))
+}
+
+/// Loads a snapshot read from `input`, taken by [`snapshot_stream_into`],
+/// into the broker as `stream`, which must not exist yet.
+pub(crate) async fn restore_stream_from(
+    client: &async_nats::Client,
+    stream: &str,
+    config: &serde_json::Value,
+    state: &serde_json::Value,
+    input: &mut impl std::io::Read,
+) -> Result<(), SnapshotError> {
+    let failed = || {
+        let what = format!("restoring stream {stream}");
+        move |error: String| SnapshotError::Nats(nats_error(what)(error))
+    };
     let request = serde_json::json!({ "config": config, "state": state });
     let answer = jetstream_api(
         client,
@@ -484,10 +551,9 @@ async fn restore_stream(
         .as_str()
         .ok_or_else(|| failed()("the server named nowhere to send it".to_owned()))?
         .to_owned();
-    let mut input = fs::File::open(file).map_err(file_error("read", file))?;
     let mut buffer = vec![0; CHUNK];
     loop {
-        let read = input.read(&mut buffer).map_err(file_error("read", file))?;
+        let read = input.read(&mut buffer).map_err(SnapshotError::Io)?;
         if read == 0 {
             break;
         }

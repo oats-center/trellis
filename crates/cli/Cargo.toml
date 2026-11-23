@@ -9,10 +9,11 @@ publish = false
 
 [features]
 default = ["runtime"]
-runtime = ["dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:trellis-self-update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
+runtime = ["dep:argon2", "dep:ring", "dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:trellis-self-update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
 
 [dependencies]
 anstream.workspace = true
+argon2 = { workspace = true, optional = true }
 clap.workspace = true
 clap_complete.workspace = true
 comfy-table.workspace = true
@@ -47,6 +48,7 @@ sha2.workspace = true
 url.workspace = true
 tar.workspace = true
 rand.workspace = true
+ring = { version = "0.17.14", optional = true }
 rustls.workspace = true
 shlex = "2.0.1"
 tempfile.workspace = true

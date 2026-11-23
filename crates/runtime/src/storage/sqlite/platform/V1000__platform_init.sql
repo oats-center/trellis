@@ -1298,3 +1298,18 @@ CREATE TABLE auth_webhook_settings (
     value INTEGER NOT NULL CHECK (value BETWEEN 0 AND 9007199254740991),
     PRIMARY KEY (deployment_id, endpoint, setting)
 );
+-- Deployments created by importing a service bundle. The import commits the
+-- deployment first and loads its data after, so running the same bundle again
+-- finishes an import that stopped partway; `loaded_json` names the resources
+-- whose data is in place.
+CREATE TABLE auth_service_imports (
+    deployment_id TEXT PRIMARY KEY REFERENCES auth_deployments(deployment_id),
+    content_digest TEXT NOT NULL CHECK (length(content_digest) = 43),
+    state TEXT NOT NULL CHECK (state IN ('loading', 'complete')),
+    loaded_json TEXT NOT NULL CHECK (json_valid(loaded_json)),
+    report_json TEXT NOT NULL CHECK (json_valid(report_json)),
+    imported_by TEXT NOT NULL,
+    imported_at INTEGER NOT NULL CHECK (imported_at BETWEEN 0 AND 9007199254740991),
+    completed_at INTEGER CHECK (completed_at BETWEEN 0 AND 9007199254740991),
+    CHECK ((state = 'complete') = (completed_at IS NOT NULL))
+);

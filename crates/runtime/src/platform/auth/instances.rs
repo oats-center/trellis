@@ -1116,6 +1116,7 @@ fn enroll(
             &deployment,
             Some(input.identity_public_key.as_str()),
             input.title.trim(),
+            None,
             now,
         )?;
         connection.execute(

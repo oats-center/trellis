@@ -283,7 +283,8 @@ owner reference; restore it with the invoker's `control(reference)` without
 starting another execution. To cancel a reserved invocation that may not yet be
 admitted, use `start_cancelled_with_invocation_id(id, &input)` with its original
 input; the returned reference does not imply finished cleanup, so `wait()` for
-the terminal result.
+the terminal result. `wait()` returns a `failed` snapshot as success; its
+`error` holds the declared error's `error_type`, `message` and fields.
 
 For explicit pre-acceptance owner selection, persist deployment, invocation
 ULID, and frozen input before sending, then use

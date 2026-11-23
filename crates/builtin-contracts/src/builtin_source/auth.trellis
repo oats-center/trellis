@@ -118,6 +118,13 @@ import {
   AuthDeploymentApplyRequest,
   AuthDeploymentMutationRequest,
   AuthDeploymentMutationResponse,
+  AuthDeploymentExportRequest,
+  AuthDeploymentExportResult,
+  AuthDeploymentExportDownloadRequest,
+  AuthDeploymentExportDownloadResponse,
+  AuthDeploymentImportRequest,
+  AuthDeploymentImportResult,
+  AuthServiceBundleProgress,
   AuthInstancesListRequest,
   AuthInstancesListResponse,
   AuthInstanceProvisionRequest,
@@ -392,6 +399,12 @@ api auth@v1 {
   rpc Deployments.List { input AuthPageRequest; output AuthDeploymentsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   /// Apply a service or device definition to a deployment.
   rpc Deployments.Apply { input AuthDeploymentApplyRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Export a service deployment, with its build, instances, settings, secrets and data, for import into another installation. Exporting changes nothing in this installation. Download the finished bundle with Deployments.Exports.Download.
+  operation Deployments.Export { input AuthDeploymentExportRequest; progress AuthServiceBundleProgress; output AuthDeploymentExportResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// Download the content of a finished export. Only the administrator who exported it may.
+  rpc Deployments.Exports.Download { input AuthDeploymentExportDownloadRequest; output AuthDeploymentExportDownloadResponse; errors [AuthError, UnexpectedError, ValidationError]; download; }
+  /// Import an exported service, sent as the operation's byte stream. The deployment keeps its ID; an import that would replace an existing deployment is refused.
+  operation Deployments.Import { input AuthDeploymentImportRequest; progress AuthServiceBundleProgress; output AuthDeploymentImportResult; errors [AuthError, UnexpectedError, ValidationError]; stream; }
   /// Turn a deployment on.
   rpc Deployments.Enable { input AuthDeploymentMutationRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Turn a deployment off. Its instances stop connecting.
@@ -575,7 +588,7 @@ api auth@v1 {
       title "Manage sign-in and services";
       description "Change sign-in providers, services, devices, storage, sessions, and connections.";
       grants "Can change any service or device in this Trellis and sign anyone out.";
-      allows { rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Enable; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Packages.Resolve; rpc Packages.Pull; rpc PackageRegistries.List; rpc PackageRegistries.Put; rpc PackageRegistries.Remove; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceUpdates.List; rpc ServiceUpdates.Get; rpc ServiceUpdates.Decide; rpc ServiceClaims.Create; rpc ServiceClaims.List; rpc ServiceClaims.Remove; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc EnrollmentSecrets.Issue; rpc EnrollmentSecrets.List; rpc EnrollmentSecrets.Update; rpc EnrollmentSecrets.Revoke; rpc InstancePolicy.Get; rpc InstancePolicy.Set; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; rpc Webhooks.Update; }
+      allows { rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Enable; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Packages.Resolve; rpc Packages.Pull; rpc PackageRegistries.List; rpc PackageRegistries.Put; rpc PackageRegistries.Remove; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceUpdates.List; rpc ServiceUpdates.Get; rpc ServiceUpdates.Decide; rpc ServiceClaims.Create; rpc ServiceClaims.List; rpc ServiceClaims.Remove; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc EnrollmentSecrets.Issue; rpc EnrollmentSecrets.List; rpc EnrollmentSecrets.Update; rpc EnrollmentSecrets.Revoke; rpc InstancePolicy.Get; rpc InstancePolicy.Set; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; rpc Webhooks.Update; operation Deployments.Export; rpc Deployments.Exports.Download; operation Deployments.Import; }
     }
     capability roles.manage {
       administrative;
