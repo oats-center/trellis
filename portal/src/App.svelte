@@ -263,12 +263,17 @@
       enrollmentBusy = false;
     }
   }
-  const csrf =
-    document.cookie
-      .split(";")
-      .map((cookie) => cookie.trim())
-      .find((cookie) => cookie.startsWith("__Host-trellis-portal-csrf="))
-      ?.slice("__Host-trellis-portal-csrf=".length) ?? "";
+  /** This browser's Portal CSRF token, as its cookie holds it now. */
+  function readCsrf(): string {
+    return (
+      document.cookie
+        .split(";")
+        .map((cookie) => cookie.trim())
+        .find((cookie) => cookie.startsWith("__Host-trellis-portal-csrf="))
+        ?.slice("__Host-trellis-portal-csrf=".length) ?? ""
+    );
+  }
+  const csrf = readCsrf();
   let view = $state.raw<Consent | null>(served.consent ?? null);
   let selected = $state<string[]>(
     served.consent?.capabilities
@@ -530,22 +535,44 @@
    * Ends the Portal login on this browser, then returns to the app. Only the
    * server says the login is gone, so the page asks it even without a CSRF
    * cookie, and an answer that fails or never comes keeps the retry screen.
+   * A login refused for its CSRF token (`invalid_request`), as when the
+   * browser lost only its CSRF cookie, gets a new token from Trellis and is
+   * signed out with that once.
    */
   async function endPortalLogin(): Promise<void> {
     signOutFailed = false;
     signOutReference = null;
-    try {
-      const response = await fetch(`/portal/logout`, {
+    const deadline = AbortSignal.timeout(30_000);
+    const logout = (token: string) =>
+      fetch(`/portal/logout`, {
         method: "POST",
         credentials: "same-origin",
-        body: new URLSearchParams({ csrf, request_id: decisionKey }),
-        signal: AbortSignal.timeout(30_000),
+        body: new URLSearchParams({ csrf: token, request_id: decisionKey }),
+        signal: deadline,
       });
+    try {
+      let response = await logout(csrf);
+      let refusal = response.ok
+        ? null
+        : (await response.json().catch(() => null))?.error;
+      if (refusal === "invalid_request") {
+        const renewed = await fetch(`/portal/csrf`, {
+          method: "POST",
+          credentials: "same-origin",
+          signal: deadline,
+        });
+        if (renewed.ok) {
+          response = await logout(readCsrf());
+          refusal = response.ok
+            ? null
+            : (await response.json().catch(() => null))?.error;
+        } else {
+          response = renewed;
+          refusal = (await renewed.json().catch(() => null))?.error;
+        }
+      }
       // access_denied: no Portal login is left to end.
-      if (
-        !response.ok &&
-        (await response.json().catch(() => null))?.error !== "access_denied"
-      ) {
+      if (!response.ok && refusal !== "access_denied") {
         signOutReference = response.headers.get("Trellis-Reference");
         throw new Error("logout_failed");
       }

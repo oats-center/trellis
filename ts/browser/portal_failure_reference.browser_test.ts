@@ -179,14 +179,13 @@ test(
 );
 
 // The browser kept its Portal login cookie but lost the CSRF cookie the
-// sign-out page sends with it. Signing out of the Console must not return to
-// the app until Trellis confirms the login ended: the page asks Trellis, which
-// still has the login and refuses the request, and the page stays on its retry
-// screen with the login intact. With the cookie back, signing out ends the
-// login and returns. This catches a sign-out page that returns to the app
-// without asking, and a refusal answered as "no login left".
+// sign-out page sends with it. Trellis refuses that sign-out, since the login
+// is still there, and the page gets a new CSRF token for the login and signs
+// out with it: the login ends and the browser returns to the app. Another
+// origin cannot ask for the token. This catches a sign-out stuck on "Try
+// again" forever, and a token reissue a foreign page could trigger.
 test(
-  "a sign-out Trellis has not confirmed does not return to the app",
+  "a browser that lost its CSRF cookie still signs out",
   { timeout: 300_000 },
   async () => {
     await withTrellisRuntime(async (runtime) => {
@@ -222,31 +221,41 @@ test(
           assert(csrf, "the Portal login has a CSRF cookie");
           await context.clearCookies({ name: "__Host-trellis-portal-csrf" });
 
-          const refused = page.waitForResponse(
-            (response) => new URL(response.url()).pathname === "/portal/logout",
+          // A page on another origin cannot have the login's token renewed.
+          const foreign = await context.request.post(
+            `${runtime.trellisUrl}/portal/csrf`,
+            { headers: { Origin: "https://elsewhere.example" } },
           );
+          assert.equal(foreign.status(), 400);
+          assert.equal(
+            (await context.cookies(runtime.trellisUrl)).some(
+              (cookie) => cookie.name === "__Host-trellis-portal-csrf",
+            ),
+            false,
+          );
+
+          const answers: string[] = [];
+          page.on("response", (response) => {
+            const path = new URL(response.url()).pathname;
+            if (path === "/portal/logout" || path === "/portal/csrf") {
+              answers.push(`${path} ${response.status()}`);
+            }
+          });
           await page.getByLabel("Open user menu", { exact: true }).click();
           await page
             .getByRole("button", { name: "Sign out", exact: true })
             .click();
-          // Not access_denied, which would say no login is left to end.
-          assert.equal(
-            ((await (await refused).json()) as { error: string }).error,
-            "invalid_request",
-          );
-          await page.getByRole("button", { name: "Try again" }).waitFor();
-          assert.equal(new URL(page.url()).pathname, "/logout");
-          assert.equal(liveLogins(), signedIn, "the login is still there");
-
-          await context.addCookies([csrf]);
-          const ended = page.waitForResponse(
-            (response) => new URL(response.url()).pathname === "/portal/logout",
-          );
-          await page.reload({ waitUntil: "domcontentloaded" });
-          assert.equal((await ended).status(), 200);
+          await page.waitForURL((url) => url.pathname === "/logout");
           await page.waitForURL((url) =>
             url.href.startsWith(`${runtime.consoleUrl}/console`),
           );
+          // Refused for its missing token, not as "no login left", then
+          // signed out with the renewed one.
+          assert.deepEqual(answers, [
+            "/portal/logout 400",
+            "/portal/csrf 200",
+            "/portal/logout 200",
+          ]);
           assert.equal(liveLogins(), signedIn - 1);
         } finally {
           database.close();

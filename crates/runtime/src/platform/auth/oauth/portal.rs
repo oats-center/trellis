@@ -610,4 +610,43 @@ impl SqliteAuthorizationStore {
             .optional()?
             .is_some())
     }
+
+    /// Gives the live login `cookie` names a new CSRF token, for a browser
+    /// that kept its login cookie but lost the CSRF cookie and so could not
+    /// sign out. The old token stops working. Returns the new token and when
+    /// the Portal session expires; a cookie naming no live login is refused.
+    pub(crate) fn portal_renew_csrf(
+        &self,
+        cookie: &str,
+        now: i64,
+    ) -> Result<(String, i64), AuthError> {
+        if cookie.len() > 128 {
+            return Err(AuthError::Denied);
+        }
+        let mut secret = [0u8; 32];
+        getrandom::fill(&mut secret).map_err(|_| AuthError::Unavailable)?;
+        let csrf = URL_SAFE_NO_PAD.encode(secret);
+        let expires_at = self.transaction(|connection| {
+            connection
+                .query_row(
+                    "UPDATE auth_portal_sessions SET csrf_hash=?1 \
+                    WHERE cookie_hash=?2 AND expires_at>?3 \
+                    AND login_session_id IN (SELECT l.login_session_id \
+                        FROM auth_login_sessions l \
+                        JOIN auth_principals u ON u.principal_id=l.principal_id \
+                        WHERE l.expires_at>?3 AND l.revoked_at IS NULL \
+                        AND u.state='active') \
+                    RETURNING expires_at",
+                    params![
+                        URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes())),
+                        URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes())),
+                        now
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .ok_or(AuthError::Denied)
+        })?;
+        Ok((csrf, expires_at))
+    }
 }

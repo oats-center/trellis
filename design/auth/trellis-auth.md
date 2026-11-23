@@ -1067,8 +1067,15 @@ which the page treats as signed out; when ending the login fails on the server
 it answers `server_error`, the login stays valid, and the page keeps its
 "Try again" screen with the request's reference. A live login sent without its
 CSRF token is refused as `invalid_request`, not `access_denied`, since it was
-not ended. The page always asks the server, even with no CSRF cookie to read,
-and returns to the app only on success or `access_denied`; an answer that
+not ended. The page then posts `/portal/csrf`, which gives the live login a new
+CSRF token as a fresh `__Host-trellis-portal-csrf` cookie (the old token stops
+working), and signs out once more with it, so a browser that lost only its CSRF
+cookie can still sign out. `/portal/csrf` takes no token: it checks the
+`Origin` header like every Portal POST, the login cookie is `SameSite=Lax`, and
+the token comes back only as a cookie another origin cannot read; a cookie that
+names no live login is refused as `access_denied`. The page always asks the
+server, even with no CSRF cookie to read, and returns to the app only on
+success or `access_denied`; an answer that
 fails or does not arrive within 30 seconds keeps the "Try again" screen.
 `/revoke` revokes a refresh
 token's family before the OAuth library takes the token. When revoking the

@@ -208,6 +208,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         )
         .route("/portal/oidc/callback", get(super::upstream_http::callback))
         .route("/portal/logout", post(portal_logout))
+        .route("/portal/csrf", post(portal_csrf))
         .route("/portal/switch-account", post(switch_account))
         .layer(DefaultBodyLimit::max(32 * 1024))
         .layer(middleware::from_fn(move |request: Request, next: Next| {
@@ -1980,6 +1981,34 @@ async fn portal_logout(
     match logged_out {
         Ok(()) => cookie_response("", Some(""), 0, Json(serde_json::json!({})).into_response()),
         Err(code) => error(code),
+    }
+}
+
+/// `POST /portal/csrf`: a new CSRF cookie for this browser's live login, so
+/// a browser that lost only its CSRF cookie can still sign out. Only the
+/// Portal's own pages can ask (the `Origin` check, and the login cookie is
+/// `SameSite=Lax`), and the token comes back only as a cookie that a page on
+/// another origin cannot read. A cookie naming no live login is refused as
+/// `access_denied`.
+async fn portal_csrf(State(engine): State<Arc<OAuthEngine>>, headers: HeaderMap) -> Response {
+    if !portal_origin(&engine, &headers) {
+        return error(ErrorCode::InvalidRequest);
+    }
+    let Some(cookie) = portal_cookie(&headers, "__Host-trellis-portal") else {
+        return error(ErrorCode::AccessDenied);
+    };
+    let now = crate::clock::unix_now();
+    let authority = engine.server.store().authority.clone();
+    let bearer = cookie.clone();
+    match blocking(move || authority.portal_renew_csrf(&bearer, now)).await {
+        Ok((csrf, expires_at)) => cookie_response(
+            &cookie,
+            Some(&csrf),
+            u32::try_from(expires_at.saturating_sub(now)).unwrap_or(0),
+            Json(serde_json::json!({})).into_response(),
+        ),
+        Err(super::super::AuthError::Denied) => error(ErrorCode::AccessDenied),
+        Err(cause) => error(failed("could not renew the Portal CSRF token", cause)),
     }
 }
 
