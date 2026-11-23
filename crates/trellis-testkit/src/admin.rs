@@ -535,6 +535,28 @@ impl AdminSession {
         Ok(response.deployment.deployment_id.to_string())
     }
 
+    /// Removes a deployment at its current revision through
+    /// `Auth.Deployments.Remove`.
+    pub(crate) async fn remove_deployment(
+        &self,
+        deployment_id: &str,
+    ) -> Result<(), TrellisTestError> {
+        let current = self
+            .auth
+            .deployments_get(&wire(json!({ "deploymentId": deployment_id }))?)
+            .await
+            .map_err(|error| failure(TrellisTestStage::DeploymentCreateApply, error))?;
+        self.auth
+            .deployments_remove(&wire(json!({
+                "deploymentId": deployment_id,
+                "expectedRevision": current.deployment.revision,
+                "idempotencyKey": ulid::Ulid::generate().to_string(),
+            }))?)
+            .await
+            .map_err(|error| failure(TrellisTestStage::DeploymentCreateApply, error))?;
+        Ok(())
+    }
+
     /// Store settings for a deployment, or one of its instances, as a new
     /// revision through the same `Config.Set` administrators use.
     /// Each webhook endpoint of a deployment, by name, with the URL senders use.

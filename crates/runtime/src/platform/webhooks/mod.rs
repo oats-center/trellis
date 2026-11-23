@@ -540,6 +540,20 @@ impl Webhooks {
         if let Ok(mut current) = self.inner.directory.write() {
             *current = Arc::clone(&directory);
         }
+        // A deployment without endpoints any more needs no intake stream, so
+        // what JetStream refused it no longer holds Health.Storage degraded.
+        let wanted = directory.deployments();
+        if let Ok(mut intake) = self.inner.intake.lock() {
+            intake.retain(|deployment, _| {
+                let keep = wanted.contains_key(deployment);
+                if !keep {
+                    self.inner
+                        .shortages
+                        .forget(&format!("intake stream {}", stream_name(deployment)));
+                }
+                keep
+            });
+        }
         // Endpoints are served from here on; one whose stream cannot be
         // created now answers 503 and its worker keeps trying.
         for (deployment, endpoint) in directory.deployments() {
@@ -589,10 +603,17 @@ impl Webhooks {
             }
         };
         if let Ok(mut intake) = self.inner.intake.lock() {
-            match problem {
-                Some(problem) => intake.insert(deployment.to_owned(), problem),
-                None => intake.remove(deployment),
-            };
+            // A reload may have dropped the deployment while JetStream
+            // answered; its pruning ran under this lock, so check again here.
+            if !self.directory().deployments().contains_key(deployment) {
+                intake.remove(deployment);
+                self.inner.shortages.forget(&resource);
+            } else {
+                match problem {
+                    Some(problem) => intake.insert(deployment.to_owned(), problem),
+                    None => intake.remove(deployment),
+                };
+            }
         }
         result
     }

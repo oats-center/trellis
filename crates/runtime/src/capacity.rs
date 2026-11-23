@@ -398,6 +398,13 @@ impl Shortages {
         }
     }
 
+    /// Drops a refusal of a resource Trellis no longer wants.
+    pub(crate) fn forget(&self, resource: &str) {
+        if let Ok(mut refused) = self.refused.lock() {
+            refused.remove(resource);
+        }
+    }
+
     /// Every outstanding refusal, with its numbers.
     pub(crate) fn outstanding(&self) -> Vec<String> {
         self.refused

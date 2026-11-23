@@ -118,7 +118,10 @@ connection (the platform role does), stream and consumer counts, and the
 largest streams by bytes stored or reserved. It is `degraded`, with each
 problem and its numbers, while used or reserved bytes, streams, or consumers
 reach 85% of a limit, and while JetStream refuses a resource this process
-needs. `trellis storage` and the Console Health page show it.
+needs. A refusal is reported until the resource is created or written, or
+until nothing needs it any more, as when the last webhook endpoint of a
+deployment whose intake stream was refused is removed. `trellis storage` and
+the Console Health page show it.
 
 `Health.Storage` and the `trellis.storage.bytes`, `trellis.storage.records`, and
 `trellis.storage.oldest.age` gauges (attribute `trellis.data_class`) report each

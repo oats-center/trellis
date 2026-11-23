@@ -1164,6 +1164,22 @@ impl TrellisTestRuntime {
         })
     }
 
+    /// Removes `service`'s deployment through the same `Deployments.Remove`
+    /// an administrator uses: its instances can no longer connect and its
+    /// webhook endpoints stop.
+    ///
+    /// # Errors
+    /// Returns an error when Auth refuses the removal.
+    pub async fn remove_service(
+        &self,
+        service: &TestServiceIdentity,
+    ) -> Result<(), TrellisTestError> {
+        self.ensure_running()?;
+        self.admin()?
+            .remove_deployment(&service.deployment_id)
+            .await
+    }
+
     /// Stores settings for `service`'s deployment as a new revision, through
     /// the same `Config.Set` an administrator uses. Secrets go in `secrets`.
     ///

@@ -279,6 +279,49 @@ async fn a_small_broker_holds_every_stream_and_webhook_intake_recovers() {
         "{problems:?}"
     );
 
+    // Removing a deployment whose intake stream JetStream refuses takes its
+    // refusal out of Health.Storage, since nothing wants that stream now.
+    let removed = runtime
+        .register_service::<Participant>("billing-removed")
+        .await
+        .unwrap();
+    let removed_stream = format!("intake stream {} asks for", intake_stream(&removed));
+    let refuses = |storage: &Value, needle: &str| {
+        storage["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|problem| problem.contains(needle))
+    };
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !refuses(&jetstream_storage(&health).await, &removed_stream) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("Health.Storage reports the refused intake stream");
+    runtime.remove_service(&removed).await.unwrap();
+    let mut last = Value::Null;
+    let pruned = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            last = jetstream_storage(&health).await;
+            if !refuses(&last, &removed_stream) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    assert!(
+        pruned.is_ok(),
+        "the refusal outlives the deployment: {last}"
+    );
+    assert!(
+        refuses(&last, &format!("intake stream {stream} asks for")),
+        "the remaining deployment's refusal stays: {last}"
+    );
+
     // Once there is room, the worker creates the stream, the check clears,
     // and requests flow.
     jetstream.delete_stream("FILLER").await.unwrap();
