@@ -33,6 +33,10 @@ deviceName })`); `trellis login` sends the hostname, and the confirmation
 
 ### Fixed
 
+- Health reporting: a failed enforcement page marks its own work stuck, a
+  removed webhook deployment's storage warning clears, a failed stream listing
+  omits `largestStreams` (now optional) instead of looking complete, and in a
+  cluster storage and memory each come from the most committed server.
 - `trellis svc|dev <name> remove` resolves the deployment before asking, names
   it with its ID in the prompt, and reports the deployment it removed.
 - Generated Rust `publish_*` calls published events on the subject template
