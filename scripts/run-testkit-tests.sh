@@ -16,6 +16,8 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
+# A worktree resolves its own TypeScript packages, not the main checkout's.
+node ts/tools/link_checkout_modules.ts
 [[ "${1:-}" == "--" ]] && shift
 
 targets=(availability device_authority download jobs_authority provider_added_later service_unavailable)

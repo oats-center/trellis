@@ -5,6 +5,11 @@ import { dirname, join } from "node:path";
 import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 
+import {
+  type ProcessIdentity,
+  processMatchesIdentity,
+  recordProcessIdentity,
+} from "./cleanup.ts";
 import type { ReservedPort } from "./ports.ts";
 
 const DEFAULT_OUTPUT_TAIL_CHARS = 8_192;
@@ -56,6 +61,11 @@ export type StartTrellisProcessArgs = {
   shutdownTimeoutMs: number;
   /** Ports handed to the child at spawn; the caller keeps owning them. */
   portLeases?: readonly ReservedPort[];
+  /**
+   * The pid file the host writes for the NATS broker it manages. The broker
+   * runs in a process group of its own, so stopping waits for it separately.
+   */
+  brokerPidFile?: string;
 };
 
 /** @internal Bounded text buffer for child process output tails. */
@@ -104,6 +114,8 @@ class StartedTrellisProcess implements TrellisProcessHandle {
   readonly #stderrReader: Promise<void>;
   readonly #shutdownTimeoutMs: number;
   readonly #isolatedProcessGroup: boolean;
+  readonly #brokerPidFile: string | undefined;
+  #broker: ProcessIdentity | undefined;
   readonly #stdoutTail: TextTail;
   readonly #stderrTail: TextTail;
   #bootstrapUrl: string | undefined;
@@ -122,6 +134,7 @@ class StartedTrellisProcess implements TrellisProcessHandle {
     stderrTail: TextTail;
     shutdownTimeoutMs: number;
     isolatedProcessGroup: boolean;
+    brokerPidFile: string | undefined;
   }) {
     this.trellisUrl = args.trellisUrl;
     this.#child = args.child;
@@ -133,6 +146,7 @@ class StartedTrellisProcess implements TrellisProcessHandle {
     this.#stderrTail = args.stderrTail;
     this.#shutdownTimeoutMs = args.shutdownTimeoutMs;
     this.#isolatedProcessGroup = args.isolatedProcessGroup;
+    this.#brokerPidFile = args.brokerPidFile;
     this.#running = {
       child: args.child,
       ...(args.isolatedProcessGroup ? { group: args.processId } : {}),
@@ -183,12 +197,20 @@ class StartedTrellisProcess implements TrellisProcessHandle {
     });
   }
 
+  /** Records the managed broker while the host that started it is running. */
+  async recordBroker(): Promise<void> {
+    if (this.#brokerPidFile === undefined || this.#broker !== undefined) return;
+    this.#broker = await readBrokerIdentity(this.#brokerPidFile);
+  }
+
   stop(): Promise<void> {
     this.#stopping ??= this.#stopOnce();
     return this.#stopping;
   }
 
   async #stopOnce(): Promise<void> {
+    // A host that crashed before readiness leaves its broker's pid file.
+    await this.recordBroker();
     const alreadyExited = await settledStatus(this.#status);
     if (alreadyExited === undefined) {
       killProcess(this.#child, "SIGTERM");
@@ -238,6 +260,38 @@ class StartedTrellisProcess implements TrellisProcessHandle {
         await delay(GROUP_EXIT_POLL_MS);
       }
     }
+    // The broker has a group of its own, so a Ctrl-C in the host's terminal
+    // reaches only the host. A host stopped in order stops it first; a
+    // killed host's broker gets SIGTERM from the kernel and may still be
+    // writing its store, so wait for it before the sandbox goes.
+    if (this.#broker !== undefined) {
+      const broker = this.#broker;
+      let deadline = Date.now() + GROUP_EXIT_TIMEOUT_MS;
+      let killed = false;
+      while (
+        (await processMatchesIdentity(broker)) &&
+        (await processHasLivingTask(broker.pid))
+      ) {
+        if (Date.now() >= deadline) {
+          if (killed) {
+            throw new Error(
+              `Managed NATS broker ${broker.pid} still ran ${GROUP_EXIT_TIMEOUT_MS}ms after SIGKILL`,
+            );
+          }
+          console.error(
+            `Managed NATS broker ${broker.pid} outlived its host by ${GROUP_EXIT_TIMEOUT_MS}ms; sending SIGKILL`,
+          );
+          try {
+            process.kill(broker.pid, "SIGKILL");
+          } catch {
+            // It exited after the last check.
+          }
+          killed = true;
+          deadline += GROUP_EXIT_TIMEOUT_MS;
+        }
+        await delay(GROUP_EXIT_POLL_MS);
+      }
+    }
     runningHosts.delete(this.#running);
     await Promise.allSettled([this.#stdoutReader, this.#stderrReader]);
   }
@@ -282,31 +336,85 @@ async function groupHasLivingMember(groupId: number): Promise<boolean> {
   } catch {
     return true;
   }
-  // `pid (comm) state ppid pgrp ...`; comm may itself contain spaces or `)`.
-  const fields = async (path: string) => {
-    try {
-      const stat = await readFile(path, "utf8");
-      return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    } catch {
-      return undefined;
-    }
-  };
   for (const entry of entries) {
     if (!/^\d+$/.test(entry)) continue;
-    const pgrp = (await fields(`/proc/${entry}/stat`))?.[2];
+    const pgrp = (await statFields(`/proc/${entry}/stat`))?.[2];
     if (Number(pgrp) !== groupId) continue;
-    let tasks: string[];
-    try {
-      tasks = await readdir(`/proc/${entry}/task`);
-    } catch {
-      continue;
-    }
-    for (const task of tasks) {
-      const state = (await fields(`/proc/${entry}/task/${task}/stat`))?.[0];
-      if (state !== undefined && state !== "Z" && state !== "X") return true;
-    }
+    if (await livingTask(entry)) return true;
   }
   return false;
+}
+
+/**
+ * Reports whether process `pid` has a thread that isn't a zombie, counted as
+ * {@link groupHasLivingMember} counts them. Without `/proc` a process that
+ * exists counts as living.
+ */
+async function processHasLivingTask(pid: number): Promise<boolean> {
+  if (!(await hasProc())) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return await livingTask(String(pid));
+}
+
+async function hasProc(): Promise<boolean> {
+  try {
+    await readdir("/proc");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// `pid (comm) state ppid pgrp ...`; comm may itself contain spaces or `)`.
+async function statFields(path: string): Promise<string[] | undefined> {
+  try {
+    const stat = await readFile(path, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  } catch {
+    return undefined;
+  }
+}
+
+async function livingTask(pid: string): Promise<boolean> {
+  let tasks: string[];
+  try {
+    tasks = await readdir(`/proc/${pid}/task`);
+  } catch {
+    return false;
+  }
+  for (const task of tasks) {
+    const state = (await statFields(`/proc/${pid}/task/${task}/stat`))?.[0];
+    if (state !== undefined && state !== "Z" && state !== "X") return true;
+  }
+  return false;
+}
+
+/**
+ * Reads the broker's pid file and records the process it names, if that is
+ * a nats-server: a file a broker left behind may name a reused pid. Without
+ * `/proc` the pid file is all there is to go on.
+ */
+async function readBrokerIdentity(
+  pidFile: string,
+): Promise<ProcessIdentity | undefined> {
+  let pid: number;
+  try {
+    pid = Number((await readFile(pidFile, "utf8")).trim());
+  } catch {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  if (await hasProc()) {
+    const comm = await readFile(`/proc/${pid}/comm`, "utf8").catch(() => "");
+    if (!comm.startsWith("nats-server")) return undefined;
+  }
+  return await recordProcessIdentity(pid, "");
 }
 
 /** @internal Resolves the status if the child already exited, else undefined. */
@@ -569,6 +677,7 @@ export async function startTrellisProcess(
     stderrTail,
     shutdownTimeoutMs: args.shutdownTimeoutMs,
     isolatedProcessGroup: args.command.isolatedProcessGroup ?? false,
+    brokerPidFile: args.brokerPidFile,
   });
 
   try {
@@ -581,6 +690,7 @@ export async function startTrellisProcess(
       stderrTail,
       readers: [stdoutReader, stderrReader],
     });
+    await handle.recordBroker();
     return handle;
   } catch (error) {
     try {

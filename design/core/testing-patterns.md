@@ -98,7 +98,12 @@ while its production child starts or while a restart has it down; the child
 binds TCP normally.
 The TypeScript host runs in a dedicated Unix process group: shutdown first asks
 the host to stop gracefully, then force-closes remaining owned descendants after
-the deadline or host exit. Process-failure tests may deliberately kill or
+the deadline or host exit. The managed broker runs in a process group of its
+own, so a Ctrl-C in the host's terminal reaches only the host, which stops the
+broker in order. A killed host's broker gets SIGTERM from the kernel instead,
+so the testkit records the broker from the host's `var/run/nats-server.pid`
+once the host is ready and waits for it to exit (SIGKILL after 10 s) before
+removing the sandbox. Process-failure tests may deliberately kill or
 replace their isolated broker, but must keep a replacement available while its
 original host releases broker-backed ownership and reap it before normal managed
 restart. There is no shared-runner registry, tenant allocator, artifact

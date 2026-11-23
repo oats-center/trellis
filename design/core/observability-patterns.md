@@ -251,6 +251,12 @@ Library support rule:
   responses should still attach `traceId` from a valid inbound `traceparent`
   header before the error leaves the server span boundary
 
+Export never holds up a stopping process. A Rust host that owns its OTLP
+providers gives their shutdown, including the last export of each signal, 5
+seconds in all, then exits; a collector that is down or never answers costs at
+most that. It logs to stderr what it failed to export: spans still queued, a
+failed final metric export, or a shutdown cut off by the 5-second budget.
+
 ## Failure Log Lines
 
 Every failed request, Operation, job attempt, event delivery and webhook
