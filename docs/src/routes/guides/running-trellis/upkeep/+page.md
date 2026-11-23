@@ -83,6 +83,10 @@ holds jobs, events, KV buckets and stored files.
   reports it stored. A job that was running runs again.
 - The NATS process restarts: nothing is lost, and services reconnect by
   themselves.
+- Another program holds a database locked longer than Trellis waits for it,
+  such as an `sqlite3` session left in a transaction: nothing is lost. Trellis
+  logs a warning and tries again, whether it is starting or running, and
+  carries on once the lock is released.
 - The machine loses power or its kernel crashes: SQLite loses nothing it
   committed. JetStream flushes to disk every two minutes by default, so writes
   from the last two minutes can be gone. `sync_interval: always` in the

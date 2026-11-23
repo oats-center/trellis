@@ -18,15 +18,13 @@ pub(crate) async fn prepare_builtin_provider<C: ParticipantDescriptor>(
     store: &Arc<SqliteAuthorizationStore>,
     operational: &async_nats::Client,
     identity_seed: &str,
-) -> Result<ProvisionedDeployment, RuntimeError> {
+) -> Result<ProvisionedDeployment, super::auth::AuthError> {
     let now = crate::clock::unix_now();
     let (provisioner, seed) = (store.clone(), identity_seed.to_owned());
     let deployment =
         super::auth::blocking(move || provisioner.initialize_builtin_provider::<C>(&seed, now))
             .await?;
-    materialize_native_kv(store, operational, &deployment.deployment_id, now)
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    materialize_native_kv(store, operational, &deployment.deployment_id, now).await?;
     Ok(deployment)
 }
 

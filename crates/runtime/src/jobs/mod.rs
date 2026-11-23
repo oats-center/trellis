@@ -95,8 +95,16 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .config
         .jobs_storage_backend()
         .map_err(RuntimeError::Config)?;
-    let store = SqliteJobsStore::open(&storage.path, storage.busy_timeout())
-        .map_err(|error| RuntimeError::Nats(format!("failed to open Jobs SQLite: {error}")))?;
+    // Another process can hold the database's lock while the server starts,
+    // such as a backup or an operator's query; startup waits for it.
+    let store = crate::supervisor::until_stored(context.stopping(), "Jobs startup", || {
+        std::future::ready((|| {
+            let store = SqliteJobsStore::open(&storage.path, storage.busy_timeout())?;
+            store.projection_id()?;
+            Ok::<_, trellis_jobs_runtime::SqliteJobsStoreError>(store)
+        })())
+    })
+    .await?;
     let jobs_runtime = trellis_rs::jobs::JobsRuntime::from_nats(context.trellis_nats.clone());
     let resources = jobs_admin_resources();
     let evidence = crate::resource_evidence::ResourceEvidenceReader::new(

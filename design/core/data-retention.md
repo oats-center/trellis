@@ -48,8 +48,11 @@ busy_timeout_ms`, five seconds when unset. A failure is then one of three kinds:
   failure, doubling up to 30 seconds, or for Health at its next tick (logged at
   most once a minute while it repeats) and a heartbeat redelivered after five
   seconds. Durable work stays queued and a projector retries the same batch.
-  Startup waits the same way, so a server started while its database is locked
-  starts once the lock is released.
+  Startup waits the same way, logging each failed attempt with the work it was
+  doing: the migrations, and Auth, Jobs, Events and Health startup each retry
+  every step that writes their database, so a server started while any of its
+  databases is locked, or one locked part way through startup, starts once the
+  lock is released. A stop request ends the wait at once.
 - It fails the same way on every attempt, such as a constraint violation or a
   value that cannot be decoded, for one item. That item is logged once at
   error with its ID and set aside, and the loop goes on with the next one. An
@@ -58,9 +61,10 @@ busy_timeout_ms`, five seconds when unset. A failure is then one of three kinds:
   event is kept with `set_aside_at_ns` until retention removes it; a heartbeat
   or coverage gap is dropped. An Auth enforcement page that fails this way is
   deferred a minute rather than dropped, since its sessions still need
-  enforcing, so the work queued after it proceeds. A failure that is not tied
-  to one item, such as a projector's batch bookkeeping, is retried and logged
-  at error.
+  enforcing, so the work queued after it proceeds. Startup work that fails this
+  way, such as a migration whose checksum differs, stops startup with a message
+  naming the work. A failure that is not tied to one item, such as a
+  projector's batch bookkeeping, is retried and logged at error.
 - The database file is corrupt or not a database. Its subsystem stops, and
   with it trellis-server, with a message naming that database.
 

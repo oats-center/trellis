@@ -57,6 +57,8 @@ pub(crate) enum HealthStoreError {
     Json(#[from] serde_json::Error),
     #[error("health store lock is poisoned")]
     Poisoned,
+    #[error(transparent)]
+    Open(#[from] crate::storage::StoreError),
     #[error("health heartbeat deadline overflow")]
     DeadlineOverflow,
     #[error("health timestamp is outside the supported range")]
@@ -72,8 +74,15 @@ impl HealthStoreError {
     pub(crate) fn storage_failure(&self) -> crate::storage::StorageFailure {
         match self {
             Self::Sqlite(error) => crate::storage::sqlite_failure(error),
+            Self::Open(error) => crate::storage::ClassifiedFailure::storage_failure(error),
             _ => crate::storage::StorageFailure::Permanent,
         }
+    }
+}
+
+impl crate::storage::ClassifiedFailure for HealthStoreError {
+    fn storage_failure(&self) -> crate::storage::StorageFailure {
+        HealthStoreError::storage_failure(self)
     }
 }
 

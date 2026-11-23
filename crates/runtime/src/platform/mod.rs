@@ -22,7 +22,9 @@ pub(crate) use live_provider::{
 
 use crate::{
     shutdown::StopHandle,
-    supervisor::{NatsEndpointOverride, RuntimeContext, RuntimeError, SubsystemHandle},
+    supervisor::{
+        until_stored, NatsEndpointOverride, RuntimeContext, RuntimeError, SubsystemHandle,
+    },
     ResolvedRuntimeNatsConfig, RuntimeConfig, SubsystemName,
 };
 use auth::SqliteAuthorizationStore;
@@ -55,7 +57,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     // Another process can hold the database's write lock while the server
     // starts, such as a backup or an operator's query. Startup waits for it.
     let probe = store.clone();
-    until_stored(context, "Auth startup", move || {
+    until_stored(context.stopping(), "Auth startup", move || {
         let probe = probe.clone();
         auth::blocking(move || probe.writable())
     })
@@ -65,29 +67,29 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .config
         .resolve_console_origin()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let (opened, keep_admin) = (store.clone(), !context.take_reset_admin());
-    let (engine, account_url) = auth::blocking(move || {
-        let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
-        opened.initialize_issuer(crate::clock::unix_now())?;
-        let storage =
-            auth::OAuthStorage::open(opened.clone(), &custody).map_err(|error| platform(&error))?;
-        let account_url = if !opened.has_administrator()? {
-            storage
-                .initialize_local_administrator(
-                    &console_origin,
-                    "admin",
-                    None,
-                    crate::clock::unix_now(),
-                )
-                .map_err(|error| platform(&error))?
-                .1
-        } else {
-            storage
-                .reset_local_administrator(crate::clock::unix_now(), keep_admin)
-                .map_err(|error| platform(&error))?
-        };
-        let engine = auth::OAuthEngine::new(storage)?;
-        Ok::<_, RuntimeError>((Arc::new(engine), account_url))
+    let keep_admin = !context.take_reset_admin();
+    // Each step is its own transaction and safe to run again, so a lock taken
+    // part way through only delays startup.
+    let (engine, account_url) = until_stored(context.stopping(), "Auth startup", || {
+        let (opened, console_origin) = (store.clone(), console_origin.clone());
+        auth::blocking(move || {
+            opened.initialize_issuer(crate::clock::unix_now())?;
+            let storage = auth::OAuthStorage::open(opened.clone(), &custody)?;
+            let account_url = if !opened.has_administrator()? {
+                storage
+                    .initialize_local_administrator(
+                        &console_origin,
+                        "admin",
+                        None,
+                        crate::clock::unix_now(),
+                    )?
+                    .1
+            } else {
+                storage.reset_local_administrator(crate::clock::unix_now(), keep_admin)?
+            };
+            let engine = auth::OAuthEngine::new(storage)?;
+            Ok::<_, auth::AuthError>((Arc::new(engine), account_url))
+        })
     })
     .await?;
     if let Some(url) = account_url {
@@ -175,7 +177,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         builtins.push((participant, evidence, seed));
     }
     let checking = store.clone();
-    until_stored(context, "Auth startup", move || {
+    until_stored(context.stopping(), "Auth startup", move || {
         let (checking, builtins) = (checking.clone(), builtins.clone());
         auth::blocking(move || checking.check_builtin_upgrades(builtins, crate::clock::unix_now()))
     })
@@ -184,9 +186,11 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         &context.config,
         live_provider::LiveProviderRole::Platform,
     )?;
-    bootstrap::prepare_builtin_provider::<
-        trellis_runtime_apis::participants::trellis_platform::Participant,
-    >(&store, &context.trellis_nats, &provider_seed)
+    until_stored(context.stopping(), "Auth startup", || {
+        bootstrap::prepare_builtin_provider::<
+            trellis_runtime_apis::participants::trellis_platform::Participant,
+        >(&store, &context.trellis_nats, &provider_seed)
+    })
     .await?;
     // Startup drains committed effects before serving. A database another
     // process holds locked, or a broker that is not answering yet, delays it;
@@ -212,11 +216,13 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             Err(error) => {
                 let delay = backoff.failed();
                 retrying("Auth startup effects", &error, delay);
-                tokio::time::sleep(delay).await;
-                if context.is_stopping() {
-                    return Err(RuntimeError::Platform(format!(
-                        "stopped while Auth startup effects were failing: {error}"
-                    )));
+                tokio::select! {
+                    () = context.stopping().stopped() => {
+                        return Err(RuntimeError::Startup(format!(
+                            "stopped while Auth startup effects were failing: {error}"
+                        )));
+                    }
+                    () = tokio::time::sleep(delay) => {}
                 }
             }
         }
@@ -590,36 +596,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         stop,
         join,
     })
-}
-
-/// Runs a startup `step` that writes the Auth database until it succeeds. A
-/// failure that can pass, such as a lock another process holds, is logged and
-/// the step runs again after a growing wait; any other failure ends startup.
-async fn until_stored<T, F>(
-    context: &RuntimeContext,
-    work: &str,
-    mut step: impl FnMut() -> F,
-) -> Result<T, RuntimeError>
-where
-    F: std::future::Future<Output = Result<T, auth::AuthError>>,
-{
-    let mut backoff = crate::storage::Backoff::default();
-    loop {
-        match step().await {
-            Ok(value) => return Ok(value),
-            Err(error) if error.storage_failure() == crate::storage::StorageFailure::Transient => {
-                let delay = backoff.failed();
-                retrying(work, &error, delay);
-                tokio::time::sleep(delay).await;
-                if context.is_stopping() {
-                    return Err(RuntimeError::Platform(format!(
-                        "stopped while {work} was failing: {error}"
-                    )));
-                }
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
 }
 
 /// Logs a failed pass of Auth background `work` that runs again after `delay`:
