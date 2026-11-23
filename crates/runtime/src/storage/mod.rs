@@ -120,15 +120,53 @@ mod sqlite_migrations {
         embed_migrations!("src/storage/sqlite/health");
     }
     pub use trellis_events_runtime::storage::sqlite_migrations as events;
+    pub mod webhooks {
+        use refinery::embed_migrations;
+        embed_migrations!("src/storage/sqlite/webhooks");
+    }
 }
 
 /// Webhook request records, kept beside the platform database.
 pub(crate) const WEBHOOKS_DATABASE: &str = "webhooks.sqlite";
 
+/// The schema a runtime database holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Schema {
+    Subsystem(SubsystemName),
+    /// Webhook request records, kept beside the platform database and
+    /// migrated with it.
+    Webhooks,
+}
+
+impl Schema {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Subsystem(subsystem) => subsystem.as_str(),
+            Self::Webhooks => "webhooks",
+        }
+    }
+
+    fn runner(self) -> refinery::Runner {
+        match self {
+            Self::Subsystem(SubsystemName::Platform) => {
+                sqlite_migrations::platform::migrations::runner()
+            }
+            Self::Subsystem(SubsystemName::Jobs) => sqlite_migrations::jobs::migrations::runner(),
+            Self::Subsystem(SubsystemName::Health) => {
+                sqlite_migrations::health::migrations::runner()
+            }
+            Self::Subsystem(SubsystemName::Events) => {
+                sqlite_migrations::events::migrations::runner()
+            }
+            Self::Webhooks => sqlite_migrations::webhooks::migrations::runner(),
+        }
+    }
+}
+
 /// SQLite-backed store for a built-in runtime subsystem.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteStore {
-    subsystem: SubsystemName,
+    schema: Schema,
     config: SqliteStorageConfig,
 }
 
@@ -137,8 +175,19 @@ impl SqliteStore {
     #[must_use]
     pub fn new(subsystem: SubsystemName, config: impl Into<SqliteStorageConfig>) -> Self {
         Self {
-            subsystem,
+            schema: Schema::Subsystem(subsystem),
             config: config.into(),
+        }
+    }
+
+    /// The webhook request records beside the `platform` database, which
+    /// share its settings.
+    pub(crate) fn webhooks_beside(platform: &Self) -> Self {
+        let mut config = platform.config.clone();
+        config.path = config.path.with_file_name(WEBHOOKS_DATABASE);
+        Self {
+            schema: Schema::Webhooks,
+            config,
         }
     }
 
@@ -155,7 +204,7 @@ impl SqliteStore {
 
     /// Runs schema migrations for this subsystem.
     pub fn migrate(&self) -> Result<(), StoreError> {
-        migrate_sqlite(self.subsystem, &self.config)
+        migrate_sqlite(self.schema, &self.config)
     }
 
     /// Verify migration compatibility on a temporary copy without changing the database.
@@ -165,12 +214,7 @@ impl SqliteStore {
                 path: self.config.path.clone(),
             });
         }
-        let runner = match self.subsystem {
-            SubsystemName::Platform => sqlite_migrations::platform::migrations::runner(),
-            SubsystemName::Jobs => sqlite_migrations::jobs::migrations::runner(),
-            SubsystemName::Health => sqlite_migrations::health::migrations::runner(),
-            SubsystemName::Events => sqlite_migrations::events::migrations::runner(),
-        };
+        let runner = self.schema.runner();
         let directory = tempfile::tempdir().map_err(|error| StoreError::CopySqliteSnapshot {
             from: self.config.path.clone(),
             to: std::env::temp_dir(),
@@ -212,7 +256,7 @@ impl SqliteStore {
             .run(&mut connection)
             .map_err(|source| StoreError::MigrateSqlite {
                 path: self.config.path.clone(),
-                subsystem: self.subsystem.as_str(),
+                subsystem: self.schema.name(),
                 source,
             })?;
         Ok(())
@@ -250,6 +294,7 @@ impl SqliteStore {
 #[derive(Debug)]
 pub(crate) struct RuntimeStores {
     platform: Option<SqliteStore>,
+    webhooks: Option<SqliteStore>,
     jobs: Option<SqliteStore>,
     health: Option<SqliteStore>,
     events: Option<SqliteStore>,
@@ -263,6 +308,7 @@ impl RuntimeStores {
     ) -> Result<Self, crate::ConfigError> {
         let mut stores = Self {
             platform: None,
+            webhooks: None,
             jobs: None,
             health: None,
             events: None,
@@ -272,7 +318,9 @@ impl RuntimeStores {
             match subsystem {
                 SubsystemName::Platform => {
                     let StorageBackend::Sqlite(config) = config.platform_storage_backend()?;
-                    stores.platform = Some(SqliteStore::new(SubsystemName::Platform, config));
+                    let platform = SqliteStore::new(SubsystemName::Platform, config);
+                    stores.webhooks = Some(SqliteStore::webhooks_beside(&platform));
+                    stores.platform = Some(platform);
                 }
                 SubsystemName::Jobs => {
                     let StorageBackend::Sqlite(config) = config.jobs_storage_backend()?;
@@ -292,15 +340,22 @@ impl RuntimeStores {
         Ok(stores)
     }
 
-    /// Migrates the selected subsystem stores.
+    /// Migrates the selected subsystem stores, and the webhook records with
+    /// the platform's, before any other startup work.
     ///
     /// A database whose applied schema differs from this release's, as one a
     /// different release candidate created, is refused with an error naming
     /// both releases (see [`StoreError::IncompatibleSchema`]).
     pub(crate) fn migrate_all(&self) -> Result<(), StoreError> {
-        for store in [&self.platform, &self.jobs, &self.health, &self.events]
-            .into_iter()
-            .flatten()
+        for store in [
+            &self.platform,
+            &self.webhooks,
+            &self.jobs,
+            &self.health,
+            &self.events,
+        ]
+        .into_iter()
+        .flatten()
         {
             store.migrate().map_err(|error| match &error {
                 StoreError::MigrateSqlite {
@@ -348,9 +403,15 @@ impl RuntimeStores {
     }
 
     pub(crate) fn check_all(&self) -> Result<(), StoreError> {
-        for store in [&self.platform, &self.jobs, &self.health, &self.events]
-            .into_iter()
-            .flatten()
+        for store in [
+            &self.platform,
+            &self.webhooks,
+            &self.jobs,
+            &self.health,
+            &self.events,
+        ]
+        .into_iter()
+        .flatten()
         {
             store.check_migrations()?;
         }
@@ -368,18 +429,17 @@ impl RuntimeStores {
             subsystem: SubsystemName::Platform,
         })
     }
+
+    /// The webhook request records, migrated with the platform database.
+    pub(crate) fn webhooks(&self) -> Result<&SqliteStore, StoreError> {
+        self.webhooks.as_ref().ok_or(StoreError::NotConfigured {
+            subsystem: SubsystemName::Platform,
+        })
+    }
 }
 
-fn migrate_sqlite(
-    subsystem: SubsystemName,
-    config: &SqliteStorageConfig,
-) -> Result<(), StoreError> {
-    let runner = match subsystem {
-        SubsystemName::Platform => sqlite_migrations::platform::migrations::runner(),
-        SubsystemName::Jobs => sqlite_migrations::jobs::migrations::runner(),
-        SubsystemName::Health => sqlite_migrations::health::migrations::runner(),
-        SubsystemName::Events => sqlite_migrations::events::migrations::runner(),
-    };
+fn migrate_sqlite(schema: Schema, config: &SqliteStorageConfig) -> Result<(), StoreError> {
+    let runner = schema.runner();
     let mut connection = open_sqlite(config)?;
     // Subsystem runners intentionally see only their own migration directory.
     // Keep divergent-version checks, but do not treat other subsystem versions
@@ -389,7 +449,7 @@ fn migrate_sqlite(
         .run(&mut connection)
         .map_err(|source| StoreError::MigrateSqlite {
             path: config.path.clone(),
-            subsystem: subsystem.as_str(),
+            subsystem: schema.name(),
             source,
         })?;
     Ok(())

@@ -9,11 +9,6 @@ use serde::Serialize;
 
 use super::verify::KeyMatch;
 
-mod migrations {
-    use refinery::embed_migrations;
-    embed_migrations!("src/storage/sqlite/webhooks");
-}
-
 /// The record of one request, as the API shows it.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,24 +87,19 @@ fn now_ms() -> i64 {
 }
 
 impl Records {
-    /// Open and migrate the records database.
+    /// Open the records database, which startup migrated with the platform
+    /// database.
     pub(crate) fn open(
         path: &Path,
         busy_timeout: std::time::Duration,
     ) -> std::result::Result<Self, String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        let mut connection = rusqlite::Connection::open(path).map_err(|error| error.to_string())?;
+        let connection = rusqlite::Connection::open(path).map_err(|error| error.to_string())?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| error.to_string())?;
         connection
             .busy_timeout(busy_timeout)
             .map_err(|error| error.to_string())?;
-        migrations::migrations::runner()
-            .run(&mut connection)
-            .map_err(|error| format!("migrate {}: {error}", path.display()))?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -507,11 +497,19 @@ mod tests {
     #[tokio::test]
     async fn records_expire_for_deployments_without_endpoints() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let records = Records::open(
-            &directory.path().join("webhooks.sqlite"),
-            std::time::Duration::from_secs(5),
-        )
-        .expect("opened");
+        let database =
+            crate::storage::SqliteStore::webhooks_beside(&crate::storage::SqliteStore::new(
+                crate::SubsystemName::Platform,
+                crate::SqliteStorageConfig {
+                    path: directory.path().join("platform.sqlite"),
+                    journal_mode: None,
+                    busy_timeout_ms: None,
+                    single_writer: None,
+                },
+            ));
+        database.migrate().expect("migrated");
+        let records =
+            Records::open(database.path(), std::time::Duration::from_secs(5)).expect("opened");
         // A deployment whose last endpoint is gone keeps the Trellis defaults.
         record(
             &records,

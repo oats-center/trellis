@@ -151,9 +151,9 @@ busy_timeout_ms`, five seconds when unset. A failure is then one of three kinds:
   check reports degraded, naming the work, the time it first failed and the
   latest error, until a page of it succeeds. Startup work that fails this way, such as a
   migration whose checksum differs, stops startup with a message naming the
-  work. A platform, Jobs, Health or Events database whose applied baseline
-  differs from this release's, as one another release candidate made, is
-  refused before anything is written, and the message names this release and
+  work. A platform, webhooks, Jobs, Health or Events database whose applied
+  baseline differs from this release's, as one another release candidate made,
+  is refused before anything is written, and the message names this release and
   the release that last started the installation, read from the version of its
   installed built-in platform package. Stable releases never refuse an earlier
   stable release's installation; the release guide's "Upgrades from the
