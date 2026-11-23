@@ -618,12 +618,18 @@ async fn intake(
                 }
                 Err(error) => {
                     tracing::warn!(%attempt_id, %error, "webhook intake stream refused a request");
+                    // A full stream or a broker out of room is named, so the
+                    // record says why the sender got 503.
+                    let reason = match &error {
+                        super::StoreFailure::Other(_) => "intake storage unavailable".to_owned(),
+                        known => known.to_string(),
+                    };
                     let _ = records
                         .set_outcome(
                             attempt_id,
                             Outcome {
                                 outcome: "unavailable",
-                                reason: Some("intake storage unavailable".into()),
+                                reason: Some(reason),
                                 status: Some(503),
                                 ..Outcome::default()
                             },

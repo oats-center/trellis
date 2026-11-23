@@ -393,6 +393,10 @@ struct Inner {
     /// The largest body that fits one event in a NATS message.
     ceiling: u64,
     limits: limits::Limits,
+    /// JetStream refusals, reported with the numbers in logs and health.
+    shortages: Arc<crate::capacity::Shortages>,
+    /// Why a deployment's intake stream is unavailable, while it is.
+    intake: std::sync::Mutex<BTreeMap<String, String>>,
 }
 
 /// The intake stream of one deployment.
@@ -419,6 +423,27 @@ fn stream_subject(deployment: &str) -> String {
 
 const WORKER: &str = "TRELLIS_WEBHOOKS_WORKER";
 
+/// Why the intake stream did not take a request.
+#[derive(Debug)]
+pub(crate) enum StoreFailure {
+    /// The stream holds `intakeMaxBytes` already and refuses new requests
+    /// until verified ones age out.
+    Full,
+    /// JetStream has no room for the stream.
+    Exhausted(crate::capacity::Exhaustion),
+    Other(String),
+}
+
+impl std::fmt::Display for StoreFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full => f.write_str("intake stream full"),
+            Self::Exhausted(exhaustion) => f.write_str(exhaustion.describe()),
+            Self::Other(error) => f.write_str(error),
+        }
+    }
+}
+
 impl Webhooks {
     /// Open the records database and the dedupe bucket and load the endpoints.
     /// The records database waits up to `busy_timeout` for a lock, as the
@@ -431,6 +456,7 @@ impl Webhooks {
         publisher: watch::Receiver<Option<trellis_rs::service::EventPublisher>>,
         origin: &str,
         console_origin: &str,
+        shortages: Arc<crate::capacity::Shortages>,
     ) -> Result<Self, RuntimeError> {
         let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
         let path = records_path.to_owned();
@@ -471,6 +497,8 @@ impl Webhooks {
                 // headers and envelope.
                 ceiling: max_payload.saturating_sub(64 << 10) / 4 * 3,
                 limits: limits::Limits::default(),
+                shortages,
+                intake: std::sync::Mutex::default(),
             }),
         };
         webhooks.reload().await?;
@@ -495,19 +523,54 @@ impl Webhooks {
         let records =
             super::auth::blocking(move || super::auth::webhooks::load_endpoints(&storage)).await?;
         let directory = Arc::new(Directory::build(records));
-        for (deployment, endpoint) in directory.deployments() {
-            if let Err(error) = self.ensure_stream(&deployment, &endpoint.settings).await {
-                tracing::warn!(%deployment, %error, "webhook intake stream unavailable");
-            }
-        }
         if let Ok(mut current) = self.inner.directory.write() {
-            *current = directory;
+            *current = Arc::clone(&directory);
+        }
+        // Endpoints are served from here on; one whose stream cannot be
+        // created now answers 503 and its worker keeps trying.
+        for (deployment, endpoint) in directory.deployments() {
+            let _ = self.ensure_stream(&deployment, &endpoint.settings).await;
         }
         Ok(())
     }
 
-    /// Create the deployment's intake stream, or converge its limits in place.
+    /// Create the deployment's intake stream, or converge its limits in place,
+    /// and keep why it failed for the deployment's endpoint health until it
+    /// succeeds. A refusal for lack of room is reported with the numbers.
     async fn ensure_stream(&self, deployment: &str, settings: &Settings) -> Result<(), String> {
+        let resource = format!("intake stream {}", stream_name(deployment));
+        let result = self.converge_stream(deployment, settings).await;
+        let problem = match &result {
+            Ok(()) => {
+                self.inner.shortages.recovered(&resource);
+                None
+            }
+            Err(error) => Some(match crate::capacity::exhaustion_in(error) {
+                Some(exhaustion) => {
+                    self.inner
+                        .shortages
+                        .refused(
+                            &self.inner.nats,
+                            &resource,
+                            exhaustion,
+                            Some(settings.intake_max_bytes),
+                            error,
+                        )
+                        .await
+                }
+                None => format!("{resource} unavailable: {error}"),
+            }),
+        };
+        if let Ok(mut intake) = self.inner.intake.lock() {
+            match problem {
+                Some(problem) => intake.insert(deployment.to_owned(), problem),
+                None => intake.remove(deployment),
+            };
+        }
+        result
+    }
+
+    async fn converge_stream(&self, deployment: &str, settings: &Settings) -> Result<(), String> {
         use async_nats::jetstream::stream;
         let config = stream::Config {
             name: stream_name(deployment),
@@ -548,8 +611,16 @@ impl Webhooks {
 
     /// Store a request in its deployment's intake stream, waiting for JetStream
     /// to confirm the write, and return its sequence.
-    pub(crate) async fn store(&self, request: &request::StoredRequest) -> Result<u64, String> {
-        let payload = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    ///
+    /// A stream that has gone missing is created again before the one retry,
+    /// so a request does not wait for the worker to notice.
+    pub(crate) async fn store(
+        &self,
+        request: &request::StoredRequest,
+    ) -> Result<u64, StoreFailure> {
+        let payload: bytes::Bytes = serde_json::to_vec(request)
+            .map_err(|error| StoreFailure::Other(error.to_string()))?
+            .into();
         let mut headers = async_nats::HeaderMap::new();
         headers.insert("Nats-Msg-Id", request.attempt_id.as_str());
         let subject = format!(
@@ -557,18 +628,44 @@ impl Webhooks {
             stream_subject(&request.deployment_id),
             trellis_protocol::encode_subject_token(&request.endpoint)
         );
-        let ack = tokio::time::timeout(Duration::from_secs(5), async {
-            self.inner
-                .jetstream
-                .publish_with_headers(subject, headers, payload.into())
-                .await
-                .map_err(|error| error.to_string())?
-                .await
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|_| "intake stream write timed out".to_owned())??;
-        Ok(ack.sequence)
+        let publish = || async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                self.inner
+                    .jetstream
+                    .publish_with_headers(subject.clone(), headers.clone(), payload.clone())
+                    .await?
+                    .await
+            })
+            .await
+        };
+        let mut result = publish().await;
+        if matches!(&result, Ok(Err(error))
+            if error.kind() == async_nats::jetstream::context::PublishErrorKind::StreamNotFound)
+        {
+            let settings = self
+                .directory()
+                .deployments()
+                .get(&request.deployment_id)
+                .map(|endpoint| endpoint.settings.clone());
+            if let Some(settings) = settings {
+                if self
+                    .ensure_stream(&request.deployment_id, &settings)
+                    .await
+                    .is_ok()
+                {
+                    result = publish().await;
+                }
+            }
+        }
+        match result {
+            Ok(Ok(ack)) => Ok(ack.sequence),
+            Ok(Err(error)) => Err(match crate::capacity::exhaustion(&error) {
+                Some(crate::capacity::Exhaustion::Full) => StoreFailure::Full,
+                Some(exhaustion) => StoreFailure::Exhausted(exhaustion),
+                None => StoreFailure::Other(error.to_string()),
+            }),
+            Err(_) => Err(StoreFailure::Other("intake stream write timed out".into())),
+        }
     }
 
     /// Read a stored request back by its stream sequence.
@@ -745,6 +842,17 @@ impl Webhooks {
             ));
         }
         let (deployment, name) = endpoint.key();
+        if record.definition.mode == trellis_idl::WebhookMode::Async {
+            if let Some(problem) = self
+                .inner
+                .intake
+                .lock()
+                .ok()
+                .and_then(|intake| intake.get(&deployment).cloned())
+            {
+                problems.push(format!("requests get 503: {problem}"));
+            }
+        }
         match self
             .inner
             .records
@@ -805,11 +913,25 @@ impl Webhooks {
     }
 
     /// Verify the deployment's stored `async` requests as they arrive.
+    ///
+    /// Each start creates the intake stream when it is missing, as when it
+    /// was deleted or JetStream refused it before, and failures wait with
+    /// [`crate::storage::Backoff`] and are logged at most once a minute.
     async fn work(self, deployment: String) {
         use async_nats::jetstream::consumer;
         use futures_util::StreamExt as _;
+        let mut backoff = crate::storage::Backoff::default();
+        let mut throttle = crate::storage::LogThrottle::default();
         loop {
             let result = async {
+                let settings = self
+                    .directory()
+                    .deployments()
+                    .get(&deployment)
+                    .map(|endpoint| endpoint.settings.clone());
+                if let Some(settings) = settings {
+                    self.ensure_stream(&deployment, &settings).await?;
+                }
                 let stream = self
                     .inner
                     .jetstream
@@ -835,6 +957,7 @@ impl Webhooks {
                     .map_err(|error| error.to_string())?;
                 while let Some(message) = messages.next().await {
                     let message = message.map_err(|error| error.to_string())?;
+                    backoff.succeeded();
                     self.verify_stored(message).await;
                 }
                 Ok::<(), String>(())
@@ -843,10 +966,19 @@ impl Webhooks {
             if !self.directory().deployments().contains_key(&deployment) {
                 return;
             }
+            let delay = backoff.failed();
             if let Err(error) = result {
-                tracing::warn!(%deployment, %error, "webhook worker restarting");
+                if let Some(held) = throttle.admit() {
+                    tracing::warn!(
+                        %deployment,
+                        %error,
+                        repeats = held,
+                        retry_in_ms = delay.as_millis(),
+                        "webhook worker restarting"
+                    );
+                }
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(delay).await;
         }
     }
 

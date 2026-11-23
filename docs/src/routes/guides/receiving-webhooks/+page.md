@@ -238,6 +238,9 @@ gives the endpoint a new URL and keeps the old one working until `retire-url`.
 Requests to `async` endpoints wait for verification in the deployment's intake
 stream, which keeps them 7 days and holds at most 64 MiB by default. A full
 stream answers new requests with 503 rather than drop ones still waiting.
+If NATS has no room left to create the stream, requests get 503 too, and the
+`webhook:<endpoint>` check says so with the numbers until Trellis can create
+it, which it keeps trying on its own.
 `set intake-max-bytes 256MiB` raises the size, but NATS reserves the whole size
 on its disk as soon as the stream exists, so keep it well inside what the
 broker has.

@@ -164,6 +164,8 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         stopping,
     ))
     .await?;
+    // Capacity reports include the server's own JetStream numbers.
+    context.shortages.set_system(system.clone());
     // Provider notices reach sessions in the application account.
     let notices = context.trellis_nats.clone();
     // Every built-in this process starts must be one this server can install
@@ -265,6 +267,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             .config
             .resolve_console_origin()
             .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+        Arc::clone(&context.shortages),
     ))
     .await?;
     // Sign-in, the Console, and webhook intake share the Trellis listener.

@@ -621,6 +621,8 @@ pub(crate) struct RuntimeContext {
     pub(crate) live_providers: crate::platform::LiveProviderSlots,
     /// Where each selected owner group stands.
     groups: GroupStates,
+    /// What JetStream refuses this process for lack of room.
+    pub(crate) shortages: Arc<crate::capacity::Shortages>,
 }
 
 impl std::fmt::Debug for RuntimeContext {
@@ -909,6 +911,7 @@ pub async fn run_with_stop(
         http_ready,
         authorization_store: std::sync::Mutex::default(),
         live_providers: crate::platform::LiveProviderSlots::new(),
+        shortages: crate::capacity::Shortages::new(),
     });
     let result = serve(&context, &manager, listener, &origin, &process_stop).await;
     tracing::info!("runtime shutdown finished; flushing NATS");

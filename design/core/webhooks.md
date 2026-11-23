@@ -864,7 +864,21 @@ retention settings, and under the defaults once the deployment is gone.
 
 When a deployment's intake stream is full, Trellis refuses new requests with 503 rather
 than remove old ones, so a flood cannot push out requests still waiting for
-verification.
+verification. The request record's reason says `intake stream full`.
+
+The intake stream is created when the deployment's endpoints are loaded, and
+again whenever it is missing: the deployment's worker creates it each time it
+starts, and a request that finds no stream creates it before its one retry. The
+worker waits between attempts as the runtime's storage loops do, 250 ms
+doubling to 30 s, and logs a restart at most once a minute. When JetStream
+refuses the stream for lack of room, every `async` endpoint of the deployment
+answers 503, its `webhook:<endpoint>` check, and with it the deployment's
+health, turns degraded with the refusal and the numbers (what the stream asks
+for, and the account's and server's storage used, reserved, and limit), and the
+server logs the refusal with the same numbers once, then every ten minutes
+while it lasts. The stream is created and the check clears as soon as there is
+room. A larger `intakeMaxBytes` that does not fit leaves the stream at its old
+size and reports the same way.
 
 ## Tests
 
