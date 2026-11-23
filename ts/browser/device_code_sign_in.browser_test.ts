@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -16,7 +16,7 @@ import {
   discoverNativeOAuth,
   NativeOAuthClient,
 } from "../packages/trellis/native.ts";
-import { apps } from "../packages/trellis-testkit/trellis/index.js";
+import { apis, apps } from "../packages/trellis-testkit/trellis/index.js";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
@@ -25,6 +25,7 @@ import {
   launchProfile,
   loginCliAsAdministrator,
 } from "./browser_test_support.ts";
+import { startDex, type TestDex } from "./dex_support.ts";
 
 /** Starts `trellis login` in its own configuration and reads its challenge. */
 async function startCliLogin(runtime: TrellisTestRuntime) {
@@ -231,6 +232,29 @@ test("a Device Code sign-in takes the account, then the code, then the device's 
   }, browserRuntimeOptions());
 });
 
+/** How many OAuth grants Auth holds for `principalId`. */
+async function grantsFor(
+  runtime: TrellisTestRuntime,
+  principalId: string,
+): Promise<number> {
+  const files = await readdir(runtime.workdir, { recursive: true });
+  const path = files.find((file) => basename(file) === "platform.sqlite");
+  assert(path, files.join("\n"));
+  const database = new DatabaseSync(join(runtime.workdir, path), {
+    timeout: 10_000,
+  });
+  try {
+    const row = database
+      .prepare(
+        "SELECT count(*) AS grants FROM auth_oauth_grants WHERE principal_id=?",
+      )
+      .get(principalId) as { grants: number };
+    return row.grants;
+  } finally {
+    database.close();
+  }
+}
+
 /** Creates an account from the Portal's sign-in page, with a fresh username. */
 async function createAccount(page: Page, name: string): Promise<string> {
   const username = `${name.toLowerCase()}-${ulid().toLowerCase()}`;
@@ -339,22 +363,7 @@ test("a Device Code sign-in offers sign-up when a Device Code app allows it, and
           .getByText(/^Closed Tool doesn't let people create an account/)
           .waitFor();
         const refused = (await run("users", "show", refusedName)).principalId;
-        const files = await readdir(runtime.workdir, { recursive: true });
-        const path = files.find((file) => basename(file) === "platform.sqlite");
-        assert(path, files.join("\n"));
-        const database = new DatabaseSync(join(runtime.workdir, path), {
-          timeout: 10_000,
-        });
-        try {
-          const grants = database
-            .prepare(
-              "SELECT count(*) AS grants FROM auth_oauth_grants WHERE principal_id=?",
-            )
-            .get(refused) as { grants: number };
-          assert.equal(grants.grants, 0);
-        } finally {
-          database.close();
-        }
+        assert.equal(await grantsFor(runtime, refused), 0);
       } finally {
         await tool.close();
       }
@@ -364,3 +373,169 @@ test("a Device Code sign-in offers sign-up when a Device Code app allows it, and
     }
   }, browserRuntimeOptions());
 });
+
+/** Signs in at Dex as `email`, from the Portal's sign-in page `page` shows. */
+async function continueWithDex(
+  page: Page,
+  dex: TestDex,
+  email: string,
+): Promise<void> {
+  await page
+    .getByRole("link", { name: "Continue with Company", exact: true })
+    .click();
+  await page.waitForURL((url) => url.origin === new URL(dex.issuer).origin);
+  await page.locator('input[name="login"]').fill(email);
+  await page.locator('input[name="password"]').fill("password");
+  await page.locator('button[type="submit"]').click();
+}
+
+// The same holds for an account created by signing in through an OIDC
+// provider: the account step offers it when some Device Code app allows
+// provider sign-up, and the code step refuses the account for an app that
+// doesn't. This catches provider sign-up that a device never gets, sign-up
+// offered when no Device Code app allows it, and an account created through
+// the provider for one app that slips through to another.
+test(
+  "a Device Code sign-in creates an account through an OIDC provider when a Device Code app allows it, and the code step refuses an app that doesn't",
+  { timeout: 300_000 },
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      await runtime.ensureAdmin();
+      const emails = {
+        early: "early@example.com",
+        newcomer: "newcomer@example.com",
+        latecomer: "latecomer@example.com",
+      };
+      const dex = await startDex({
+        directory: runtime.workdir,
+        redirectUri: `${runtime.trellisUrl}/portal/oidc/callback`,
+        emails: Object.values(emails),
+      });
+      const browser = await chromium.launch({
+        headless: true,
+        env: browserTrustEnvironment(),
+      });
+      const logins: { stop(): void }[] = [];
+      try {
+        const fresh = async () => {
+          const page = await (await browser.newContext()).newPage();
+          page.setDefaultTimeout(30_000);
+          return page;
+        };
+        const { run } = await loginCliAsAdministrator(runtime, await fresh());
+        const secretFile = join(runtime.workdir, `dex-secret-${ulid()}`);
+        await writeFile(secretFile, dex.clientSecret);
+        const { provider } = await run(
+          "sign-in",
+          "providers",
+          "add",
+          "--name",
+          "Company",
+          "--issuer",
+          dex.issuer,
+          "--client-id",
+          dex.clientId,
+          "--client-secret-file",
+          secretFile,
+          "--certificate-fingerprint",
+          dex.fingerprint,
+        );
+        /** The account linked to `email`'s Dex sign-in, if there is one. */
+        const owner = async (email: string) =>
+          (
+            await runtime.callAdminRpc(
+              "authUsersFind",
+              apis.auth.API.actions["rpc:Users.Find"].input.decode({
+                identity: {
+                  providerId: provider.providerId,
+                  subject: dex.subjects.get(email),
+                },
+              }),
+            )
+          ).found?.user.principalId;
+        // A Device Code app that never lets people create an account.
+        await runtime.callAdminRpc("authOAuthClientsPut", {
+          clientId: "acme.closed-tool",
+          kind: "native",
+          title: "Closed Tool",
+          description: "A tool for existing accounts only",
+          redirectUris: [],
+          development: false,
+          impliedConsent: [],
+          expectedRevision: 0n,
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        });
+
+        // No Device Code app allows provider sign-up yet, so signing in
+        // through the provider creates nothing.
+        const closed = await startCliLogin(runtime);
+        logins.push(closed);
+        const early = await fresh();
+        await early.goto(closed.loginUrl);
+        await continueWithDex(early, dex, emails.early);
+        await early
+          .getByText(/No Trellis account is linked to this provider account/)
+          .waitFor();
+        assert.equal(await owner(emails.early), undefined);
+        closed.stop();
+
+        // The CLI allows it: a newcomer creates an account through the
+        // provider and connects the CLI as it.
+        await run("clients", "sign-up", "trellis.cli", "--providers");
+        const open = await startCliLogin(runtime);
+        logins.push(open);
+        const newcomer = await fresh();
+        await newcomer.goto(open.loginUrl);
+        await continueWithDex(newcomer, dex, emails.newcomer);
+        await typeCode(newcomer, open.userCode);
+        await checkDetails(newcomer, open.userCode);
+        await newcomer
+          .getByRole("button", { name: "Yes, this is my device", exact: true })
+          .click();
+        await allow(newcomer);
+        const created = await owner(emails.newcomer);
+        assert.ok(created, "the provider sign-in created an account");
+        assert.equal(await open.principal(), created);
+
+        // The closed tool doesn't: the code step refuses the account created
+        // through the provider for it, which gets nothing for the tool.
+        const server = (
+          await discoverNativeOAuth(runtime.trellisUrl)
+        ).orThrow();
+        const tool = (
+          await NativeOAuthClient.open({
+            scope: {
+              issuer: server.issuer,
+              instanceId: server.trust.instanceId,
+              account: server.trust.account,
+              clientId: "acme.closed-tool",
+              credentialHandle: ulid(),
+            },
+            trust: server.trust,
+          })
+        ).orThrow();
+        try {
+          const device = (await tool.startDevice(apps.cli.request)).orThrow();
+          const latecomer = await fresh();
+          await latecomer.goto(device.verificationUri);
+          await continueWithDex(latecomer, dex, emails.latecomer);
+          await typeCode(latecomer, device.userCode);
+          await latecomer
+            .getByRole("heading", {
+              name: "This app doesn't allow new accounts",
+            })
+            .waitFor();
+          const refused = await owner(emails.latecomer);
+          assert.ok(refused, "the account stays, as an ordinary account");
+          assert.equal(await grantsFor(runtime, refused), 0);
+        } finally {
+          await tool.close();
+        }
+      } finally {
+        for (const login of logins) login.stop();
+        await browser.close();
+        await dex.stop();
+      }
+    }, browserRuntimeOptions());
+  },
+);
