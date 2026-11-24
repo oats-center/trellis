@@ -284,6 +284,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         mode: context.mode,
         nats: context.trellis_nats.clone(),
         shortages: Arc::clone(&context.shortages),
+        leases: context.leases.clone(),
         started_at: context.started_at,
     };
     let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {

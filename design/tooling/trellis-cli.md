@@ -318,8 +318,12 @@ trellis storage
 `doctor` prints `Auth.Runtime.Diagnostics` as sections (server, health,
 JetStream, disk, certificates, recent server failures, background work), each
 marked ok, warning or problem with a line per finding, and exits non-zero
-unless the report's status is `ok`, so scripts and monitors can run it.
-`storage` prints `Health.Storage`.
+unless the report's status is `ok`, so scripts and monitors can run it. When
+the report cannot be had, as while the platform stands by and nothing answers
+sign-in, `doctor` reads the saved login's Trellis origin `/readyz`, trusting
+the login's CA files, and when it names roles standing by, reports each
+reason as a problem in a `server` section and fails; otherwise it fails with
+the original error. `storage` prints `Health.Storage`.
 
 ## Users And Portals
 

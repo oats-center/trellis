@@ -114,14 +114,22 @@ impl RuntimeOwnership {
     ///
     /// Another runtime holding a lease and a broker that cannot answer are both
     /// waited out, one attempt per renewal interval; `standing_by` runs after
-    /// each failed attempt. Returns `None` once `stop` fires.
+    /// each failed attempt with the reason, in an operator's words. Returns
+    /// `None` once `stop` fires.
+    ///
+    /// A failed attempt also checks whether NATS still expires the lease
+    /// bucket. When it has stopped, as after a storage write error, a lease
+    /// record that outlived its lifetime is never freed, and no runtime can
+    /// start this work until NATS restarts; that is logged at error, at most
+    /// once a minute while it lasts, and becomes the standby reason.
     pub(crate) async fn acquire_when_free(
         manager: &LeaseManager,
         groups: &[OwnerGroup],
         stop: &StopHandle,
-        standing_by: impl Fn(),
+        standing_by: impl Fn(String),
     ) -> Option<Self> {
         let mut last_failure = None;
+        let mut stalled_log = trellis_rs::__internal::LogLimit::default();
         loop {
             if stop.is_stopped() {
                 return None;
@@ -136,15 +144,52 @@ impl RuntimeOwnership {
                     return Some(ownership);
                 }
                 Err(error) => {
-                    let failure = error.to_string();
-                    if last_failure.as_ref() != Some(&failure) {
-                        tracing::warn!(
-                            error = %error,
-                            "runtime is standing by until it can own its work"
-                        );
-                    }
-                    last_failure = Some(failure);
-                    standing_by();
+                    let stalled = match manager.stalled_expiry().await {
+                        Ok(stalled) => stalled,
+                        Err(inspect) => {
+                            tracing::debug!(error = %inspect, "lease bucket could not be inspected");
+                            None
+                        }
+                    };
+                    let reason = match stalled {
+                        Some(stalled) => {
+                            let reason = stalled.to_string();
+                            if let Some(held_back) = stalled_log.admit() {
+                                tracing::error!(
+                                    stream = %stalled.stream,
+                                    oldest = %stalled.oldest,
+                                    ttl_secs = stalled.ttl.as_secs(),
+                                    held_back,
+                                    error = %error,
+                                    "{reason}"
+                                );
+                            }
+                            reason
+                        }
+                        None => {
+                            if stalled_log.recovered() {
+                                tracing::info!("NATS expires the runtime lease records again");
+                            }
+                            let failure = error.to_string();
+                            if last_failure.as_ref() != Some(&failure) {
+                                tracing::warn!(
+                                    error = %error,
+                                    "runtime is standing by until it can own its work"
+                                );
+                            }
+                            match &error {
+                                RuntimeError::OwnerHeld { key, .. } => format!(
+                                    "another Trellis runtime holds the lease {} in {}; this one \
+                                    takes the work over when that lease is released or expires",
+                                    key.as_str(),
+                                    manager.bucket
+                                ),
+                                _ => failure,
+                            }
+                        }
+                    };
+                    last_failure = Some(error.to_string());
+                    standing_by(reason);
                 }
             }
             let retry =

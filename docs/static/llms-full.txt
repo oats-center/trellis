@@ -1830,14 +1830,25 @@ which reports in one view: the server's version, installation ID, mode and
 uptime; each service deployment's instances with the settings they wait for,
 an update awaiting approval, and every degraded or failed check (Auth's
 `enforcement`, `webhook:<endpoint>`, and the service's own); devices that are
-degraded or unhealthy; JetStream use against its limits and refusals; free
-disk where the Auth database lives; the served certificate's subject, issuer
-and expiry; the last 20 failure references the Auth process logged (route,
-code and error, kept in memory, the last 50); and stuck Auth enforcement and
-set-aside effects. Each section and finding is `ok`, `warning` or `problem`,
-and `trellis doctor` exits non-zero unless everything is `ok`. A record the
-report couldn't read is a `problem` finding, never an empty or healthy result,
-and a connected instance that hasn't reported health yet is a `warning`.
+degraded or unhealthy; JetStream use against its limits and refusals, and
+runtime lease records NATS stopped expiring; free disk where the Auth database
+lives (a warning under 10% or 1 GiB, a problem under 2% or 200 MiB); the
+served certificate's subject, issuer and expiry; the last 20 failure
+references the Auth process logged (route, code and error, kept in memory, the
+last 50); and stuck Auth enforcement and set-aside effects. Each section and
+finding is `ok`, `warning` or `problem`, and `trellis doctor` exits non-zero
+unless everything is `ok`. A record the report couldn't read is a `problem`
+finding, never an empty or healthy result, and a connected instance that
+hasn't reported health yet is a `warning`.
+
+While a server part stands by, its `/readyz` answers 503 with the reason for
+each part under `standingBy`, and Auth's pages answer 503 with Auth's reason
+as text; `trellis doctor` reports those reasons when it can't reach Auth. A
+server whose lease bucket holds a record older than its lifetime logs at error,
+once a minute, that NATS has stopped expiring the runtime lease records, as
+NATS does after a storage write error such as a full disk until it restarts:
+free disk on the NATS host and restart NATS, and the server takes its leases
+and serves again by itself.
 
 ## Trellis For TypeScript Consumers
 

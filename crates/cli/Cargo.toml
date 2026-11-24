@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = ["runtime"]
-runtime = ["dep:argon2", "dep:ring", "dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:trellis-self-update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
+runtime = ["dep:argon2", "dep:reqwest", "dep:ring", "dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:trellis-self-update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
 
 [dependencies]
 anstream.workspace = true
@@ -20,6 +20,7 @@ comfy-table.workspace = true
 dialoguer = { version = "0.12.0", default-features = false, features = ["password"] }
 owo-colors.workspace = true
 qrcode = { version = "0.14.1", default-features = false, optional = true }
+reqwest = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 semver.workspace = true

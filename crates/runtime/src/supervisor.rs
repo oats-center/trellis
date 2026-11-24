@@ -670,8 +670,11 @@ pub(crate) struct RuntimeContext {
     http_router: std::sync::Mutex<axum::Router>,
     /// Routes of the running platform, served by the process-wide listener.
     platform_router: Arc<std::sync::RwLock<Option<axum::Router>>>,
-    /// Whether this process serves, reported by every listener's `/readyz`.
-    pub(crate) http_ready: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether this process serves, and why work stands by, reported by
+    /// every listener's `/readyz`.
+    pub(crate) http_ready: Arc<crate::Readiness>,
+    /// The runtime lease bucket, which diagnostics inspect.
+    pub(crate) leases: crate::leases::LeaseManager,
     /// The running platform's aggregate store; other modes may only read provisioned identity.
     pub(crate) authorization_store:
         std::sync::Mutex<Option<Arc<crate::platform::auth::SqliteAuthorizationStore>>>,
@@ -765,14 +768,14 @@ enum GroupState {
 /// lost lease leaves the others, and readiness, alone.
 struct GroupStates {
     states: tokio::sync::watch::Sender<BTreeMap<OwnerGroup, GroupState>>,
-    ready: Arc<std::sync::atomic::AtomicBool>,
+    ready: Arc<crate::Readiness>,
     components: Arc<crate::telemetry::snapshots::ComponentReadiness>,
     settled: std::sync::atomic::AtomicBool,
     stopping: StopHandle,
 }
 
 impl GroupStates {
-    fn new(mode: RuntimeMode, ready: Arc<std::sync::atomic::AtomicBool>) -> Self {
+    fn new(mode: RuntimeMode, ready: Arc<crate::Readiness>) -> Self {
         let states = OwnerGroup::for_mode(mode)
             .iter()
             .map(|&group| (group, GroupState::Starting))
@@ -786,8 +789,20 @@ impl GroupStates {
         }
     }
 
+    /// Marks `group` standing by for `reason`, which `/readyz` and the
+    /// platform's unavailable answers report.
+    fn stand_by(&self, group: OwnerGroup, reason: String) {
+        self.ready
+            .set_standing_by(&group.subsystem().to_string(), Some(reason));
+        self.set(group, GroupState::StandingBy);
+    }
+
     fn set(&self, group: OwnerGroup, state: GroupState) {
         use std::sync::atomic::Ordering::SeqCst;
+        if state != GroupState::StandingBy {
+            self.ready
+                .set_standing_by(&group.subsystem().to_string(), None);
+        }
         self.states.send_modify(|states| {
             states.insert(group, state);
         });
@@ -807,17 +822,15 @@ impl GroupStates {
             .get(&OwnerGroup::Platform)
             .is_none_or(|state| *state == GroupState::Running);
         let running = states.values().any(|state| *state == GroupState::Running);
-        self.ready.store(
+        self.ready.set_ready(
             !self.stopping.is_stopped() && self.settled.load(SeqCst) && platform && running,
-            SeqCst,
         );
     }
 
     /// Marks the process stopping; it is not ready from here on.
     fn stop(&self) {
-        use std::sync::atomic::Ordering::SeqCst;
         self.stopping.stop();
-        self.ready.store(false, SeqCst);
+        self.ready.set_ready(false);
         for name in self.states.borrow().keys() {
             self.components.set(component_label(name.subsystem()), 0.0);
         }
@@ -994,7 +1007,7 @@ pub async fn run_with_stop(
             origin: format!("{}: {error}", config.public_origin()),
         })
     })?;
-    let http_ready = Arc::<std::sync::atomic::AtomicBool>::default();
+    let http_ready = Arc::<crate::Readiness>::default();
     let context = Arc::new(RuntimeContext {
         groups: GroupStates::new(options.mode, Arc::clone(&http_ready)),
         config,
@@ -1007,6 +1020,7 @@ pub async fn run_with_stop(
         http_router: std::sync::Mutex::new(axum::Router::new()),
         platform_router: Arc::default(),
         http_ready,
+        leases: manager.clone(),
         authorization_store: std::sync::Mutex::default(),
         live_providers: crate::platform::LiveProviderSlots::new(),
         shortages,
@@ -1160,20 +1174,32 @@ async fn serve(
 }
 
 /// Routes the process listener serves beside readiness: the running platform's,
-/// answered unavailable while it stands by or restarts.
+/// answered unavailable while it stands by or restarts, with the reason it
+/// stands by when it has one.
 fn application_router(context: &RuntimeContext) -> axum::Router {
     use axum::response::IntoResponse as _;
     let router = if context.mode.subsystems().contains(&SubsystemName::Platform) {
         let served = Arc::clone(&context.platform_router);
+        let readiness = Arc::clone(&context.http_ready);
         axum::Router::new().fallback(move |request: axum::extract::Request| {
             let router = served.read().ok().and_then(|router| router.clone());
+            let readiness = Arc::clone(&readiness);
             async move {
                 match router {
                     Some(router) => match tower::ServiceExt::oneshot(router, request).await {
                         Ok(response) => response,
                         Err(never) => match never {},
                     },
-                    None => axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                    None => {
+                        let body = match readiness
+                            .standing_by()
+                            .remove(&SubsystemName::Platform.to_string())
+                        {
+                            Some(reason) => format!("Trellis is not serving yet: {reason}\n"),
+                            None => "Trellis is starting; try again shortly.\n".to_owned(),
+                        };
+                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, body).into_response()
+                    }
                 }
             }
         })
@@ -1211,8 +1237,8 @@ async fn run_group(
     }
     loop {
         let Some(mut ownership) =
-            RuntimeOwnership::acquire_when_free(&manager, &[group], &stop, || {
-                context.groups.set(group, GroupState::StandingBy);
+            RuntimeOwnership::acquire_when_free(&manager, &[group], &stop, |reason| {
+                context.groups.stand_by(group, reason);
             })
             .await
         else {
@@ -1324,7 +1350,10 @@ async fn run_owned_group(
                         retry_in_ms = wait.as_millis(),
                         "Auth cannot admit this work's built-in provider yet; it stands by"
                     );
-                    context.groups.set(group, GroupState::StandingBy);
+                    context.groups.stand_by(
+                        group,
+                        format!("Auth cannot admit this work's built-in provider yet: {reason}"),
+                    );
                     tokio::time::sleep(wait).await;
                 }
                 result => break result,
@@ -1373,7 +1402,11 @@ async fn run_owned_group(
     };
     tracing::info!(%subsystem, ?cause, "runtime subsystem stopping");
     if cause == RuntimeStopCause::OwnershipLost {
-        context.groups.set(group, GroupState::StandingBy);
+        let reason = match &primary {
+            Err(error) => format!("this work lost its lease: {error}"),
+            Ok(()) => "this work lost its lease".to_owned(),
+        };
+        context.groups.stand_by(group, reason);
     }
     if group == OwnerGroup::Platform {
         context.serve_platform_routes(None);

@@ -44,6 +44,8 @@ pub(crate) struct Diagnostics {
     pub(crate) mode: RuntimeMode,
     pub(crate) nats: async_nats::Client,
     pub(crate) shortages: Arc<Shortages>,
+    /// The runtime lease bucket, checked for records NATS stopped expiring.
+    pub(crate) leases: crate::leases::LeaseManager,
     pub(crate) started_at: OffsetDateTime,
 }
 
@@ -568,6 +570,15 @@ async fn jetstream(diagnostics: &Diagnostics) -> (Status, Value) {
             .into_iter()
             .map(|refusal| (Status::Problem, refusal)),
     );
+    // Records NATS stopped expiring hold their leases until it restarts.
+    match diagnostics.leases.stalled_expiry().await {
+        Ok(Some(stalled)) => findings.push((Status::Problem, stalled.to_string())),
+        Ok(None) => {}
+        Err(error) => findings.push((
+            Status::Problem,
+            format!("the runtime lease bucket could not be inspected: {error}"),
+        )),
+    }
     section(&findings, fields)
 }
 

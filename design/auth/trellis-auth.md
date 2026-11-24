@@ -1605,10 +1605,29 @@ ends a process. A lease moves no data: a standby can run Auth only with the
 same broker, platform database, `.issuer-keys` folder and `secrets.toml`,
 shared or restored from a backup (see `tooling/trellis-cli.md#recovery`).
 
+Lease records expire through the bucket's `max_age`, the lease lifetime, and
+a held lease is rewritten every renewal interval, so while NATS is healthy no
+record in the bucket is older than the lifetime plus one interval. NATS stops
+expiring a stream, and refuses every write to it without answering, after a
+critical storage write error such as a full disk, until NATS restarts; the
+records then hold their leases indefinitely. So each failed acquisition also
+reads the bucket stream's oldest record time and the server's clock from
+JetStream stream info, and an older record means NATS stopped expiring it.
+That is logged at error with the stream, the record's time and the advice to
+free disk and restart NATS, at most once a minute while it lasts, becomes the
+role's standby reason, and is a problem finding in `Auth.Runtime.Diagnostics`.
+Trellis never deletes or recreates the bucket on its own. A renewal or release
+that JetStream refuses is reported with JetStream's answer (`NATS refused to
+store the lease: <description> (code, error code)`); one that times out says
+the bucket stopped answering and points at the NATS log.
+
 In such a process the platform role starts first; the others start once it
 runs or stands by. The listener belongs to the process and accepts connections
 from that point on. It serves the platform's routes while the platform role
-runs here, and answers `503` for them otherwise. `/readyz` is
+runs here, and answers `503` for them otherwise, with the platform's standby
+reason as a plain-text body when it has one. `/readyz` carries every standing
+role's reason under `standingBy`, keyed by role, so an operator can learn why
+without the log; `trellis doctor` reads it when it cannot reach Auth. `/readyz` is
 ready once every role has first started or stood by, while some role runs and,
 when the process includes the platform, the platform runs. A role other than
 the platform restarting on its own leaves readiness unchanged. When the

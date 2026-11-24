@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -73,11 +74,60 @@ pub async fn bind_http_listener(
         .map_err(|source| ServerError::Bind { addr, source })
 }
 
+/// Whether a runtime process serves, and why each piece of its work that
+/// stands by does, so its HTTP answers can say so.
+#[derive(Debug, Default)]
+pub struct Readiness {
+    ready: AtomicBool,
+    standing_by: Mutex<BTreeMap<String, String>>,
+}
+
+impl Readiness {
+    /// Whether the process has finished starting and serves.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn set_ready(&self, ready: bool) {
+        self.ready.store(ready, Ordering::SeqCst);
+    }
+
+    /// Records why `work` stands by, or with `None` that it no longer does.
+    pub(crate) fn set_standing_by(&self, work: &str, reason: Option<String>) {
+        if let Ok(mut standing_by) = self.standing_by.lock() {
+            match reason {
+                Some(reason) => standing_by.insert(work.to_owned(), reason),
+                None => standing_by.remove(work),
+            };
+        }
+    }
+
+    /// Why each piece of work that stands by does, by subsystem name.
+    #[must_use]
+    pub fn standing_by(&self) -> BTreeMap<String, String> {
+        self.standing_by
+            .lock()
+            .map(|standing_by| standing_by.clone())
+            .unwrap_or_default()
+    }
+}
+
 /// Shared state for the runtime liveness and readiness endpoints.
 #[derive(Clone)]
 struct HttpState {
     version: VersionInfo,
-    ready: Arc<AtomicBool>,
+    ready: Arc<Readiness>,
+}
+
+/// The `/readyz` body: the process metadata, and why work stands by.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadyAnswer {
+    #[serde(flatten)]
+    version: VersionInfo,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    standing_by: BTreeMap<String, String>,
 }
 
 /// Serves `application_router` plus the readiness endpoints on a bound listener.
@@ -102,7 +152,7 @@ pub async fn serve_http_listener(
     trusted_proxies: &[ipnet::IpNet],
     mode: RuntimeMode,
     application_router: Router,
-    ready: Arc<AtomicBool>,
+    ready: Arc<Readiness>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
     let listener = crate::listener::LoadedListener::load(listener, origin, transport)
@@ -121,7 +171,7 @@ pub async fn serve_http_listener(
 
 /// Answers `/healthz` and `/readyz` for one runtime listener, whatever `Host`
 /// a load balancer's health check sends.
-pub(crate) fn health_router(mode: RuntimeMode, ready: Arc<AtomicBool>) -> Router {
+pub(crate) fn health_router(mode: RuntimeMode, ready: Arc<Readiness>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
@@ -136,7 +186,7 @@ pub async fn run_http_server(
     config: &RuntimeConfig,
     mode: RuntimeMode,
     application_router: Router,
-    ready: Arc<AtomicBool>,
+    ready: Arc<Readiness>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServerError> {
     let listener = bind_http_listener(config).await?;
@@ -165,11 +215,20 @@ async fn healthz(State(state): State<HttpState>) -> Json<VersionInfo> {
 }
 
 /// Reports ready only once runtime startup has completed.
+///
+/// While any of the process's work stands by, `standingBy` names each piece
+/// with the reason, so an operator learns why without the log.
 async fn readyz(State(state): State<HttpState>) -> impl IntoResponse {
-    let status = if state.ready.load(Ordering::SeqCst) {
+    let status = if state.ready.is_ready() {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-    (status, Json(state.version))
+    (
+        status,
+        Json(ReadyAnswer {
+            version: state.version,
+            standing_by: state.ready.standing_by(),
+        }),
+    )
 }
