@@ -1208,7 +1208,8 @@ async fn export(
         "users, roles, role assignments, direct grants, and consent".to_owned(),
         "audit records".to_owned(),
     ];
-    let mut pending_jobs = Vec::new();
+    // Each job queue's publish prefix, by its place in `resources`.
+    let mut queues = Vec::new();
     for (kind, name, resource_id, allocation_id, physical) in &plan.resources {
         match kind.as_str() {
             "kv" | "store" => {
@@ -1240,14 +1241,7 @@ async fn export(
                     .as_str()
                     .ok_or(AuthError::Unavailable)?
                     .to_owned();
-                progress(
-                    &format!("copying waiting jobs of {name}"),
-                    content.spool.size,
-                )
-                .await?;
-                let (jobs, messages) = unfinished_jobs(&jetstream, &prefix).await?;
-                let bytes = messages.iter().map(|line| line.len() as u64).sum();
-                pending_jobs.extend(messages);
+                queues.push((resources.len(), prefix));
                 resources.push(BundledResource {
                     kind: kind.clone(),
                     name: name.clone(),
@@ -1257,8 +1251,8 @@ async fn export(
                     entry: None,
                     config: Value::Null,
                     state: Value::Null,
-                    messages: jobs,
-                    bytes,
+                    messages: 0,
+                    bytes: 0,
                 });
             }
             "consumer" | "webhook" => {
@@ -1291,11 +1285,13 @@ async fn export(
             _ => {}
         }
     }
-    if !pending_jobs.is_empty() {
+    if !queues.is_empty() {
+        progress("copying waiting jobs", content.spool.size).await?;
         let mut entry = content.begin(JOBS)?;
-        for line in &pending_jobs {
-            entry.write_all(line).map_err(io)?;
-            entry.write_all(b"\n").map_err(io)?;
+        for (index, prefix) in &queues {
+            let (jobs, bytes) = copy_unfinished_jobs(nats, prefix, &mut entry).await?;
+            resources[*index].messages = jobs;
+            resources[*index].bytes = bytes;
         }
         let written = entry.done();
         content.end(JOBS, written)?;
@@ -1406,35 +1402,38 @@ async fn export(
     }))?)
 }
 
-/// The lifecycle messages of each job under `prefix` whose last run has not
-/// settled, oldest first, as JSON lines, and how many such jobs there are.
-async fn unfinished_jobs(
-    jetstream: &async_nats::jetstream::Context,
+/// Reads the `JOBS` messages under `prefix` once, oldest first, passing each
+/// with its job ID and event to `each`, up to and including stream sequence
+/// `until`. Returns the stream sequence of the last message read.
+///
+/// A batch holds at most `limit` messages, so how much is held at a time does
+/// not depend on how much the queue retains.
+async fn scan_jobs(
+    stream: &async_nats::jetstream::stream::Stream,
     prefix: &str,
-) -> Result<(u64, Vec<Vec<u8>>), AuthError> {
+    headers_only: bool,
+    until: u64,
+    limit: usize,
+    mut each: impl FnMut(&async_nats::jetstream::Message, &str, &str) -> Result<(), AuthError>,
+) -> Result<u64, AuthError> {
     use async_nats::jetstream::consumer;
-    let stream = jetstream
-        .get_stream(crate::resources::JOBS_STREAM)
-        .await
-        .map_err(broker)?;
     let mut reader = stream
         .create_consumer(consumer::pull::Config {
             filter_subject: format!("{prefix}.>"),
             deliver_policy: consumer::DeliverPolicy::All,
             ack_policy: consumer::AckPolicy::None,
+            headers_only,
             inactive_threshold: std::time::Duration::from_secs(60),
             ..Default::default()
         })
         .await
         .map_err(broker)?;
     let total = reader.info().await.map_err(broker)?.num_pending;
-    let mut jobs: BTreeMap<String, (bool, Vec<Vec<u8>>)> = BTreeMap::new();
-    let mut order = Vec::new();
-    let mut read = 0;
-    while read < total {
+    let (mut read, mut last) = (0, 0);
+    'reading: while read < total && last < until {
         let mut batch = reader
             .fetch()
-            .max_messages(usize::try_from((total - read).min(256)).unwrap_or(256))
+            .max_messages(usize::try_from(total - read).map_or(limit, |left| left.min(limit)))
             .expires(std::time::Duration::from_secs(5))
             .messages()
             .await
@@ -1443,38 +1442,18 @@ async fn unfinished_jobs(
         while let Some(message) = batch.next().await {
             let message = message.map_err(broker)?;
             received += 1;
+            last = message.info().map_err(broker)?.stream_sequence;
+            if last > until {
+                break 'reading;
+            }
             let rest = message
                 .subject
                 .strip_prefix(prefix)
                 .and_then(|rest| rest.strip_prefix('.'))
                 .unwrap_or_default();
-            let Some((job, event)) = rest.split_once('.') else {
-                continue;
-            };
-            let entry = jobs.entry(job.to_owned()).or_insert_with(|| {
-                order.push(job.to_owned());
-                (true, Vec::new())
-            });
-            if event == "created" || event == "retried" {
-                entry.0 = true;
-            } else if SETTLED.contains(&event) {
-                entry.0 = false;
+            if let Some((job, event)) = rest.split_once('.') {
+                each(&message, job, event)?;
             }
-            let headers = message
-                .headers
-                .iter()
-                .flat_map(|headers| headers.iter())
-                .flat_map(|(name, values)| {
-                    values
-                        .iter()
-                        .map(move |value| (name.to_string(), value.as_str().to_owned()))
-                })
-                .collect();
-            entry.1.push(serde_json::to_vec(&JobMessage {
-                subject: message.subject.to_string(),
-                headers,
-                payload: STANDARD.encode(&message.payload),
-            })?);
         }
         if received == 0 {
             return Err(AuthError::Broker(
@@ -1484,15 +1463,74 @@ async fn unfinished_jobs(
         read += received;
     }
     let _ = stream.delete_consumer(&reader.cached_info().name).await;
-    let mut count = 0;
-    let mut lines = Vec::new();
-    for job in order {
-        if let Some((true, messages)) = jobs.remove(&job) {
-            count += 1;
-            lines.extend(messages);
+    Ok(last)
+}
+
+/// Writes the lifecycle messages of each job under `prefix` whose last run
+/// has not settled into `out`, oldest first, as JSON lines. Returns how many
+/// such jobs there are and how many bytes were written.
+///
+/// The queue is read twice. The first pass reads headers only and keeps the
+/// IDs of unfinished jobs: a job is unfinished from its `created` or
+/// `retried` event until a settled one. The second copies those jobs'
+/// messages as they arrive, up to where the first pass ended. What an export
+/// holds in memory therefore follows the unfinished work, however much
+/// finished history the queue retains.
+async fn copy_unfinished_jobs(
+    nats: &async_nats::Client,
+    prefix: &str,
+    out: &mut impl Write,
+) -> Result<(u64, u64), AuthError> {
+    let jetstream = async_nats::jetstream::new(nats.clone());
+    let stream = jetstream
+        .get_stream(crate::resources::JOBS_STREAM)
+        .await
+        .map_err(broker)?;
+    // About 8 MiB a batch at the largest message the broker accepts. A byte
+    // limit would end each batch with a status the client reports as an
+    // error, so the bound is a message count.
+    let batch = ((8 << 20) / nats.server_info().max_payload.max(1)).clamp(1, 256);
+    let mut unfinished = BTreeSet::new();
+    // Headers alone are small.
+    let last = scan_jobs(&stream, prefix, true, u64::MAX, 256, |_, job, event| {
+        if event == "created" || event == "retried" {
+            unfinished.insert(job.to_owned());
+        } else if SETTLED.contains(&event) {
+            unfinished.remove(job);
         }
+        Ok(())
+    })
+    .await?;
+    if unfinished.is_empty() {
+        return Ok((0, 0));
     }
-    Ok((count, lines))
+    let mut bytes = 0;
+    scan_jobs(&stream, prefix, false, last, batch, |message, job, _| {
+        if !unfinished.contains(job) {
+            return Ok(());
+        }
+        let headers = message
+            .headers
+            .iter()
+            .flat_map(|headers| headers.iter())
+            .flat_map(|(name, values)| {
+                values
+                    .iter()
+                    .map(move |value| (name.to_string(), value.as_str().to_owned()))
+            })
+            .collect();
+        let mut line = serde_json::to_vec(&JobMessage {
+            subject: message.subject.to_string(),
+            headers,
+            payload: STANDARD.encode(&message.payload),
+        })?;
+        line.push(b'\n');
+        out.write_all(&line).map_err(io)?;
+        bytes += line.len() as u64;
+        Ok(())
+    })
+    .await?;
+    Ok((unfinished.len() as u64, bytes))
 }
 
 // ---------------------------------------------------------------------------

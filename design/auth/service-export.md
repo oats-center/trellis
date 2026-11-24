@@ -227,11 +227,15 @@ Other resources have no stream of their own:
 - **Job queues.** A job's lifecycle lives in the installation's shared `JOBS`
   stream under the queue's subjects, and its work message in `JOBS_WORK`,
   sourced from the `created` and `retried` events. Export copies the
-  lifecycle messages of each job whose last run has not settled. Import
-  publishes them again on the same subjects, which are derived from the
-  deployment and allocation IDs, and `JOBS_WORK` sources the work from them.
-  A job that was running at export time runs again, which jobs already allow.
-  Finished jobs and their history stay behind.
+  lifecycle messages of each job whose last run has not settled. It reads
+  the queue twice: first headers only, keeping the IDs of unfinished jobs,
+  then the messages of those jobs, which go straight into the bundle. Memory
+  therefore follows the unfinished work, not the finished history the queue
+  retains. Import publishes them again on the same subjects, which are
+  derived from the deployment ID, the queue's name, and its allocation ID,
+  and `JOBS_WORK` sources the work from them. A job that was running at
+  export time runs again, which jobs already allow. Finished jobs and their
+  history stay behind.
 - **Event and webhook consumers.** A consumer is a position in the
   installation's event stream. Import creates each consumer fresh, so it
   starts with events published in the new installation. The report counts the

@@ -5,6 +5,7 @@
 //! while the installation it left is unchanged.
 //! The move guide's commands act on the installations they name.
 //! Two exports never replace each other's file.
+//! An export holds only unfinished jobs.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -157,7 +158,123 @@ async fn options<'a>(runtime: &TrellisTestRuntime, seed: &'a str) -> ServiceConn
 /// design rather than taken from the CLI, so a test can open a bundle the CLI
 /// wrote and seal content the CLI never would.
 mod bundle {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine as _;
+    use ring::{aead, hmac};
     use sha2::{Digest as _, Sha256};
+
+    const CHUNK: usize = 64 * 1024;
+    const TAG: usize = 16;
+
+    fn keys(
+        passphrase: &str,
+        salt: &[u8],
+        (memory, passes, lanes): (u32, u32, u32),
+        nonce: &[u8],
+    ) -> (hmac::Key, aead::LessSafeKey) {
+        let mut root = [0; 32];
+        argon2::Argon2::new(
+            argon2::Algorithm::Argon2id,
+            argon2::Version::V0x13,
+            argon2::Params::new(memory, passes, lanes, Some(32)).unwrap(),
+        )
+        .hash_password_into(passphrase.as_bytes(), salt, &mut root)
+        .unwrap();
+        let root = hmac::Key::new(hmac::HMAC_SHA256, &root);
+        let header = hmac::sign(&root, b"trellis-service-bundle header");
+        let mut label = b"trellis-service-bundle payload".to_vec();
+        label.extend_from_slice(nonce);
+        let payload = hmac::sign(&root, &label);
+        (
+            hmac::Key::new(hmac::HMAC_SHA256, header.as_ref()),
+            aead::LessSafeKey::new(
+                aead::UnboundKey::new(&aead::CHACHA20_POLY1305, payload.as_ref()).unwrap(),
+            ),
+        )
+    }
+
+    fn nonce(counter: u64, last: bool) -> aead::Nonce {
+        let mut nonce = [0; 12];
+        nonce[3..11].copy_from_slice(&counter.to_be_bytes());
+        nonce[11] = u8::from(last);
+        aead::Nonce::assume_unique_for_key(nonce)
+    }
+
+    /// The content of a bundle file.
+    pub fn open(file: &[u8], passphrase: &str) -> Vec<u8> {
+        let text = |line: &[u8]| String::from_utf8(line.to_vec()).unwrap();
+        let mut lines = file.splitn(5, |byte| *byte == b'\n');
+        assert_eq!(text(lines.next().unwrap()), "trellis-service-bundle v1");
+        let costs = text(lines.next().unwrap());
+        let nonce_text = text(lines.next().unwrap());
+        let mac = text(lines.next().unwrap());
+        let sealed = lines.next().unwrap();
+        let field = |name: &str| {
+            costs
+                .split(' ')
+                .find_map(|part| part.strip_prefix(&format!("{name}=")))
+                .unwrap()
+                .to_owned()
+        };
+        let salt = URL_SAFE_NO_PAD.decode(field("salt")).unwrap();
+        let random = URL_SAFE_NO_PAD
+            .decode(nonce_text.strip_prefix("nonce=").unwrap())
+            .unwrap();
+        let costs_used = (
+            field("m").parse().unwrap(),
+            field("t").parse().unwrap(),
+            field("p").parse().unwrap(),
+        );
+        let (header, payload) = keys(passphrase, &salt, costs_used, &random);
+        hmac::verify(
+            &header,
+            format!("trellis-service-bundle v1\n{costs}\n{nonce_text}\n").as_bytes(),
+            &URL_SAFE_NO_PAD
+                .decode(mac.strip_prefix("mac=").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let chunks: Vec<&[u8]> = sealed.chunks(CHUNK + TAG).collect();
+        let mut content = Vec::new();
+        for (index, chunk) in chunks.iter().enumerate() {
+            let mut chunk = chunk.to_vec();
+            let plain = payload
+                .open_in_place(
+                    nonce(index as u64, index + 1 == chunks.len()),
+                    aead::Aad::empty(),
+                    &mut chunk,
+                )
+                .unwrap();
+            content.extend_from_slice(plain);
+        }
+        content
+    }
+
+    /// The content's named entries, in order, the manifest last.
+    pub fn entries(content: &[u8]) -> Vec<(String, Vec<u8>)> {
+        assert_eq!(&content[..16], b"TRELLIS-SERVICE\n");
+        let mut rest = &content[20..];
+        let take = |rest: &mut &[u8], count: usize| {
+            let (part, after) = rest.split_at(count);
+            *rest = after;
+            part.to_vec()
+        };
+        let mut entries = Vec::new();
+        while !rest.is_empty() {
+            let length = u16::from_be_bytes(take(&mut rest, 2).try_into().unwrap());
+            let name = String::from_utf8(take(&mut rest, usize::from(length))).unwrap();
+            let mut bytes = Vec::new();
+            loop {
+                let length = u32::from_be_bytes(take(&mut rest, 4).try_into().unwrap()) as usize;
+                if length == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&take(&mut rest, length));
+            }
+            entries.push((name, bytes));
+        }
+        entries
+    }
 
     /// The SHA-256 of a file, in lowercase hex, as import's `--digest` takes it.
     pub fn digest(file: &[u8]) -> String {
@@ -166,6 +283,15 @@ mod bundle {
             .map(|byte| format!("{byte:02x}"))
             .collect()
     }
+}
+
+/// The entries of the bundle file at `file`.
+fn read_bundle(file: &Path, passphrase: &Path) -> Vec<(String, Vec<u8>)> {
+    let passphrase = std::fs::read_to_string(passphrase).unwrap();
+    bundle::entries(&bundle::open(
+        &std::fs::read(file).unwrap(),
+        passphrase.trim_end(),
+    ))
 }
 
 /// Export `id` with the production CLI into `out` and return the digest.
@@ -604,6 +730,155 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     running.await.unwrap().unwrap();
     new.shutdown().await.unwrap();
     old.shutdown().await.unwrap();
+}
+
+/// The peak resident memory of `runtime`'s server while `work` runs, above
+/// what it held when `work` began, read from Linux's own accounting.
+async fn peak_growth<F: std::future::Future>(
+    runtime: &TrellisTestRuntime,
+    work: F,
+) -> (u64, F::Output) {
+    let config = runtime.workdir().to_owned();
+    let pid = std::fs::read_dir("/proc")
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+        .find(|pid| {
+            let Ok(command) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                return false;
+            };
+            let args: Vec<&[u8]> = command.split(|byte| *byte == 0).collect();
+            args.len() >= 3
+                && args[0].ends_with(b"trellis-server")
+                && args[1] == b"--config"
+                && Path::new(std::str::from_utf8(args[2]).unwrap_or_default()).starts_with(&config)
+        })
+        .expect("the runtime's server");
+    let kib = |field: &str| -> u64 {
+        std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix(field))
+            .unwrap()
+            .trim()
+            .trim_end_matches(" kB")
+            .parse()
+            .unwrap()
+    };
+    // Writing 5 resets the peak to what the process holds now.
+    std::fs::write(format!("/proc/{pid}/clear_refs"), "5").unwrap();
+    let before = kib("VmRSS:");
+    let output = work.await;
+    (kib("VmHWM:").saturating_sub(before) * 1024, output)
+}
+
+/// A service whose queue retains far more finished history than an export
+/// could hold exports with only its unfinished job, and the export's memory
+/// does not grow with the history it reads past.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_export_holds_only_unfinished_jobs_whatever_history_it_reads() {
+    const JOBS: usize = 96;
+    const PAYLOAD: usize = 512 * 1024;
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime).await;
+    let identity = runtime
+        .register_service::<Participant>("history")
+        .await
+        .unwrap();
+    runtime
+        .set_config(
+            &identity,
+            json!({ "label": "history" }),
+            json!({ "apiKey": "hook-key-0123456789" }),
+        )
+        .await
+        .unwrap();
+    // Each finished job keeps its payload and its result in the queue.
+    let mut service = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let mut provider = Provider::new(&mut service);
+    provider
+        .register_work(|job| async move { Ok::<_, JobProcessError<String>>(job.payload().clone()) })
+        .await
+        .unwrap();
+    provider
+        .runtime_trellis_moving_v1()
+        .register_ping(|_, input| async move { Ok(input) });
+    let jobs = provider.jobs_client();
+    let lifecycle = service.lifecycle();
+    let running = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await);
+    let large = "x".repeat(PAYLOAD);
+    let mut created = Vec::new();
+    for _ in 0..JOBS {
+        created.push(jobs.create_work(payload(&large)).await.unwrap());
+    }
+    for job in &created {
+        tokio::time::timeout(Duration::from_secs(60), job.wait())
+            .await
+            .expect("the job finishes")
+            .unwrap();
+    }
+    drop((created, jobs));
+    lifecycle.stop();
+    running.await.unwrap().unwrap();
+    // One job no worker takes.
+    let mut service = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let waiting = Provider::new(&mut service)
+        .jobs_client()
+        .create_work(payload("still waiting"))
+        .await
+        .unwrap();
+    drop(waiting);
+    drop(service);
+    // Memory the allocator kept from running the jobs would hide the
+    // export's own, so the export runs in a server that just started.
+    runtime.restart().await.unwrap();
+
+    let work = runtime.workdir().join("export");
+    std::fs::create_dir_all(&work).unwrap();
+    let passphrase = work.join("passphrase");
+    std::fs::write(&passphrase, "a long enough passphrase\n").unwrap();
+    let out = work.join("history.trellis-service");
+    let (growth, exported) = peak_growth(
+        &runtime,
+        cli.json(&[
+            "svc",
+            identity.deployment_id(),
+            "export",
+            "--out",
+            path(&out),
+            "--passphrase-file",
+            path(&passphrase),
+        ]),
+    )
+    .await;
+    let queue = exported["report"]["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|resource| resource["kind"] == "job")
+        .unwrap()
+        .clone();
+    assert_eq!(queue["messages"], "1", "{queue}");
+    let history = 2 * JOBS * PAYLOAD;
+    assert!(
+        growth < (48 << 20) as u64,
+        "the export grew the server by {growth} bytes reading {history} bytes of finished jobs"
+    );
+    let entries = read_bundle(&out, &passphrase);
+    let (_, lines) = entries
+        .iter()
+        .find(|(name, _)| name == "jobs.jsonl")
+        .unwrap();
+    assert!(
+        lines.len() < PAYLOAD,
+        "only the unfinished job's messages: {}",
+        lines.len()
+    );
+    runtime.shutdown().await.unwrap();
 }
 
 /// Two exports to the same file, the second already past its check that
