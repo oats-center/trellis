@@ -7,6 +7,7 @@
 //! Two exports never replace each other's file.
 //! An export holds only unfinished jobs.
 //! An import that waited for an instance finishes once one exists.
+//! An import never reaches past the deployment it creates.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -21,7 +22,7 @@ use tokio::io::{AsyncBufReadExt as _, BufReader};
 use trellis_rs::auth::discover_native_oauth;
 use trellis_rs::jobs::JobProcessError;
 use trellis_rs::service::ServiceConnectOptions;
-use trellis_testkit::TrellisTestRuntime;
+use trellis_testkit::{TestNatsUser, TrellisTestRuntime};
 
 const CLI: &str = env!("CARGO_BIN_EXE_trellis");
 
@@ -133,6 +134,14 @@ impl Cli {
             .filter(|c| !c.is_whitespace() && *c != '│')
             .collect()
     }
+
+    /// Whether this installation has deployment `id`, in any state.
+    async fn has_deployment(&self, id: &str) -> bool {
+        self.json(&["svc", "list", "--disabled"])
+            .await
+            .to_string()
+            .contains(id)
+    }
 }
 
 fn path(path: &Path) -> &str {
@@ -153,6 +162,19 @@ async fn options<'a>(runtime: &TrellisTestRuntime, seed: &'a str) -> ServiceConn
         .await
         .unwrap();
     ServiceConnectOptions::new(server.nats_servers, server.trust, seed)
+}
+
+/// JetStream of `runtime`'s broker, as the Trellis account's administrator.
+async fn jetstream(runtime: &TrellisTestRuntime) -> async_nats::jetstream::Context {
+    let nats = async_nats::ConnectOptions::with_credentials(
+        &runtime.nats_creds(TestNatsUser::Trellis).await.unwrap(),
+    )
+    .unwrap()
+    .add_root_certificates(runtime.trust_roots()[0].clone())
+    .connect(runtime.nats_url())
+    .await
+    .unwrap();
+    async_nats::jetstream::new(nats)
 }
 
 /// The bundle format of `design/auth/service-export.md`, written from the
@@ -1164,4 +1186,268 @@ async fn two_exports_to_one_file_never_replace_each_other() {
         "no partial file stays behind"
     );
     runtime.shutdown().await.unwrap();
+}
+
+/// An import creates and loads only what belongs to the deployment it
+/// creates. Bundles crafted to name another deployment's stream, a platform
+/// stream, a stream that reads another deployment's, or a subject outside the
+/// service's queues are refused with nothing changed, and an import that
+/// failed partway is resumed without touching another deployment's stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_import_touches_nothing_outside_its_own_deployment() {
+    use runtime_trellis::participants::runtime_trellis_resource_provider as keeper;
+    let mut old = TrellisTestRuntime::builder().start().await.unwrap();
+    let mut new = TrellisTestRuntime::builder().start().await.unwrap();
+    let (old_cli, new_cli) = (Cli::login(&mut old).await, Cli::login(&mut new).await);
+    let work = old.workdir().join("move");
+    std::fs::create_dir_all(&work).unwrap();
+    let passphrase = work.join("passphrase");
+    std::fs::write(&passphrase, "a long enough passphrase\n").unwrap();
+
+    // Two services in the old installation: `keeper`, with a record, and
+    // `moving`, with a record and a waiting job.
+    let keeping = old
+        .register_service::<keeper::Participant>("keeper")
+        .await
+        .unwrap();
+    let mut service = keeper::Participant::connect(keeping.connect_options())
+        .await
+        .unwrap();
+    keeper::Provider::new(&mut service)
+        .client()
+        .records()
+        .await
+        .unwrap()
+        .put(
+            "kept",
+            &keeper::types::ResourceValue {
+                value: "kept".into(),
+                extra: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    drop(service);
+    let moving = old.register_service::<Participant>("moving").await.unwrap();
+    let moving_id = moving.deployment_id().to_owned();
+    old.set_config(
+        &moving,
+        json!({ "label": "moved label" }),
+        json!({ "apiKey": "hook-key-0123456789" }),
+    )
+    .await
+    .unwrap();
+    let mut service = Participant::connect(moving.connect_options())
+        .await
+        .unwrap();
+    let provider = Provider::new(&mut service);
+    provider
+        .client()
+        .records()
+        .await
+        .unwrap()
+        .put(
+            "order.1",
+            &ResourceValue {
+                value: "moved".into(),
+                extra: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+    drop(
+        provider
+            .jobs_client()
+            .create_work(payload("waiting work"))
+            .await
+            .unwrap(),
+    );
+    drop(service);
+    let keeper_file = work.join("keeper.trellis-service");
+    let keeper_digest = export(&old_cli, keeping.deployment_id(), &keeper_file, &passphrase).await;
+    let moving_file = work.join("moving.trellis-service");
+    export(&old_cli, &moving_id, &moving_file, &passphrase).await;
+    let kv_stream = |entries: &[(String, Vec<u8>)]| {
+        bundle::document(entries, "resources.json")
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["kind"] == "kv")
+            .unwrap()["stream"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let kept_stream = kv_stream(&read_bundle(&keeper_file, &passphrase));
+    let moving_entries = read_bundle(&moving_file, &passphrase);
+    let moving_stream = kv_stream(&moving_entries);
+    // `moving`'s bundle with its KV resource changed by `change`.
+    let crafted = |name: &str, change: &dyn Fn(&mut Value)| {
+        let mut entries = moving_entries.clone();
+        let mut resources = bundle::document(&entries, "resources.json");
+        let kv = resources
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|resource| resource["kind"] == "kv")
+            .unwrap();
+        change(kv);
+        bundle::set_document(&mut entries, "resources.json", &resources);
+        let file = work.join(name);
+        let digest = write_bundle(entries, &passphrase, &file);
+        (file, digest)
+    };
+    let jetstream = jetstream(&new).await;
+    let streams = || async {
+        let mut names: Vec<String> = jetstream.stream_names().map(Result::unwrap).collect().await;
+        names.sort();
+        names
+    };
+
+    // Named before `keeper` is imported, its stream does not exist yet, so
+    // nothing in the way shows; the bundle is refused all the same.
+    let early = kept_stream.clone();
+    let (claims_keeper, claims_digest) = crafted("claims-keeper.trellis-service", &move |kv| {
+        kv["stream"] = json!(early);
+    });
+    let before = streams().await;
+    assert!(
+        !import(&new_cli, &claims_keeper, &claims_digest, &passphrase)
+            .await
+            .status
+            .success()
+    );
+    assert!(!new_cli.has_deployment(&moving_id).await);
+    assert_eq!(streams().await, before);
+
+    // `keeper` moves, then the same crafted bundle runs again, as a retry of
+    // an interrupted import does: `keeper`'s stream and record are intact.
+    let moved_keeper = import(&new_cli, &keeper_file, &keeper_digest, &passphrase).await;
+    assert!(
+        moved_keeper.status.success(),
+        "{}",
+        String::from_utf8_lossy(&moved_keeper.stderr)
+    );
+    let kept_messages = jetstream
+        .get_stream(&kept_stream)
+        .await
+        .unwrap()
+        .info()
+        .await
+        .unwrap()
+        .state
+        .messages;
+    assert_eq!(kept_messages, 1);
+    assert!(
+        !import(&new_cli, &claims_keeper, &claims_digest, &passphrase)
+            .await
+            .status
+            .success()
+    );
+    let still = jetstream
+        .get_stream(&kept_stream)
+        .await
+        .expect("keeper's stream stays")
+        .info()
+        .await
+        .unwrap()
+        .state
+        .messages;
+    assert_eq!(still, kept_messages);
+
+    // A platform stream, a stream that copies `keeper`'s, and a waiting job
+    // sent to a JetStream API subject that would delete `keeper`'s stream.
+    let platform = crafted("platform.trellis-service", &|kv| {
+        kv["stream"] = json!("KV_trellis_state");
+    });
+    let sourced_from = kept_stream.clone();
+    let copies = crafted("copies-keeper.trellis-service", &move |kv| {
+        kv["config"]["sources"] = json!([{ "name": sourced_from }]);
+    });
+    let deletes = {
+        let mut entries = moving_entries.clone();
+        let (_, jobs) = entries
+            .iter_mut()
+            .find(|(name, _)| name == "jobs.jsonl")
+            .unwrap();
+        let mut message: Value =
+            serde_json::from_slice(jobs.split(|byte| *byte == b'\n').next().unwrap()).unwrap();
+        message["subject"] = json!(format!("$JS.API.STREAM.DELETE.{kept_stream}"));
+        *jobs = serde_json::to_vec(&message).unwrap();
+        jobs.push(b'\n');
+        let file = work.join("deletes-keeper.trellis-service");
+        let digest = write_bundle(entries, &passphrase, &file);
+        (file, digest)
+    };
+    let unknown = {
+        let mut entries = moving_entries.clone();
+        entries.insert(0, ("resources/../escape".into(), b"elsewhere".to_vec()));
+        let file = work.join("unknown-entry.trellis-service");
+        let digest = write_bundle(entries, &passphrase, &file);
+        (file, digest)
+    };
+    let before = streams().await;
+    for (file, digest) in [platform, copies, deletes, unknown] {
+        assert!(
+            !import(&new_cli, &file, &digest, &passphrase)
+                .await
+                .status
+                .success(),
+            "{} was imported",
+            file.display()
+        );
+        assert!(!new_cli.has_deployment(&moving_id).await);
+        assert_eq!(streams().await, before);
+    }
+
+    // An import whose store snapshot cannot be restored stops partway, and
+    // running it again starts over only what it began itself: `keeper`'s
+    // stream is untouched, and `moving`'s own KV keeps what it loaded.
+    let broken = {
+        let mut entries = moving_entries.clone();
+        let resources = bundle::document(&entries, "resources.json");
+        let store = resources
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["kind"] == "store")
+            .unwrap()["entry"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let (_, snapshot) = entries.iter_mut().find(|(name, _)| *name == store).unwrap();
+        *snapshot = vec![7; 4096];
+        let file = work.join("broken-store.trellis-service");
+        let digest = write_bundle(entries, &passphrase, &file);
+        (file, digest)
+    };
+    for _ in 0..2 {
+        assert!(!import(&new_cli, &broken.0, &broken.1, &passphrase)
+            .await
+            .status
+            .success());
+    }
+    assert!(new_cli.has_deployment(&moving_id).await);
+    let loaded = jetstream
+        .get_stream(&moving_stream)
+        .await
+        .unwrap()
+        .info()
+        .await
+        .unwrap()
+        .state
+        .messages;
+    assert_eq!(loaded, 1);
+    let kept = jetstream
+        .get_stream(&kept_stream)
+        .await
+        .expect("keeper's stream stays")
+        .info()
+        .await
+        .unwrap()
+        .state
+        .messages;
+    assert_eq!(kept, kept_messages);
+    new.shutdown().await.unwrap();
+    old.shutdown().await.unwrap();
 }

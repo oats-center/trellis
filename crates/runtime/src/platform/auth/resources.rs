@@ -116,6 +116,22 @@ pub(crate) async fn materialize_native_kv(
     let plan = store
         .transaction_blocking(move |connection| {
             let deployment = selected.as_str();
+            // An import that has not loaded a stream yet would find it
+            // missing and make it empty, and its next attempt could then
+            // delete only what it made itself, so it could never finish.
+            let importing: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_service_imports, json_each(restores_json) r \
+                WHERE deployment_id=?1 AND state='loading' \
+                AND r.value NOT IN (SELECT value FROM json_each(loaded_json)))",
+                [deployment],
+                |row| row.get(0),
+            )?;
+            if importing {
+                return Err(AuthError::Conflict(format!(
+                    "deployment {deployment} is still loading the data of its import; run the \
+                    import again to finish it"
+                )));
+            }
             let (principal, participant, installed_revision, binding_revision, evidence): (
                 String,
                 String,

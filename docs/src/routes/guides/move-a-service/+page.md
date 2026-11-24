@@ -100,6 +100,12 @@ already exists in the new installation, when the same service is already
 deployed there, or when one of its instance keys, enrollment secrets or
 webhook URLs is already in use. An import never replaces a deployment.
 
+It also refuses a bundle that names anything outside the deployment it
+creates: a stream, bucket or job subject that belongs to another deployment
+or to Trellis itself, or a stream that would copy another one. Every name the
+import uses comes from the deployment's ID and its build, and the bundle has
+to agree with them.
+
 It ends with a report:
 
 - the webhook URLs at the new origin, to give to senders;
@@ -107,7 +113,8 @@ It ends with a report:
 - what stayed behind, such as events a consumer had not processed yet.
 
 If the import stops while it loads the data, run the same command again; it
-picks up where it stopped.
+picks up where it stopped. It deletes and loads again only a stream it began
+itself. Until the data is loaded, the service's processes cannot connect.
 
 A bundle whose instances were all retired or disabled imports without one
 that can run, so the import stops before it prepares the resources and

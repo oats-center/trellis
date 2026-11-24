@@ -304,6 +304,11 @@ size and SHA-256 the manifest gives, and nothing else is. The SHA-256 of the
 whole content, the **content digest**, is recorded in both installations'
 audit entries and printed in the report.
 
+Import accepts only the entry names above, each once, with a snapshot named
+after a resource ID, and at most 1024 entries. It holds a JSON document of
+up to 16 MiB in memory and spools everything else to disk; a content chunk
+is at most 1 MiB and a line of `jobs.jsonl` at most 8 MiB.
+
 **Encryption.** The CLI encrypts the content with the operator's passphrase
 as it arrives from Auth, and decrypts it as it sends it to Auth. The bundle
 file is a text header followed by the encrypted content:
@@ -427,7 +432,22 @@ installations' entries can be matched by the content digest.
 Import works through these steps and changes nothing until step 4.
 
 1. **Receive and verify.** Auth reads the content, checks the format, and
-   checks every entry against the manifest.
+   checks every entry against the manifest. It then checks that the bundle
+   names nothing outside the deployment it creates. Auth compiles the build
+   and derives from the deployment ID and the build's declarations every
+   stream, bucket, allocation and job subject the import will create or
+   load; the bundle's own copy of each has to match. A KV or store resource
+   has to be one the build declares, with the resource ID its kind and name
+   give, its stream `KV_` or `OBJ_` followed by `TRELLIS_RESOURCE_<resource
+ID>_<allocation ID>`, and a stream configuration with exactly that name,
+   its own subjects and ownership marker, and no mirror, sources, republish
+   or subject transform. A waiting job's message has to be on
+   `<queue prefix>.<job ID>.<event>` for one of the bundle's queues, with no
+   NATS control header but `Nats-Msg-Id`. Instance, principal, enrollment
+   secret, allocation and deployment IDs are ULIDs, a webhook URL ID is 16
+   random bytes, and a webhook endpoint is one the build declares. A bundle
+   that names a stream of another deployment or of Trellis itself, or any
+   other subject, is refused here. So is a Trellis service.
 2. **Check for conflicts.** Import refuses, naming what is in the way, when:
    - a deployment with the same ID exists, whatever its state;
    - another deployment of the same participant exists and is not removed;
@@ -449,25 +469,36 @@ Import works through these steps and changes nothing until step 4.
    keys, writes the enrollment secrets, the instance policy, the settings
    with their secrets sealed, and the webhook endpoints, records the
    resources as `pending` under their own resource and allocation IDs, and
-   records the import with its content digest. The deployment starts
-   enabled.
-5. **Load the data.** Auth restores each KV and store snapshot, marking each
-   loaded as it finishes, then prepares the resources as it does for a new
-   instance, which finds the restored streams and makes them `ready`, and
-   then publishes the waiting jobs. Whether there is an instance to prepare
-   them for is read from this installation: a deployment with no active
-   instance stops before preparing the resources, and the report says so.
+   records the import with its content digest and the streams it will
+   restore. The deployment starts enabled.
+5. **Load the data.** Auth restores each KV and store snapshot, recording
+   that it began before it starts and that it is loaded once it finishes.
+   The broker builds a restored stream from the configuration inside the
+   snapshot, so Auth checks the stream it got against the same rules as step
+   1, and deletes it and stops if it differs. Auth then prepares the
+   resources as it does for a new instance, which finds the restored streams
+   and makes them `ready`, and publishes the waiting jobs. Whether there is
+   an instance to prepare them for is read from this installation: a
+   deployment with no active instance stops before preparing the resources,
+   and the report says so.
 6. **Report.** Import returns the report with the webhook URLs at the new
    origin.
 
+Until every stream is loaded, nothing else prepares the deployment's
+resources: an instance that connects meanwhile is refused, since preparing
+would create the missing streams empty.
+
 If step 5 fails, or stops for want of an instance, running the same import
 again resumes it: Auth finds the import record for the deployment with the
-same content digest, deletes any stream it had only partly restored, and
-loads the rest. Readiness is read again, so an instance provisioned or
-enabled since the last attempt lets the import finish. A resource does not
-become `ready` empty, following the existing rule that a missing stream after
-materialization is storage loss, not something to recreate. Running a bundle
-again after its import finished is refused.
+same content digest, deletes a stream it began to restore and did not
+finish, and loads the rest. It deletes only streams the import record says
+it began; a stream under one of those names that it did not begin is left
+alone and the import stops, naming it. Readiness is read again, so an
+instance provisioned or enabled since the last attempt lets the import
+finish. A resource does not become `ready` empty, following the existing
+rule that a missing stream after materialization is storage loss, not
+something to recreate. Running a bundle again after its import finished is
+refused.
 
 ## Consistency
 

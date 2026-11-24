@@ -58,8 +58,15 @@ const MAGIC: &[u8; 16] = b"TRELLIS-SERVICE\n";
 const CHUNK: usize = 64 * 1024;
 /// The largest content chunk accepted.
 const MAX_CHUNK: usize = 1 << 20;
-/// The largest JSON entry an import holds in memory.
-const MAX_DOCUMENT: usize = 64 << 20;
+/// The largest JSON entry an import holds in memory. Only the fixed set of
+/// documents is accepted, so this bounds them all together too.
+const MAX_DOCUMENT: usize = 16 << 20;
+/// The most entries a bundle may have: its documents, its jobs, and one
+/// snapshot per KV bucket or store.
+const MAX_ENTRIES: usize = 1_024;
+/// The longest line of `jobs.jsonl`: one lifecycle message, which the broker
+/// limits to its largest payload, in base64 with its headers.
+const MAX_JOB_LINE: usize = 8 << 20;
 /// How long a finished export waits for its download, in seconds.
 const EXPORT_LIFETIME: i64 = 3_600;
 /// Job lifecycle events after which a run does nothing more.
@@ -1603,12 +1610,30 @@ async fn receive(
         let mut name = vec![0; usize::from(u16::from_be_bytes(length))];
         read_part(stream, &mut hash, &mut name, false).await?;
         let name = String::from_utf8(name).map_err(|_| damaged("an entry name is not text"))?;
-        if name.is_empty() || name.contains("..") || received.iter().any(|entry| entry.name == name)
+        // Only the entries an export writes: each document once, the jobs,
+        // and a snapshot named after a resource ID.
+        let snapshot = name
+            .strip_prefix("resources/")
+            .and_then(|rest| rest.strip_suffix(".snapshot"))
+            .is_some_and(|resource| {
+                resource.len() == 43
+                    && resource
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            });
+        let document = [
+            DEPLOYMENT, EVIDENCE, INSTANCES, SETTINGS, RESOURCES, REPORT, MANIFEST,
+        ]
+        .contains(&name.as_str());
+        if !(document || snapshot || name == JOBS)
+            || received.iter().any(|entry| entry.name == name)
         {
             return Err(damaged(format!("entry name {name:?}")));
         }
+        if received.len() == MAX_ENTRIES {
+            return Err(damaged(format!("it has more than {MAX_ENTRIES} entries")));
+        }
         size += 2 + name.len() as u64;
-        let document = name.ends_with(".json");
         let mut kept = Vec::new();
         let mut spooled = if document {
             None
@@ -1728,6 +1753,274 @@ fn parse(received: Received) -> Result<Bundle, AuthError> {
         deployment,
         received,
     })
+}
+
+/// The bucket a KV or store resource is, from its resource and allocation IDs.
+fn bucket(resource: &BundledResource) -> String {
+    format!(
+        "TRELLIS_RESOURCE_{}_{}",
+        resource.resource_id, resource.allocation_id
+    )
+}
+
+/// The stream a KV or store resource is, and the subjects it holds.
+fn resource_stream(resource: &BundledResource) -> (String, BTreeSet<String>) {
+    let bucket = bucket(resource);
+    if resource.kind == "kv" {
+        (
+            format!("KV_{bucket}"),
+            BTreeSet::from([format!("$KV.{bucket}.>")]),
+        )
+    } else {
+        (
+            format!("OBJ_{bucket}"),
+            BTreeSet::from([format!("$O.{bucket}.C.>"), format!("$O.{bucket}.M.>")]),
+        )
+    }
+}
+
+/// Whether `config`, a stream configuration in the broker's JSON, is exactly
+/// the KV bucket or store `resource` is: its own name, subjects and ownership
+/// marker, and nothing that reads from or writes to any other stream.
+fn owned_stream(config: &Value, resource: &BundledResource) -> bool {
+    let (stream, subjects) = resource_stream(resource);
+    let marker = format!(
+        "trellis.resource.v1:{}:{}",
+        resource.resource_id, resource.allocation_id
+    );
+    let unset = |field: &str| match &config[field] {
+        Value::Null => true,
+        Value::Array(items) => items.is_empty(),
+        Value::Object(fields) => fields.is_empty(),
+        _ => false,
+    };
+    config["name"] == stream.as_str()
+        && config["description"] == marker.as_str()
+        && config["storage"] == "file"
+        && config["subjects"].as_array().is_some_and(|listed| {
+            listed.len() == subjects.len()
+                && listed
+                    .iter()
+                    .all(|subject| subject.as_str().is_some_and(|s| subjects.contains(s)))
+        })
+        && ["mirror", "sources", "republish", "subject_transform"]
+            .into_iter()
+            .all(unset)
+}
+
+/// The subject prefix of a job queue's lifecycle messages.
+fn job_prefix(deployment_id: &str, resource: &BundledResource) -> Result<String, AuthError> {
+    Ok(format!(
+        "trellis.jobs.{}.{}_{}",
+        digest(&("jobs", deployment_id))?,
+        resource.name,
+        resource.allocation_id
+    ))
+}
+
+/// One subject token an export writes: letters, digits, `-` and `_`.
+fn token(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+/// Refuse a bundle that names anything outside the deployment it creates.
+///
+/// Every stream, bucket, allocation, webhook URL ID and job subject an import
+/// creates or loads is derived from the deployment's ID and its build's
+/// declarations as this installation compiles them, and the bundle's own copy
+/// has to match. A bundle that names another deployment's stream, a platform
+/// stream, another queue's subjects or any other subject is refused here,
+/// before anything changes; so is one whose stream configuration would read
+/// from or write to another stream. Runs on the blocking pool: it compiles
+/// the build and reads the spooled jobs.
+fn validate(bundle: &Bundle) -> Result<(), AuthError> {
+    let deployment = &bundle.deployment;
+    let deployment_id = deployment.deployment_id.as_str();
+    let participant_id = deployment.participant_id.as_str();
+    let ulid = |text: &str| ulid::Ulid::from_string(text).is_ok();
+    if !ulid(deployment_id) {
+        return Err(damaged("its deployment ID is not a deployment ID"));
+    }
+    if participant_id.starts_with("trellis.") {
+        return Err(AuthError::Invalid(
+            "Trellis's own services belong to their installation and are not imported".into(),
+        ));
+    }
+    let graph = trellis_idl::compile_evidence(bundle.evidence.clone())
+        .map_err(|error| AuthError::Invalid(error.to_string()))?;
+    let participant = graph
+        .root_package()
+        .participants()
+        .values()
+        .find(|participant| participant.identity().as_str() == participant_id)
+        .ok_or_else(|| damaged(format!("its build has no participant {participant_id}")))?;
+    if participant.kind() != trellis_idl::ParticipantKind::Service {
+        return Err(damaged("its build is not a service"));
+    }
+    let declared = |name: &str, kind: &str| {
+        participant
+            .resources()
+            .iter()
+            .any(|(declared, definition)| {
+                declared.as_str() == name
+                    && matches!(
+                        (definition, kind),
+                        (trellis_idl::ResourceDefinition::Kv { .. }, "kv")
+                            | (trellis_idl::ResourceDefinition::Store { .. }, "store")
+                            | (trellis_idl::ResourceDefinition::Job { .. }, "job")
+                            | (trellis_idl::ResourceDefinition::Webhook { .. }, "webhook")
+                    )
+            })
+    };
+    let mut secrets = BTreeSet::new();
+    for secret in &bundle.instances.enrollment_secrets {
+        if !ulid(&secret.secret_id) || !secrets.insert(secret.secret_id.as_str()) {
+            return Err(damaged(format!("enrollment secret {}", secret.secret_id)));
+        }
+    }
+    let mut instances = BTreeSet::new();
+    for instance in &bundle.instances.instances {
+        if !ulid(&instance.instance_id)
+            || !ulid(&instance.principal_id)
+            || !instances.insert(instance.instance_id.as_str())
+            || !matches!(instance.state.as_str(), "active" | "disabled")
+            || instance
+                .enrollment_secret_id
+                .as_deref()
+                .is_some_and(|secret| !secrets.contains(secret))
+        {
+            return Err(damaged(format!("instance {}", instance.instance_id)));
+        }
+    }
+    let mut endpoints = BTreeSet::new();
+    for webhook in &deployment.webhooks {
+        if !declared(&webhook.endpoint, "webhook")
+            || !endpoints.insert(webhook.endpoint.as_str())
+            || super::webhooks::service_name(&webhook.service_name) != webhook.service_name
+        {
+            return Err(damaged(format!("webhook endpoint {}", webhook.endpoint)));
+        }
+        for url in &webhook.urls {
+            if URL_SAFE_NO_PAD
+                .decode(&url.url_id)
+                .map_or(true, |bytes| bytes.len() != 16)
+            {
+                return Err(damaged(format!(
+                    "a URL of webhook endpoint {}",
+                    webhook.endpoint
+                )));
+            }
+        }
+    }
+    for setting in &deployment.webhook_settings {
+        let known = serde_json::from_value(Value::String(setting.setting.clone()))
+            .ok()
+            .and_then(|known| super::webhooks::setting_name(&known).ok());
+        let fits = match known {
+            Some((name, true)) => {
+                name == setting.setting && setting.endpoint == super::webhooks::DEPLOYMENT_WIDE
+            }
+            Some((name, false)) => {
+                name == setting.setting && endpoints.contains(setting.endpoint.as_str())
+            }
+            None => false,
+        };
+        if !fits {
+            return Err(damaged(format!("webhook setting {}", setting.setting)));
+        }
+    }
+    let mut resources = BTreeSet::new();
+    let mut snapshots = BTreeSet::new();
+    let mut queues = BTreeSet::new();
+    for resource in &bundle.resources {
+        let expected = digest(&(
+            "deployment",
+            deployment_id,
+            participant_id,
+            resource.kind.as_str(),
+            resource.name.as_str(),
+        ))?;
+        let refuse = || damaged(format!("resource {} {}", resource.kind, resource.name));
+        if expected != resource.resource_id
+            || !ulid(&resource.allocation_id)
+            || !resources.insert(resource.resource_id.as_str())
+        {
+            return Err(refuse());
+        }
+        if !matches!(resource.kind.as_str(), "kv" | "store" | "job")
+            || !declared(&resource.name, &resource.kind)
+        {
+            return Err(damaged(format!(
+                "its build declares no {} {}",
+                resource.kind, resource.name
+            )));
+        }
+        if resource.kind == "job" {
+            if resource.stream.is_some() || resource.entry.is_some() {
+                return Err(refuse());
+            }
+            queues.insert(job_prefix(deployment_id, resource)?);
+            continue;
+        }
+        let entry = format!("resources/{}.snapshot", resource.resource_id);
+        if resource.stream.as_deref() != Some(resource_stream(resource).0.as_str())
+            || resource.entry.as_deref() != Some(entry.as_str())
+            || !owned_stream(&resource.config, resource)
+            || !bundle.received.spools.contains_key(&entry)
+        {
+            return Err(refuse());
+        }
+        snapshots.insert(entry);
+    }
+    if let Some(name) = bundle
+        .received
+        .spools
+        .keys()
+        .find(|name| name.as_str() != JOBS && !snapshots.contains(*name))
+    {
+        return Err(damaged(format!("{name} belongs to no resource")));
+    }
+    let Some(jobs) = bundle.received.spools.get(JOBS) else {
+        return Ok(());
+    };
+    let mut lines = std::io::BufReader::new(jobs.reader()?);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = std::io::BufRead::read_until(
+            &mut std::io::Read::take(&mut lines, MAX_JOB_LINE as u64 + 1),
+            b'\n',
+            &mut line,
+        )
+        .map_err(io)?;
+        if read == 0 {
+            return Ok(());
+        }
+        if line.last() != Some(&b'\n') {
+            return Err(damaged(format!(
+                "{JOBS} has a line over {MAX_JOB_LINE} bytes"
+            )));
+        }
+        let message: JobMessage =
+            serde_json::from_slice(&line).map_err(|error| damaged(format!("{JOBS}: {error}")))?;
+        // `<queue prefix>.<job ID>.<event>`, for one of the bundle's queues.
+        let queued = message.subject.rsplitn(3, '.').collect::<Vec<_>>();
+        let fits = matches!(queued.as_slice(), [event, job, prefix]
+            if token(event) && token(job) && queues.contains(*prefix));
+        let headers = message.headers.iter().all(|(name, _)| {
+            !name.to_ascii_lowercase().starts_with("nats-")
+                || name.eq_ignore_ascii_case("Nats-Msg-Id")
+        });
+        if !fits || !headers {
+            return Err(damaged(format!(
+                "a waiting job's message names {}, which is not one of the service's queues",
+                message.subject
+            )));
+        }
+    }
 }
 
 /// Why this installation cannot take the bundle, naming what is in the way.
@@ -2031,37 +2324,8 @@ fn apply(
         [deployment_id],
         |row| row.get(0),
     )?;
+    // `validate` checked each resource against the build and the deployment.
     for resource in &bundle.resources {
-        let expected = digest(&(
-            "deployment",
-            deployment_id,
-            participant_id,
-            resource.kind.as_str(),
-            resource.name.as_str(),
-        ))?;
-        if expected != resource.resource_id
-            || ulid::Ulid::from_string(&resource.allocation_id).is_err()
-        {
-            return Err(damaged(format!(
-                "resource {} {}",
-                resource.kind, resource.name
-            )));
-        }
-        let declared = participant.resources().iter().any(|(name, definition)| {
-            name.as_str() == resource.name
-                && matches!(
-                    (definition, resource.kind.as_str()),
-                    (trellis_idl::ResourceDefinition::Kv { .. }, "kv")
-                        | (trellis_idl::ResourceDefinition::Store { .. }, "store")
-                        | (trellis_idl::ResourceDefinition::Job { .. }, "job")
-                )
-        });
-        if !declared {
-            return Err(damaged(format!(
-                "its build declares no {} {}",
-                resource.kind, resource.name
-            )));
-        }
         connection.execute(
             "INSERT INTO auth_resources(resource_id,allocation_id,owner_kind,owner_id,\
             participant_id,kind,local_name,commitment_json,state,binding_revision,revision,\
@@ -2076,19 +2340,24 @@ fn apply(
                 resource.name,
                 binding_revision,
                 now,
-                format!(
-                    "TRELLIS_RESOURCE_{}_{}",
-                    resource.resource_id, resource.allocation_id
-                )
+                bucket(resource)
             ],
         )?;
     }
+    let restores: BTreeSet<&str> = bundle
+        .resources
+        .iter()
+        .filter(|resource| resource.stream.is_some())
+        .map(|resource| resource.resource_id.as_str())
+        .collect();
     connection.execute(
-        "INSERT INTO auth_service_imports(deployment_id,content_digest,state,loaded_json,\
-        report_json,imported_by,imported_at) VALUES(?1,?2,'loading','[]',?3,?4,?5)",
+        "INSERT INTO auth_service_imports(deployment_id,content_digest,state,restores_json,\
+        started_json,loaded_json,report_json,imported_by,imported_at) \
+        VALUES(?1,?2,'loading',?3,'[]','[]',?4,?5,?6)",
         params![
             deployment_id,
             bundle.received.digest,
+            json(&restores)?,
             bundle.report.to_string(),
             actor,
             now
@@ -2172,25 +2441,33 @@ async fn import(
         .map_err(AuthError::from)
     };
     let deployment_id = bundle.deployment.deployment_id.clone();
+    let bundle = Arc::new(bundle);
+    // Before anything changes, and again for an attempt that resumes.
+    let checked = Arc::clone(&bundle);
+    if let Err(error) = blocking(move || validate(&checked)).await {
+        return Err(refused(&store, &actor, &deployment_id, error).await);
+    }
     // An import of this same bundle that stopped while loading resumes.
-    let earlier: Option<(String, String, String)> = {
+    let earlier: Option<(String, String, String, String)> = {
         let deployment_id = deployment_id.clone();
         store
             .transaction_blocking(move |connection| {
                 Ok(connection
                     .query_row(
-                        "SELECT content_digest,state,loaded_json FROM auth_service_imports \
-                        WHERE deployment_id=?1",
+                        "SELECT content_digest,state,started_json,loaded_json \
+                        FROM auth_service_imports WHERE deployment_id=?1",
                         [deployment_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .optional()?)
             })
             .await?
     };
     let resuming = match &earlier {
-        Some((digest, state, _)) if *digest == bundle.received.digest && state == "loading" => true,
-        Some((digest, state, _)) if *digest == bundle.received.digest && state == "complete" => {
+        Some((digest, state, ..)) if *digest == bundle.received.digest && state == "loading" => {
+            true
+        }
+        Some((digest, state, ..)) if *digest == bundle.received.digest && state == "complete" => {
             return Err(refused(
                 &store,
                 &actor,
@@ -2204,7 +2481,6 @@ async fn import(
         _ => false,
     };
     let jetstream = async_nats::jetstream::new(nats.clone());
-    let bundle = Arc::new(bundle);
     if !resuming {
         // What the Auth database names is reported before what NATS holds,
         // so an existing deployment is named rather than one of its streams.
@@ -2265,20 +2541,24 @@ async fn import(
     } else if input.check == Some(true) {
         return output(false, true, &report);
     }
-    let mut loaded: BTreeSet<String> = match &earlier {
-        Some((_, _, loaded)) if resuming => decode(loaded)?,
-        _ => BTreeSet::new(),
+    let (mut started, mut loaded): (BTreeSet<String>, BTreeSet<String>) = match &earlier {
+        Some((_, _, started, loaded)) if resuming => (decode(started)?, decode(loaded)?),
+        _ => (BTreeSet::new(), BTreeSet::new()),
     };
-    let record = |loaded: &BTreeSet<String>| {
-        let (deployment_id, loaded) = (deployment_id.clone(), json(loaded));
+    // Each step is recorded before the next begins, so a later attempt knows
+    // which streams this import made.
+    let record = |column: &'static str, names: &BTreeSet<String>| {
+        let (deployment_id, names) = (deployment_id.clone(), json(names));
         let store = Arc::clone(&store);
         async move {
-            let loaded = loaded?;
+            let names = names?;
             store
                 .transaction_blocking(move |connection| {
                     connection.execute(
-                        "UPDATE auth_service_imports SET loaded_json=?2 WHERE deployment_id=?1",
-                        params![deployment_id, loaded],
+                        &format!(
+                            "UPDATE auth_service_imports SET {column}=?2 WHERE deployment_id=?1"
+                        ),
+                        params![deployment_id, names],
                     )?;
                     Ok(())
                 })
@@ -2297,9 +2577,20 @@ async fn import(
             bundle.received.size,
         )
         .await?;
-        // A stream an earlier, interrupted attempt only partly loaded.
-        if resuming && jetstream.get_stream(stream).await.is_ok() {
+        if jetstream.get_stream(stream).await.is_ok() {
+            // A stream an earlier attempt began to restore and did not finish
+            // is deleted and restored again. Any other is left alone: this
+            // import did not make it.
+            if !started.contains(&resource.resource_id) {
+                return Err(AuthError::Conflict(format!(
+                    "stream {stream} of {} {} exists, and this import did not create it",
+                    resource.kind, resource.name
+                )));
+            }
             jetstream.delete_stream(stream).await.map_err(broker)?;
+        }
+        if started.insert(resource.resource_id.clone()) {
+            record("started_json", &started).await?;
         }
         let spool = bundle
             .received
@@ -2316,8 +2607,24 @@ async fn import(
         )
         .await
         .map_err(broker)?;
+        // The broker builds the stream from the snapshot, which carries its
+        // own copy of the configuration; it has to be the resource's too.
+        let restored = jetstream
+            .get_stream(stream)
+            .await
+            .map_err(broker)?
+            .cached_info()
+            .config
+            .clone();
+        if !owned_stream(&serde_json::to_value(&restored)?, resource) {
+            jetstream.delete_stream(stream).await.map_err(broker)?;
+            return Err(damaged(format!(
+                "the snapshot of {} {} configures another stream",
+                resource.kind, resource.name
+            )));
+        }
         loaded.insert(resource.resource_id.clone());
-        record(&loaded).await?;
+        record("loaded_json", &loaded).await?;
     }
     let now = crate::clock::unix_now();
     // The resources are prepared for an instance that can run now, as this
@@ -2367,7 +2674,7 @@ async fn import(
                 }
             }
             loaded.insert(JOBS.to_owned());
-            record(&loaded).await?;
+            record("loaded_json", &loaded).await?;
         }
     } else {
         left.push(

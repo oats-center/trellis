@@ -25,7 +25,7 @@ fn url_id() -> String {
 
 /// The URL's service segment: the deployment's name, lowercased, with runs of
 /// anything but letters and digits made one `-`.
-fn service_name(title: &str) -> String {
+pub(super) fn service_name(title: &str) -> String {
     let mut name = String::new();
     for character in title.chars().flat_map(char::to_lowercase) {
         if character.is_ascii_alphanumeric() {

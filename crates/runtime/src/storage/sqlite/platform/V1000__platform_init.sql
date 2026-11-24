@@ -1300,12 +1300,18 @@ CREATE TABLE auth_webhook_settings (
 );
 -- Deployments created by importing a service bundle. The import commits the
 -- deployment first and loads its data after, so running the same bundle again
--- finishes an import that stopped partway; `loaded_json` names the resources
--- whose data is in place.
+-- finishes an import that stopped partway. `restores_json` names the KV and
+-- store resources whose streams the import restores, `started_json` those it
+-- began restoring (the only streams a later attempt may delete), and
+-- `loaded_json` those whose data is in place, with `jobs.jsonl` once the
+-- waiting jobs are queued. No instance prepares a resource of `restores_json`
+-- until it is loaded.
 CREATE TABLE auth_service_imports (
     deployment_id TEXT PRIMARY KEY REFERENCES auth_deployments(deployment_id),
     content_digest TEXT NOT NULL CHECK (length(content_digest) = 43),
     state TEXT NOT NULL CHECK (state IN ('loading', 'complete')),
+    restores_json TEXT NOT NULL CHECK (json_valid(restores_json)),
+    started_json TEXT NOT NULL CHECK (json_valid(started_json)),
     loaded_json TEXT NOT NULL CHECK (json_valid(loaded_json)),
     report_json TEXT NOT NULL CHECK (json_valid(report_json)),
     imported_by TEXT NOT NULL,
