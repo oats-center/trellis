@@ -8,6 +8,21 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- Service import: a retry after provisioning an instance finishes it, every
+  restored resource must belong to the imported deployment, export streams
+  unfinished jobs instead of loading job history, and never overwrites a file
+  created meanwhile. `--profile` keeps logins to different installations apart,
+  and removing or disabling a just-imported deployment names the installation
+  and asks first.
+- Doctor reports health it couldn't read as a problem, reads every page of
+  device health, and the Console keys diagnostics by deployment ID and says
+  TLS when the certificate can't be read.
+- A refused startup checks every database before migrating any, new Portal or
+  Console files trigger the stale-asset check, embedded apps build without
+  Git, and the upgrade test reads every page of releases.
+
 ### Added
 
 - `trellis svc <id> export` and `trellis svc import` move a service to another
