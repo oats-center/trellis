@@ -25,7 +25,8 @@ attention:
   with its message, including Auth's `enforcement` check and each
   `webhook:<endpoint>` check. A connected instance that hasn't reported its
   health yet is a warning. Devices appear only when they report degraded or
-  unhealthy. A health record the server couldn't read is a problem, named as
+  unhealthy: the 20 worst by name, then one line counting the rest, which
+  still count toward the section's status. A health record the server couldn't read is a problem, named as
   such, and the instances it was for show as unknown, never as healthy.
 - **JetStream**: storage and memory used and reserved against the account's
   and the server's limits, a warning at 85% of a limit, and a problem for each

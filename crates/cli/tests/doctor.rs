@@ -354,6 +354,55 @@ async fn doctor_fails_when_health_records_cannot_be_read() {
     runtime.shutdown().await.unwrap();
 }
 
+// More degraded devices than one page of the health query holds, written to
+// the Health database by another process, and one unhealthy device whose
+// contract sorts after all of them. Doctor names the unhealthy one, counts
+// the degraded ones it doesn't list, and reports a problem; before, it read
+// the first page only and reported a warning. This catches a doctor whose
+// severity depends on which page a device lands on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doctor_finds_an_unhealthy_device_past_the_first_page() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime).await;
+    cli.passing().await;
+
+    let mut health = rusqlite::Connection::open(database(&runtime, "health.sqlite")).unwrap();
+    health.busy_timeout(Duration::from_secs(10)).unwrap();
+    let now = i64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos()).unwrap();
+    let devices = health.transaction().unwrap();
+    for (contract, status) in (0..250)
+        .map(|index| (format!("device-a{index:03}"), "degraded"))
+        .chain([("device-z".to_owned(), "unhealthy")])
+    {
+        devices
+            .execute(
+                "INSERT INTO health_latest VALUES ('device', ?1, 'instance', 'deployment', \
+                    'session', ?1, 'digest', ?2, ?2, ?3, ?3, ?4, '2026-01-01T00:00:00Z', \
+                    1000, 'rust', NULL, NULL, '{\"checks\":[]}', 0)",
+                rusqlite::params![contract, status, now, i64::MAX],
+            )
+            .unwrap();
+    }
+    devices.commit().unwrap();
+
+    let (passed, report) = cli.doctor().await;
+    assert!(!passed, "{report:#}");
+    assert_eq!(report["health"]["status"], "problem", "{report:#}");
+    let messages = findings(&report);
+    for (status, wanted) in [
+        ("problem", "(device-z) is unhealthy"),
+        ("warning", "231 more devices are degraded or unhealthy"),
+    ] {
+        assert!(
+            messages
+                .iter()
+                .any(|(found, message)| found == status && message.contains(wanted)),
+            "{wanted}: {report:#}"
+        );
+    }
+    runtime.shutdown().await.unwrap();
+}
+
 /// The runtime's SQLite database named `file`.
 fn database(runtime: &TrellisTestRuntime, file: &str) -> PathBuf {
     let mut pending = vec![runtime.workdir().to_path_buf()];

@@ -34,7 +34,7 @@ use crate::{ListenerTransport, RuntimeConfig, RuntimeMode, StorageBackend};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// A certificate this close to expiring is a warning.
 const CERTIFICATE_WARNING_DAYS: i64 = 30;
-/// How many failures and set-aside records the report lists.
+/// How many failures, set-aside records and unhealthy devices the report lists.
 const LISTED: usize = 20;
 
 /// What the diagnostics report reads beyond the Auth store.
@@ -339,12 +339,14 @@ fn health(oauth: &OAuthEngine, store: &HealthReader, now: OffsetDateTime) -> (St
         }));
     }
     if let Some(store) = store {
-        let request = HealthQueryRequest {
+        // Every page: they come in contract order, so an unhealthy device can
+        // sit on any of them.
+        let mut request = HealthQueryRequest {
             contract_ids: None,
             deployment_ids: None,
             page: Some(CursorQuery {
                 cursor: None,
-                limit: Some(100),
+                limit: Some(200),
             }),
             participant_kinds: Some(vec![HealthQueryRequestParticipantKinds::Device]),
             search: None,
@@ -354,35 +356,58 @@ fn health(oauth: &OAuthEngine, store: &HealthReader, now: OffsetDateTime) -> (St
             ]),
             extra: Default::default(),
         };
-        let read = store
-            .query(&request, now_ns)
-            .map_err(|error| error.to_string())
-            .and_then(|devices| serde_json::to_value(devices).map_err(|error| error.to_string()));
-        match read {
-            Err(error) => findings.push((
+        let mut devices = Vec::new();
+        let read = loop {
+            let page = match store.query(&request, now_ns) {
+                Ok(page) => page,
+                Err(error) => break Err(error.to_string()),
+            };
+            for device in page.items {
+                let status = match device.effective_status.as_str() {
+                    "unhealthy" => Status::Problem,
+                    "degraded" => Status::Warning,
+                    _ => continue,
+                };
+                devices.push((
+                    status,
+                    format!(
+                        "device {} ({}) is {}",
+                        device.participant_name,
+                        device.contract_id,
+                        device.effective_status.as_str()
+                    ),
+                ));
+            }
+            match page.page.next_cursor {
+                Some(cursor) => {
+                    request.page = Some(CursorQuery {
+                        cursor: Some(cursor),
+                        limit: Some(200),
+                    });
+                }
+                None => break Ok(()),
+            }
+        };
+        if let Err(error) = read {
+            findings.push((
                 Status::Problem,
                 format!("couldn't read device health: {error}"),
-            )),
-            Ok(devices) => {
-                for device in devices["items"].as_array().map_or(&[][..], Vec::as_slice) {
-                    let status = device["effectiveStatus"].as_str().unwrap_or_default();
-                    if status != "degraded" && status != "unhealthy" {
-                        continue;
-                    }
-                    findings.push((
-                        if status == "unhealthy" {
-                            Status::Problem
-                        } else {
-                            Status::Warning
-                        },
-                        format!(
-                            "device {} ({}) is {status}",
-                            device["participantName"].as_str().unwrap_or_default(),
-                            device["contractId"].as_str().unwrap_or_default()
-                        ),
-                    ));
-                }
-            }
+            ));
+        }
+        // The worst first; past the first few, one finding counts the rest at
+        // the worst status among them.
+        devices.sort_by_key(|device| std::cmp::Reverse(device.0));
+        let omitted = devices.split_off(devices.len().min(LISTED));
+        findings.extend(devices);
+        if let Some(worst) = omitted.iter().map(|(status, _)| *status).max() {
+            findings.push((
+                worst,
+                format!(
+                    "{} more device{} degraded or unhealthy",
+                    omitted.len(),
+                    if omitted.len() == 1 { " is" } else { "s are" }
+                ),
+            ));
         }
     }
     section(&findings, json!({ "deployments": listed }))

@@ -342,7 +342,10 @@ response's `status` is the worst section's:
   problem, an awaited approval a warning, degraded a warning and unhealthy or
   stopped heartbeats a problem, with one finding per failing check. A
   connected instance with no report on its current connection yet is a
-  warning. Devices appear only as findings, when degraded or unhealthy.
+  warning. Devices appear only as findings, when degraded or unhealthy: the
+  report reads every page of the device query, lists the 20 worst, and adds
+  one finding counting the rest at the worst status among them, so a device
+  never lowers the section's status by sorting late.
   Health comes from this host's Health database opened read-only; when it is
   elsewhere the section says so and shows Auth's view only, with each
   connected instance's state `unknown`. A read that fails (the database won't
