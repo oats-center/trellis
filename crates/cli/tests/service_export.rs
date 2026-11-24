@@ -1563,10 +1563,10 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         moving_id
     );
 
-    // An import that stops after restoring a stream, before it records the
-    // stream loaded, resumes when run again: it restores again only a stream
-    // it made itself. A trigger refuses the record of the store loaded, as a
-    // stop between the two would leave it.
+    // An import that stops after restoring a stream, before it records
+    // anything about it, resumes when run again: it restores again only a
+    // stream it made itself. A trigger refuses the record of the store
+    // loaded, as a stop just after the broker made the stream would leave it.
     let store = bundle::document(&moving_entries, "resources.json")
         .as_array()
         .unwrap()
@@ -1602,22 +1602,14 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     assert!(new_cli.has_deployment(&moving_id).await);
     let (made, _, _) = created(store_stream.clone()).await;
 
-    // Someone else's stream under the store's name: one without the
-    // import's mark, then one with another import's.
+    // Someone else's stream under the store's name, configured as the
+    // store is: one without the import's mark, then one with another
+    // import's.
     jetstream.delete_stream(&store_stream).await.unwrap();
-    let foreign = jetstream
-        .create_stream(async_nats::jetstream::stream::Config {
-            name: store_stream.clone(),
-            subjects: store["config"]["subjects"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|subject| subject.as_str().unwrap().to_owned())
-                .collect(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+    let mut foreign_config: async_nats::jetstream::stream::Config =
+        serde_json::from_value(store["config"].clone()).unwrap();
+    foreign_config.metadata.clear();
+    let foreign = jetstream.create_stream(foreign_config).await.unwrap();
     let foreign_subject = store["config"]["subjects"][0]
         .as_str()
         .unwrap()
@@ -1629,10 +1621,12 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         .await
         .unwrap();
     let foreign_created = foreign.cached_info().created;
-    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
-        .await
-        .status
-        .success());
+    let refused = import(&new_cli, &moving_file, &moving_digest, &passphrase).await;
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("did not create"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
     let (kept_created, kept_messages_now, kept_metadata) = created(store_stream.clone()).await;
     assert_eq!(
         (
@@ -1650,10 +1644,12 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     let mut config = foreign.cached_info().config.clone();
     config.metadata = marked.clone();
     jetstream.update_stream(config).await.unwrap();
-    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
-        .await
-        .status
-        .success());
+    let refused = import(&new_cli, &moving_file, &moving_digest, &passphrase).await;
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("did not create"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
     let (kept_created, kept_messages_now, kept_metadata) = created(store_stream.clone()).await;
     assert_eq!(
         (kept_created, kept_messages_now),
@@ -1667,7 +1663,7 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
 
     // Without the stranger's stream the store is restored, and the record
     // refused again; once the record goes through, the store this import
-    // made is restored again and the import finishes.
+    // made and never recorded is restored again and the import finishes.
     jetstream.delete_stream(&store_stream).await.unwrap();
     assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
         .await

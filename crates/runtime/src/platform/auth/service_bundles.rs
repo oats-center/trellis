@@ -2381,8 +2381,8 @@ fn apply(
         .collect();
     connection.execute(
         "INSERT INTO auth_service_imports(deployment_id,import_id,content_digest,state,\
-        restores_json,created_json,loaded_json,report_json,imported_by,imported_at) \
-        VALUES(?1,?7,?2,'loading',?3,'{}','[]',?4,?5,?6)",
+        restores_json,loaded_json,report_json,imported_by,imported_at) \
+        VALUES(?1,?7,?2,'loading',?3,'[]',?4,?5,?6)",
         params![
             deployment_id,
             bundle.received.digest,
@@ -2478,24 +2478,16 @@ async fn import(
         return Err(refused(&store, &actor, &deployment_id, error).await);
     }
     // An import of this same bundle that stopped while loading resumes.
-    let earlier: Option<(String, String, String, String, String)> = {
+    let earlier: Option<(String, String, String, String)> = {
         let deployment_id = deployment_id.clone();
         store
             .transaction_blocking(move |connection| {
                 Ok(connection
                     .query_row(
-                        "SELECT content_digest,state,import_id,created_json,loaded_json \
+                        "SELECT content_digest,state,import_id,loaded_json \
                         FROM auth_service_imports WHERE deployment_id=?1",
                         [deployment_id],
-                        |row| {
-                            Ok((
-                                row.get(0)?,
-                                row.get(1)?,
-                                row.get(2)?,
-                                row.get(3)?,
-                                row.get(4)?,
-                            ))
-                        },
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .optional()?)
             })
@@ -2586,13 +2578,13 @@ async fn import(
     } else if input.check == Some(true) {
         return output(false, true, &report);
     }
-    let (mut created, mut loaded): (BTreeMap<String, String>, BTreeSet<String>) = match &earlier {
-        Some((_, _, _, created, loaded)) if resuming => (decode(created)?, decode(loaded)?),
-        _ => (BTreeMap::new(), BTreeSet::new()),
+    let mut loaded: BTreeSet<String> = match &earlier {
+        Some((_, _, _, loaded)) if resuming => decode(loaded)?,
+        _ => BTreeSet::new(),
     };
-    // Each step is recorded before the next begins, so a later attempt knows
-    // which streams this import made.
-    let record = |column: &'static str, names: Result<String, AuthError>| {
+    // Each loaded resource is recorded before the next begins, so a later
+    // attempt skips it.
+    let record = |names: Result<String, AuthError>| {
         let deployment_id = deployment_id.clone();
         let store = Arc::clone(&store);
         async move {
@@ -2600,9 +2592,7 @@ async fn import(
             store
                 .transaction_blocking(move |connection| {
                     connection.execute(
-                        &format!(
-                            "UPDATE auth_service_imports SET {column}=?2 WHERE deployment_id=?1"
-                        ),
+                        "UPDATE auth_service_imports SET loaded_json=?2 WHERE deployment_id=?1",
                         params![deployment_id, names],
                     )?;
                     Ok(())
@@ -2624,15 +2614,13 @@ async fn import(
         .await?;
         match jetstream.get_stream(stream).await {
             // A stream an earlier attempt of this import restored and did not
-            // finish loading is deleted and restored again. Only one that
-            // shows it is that stream: it carries this import's ID, which
-            // nobody learns before the import's own stream exists, and the
-            // creation time recorded once the broker made it. Any other
-            // stream under the name is someone else's, and stays as it is.
+            // record loaded is deleted and restored again: one whose metadata
+            // carries this import's ID and whose configuration is the
+            // resource's. Any other stream under the name stays as it is.
             Ok(existing) => {
                 let info = existing.cached_info();
                 let ours = info.config.metadata.get(IMPORT_MARKER) == Some(&import_id)
-                    && created.get(&resource.resource_id) == Some(&info.created.to_string());
+                    && owned_stream(&serde_json::to_value(&info.config)?, resource);
                 if !ours {
                     return Err(AuthError::Conflict(format!(
                         "stream {stream} of {} {} exists, and this import did not create it; \
@@ -2681,10 +2669,8 @@ async fn import(
                 resource.kind, resource.name
             )));
         }
-        created.insert(resource.resource_id.clone(), restored.created.to_string());
-        record("created_json", json(&created)).await?;
         loaded.insert(resource.resource_id.clone());
-        record("loaded_json", json(&loaded)).await?;
+        record(json(&loaded)).await?;
     }
     let now = crate::clock::unix_now();
     // The resources are prepared for an instance that can run now, as this
@@ -2725,7 +2711,7 @@ async fn import(
                 }
             }
             loaded.insert(JOBS.to_owned());
-            record("loaded_json", json(&loaded)).await?;
+            record(json(&loaded)).await?;
         }
     } else {
         left.push(

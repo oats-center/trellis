@@ -113,12 +113,11 @@ It ends with a report:
 - what stayed behind, such as events a consumer had not processed yet.
 
 If the import stops while it loads the data, run the same command again; it
-picks up where it stopped. It deletes and loads again only a stream it can
-show it restored: one that carries the import's ID in its metadata and the
-creation time the import recorded for it. Any other stream under that name is
-left as it is, and the import stops and names it; remove it yourself if you
-know it is a partial copy, then run the import again. Until the data is
-loaded, the service's processes cannot connect.
+picks up where it stopped. It deletes and loads again only a stream it
+restored itself, one that carries the import's ID in its metadata, even when
+the import stopped right after the stream was made. Any other stream under
+that name is left as it is, and the import stops and names it. Until the data
+is loaded, the service's processes cannot connect.
 
 A bundle whose instances were all retired or disabled imports without one
 that can run, so the import stops before it prepares the resources and
