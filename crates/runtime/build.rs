@@ -127,9 +127,14 @@ fn check_fresh(repository: &Path, generated: &Path, app: &str) {
         generated.display()
     );
     // Cargo reruns a failed build script regardless, so the sources are
-    // declared only once they match, keeping the failure output short.
-    for path in &paths {
-        println!("cargo:rerun-if-changed={}", repository.join(path).display());
+    // declared only once they match, keeping the failure output short. A
+    // directory is declared whole: Cargo then reruns this script when a file
+    // in it is added or removed, not only when a listed file changes.
+    for pathspec in &pathspecs {
+        println!(
+            "cargo:rerun-if-changed={}",
+            repository.join(pathspec).display()
+        );
     }
 }
 
