@@ -964,7 +964,10 @@ approve declined capabilities. Signed revocations remain effective through
 mirror reconnect or missing entries until context acceptance deadlines expire.
 Service and device authority is deployment-owned and separate from
 independently consented user companion authority. Read-only capabilities do not
-grant write access.
+grant write access. Whoever operates the installation (its host, NATS operator
+or system account, configuration and secrets, or the `platform.manage` role) is
+trusted, so a service does not defend against it; it defends against other
+callers and untrusted input.
 
 Capability approvals are policy decisions over whole capabilities, not saved
 exact-action grant snapshots. Holding a group grants its current members, so a
