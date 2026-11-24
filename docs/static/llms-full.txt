@@ -1530,10 +1530,11 @@ it is stopped). That reason also reaches the CLI, the Console, the `settings`
 health check, the participant's log and its startup output, so it must never
 include a secret value: the SDKs replace every secret field's value (four
 characters or longer, candidate or in effect) with `[redacted]`, and an
-unexpected error that involves a secret field (a check of a revision changing
-one, a newly registered check, or a builder of one) is reported as `the check
-failed (<error type>)` or `building the value failed (<error type>)` without
-its message, which is not logged either. Auth keeps a reason's first KiB,
+unexpected error (a throw, or a Rust error converted through `?`) from any
+check or builder of a build that declares a secret field is reported as `the
+check failed (<error type>)` or `building the value failed (<error type>)`
+without its message, which is not logged either, since checks and builders
+read every value; explicit rejections keep their redacted reason. Auth keeps a reason's first KiB,
 marking a cut with `…`. The revision an instance starts with is reported as `applied`
 only once startup ends, when a service first serves (after `wait()` or
 `run()` begins) or a device first reads its settings, so a starting value a
@@ -2259,12 +2260,12 @@ in a module-level constant keeps the values it was copied from.
 `await config.check((candidate, { reject, changed }) => ...)` checks every
 later revision before it takes effect: `reject(["awsKeyId", "awsSecret"],
 "set both or neither")` refuses named fields, a throw refuses every changed
-field with its message (a generic reason when a changed field is secret), and
+field with its message (a generic reason when the build declares a secret), and
 the check may be async. `const stripe = await
 config.derive(["stripeSecretKey"], (c) => new Stripe(c.stripeSecretKey), {
 dispose: (old) => ... })` builds a value now and rebuilds it only when one of
 its fields changes; a builder that throws rejects those fields and keeps the
-old value (with a generic reason when one is secret), and `dispose` gets the
+old value (with a generic reason when the build declares a secret), and `dispose` gets the
 replaced value after its replacement took
 effect, and the value in effect when the participant stops (before
 `service.stop()` returns) or its connection closes. Use `stripe.current`. A rejected revision leaves `current` as it was
@@ -2836,14 +2837,14 @@ checks every later revision before it takes effect;
 `trellis_rs::service::Rejection::new(["webhook_url"], "must be an https URL")`
 refuses named fields (snake_case or declared names), and any other error
 through `?` refuses every changed field with its message, or with a generic
-reason and the error's type when a changed field is secret. `let stripe =
+reason and the error's type when the build declares a secret. `let stripe =
 config.derive(["stripe_secret_key"], |c| Ok(Stripe::new(..))).await?` (or
 `derive_async` with an awaiting builder taking an owned `Config`) builds a
 value now and rebuilds it only when one of its fields changes;
 `stripe.current()` returns an `Arc<T>`, already rebuilt when `changed()`
 returns the revision it was built for. A failing builder rejects those fields
-(an error converted through `?` gives a generic reason when one is secret)
-and keeps the old value, and a replaced value drops after its replacement took
+(an error converted through `?` gives a generic reason when the build
+declares a secret) and keeps the old value, and a replaced value drops after its replacement took
 effect. A rejected revision leaves `current()` as it was and never reaches
 `changed()`. Registering a check or derive tests the values in effect at once
 and waits, printing the fields, reasons, and Console link, until a revision

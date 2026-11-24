@@ -59,10 +59,11 @@ const REDACT_MIN_LENGTH: usize = 4;
 /// Why a check or derive builder refused candidate settings.
 ///
 /// Any [`std::error::Error`] converts into one that refuses every field the
-/// candidate changes, so `?` works inside checks and builders. A converted
-/// error that involves a secret field (a check of a revision that changes
-/// one, or a builder of one) is reported by a generic reason and the error's
-/// type, never its message. A reason reaches the status administrators see,
+/// candidate changes, so `?` works inside checks and builders. Checks and
+/// builders read every value, so when the build declares any secret field, a
+/// converted error is reported by a generic reason and the error's type,
+/// never its message; one made with [`Rejection::new`] or
+/// [`Rejection::changed`] keeps its reason. A reason reaches the status administrators see,
 /// so it should never include a secret value; every secret value in it is
 /// replaced with `[redacted]`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -387,27 +388,12 @@ impl Live {
         secrets.retain(|text| text.chars().count() >= REDACT_MIN_LENGTH);
         secrets.sort_by(|left, right| right.len().cmp(&left.len()).then(left.cmp(right)));
         secrets.dedup();
-        let secret = |names: &[&'static str]| {
-            names.iter().any(|name| {
-                self.fields
-                    .iter()
-                    .any(|field| field.name == *name && field.secret)
-            })
-        };
         // An error converted into a rejection may carry a secret in any form,
-        // so one that involves a secret field is reported by a generic reason
-        // and the error's type. A check registered now reads every value in
-        // effect.
-        let every = self
-            .fields
-            .iter()
-            .map(|field| field.name)
-            .collect::<Vec<_>>();
-        let checked = if changed.is_empty() { &every } else { changed };
-        let named = |rejection: Rejection,
-                     otherwise: &[&'static str],
-                     involved: &[&'static str],
-                     failed: &str| {
+        // and every check and builder reads every value, secrets included,
+        // whatever fields it names. So once the build declares a secret, a
+        // converted error is reported by a generic reason and its type.
+        let generic = self.fields.iter().any(|field| field.secret);
+        let named = |rejection: Rejection, otherwise: &[&'static str], failed: &str| {
             let fields = match rejection.fields {
                 Some(fields) => fields
                     .iter()
@@ -417,7 +403,7 @@ impl Live {
                 None => otherwise.iter().map(|name| (*name).to_owned()).collect(),
             };
             let reason = match rejection.converted {
-                Some(kind) if secret(involved) => {
+                Some(kind) if generic => {
                     // The type without module paths, which differ between
                     // toolchains: `Error`, or `Box<dyn Error>`.
                     let mut short = String::new();
@@ -441,7 +427,7 @@ impl Live {
         let refused = checks
             .iter()
             .filter_map(|check| check(candidate).err())
-            .map(|rejection| named(rejection, changed, checked, "the check failed"))
+            .map(|rejection| named(rejection, changed, "the check failed"))
             .collect::<Vec<_>>();
         if !refused.is_empty() {
             return Err(refused);
@@ -454,12 +440,9 @@ impl Live {
             }
             match slot.build(candidate.clone()).await {
                 Ok(value) => built.push((Arc::clone(slot), value)),
-                Err(rejection) => refused.push(named(
-                    rejection,
-                    slot.fields(),
-                    slot.fields(),
-                    "building the value failed",
-                )),
+                Err(rejection) => {
+                    refused.push(named(rejection, slot.fields(), "building the value failed"));
+                }
             }
         }
         // Values built for a refused revision drop here, never taking effect.
@@ -710,7 +693,7 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
     /// check step of a revision that changes one of `fields`; a revision that
     /// changes only other fields keeps it. A builder that fails rejects that
     /// revision for `fields` and keeps the old value; an error converted into
-    /// a [`Rejection`] gives a generic reason when one of `fields` is secret.
+    /// a [`Rejection`] gives a generic reason when the build declares a secret.
     /// A replaced value is dropped once its replacement takes effect, when no
     /// caller holds it. Returns once a value is built, waiting as
     /// [`Self::check`] does while it can't be.
@@ -1323,5 +1306,41 @@ mod tests {
         let (changed, derived) = consumer.await.unwrap();
         assert_eq!(changed, "debug");
         assert_eq!(derived, "debug", "woken before its derived value was built");
+    }
+
+    /// A build that declares no secret has nothing a message could leak, so
+    /// an error a check converts with `?` is reported with its message.
+    #[tokio::test]
+    async fn a_build_without_secrets_reports_a_failing_checks_message() {
+        let live = Live::new(
+            FIELDS,
+            "plain".to_owned(),
+            None,
+            Box::new(|_| {}),
+            false,
+            ConfigState {
+                values: Arc::new(values(serde_json::json!({"level": "info", "port": 80}))),
+                revision: ConfigRevision::default(),
+            },
+        );
+        let config = ConfigHandle::<Settings>::new(&live);
+        config
+            .check(|settings: &Settings| {
+                if settings.level == "debug" {
+                    Err(std::io::Error::other("level debug is not served"))?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        live.take(&serde_json::json!({
+            "values": {"level": "debug", "port": 80},
+            "deploymentRevision": 2,
+        }))
+        .await;
+        let outcome = live.outcome.borrow().clone();
+        assert!(outcome.rejected);
+        assert_eq!(outcome.fields, ["level"]);
+        assert_eq!(outcome.reason.as_deref(), Some("level debug is not served"));
     }
 }

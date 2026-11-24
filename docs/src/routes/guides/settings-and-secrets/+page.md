@@ -283,7 +283,7 @@ await stripe.current.charges.create(charge);
 
 A check calls `reject(fields, reason)` for each problem it finds and may be
 async. A check that throws rejects every field the candidate changes, with
-the error's message unless a secret is involved (see below).
+the error's message unless the build declares a secret (see below).
 `derive(fields, build, { dispose })` builds its first value from the settings
 in effect. After that it rebuilds only during the check step of a revision
 that changes one of `fields`; a revision that changes other fields keeps the
@@ -318,7 +318,8 @@ stripe.current().charge(&order).await?; // Arc<Stripe>, read at each use
 
 `Rejection::new(fields, reason)` names fields as the generated struct does
 (`webhook_url`) or as declared (`webhookUrl`). Any other error, through `?`,
-rejects every changed field with its message unless a secret is involved.
+rejects every changed field with its message, unless the build declares a
+secret.
 `derive_async` takes a builder that awaits, such as one that opens a
 connection. A replaced derived value is dropped once its replacement took
 effect and no caller holds it.
@@ -339,13 +340,14 @@ secret value. The SDKs enforce that in two ways:
   alone, since replacing them would blank out ordinary words.
 - An error you didn't write as a rejection (a throw in TypeScript, an error
   converted through `?` in Rust) may quote a secret in a form redaction can't
-  spot, such as base64. When it involves a secret field, its message is
-  dropped: a check of a revision that changes a secret field (or a newly
-  registered check, which reads every value) reports `the check failed`, and a
-  builder with a secret among its fields reports `building the value failed`,
-  each followed by the error's type, such as `the check failed (TypeError)`.
-  The message isn't logged either. A failure that involves no secret keeps
-  its message.
+  spot, such as base64. A check or builder receives every value, secrets
+  included, whatever fields it names or the revision changes, so which fields
+  it involves can't tell whether its message quotes one. When the build
+  declares any secret field, every such error's message is dropped: a check
+  reports `the check failed` and a builder `building the value failed`, each
+  followed by the error's type, such as `the check failed (TypeError)`. The
+  message isn't logged either. To give a specific reason, reject explicitly.
+  A build that declares no secret keeps the error's message.
 
 Auth keeps the first KiB of a reason and marks a cut with `…`.
 

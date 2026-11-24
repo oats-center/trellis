@@ -4,11 +4,11 @@
 //! The check fails with an error quoting the key, and its base64, when the
 //! key starts with `check-throws-`; refuses `region` with a reason quoting the
 //! candidate key and the key in effect when the region is `explicit`;
-//! fails with an error that names no secret when the region is `plain`; and
-//! refuses `region` with a reason longer than Auth keeps when it is `long`. The
-//! client's builder fails with an error quoting the key, and its base64, when
-//! the key starts with `build-throws-`. Prints `READY` to stderr once its
-//! check and client are registered, then serves.
+//! fails with an error quoting the unchanged key, and its base64, when the
+//! region is `plain`; and refuses `region` with a reason longer than Auth
+//! keeps when it is `long`. The client's builder fails with an error quoting
+//! the key, and its base64, when the key starts with `build-throws-`. Prints
+//! `READY` to stderr once its check and client are registered, then serves.
 
 use base64::Engine as _;
 use runtime_trellis::participants::runtime_trellis_configured_service::{
@@ -52,7 +52,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ))
                 }
                 Nullable::Value(region) if region == "plain" => {
-                    Err(std::io::Error::other("region plain is not served"))?
+                    Err(std::io::Error::other(format!(
+                        "region plain is not served for {} ({})",
+                        candidate.api_key,
+                        encoded(&candidate.api_key)
+                    )))?
                 }
                 Nullable::Value(region) if region == "long" => {
                     Err(Rejection::new(["region"], "é".repeat(1000)))

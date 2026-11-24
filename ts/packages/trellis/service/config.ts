@@ -53,7 +53,8 @@ export type ConfigCheckContext<TValues> = {
 /**
  * Validates candidate settings before they take effect. Call `reject` to
  * refuse fields; a throw refuses every changed field with the error's message,
- * or with a generic reason when a changed field is secret. A reason reaches
+ * or, when the build declares any secret field, with a generic reason and the
+ * error's name, since a check reads every value. A reason reaches
  * the status administrators see, so it should never include a secret value;
  * every secret value in it is replaced with `[redacted]`.
  */
@@ -116,7 +117,8 @@ export interface ParticipantConfig<TValues> {
    * built now from the values in effect, and rebuilt during the check step
    * of a revision that changes one of `fields`. A builder that throws
    * rejects that revision for `fields` and keeps the old value; the error's
-   * message is the reason, or a generic one when one of `fields` is secret.
+   * message is the reason, or a generic one when the build declares any
+   * secret field.
    * `dispose` receives a replaced value after its replacement takes effect,
    * and the value in effect when the participant stops. Resolves once a value is
    * built, waiting as {@link check} does while it can't be; it rejects once
@@ -479,12 +481,11 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
         (text, secret) => text.replaceAll(secret, "[redacted]"),
         reason,
       );
-    const secret = (names: readonly string[]): boolean =>
-      names.some((name) => this.#fields[name]?.secret === true);
-    // An unexpected error's message may carry a secret in any form, so one
-    // that involves a secret field is reported by a generic reason and the
-    // error's name. A check registered now reads every value in effect.
-    const checked = changed.length > 0 ? changed : Object.keys(this.#fields);
+    // An unexpected error's message may carry a secret in any form, and
+    // every check and builder reads every value, secrets included, whatever
+    // fields it names. So once the build declares a secret, a thrown error
+    // is reported by a generic reason and the error's name.
+    const generic = Object.values(this.#fields).some((field) => field.secret);
     for (const check of checks) {
       const found: Rejection[] = [];
       try {
@@ -496,7 +497,7 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       } catch (error) {
         found.push({
           fields: [...changed],
-          reason: secret(checked)
+          reason: generic
             ? `the check failed (${nameOf(error)})`
             : redact(messageOf(error)),
         });
@@ -512,7 +513,7 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       } catch (error) {
         rejections.push({
           fields: [...slot.fields],
-          reason: secret(slot.fields)
+          reason: generic
             ? `building the value failed (${nameOf(error)})`
             : redact(messageOf(error)),
         });

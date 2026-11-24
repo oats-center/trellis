@@ -1,16 +1,18 @@
 /**
  * Live acceptance that a secret setting's value never leaves a TypeScript or
- * Rust service through the reasons its checks and derive builders give. A
- * check that fails while a secret changes, or a builder of a secret that
- * fails, is reported by a generic reason and the error's type, since its
- * message may carry the secret in any form (here, base64). An explicit
- * rejection keeps its text with every secret value in it replaced, and a
- * check's failure that involves no secret keeps its message. None of the
+ * Rust service through the reasons its checks and derive builders give.
+ * Checks and builders read every value, so in a build that declares a secret,
+ * any check or builder that fails unexpectedly is reported by a generic reason
+ * and the error's type, since its message may carry a secret in any form
+ * (here, base64), even when the secret didn't change. An explicit rejection
+ * keeps its text with every secret value in it replaced, and a build that
+ * declares no secret keeps an unexpected failure's message. None of the
  * secret values appears in `Config.Get`, the instance's health, or anything
  * the service printed or logged, the startup wait included.
  */
 
 import { codecs } from "@oatscenter/trellis/generated";
+import { TrellisService } from "@oatscenter/trellis/service";
 import assert from "node:assert/strict";
 import { execPath } from "node:process";
 import { test } from "node:test";
@@ -143,10 +145,11 @@ async function exercise(
     await status("applied", good.revision);
     await health(undefined);
 
-    // A check's failure that involves no secret keeps its message.
+    // A check that fails on a plain field's change, quoting the key it
+    // reads but nobody changed, gives the generic reason too.
     const plain = await refused({ values: { region: "plain" } });
     assert.deepEqual(plain.fields, ["region"]);
-    assert.equal(plain.reason, "region plain is not served");
+    assert.equal(plain.reason, `the check failed (Error)`);
 
     // An explicit reason keeps its text, with the candidate key and the
     // key in effect replaced.
@@ -196,6 +199,46 @@ async function exercise(
     await child.exited;
   }
 }
+
+test("a service whose build declares no secret reports a failing check's message", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const contract = participants.ConfiguredGrowthService.participant;
+    const key = await runtime.registerService({
+      name: "no-secrets",
+      contract,
+    });
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: contract,
+      seed: key.seed,
+    }).orThrow();
+    try {
+      await service.config.check((candidate) => {
+        if (candidate.level === "debug")
+          throw new Error("level debug is not served");
+      });
+      const { revision } = await runtime.callAdminRpc("authConfigSet", {
+        target,
+        values: { level: "debug" },
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      });
+      const rejected = await runtime.waitFor(async () => {
+        const { instances } = await runtime.callAdminRpc("authConfigGet", {
+          target,
+        });
+        const settings = instances[0]?.settings;
+        return settings?.state === "rejected" && settings.revision === revision
+          ? settings
+          : undefined;
+      });
+      assert.deepEqual(rejected.fields, ["level"]);
+      assert.equal(rejected.reason, "level debug is not served");
+    } finally {
+      await service.stop();
+    }
+  });
+});
 
 test("a TypeScript service's rejection reasons never show a secret value", async () => {
   await withTrellisRuntime(async (runtime) => {

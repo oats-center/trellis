@@ -4,8 +4,9 @@
 // The check throws an error quoting the key, and its base64, when the key
 // starts with `check-throws-`; refuses `region` with a reason quoting the
 // candidate key and the key in effect when the region is `explicit`; throws
-// an error that names no secret when the region is `plain`; and refuses
-// `region` with a reason longer than Auth keeps when the region is `long`.
+// an error quoting the unchanged key, and its base64, when the region is
+// `plain`; and refuses `region` with a reason longer than Auth keeps when the
+// region is `long`.
 // The client's builder throws an error quoting the key, and its base64, when
 // the key starts with `build-throws-`. Prints `READY` to stderr once its check
 // and client are registered, then serves.
@@ -34,7 +35,9 @@ await service.config.check((candidate, { reject }) => {
       `region conflicts with key ${candidate.apiKey}, was ${service.config.current.apiKey}`,
     );
   if (candidate.region === "plain")
-    throw new Error("region plain is not served");
+    throw new Error(
+      `region plain is not served for ${candidate.apiKey} (${encoded(candidate.apiKey)})`,
+    );
   if (candidate.region === "long") reject(["region"], "é".repeat(1000));
 });
 await service.config.derive(["apiKey"], (candidate) => {

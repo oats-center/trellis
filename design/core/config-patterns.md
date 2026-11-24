@@ -285,13 +285,15 @@ anywhere:
   replacing them would blank out ordinary words. This covers explicit reasons
   (`reject`, `Rejection::new`) as well as error messages.
 - An unexpected error (a TypeScript throw, a Rust error converted through
-  `?`) can carry a secret in a form redaction can't find. When it involves a
-  secret field, its message is replaced by a generic reason with the error's
-  type name (in Rust without its module path): `the check failed (TypeError)`
-  for a check whose candidate changes a secret field, or a newly registered
-  check, which reads every value in effect; `building the value failed
-  (Error)` for a builder with a secret among its fields. The message is not
-  logged either. Explicit reasons keep their text.
+  `?`) can carry a secret in a form redaction can't find. Checks and builders
+  receive the whole settings object, so the fields a revision changes or a
+  builder names can't tell whether a message quotes a secret. When the build
+  declares any secret field, every unexpected error's message is replaced by
+  a generic reason with the error's type name (in Rust without its module
+  path): `the check failed (TypeError)` for a check, `building the value
+failed (Error)` for a builder. The message is not logged either. Explicit
+  reasons keep their redacted text, and a build that declares no secret keeps
+  unexpected messages.
 
 Settings work live only when read at each use: `config.current`, a derived
 `current`, or Rust's `current()`. A copy kept in a module-level constant, or a
