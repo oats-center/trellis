@@ -109,3 +109,13 @@ fn a_source_file_added_after_the_asset_build_refuses_the_next_build() {
     let rebuilt = build(root.path());
     assert!(rebuilt.status.success(), "{}", report(&rebuilt));
 }
+
+#[test]
+fn assets_built_from_a_source_tree_without_git_are_embedded() {
+    // As in an unpacked source archive: nothing can list the sources, so the
+    // asset build and the build script both skip the check.
+    let root = fixture(false);
+    fingerprint(root.path());
+    let built = build(root.path());
+    assert!(built.status.success(), "{}", report(&built));
+}

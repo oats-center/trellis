@@ -4,6 +4,12 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
+ * The fingerprint recorded when the sources cannot be listed. It matches no
+ * digest, so a checkout that can list them refuses the assets.
+ */
+export const UNCHECKED = "unchecked";
+
+/**
  * Digests the files an embedded browser app build reads.
  *
  * The files are the ones Git lists under `pathspecs` (tracked, plus untracked
@@ -11,26 +17,39 @@ import { join } from "node:path";
  * crates/runtime/build.rs computes the same digest to detect a stale embedded
  * app; a change to this algorithm must change it there too.
  *
+ * Outside a Git checkout, such as an unpacked source archive, nothing is
+ * listed: like the build script, this warns and skips the check, returning
+ * {@link UNCHECKED}, which no digest matches.
+ *
  * @param root The repository root the pathspecs are relative to.
  * @param pathspecs The source files and directories the build reads.
- * @returns The hex SHA-256 digest of every listed path and its contents.
+ * @returns The hex SHA-256 digest of every listed path and its contents, or
+ *   {@link UNCHECKED} when Git cannot list them.
  */
 export function sourceFingerprint(root: string, pathspecs: string[]): string {
-  const listed = execFileSync(
-    "git",
-    [
-      "-C",
-      root,
-      "ls-files",
-      "-z",
-      "--cached",
-      "--others",
-      "--exclude-standard",
-      "--",
-      ...pathspecs,
-    ],
-    { maxBuffer: 64 * 1024 * 1024 },
-  );
+  let listed: Buffer;
+  try {
+    listed = execFileSync(
+      "git",
+      [
+        "-C",
+        root,
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--",
+        ...pathspecs,
+      ],
+      { maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] },
+    );
+  } catch {
+    console.warn(
+      `cannot list the sources under ${root} with git; skipping the stale-asset fingerprint`,
+    );
+    return UNCHECKED;
+  }
   const paths = [...new Set(listed.toString("utf8").split("\0"))]
     .filter((path) => path !== "")
     .sort((left, right) =>
