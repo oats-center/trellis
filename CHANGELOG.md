@@ -22,8 +22,20 @@ and this project adheres to
   `--values-file`, `--env-file`, `--secret-keys`), and `set-secret` takes
   several fields, each as one revision.
 
+### Changed
+
+- `trellis svc import` no longer takes `--digest`, and export no longer prints
+  one: the passphrase-sealed bundle is the proof of integrity.
+- A starting settings revision reads pending until the service serves, so a
+  startup check's rejection never shows as applied first.
+
 ### Fixed
 
+- Live settings: status reports are retried until Auth has them, the status
+  names pending restart-only fields and the right rollback scope, Rust derived
+  values are in place before `changed()` wakes, TypeScript disposes derived
+  values when a participant stops, and env and values files keep literal
+  backslashes and refuse duplicate keys.
 - Service import: a retry replaces any stream it tagged, even one it never
   recorded, so a crash mid-import no longer needs a manual cleanup.
 - Service import: a retry after provisioning an instance finishes it, every
