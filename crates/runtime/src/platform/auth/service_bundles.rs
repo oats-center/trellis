@@ -25,6 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr as _;
 use std::sync::{Arc, Mutex};
 
 use async_nats::jetstream::{context::GetStreamErrorKind, ErrorCode};
@@ -1823,6 +1824,27 @@ fn job_prefix(deployment_id: &str, resource: &BundledResource) -> Result<String,
     ))
 }
 
+/// A line of `jobs.jsonl` and the headers and payload it publishes.
+///
+/// Every part replay sends is decoded here, so preflight refuses a line that
+/// replay could not publish before anything changes.
+fn job_message(line: &[u8]) -> Result<(JobMessage, async_nats::HeaderMap, Vec<u8>), AuthError> {
+    let message: JobMessage =
+        serde_json::from_slice(line).map_err(|error| damaged(format!("{JOBS}: {error}")))?;
+    let mut headers = async_nats::HeaderMap::new();
+    for (name, value) in &message.headers {
+        let refuse = || damaged(format!("{JOBS}: a waiting job's header {name:?}"));
+        headers.append(
+            async_nats::header::HeaderName::from_str(name).map_err(|_| refuse())?,
+            async_nats::header::HeaderValue::from_str(value).map_err(|_| refuse())?,
+        );
+    }
+    let payload = STANDARD
+        .decode(&message.payload)
+        .map_err(|error| damaged(format!("{JOBS}: a waiting job's payload: {error}")))?;
+    Ok((message, headers, payload))
+}
+
 /// One subject token an export writes: letters, digits, `-` and `_`.
 fn token(text: &str) -> bool {
     !text.is_empty()
@@ -1839,8 +1861,10 @@ fn token(text: &str) -> bool {
 /// has to match. A bundle that names another deployment's stream, a platform
 /// stream, another queue's subjects or any other subject is refused here,
 /// before anything changes; so is one whose stream configuration would read
-/// from or write to another stream. Runs on the blocking pool: it compiles
-/// the build and reads the spooled jobs.
+/// from or write to another stream, and one with a waiting job whose
+/// headers or payload replay could not decode. It runs before `--check`
+/// reports and before a real import writes anything. Runs on the blocking
+/// pool: it compiles the build and reads the spooled jobs.
 fn validate(bundle: &Bundle) -> Result<(), AuthError> {
     let deployment = &bundle.deployment;
     let deployment_id = deployment.deployment_id.as_str();
@@ -2009,8 +2033,7 @@ fn validate(bundle: &Bundle) -> Result<(), AuthError> {
                 "{JOBS} has a line over {MAX_JOB_LINE} bytes"
             )));
         }
-        let message: JobMessage =
-            serde_json::from_slice(&line).map_err(|error| damaged(format!("{JOBS}: {error}")))?;
+        let (message, ..) = job_message(&line)?;
         // `<queue prefix>.<job ID>.<event>`, for one of the bundle's queues.
         let queued = message.subject.rsplitn(3, '.').collect::<Vec<_>>();
         let fits = matches!(queued.as_slice(), [event, job, prefix]
@@ -2692,18 +2715,9 @@ async fn import(
                 progress("queueing waiting jobs", bundle.received.size).await?;
                 let lines = std::io::BufReader::new(spool.reader()?);
                 for line in std::io::BufRead::lines(lines) {
-                    let message: JobMessage =
-                        serde_json::from_str(&line.map_err(io)?).map_err(damaged)?;
-                    let mut headers = async_nats::HeaderMap::new();
-                    for (name, value) in &message.headers {
-                        headers.append(name.as_str(), value.as_str());
-                    }
+                    let (message, headers, payload) = job_message(line.map_err(io)?.as_bytes())?;
                     jetstream
-                        .publish_with_headers(
-                            message.subject,
-                            headers,
-                            STANDARD.decode(&message.payload).map_err(damaged)?.into(),
-                        )
+                        .publish_with_headers(message.subject, headers, payload.into())
                         .await
                         .map_err(broker)?
                         .await

@@ -1305,6 +1305,26 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         names
     };
 
+    // Where the new installation's Auth keeps its records.
+    let records = {
+        let mut pending = vec![new.workdir().to_path_buf()];
+        let mut found = None;
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path
+                    .file_name()
+                    .is_some_and(|name| name == "platform.sqlite")
+                {
+                    found = Some(path);
+                }
+            }
+        }
+        rusqlite::Connection::open(found.expect("the runtime's platform database")).unwrap()
+    };
+    records.busy_timeout(Duration::from_secs(10)).unwrap();
     // Named before `keeper` is imported, its stream does not exist yet, so
     // nothing in the way shows; the bundle is refused all the same.
     let early = kept_stream.clone();
@@ -1380,6 +1400,22 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         let digest = write_bundle(entries, &passphrase, &file);
         (file, digest)
     };
+    // A waiting job whose payload replay could not decode.
+    let undecodable = {
+        let mut entries = moving_entries.clone();
+        let (_, jobs) = entries
+            .iter_mut()
+            .find(|(name, _)| name == "jobs.jsonl")
+            .unwrap();
+        let mut message: Value =
+            serde_json::from_slice(jobs.split(|byte| *byte == b'\n').next().unwrap()).unwrap();
+        message["payload"] = json!("not base64!");
+        *jobs = serde_json::to_vec(&message).unwrap();
+        jobs.push(b'\n');
+        let file = work.join("undecodable-job.trellis-service");
+        let digest = write_bundle(entries, &passphrase, &file);
+        (file, digest)
+    };
     let unknown = {
         let mut entries = moving_entries.clone();
         entries.insert(0, ("resources/../escape".into(), b"elsewhere".to_vec()));
@@ -1388,7 +1424,20 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         (file, digest)
     };
     let before = streams().await;
-    for (file, digest) in [platform, copies, deletes, unknown] {
+    for (file, digest) in [platform, copies, deletes, undecodable, unknown] {
+        let checked = new_cli
+            .run(&[
+                "svc",
+                "import",
+                path(&file),
+                "--digest",
+                &digest,
+                "--passphrase-file",
+                path(&passphrase),
+                "--check",
+            ])
+            .await;
+        assert!(!checked.status.success(), "{} checks out", file.display());
         assert!(
             !import(&new_cli, &file, &digest, &passphrase)
                 .await
@@ -1398,6 +1447,16 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
             file.display()
         );
         assert!(!new_cli.has_deployment(&moving_id).await);
+        let rows: i64 = records
+            .query_row(
+                "SELECT (SELECT count(*) FROM auth_service_imports WHERE deployment_id=?1) \
+                + (SELECT count(*) FROM auth_resources WHERE owner_id=?1) \
+                + (SELECT count(*) FROM auth_instances WHERE deployment_id=?1)",
+                [&moving_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "{} left records", file.display());
         assert_eq!(streams().await, before);
     }
 
@@ -1414,26 +1473,7 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         .clone();
     let store_id = store["resourceId"].as_str().unwrap().to_owned();
     let store_stream = store["stream"].as_str().unwrap().to_owned();
-    let platform = {
-        let mut pending = vec![new.workdir().to_path_buf()];
-        let mut found = None;
-        while let Some(directory) = pending.pop() {
-            for entry in std::fs::read_dir(&directory).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    pending.push(path);
-                } else if path
-                    .file_name()
-                    .is_some_and(|name| name == "platform.sqlite")
-                {
-                    found = Some(path);
-                }
-            }
-        }
-        rusqlite::Connection::open(found.expect("the runtime's platform database")).unwrap()
-    };
-    platform.busy_timeout(Duration::from_secs(10)).unwrap();
-    platform
+    records
         .execute_batch(&format!(
             "CREATE TRIGGER stop_before_store_loaded BEFORE UPDATE OF loaded_json \
             ON auth_service_imports WHEN NEW.loaded_json LIKE '%{store_id}%' \
@@ -1532,7 +1572,7 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         .success());
     let (made_again, _, _) = created(store_stream.clone()).await;
     assert_ne!(made_again, made);
-    platform
+    records
         .execute_batch("DROP TRIGGER stop_before_store_loaded")
         .unwrap();
     let finished = import(&new_cli, &moving_file, &moving_digest, &passphrase).await;

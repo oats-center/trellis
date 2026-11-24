@@ -379,6 +379,10 @@ move's cleanup without asking forever after. `-f` skips the question.
 
 `import --check` sends the bundle, and Auth verifies it and runs the whole
 import in a transaction it rolls back, then reports what the import would do.
+Everything Auth itself later decodes from the bundle, each waiting job's
+headers and payload included, is decoded during that verification, for
+`--check` and for a real import alike, before anything is written. Only the
+stream snapshots are read by the broker, when it loads them.
 
 Both commands start an Auth Operation and wait for it:
 
@@ -443,7 +447,9 @@ ID>_<allocation ID>`, and a stream configuration with exactly that name,
    its own subjects and ownership marker, and no mirror, sources, republish
    or subject transform. A waiting job's message has to be on
    `<queue prefix>.<job ID>.<event>` for one of the bundle's queues, with no
-   NATS control header but `Nats-Msg-Id`. Instance, principal, enrollment
+   NATS control header but `Nats-Msg-Id`, and its header names, header
+   values and base64 payload have to decode as they will when the job is
+   published again. Instance, principal, enrollment
    secret, allocation and deployment IDs are ULIDs, a webhook URL ID is 16
    random bytes, and a webhook endpoint is one the build declares. A bundle
    that names a stream of another deployment or of Trellis itself, or any
