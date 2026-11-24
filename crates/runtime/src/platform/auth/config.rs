@@ -363,6 +363,52 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                 .map_err(rpc_error)
         }
     });
+    let report = Arc::clone(&engine);
+    provider.register_config_own_report(move |context, input| {
+        let engine = Arc::clone(&report);
+        async move {
+            let actor = caller(&context, None).map_err(rpc_error)?;
+            blocking(move || {
+                let now = crate::clock::unix_now();
+                engine.server.store().authority.transaction(|connection| {
+                    let instance: String = connection
+                        .query_row(
+                            "SELECT i.instance_id FROM auth_instances i \
+                            JOIN auth_deployments d USING(deployment_id) \
+                            WHERE i.principal_id=?1 AND i.state='active' AND d.state='active'",
+                            [&actor],
+                            |row| row.get(0),
+                        )
+                        .optional()?
+                        .ok_or(AuthError::Denied)?;
+                    let report = serde_json::to_value(&input)?;
+                    connection.execute(
+                        "INSERT INTO auth_config_reports(instance_id,deployment_revision,\
+                        instance_revision,state,fields_json,reason,reported_at) \
+                        VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(instance_id) DO UPDATE SET \
+                        deployment_revision=excluded.deployment_revision,\
+                        instance_revision=excluded.instance_revision,state=excluded.state,\
+                        fields_json=excluded.fields_json,reason=excluded.reason,\
+                        reported_at=excluded.reported_at",
+                        params![
+                            instance,
+                            report["revision"].as_u64(),
+                            report["instanceRevision"].as_u64(),
+                            report["state"].as_str(),
+                            json(&report["fields"])?,
+                            report["reason"].as_str(),
+                            now
+                        ],
+                    )?;
+                    Ok(AuthEmpty {
+                        extra: Default::default(),
+                    })
+                })
+            })
+            .await
+            .map_err(rpc_error)
+        }
+    });
 }
 
 /// Secrets one administrator may be shown within [`REVEAL_WINDOW_SECONDS`].
@@ -1286,50 +1332,134 @@ fn response(
     }
     let mut statement = connection.prepare(
         "SELECT i.instance_id,i.title,c.deployment_revision,c.instance_revision,c.connected_at,\
-        d.participant_id,i.installed_revision \
+        d.participant_id,i.installed_revision,\
+        (SELECT max(revision) FROM auth_config_revisions WHERE target_key='instance:'||i.instance_id),\
+        r.deployment_revision,r.instance_revision,r.state,r.fields_json,r.reason,r.reported_at \
         FROM auth_instances i JOIN auth_deployments d ON d.deployment_id=i.deployment_id \
         LEFT JOIN auth_config_connections c ON c.instance_id=i.instance_id \
+        LEFT JOIN auth_config_reports r ON r.instance_id=i.instance_id \
         WHERE i.deployment_id=?1 AND i.state='active' AND (?2 IS NULL OR i.instance_id=?2) \
         ORDER BY i.instance_id",
     )?;
     type Row = (
-        String,
-        String,
+        (
+            String,
+            String,
+            Option<u32>,
+            Option<u32>,
+            Option<i64>,
+            String,
+            u64,
+        ),
+        Option<u32>,
+        Report,
+    );
+    /// The revisions an instance last reported on, what it did with them,
+    /// the fields and reason of a rejection, and when.
+    type Report = (
         Option<u32>,
         Option<u32>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
         Option<i64>,
-        String,
-        u64,
     );
     let rows = statement
         .query_map(params![target.deployment(), target.instance()], |row| {
             Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
+                (
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ),
+                row.get(7)?,
+                (
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                ),
             ))
         })?
         .collect::<rusqlite::Result<Vec<Row>>>()?;
+    let deployment_current = match target.deployment() {
+        Some(deployment) => {
+            current(connection, &format!("deployment:{deployment}"))?.map(|stored| stored.revision)
+        }
+        None => None,
+    };
+    let saved_at = |key: String, revision: Option<u32>| -> Result<Option<i64>, AuthError> {
+        Ok(match revision {
+            Some(revision) => connection
+                .query_row(
+                    "SELECT created_at FROM auth_config_revisions \
+                    WHERE target_key=?1 AND revision=?2",
+                    params![key, revision],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            None => None,
+        })
+    };
     let mut builds: BTreeMap<u64, Declared> = BTreeMap::new();
     let mut instances = Vec::new();
-    for (instance, title, revision, instance_revision, connected, participant, build) in rows {
+    for (
+        (instance, title, revision, instance_revision, connected, participant, build),
+        instance_current,
+        (reported, reported_instance, state, fields, reason, reported_at),
+    ) in rows
+    {
+        let declared = match builds.entry(build) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Declared::of(connection, &participant, build)?)
+            }
+        };
+        let declared = &*declared;
+        // A report on the current revisions stands; any other means the
+        // instance has not read the newest settings yet.
+        let settings = if declared.fields.is_empty() {
+            None
+        } else if state.is_some()
+            && reported == deployment_current
+            && reported_instance == instance_current
+        {
+            Some(json!({
+                "revision": reported,
+                "instanceRevision": reported_instance,
+                "state": state,
+                "fields": fields.as_deref().map(decode::<Value>).transpose()?.unwrap_or(json!([])),
+                "reason": reason,
+                "at": reported_at.map(timestamp).transpose()?,
+            }))
+        } else {
+            let at = saved_at(format!("instance:{instance}"), instance_current)?
+                .into_iter()
+                .chain(saved_at(
+                    format!("deployment:{}", target.deployment().unwrap_or_default()),
+                    deployment_current,
+                )?)
+                .max();
+            Some(json!({
+                "revision": deployment_current,
+                "instanceRevision": instance_current,
+                "state": "pending",
+                "fields": [],
+                "at": at.map(timestamp).transpose()?,
+            }))
+        };
         // Only what the instance's own build reads after a restart counts:
         // values for fields it doesn't declare, or that don't fit it, leave
         // it as it is.
         let restart_pending = match connected {
             None => false,
             Some(_) => {
-                let declared = match builds.entry(build) {
-                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(Declared::of(connection, &participant, build)?)
-                    }
-                };
-                let declared = &*declared;
                 let own = Target::Instance {
                     deployment: target.deployment().unwrap_or_default().to_owned(),
                     instance: instance.clone(),
@@ -1361,6 +1491,7 @@ fn response(
             "connectedInstanceRevision": instance_revision,
             "connectedAt": connected.map(timestamp).transpose()?,
             "restartPending": restart_pending,
+            "settings": settings,
         }));
     }
     let deployment_revision = match target {

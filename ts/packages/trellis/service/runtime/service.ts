@@ -1416,6 +1416,8 @@ export function createConnectedService<
   telemetry?: ReturnType<typeof startConnectionTelemetry>;
   /** The process's lifecycle, started before the transport connected. @internal */
   lifecycle?: ServiceLifecycle;
+  /** Live settings, whose rejections the `settings` health check reports. @internal */
+  config?: ConfigHandle<Record<string, unknown>>;
 }): Promise<TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>> {
   const resolvedLog = resolveServiceLogger(args.runtime.log);
   const lifecycle =
@@ -1579,6 +1581,11 @@ export function createConnectedService<
       : {}),
   }));
 
+  // A revision the service's own checks rejected degrades its health until
+  // one is accepted.
+  const settings = args.config;
+  if (settings) health.add("settings", () => settings.healthCheck());
+
   // Each webhook endpoint feeds the service's health with the check Trellis
   // keeps for it, so a wrong or missing secret shows on the service.
   if (args.healthIdentity) {
@@ -1725,6 +1732,8 @@ export function createConnectedService<
   if (heartbeatEnabled) {
     // A phase change is reported at once, so a watcher sees it move.
     lifecycle.subscribe(() => void publishHealthHeartbeat());
+    // So is what became of a revision of its settings.
+    settings?.onOutcome(() => void publishHealthHeartbeat());
     // Generation 1 activates after construction, so admission must not block it.
     void publishHealthHeartbeat();
     healthPublishTimer = setInterval(() => {
@@ -3414,6 +3423,7 @@ export function connectTrellisServiceWithRuntimeDeps<
             participantId: args.participant.identity,
             fields: configFields,
             read: readOwnConfig,
+            report: (outcome) => configClient.reportOwnConfig(outcome),
             log: resolveServiceLogger(args.runtime?.log),
             status: (text) => lifecycle?.status(text),
             ...(args.signal ? { signal: args.signal } : {}),
@@ -3471,6 +3481,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           activeNats: () => manager.currentNats(),
           telemetry,
           lifecycle,
+          ...(config ? { config } : {}),
         });
         ingress = service[SERVICE_PROVIDER_INGRESS];
         const generation = manager.currentGeneration();

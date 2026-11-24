@@ -1730,6 +1730,40 @@ model AuthConfigInstanceStatus {
   /// A setting that applies after a restart has a different value for this
   /// instance's build than the one it loaded when it connected.
   restartPending: bool;
+  /// What the instance did with its newest settings. Absent when its build
+  /// declares no settings.
+  settings?: AuthConfigApplyStatus;
+}
+/// What an instance did with a revision of its settings. `pending` until it
+/// reads the newest one; `rejected` when one of its own checks refused it, in
+/// which case it keeps the values it accepted last.
+enum AuthConfigApplyState { applied; rejected; pending; }
+/// Why an instance's checks refused a revision, in its own words.
+type AuthConfigRejectReason = string(max_length=1024);
+model AuthConfigApplyStatus {
+  /// The deployment revision; absent while the deployment has none.
+  revision?: AuthConfigRevisionNumber;
+  /// The instance's own override revision; absent while it has none.
+  instanceRevision?: AuthConfigRevisionNumber;
+  state: AuthConfigApplyState;
+  /// Fields a check refused. Empty when it refused the revision as a whole.
+  fields: list<AuthConfigFieldName>;
+  reason?: AuthConfigRejectReason;
+  /// When the instance reported it, or for `pending`, when the newest
+  /// revision was saved.
+  at?: timestamp;
+}
+/// What a service or device did with the settings it read last.
+enum AuthConfigOutcome { applied; rejected; }
+model AuthConfigOwnReportRequest {
+  /// The deployment revision it read, as `Config.Own.Get` returned it.
+  revision?: AuthConfigRevisionNumber;
+  /// The instance revision it read, as `Config.Own.Get` returned it.
+  instanceRevision?: AuthConfigRevisionNumber;
+  state: AuthConfigOutcome;
+  /// Fields its checks refused; empty for `applied`.
+  fields: list<AuthConfigFieldName>;
+  reason?: AuthConfigRejectReason;
 }
 model AuthConfigResponse {
   target: AuthConfigTarget;

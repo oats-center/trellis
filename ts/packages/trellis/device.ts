@@ -9,6 +9,10 @@ import type { NatsConnection } from "@nats-io/nats-core";
 export { checkDeviceActivation } from "./device/activation.ts";
 export type {
   ConfigChange,
+  ConfigCheck,
+  ConfigCheckContext,
+  DeriveOptions,
+  DerivedConfig,
   ParticipantConfig,
   ParticipantConfigOf,
 } from "./service/config.ts";
@@ -653,6 +657,7 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
         participantId: args.participant.identity,
         fields: configFields,
         read,
+        report: (outcome) => trellis.reportOwnConfig(outcome),
         log: resolveDeviceLogger(args.log),
       });
       config.watch({
@@ -698,6 +703,13 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
         );
       }
     };
+    // A revision the device's own checks rejected degrades its health until
+    // one is accepted, and each outcome is reported at once.
+    if (config) {
+      const settings = config;
+      health.add("settings", () => settings.healthCheck());
+      settings.onOutcome(() => void publishHealth());
+    }
     await publishHealth();
     const heartbeat = setInterval(
       () => void publishHealth(),

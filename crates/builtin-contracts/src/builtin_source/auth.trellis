@@ -178,6 +178,7 @@ import {
   AuthConfigSecretRevealResponse,
   AuthOwnConfigRequest,
   AuthOwnConfigResponse,
+  AuthConfigOwnReportRequest,
   AuthConfigChanged,
   AuthConfigAppDeclareRequest,
   AuthAppConfigResponse,
@@ -491,6 +492,9 @@ api auth@v1 {
   rpc Config.Secrets.Reveal { input AuthConfigSecretRevealRequest; output AuthConfigSecretRevealResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// A service or device reads its own configuration, secrets included.
   rpc Config.Own.Get { input AuthOwnConfigRequest; output AuthOwnConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  /// A service or device reports whether it applied the settings it read
+  /// or its own checks rejected them.
+  rpc Config.Own.Report { input AuthConfigOwnReportRequest; output AuthEmpty; errors [AuthError, UnexpectedError, ValidationError]; }
   /// Attach the settings an app build declares to its registered client.
   rpc Config.Apps.Declare { input AuthConfigAppDeclareRequest; output AuthConfigResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   /// An app reads its own settings, which are public to its users.
@@ -660,9 +664,9 @@ api auth@v1 {
     }
     capability config.readOwn {
       title "Read its own settings";
-      description "A service or device reads the settings Trellis keeps for it and hears when they change.";
+      description "A service or device reads the settings Trellis keeps for it, hears when they change, and reports whether it applied them.";
       grants "The service or device can read its own settings, secrets included.";
-      allows { rpc Config.Own.Get; subscribe event Config.Changed; }
+      allows { rpc Config.Own.Get; rpc Config.Own.Report; subscribe event Config.Changed; }
     }
     capability config.readApp {
       title "Read the app's settings";

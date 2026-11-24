@@ -1256,6 +1256,19 @@ CREATE TABLE auth_config_connections (
     instance_revision INTEGER,
     connected_at INTEGER NOT NULL CHECK (connected_at BETWEEN 0 AND 9007199254740991)
 );
+-- What each instance last reported about the settings it read: the
+-- revisions, and whether it applied them or its own checks rejected them. An
+-- instance whose report names older revisions than the current ones has not
+-- read the newest yet, which administrators see as pending.
+CREATE TABLE auth_config_reports (
+    instance_id TEXT PRIMARY KEY REFERENCES auth_instances(instance_id) ON DELETE CASCADE,
+    deployment_revision INTEGER CHECK (deployment_revision BETWEEN 1 AND 4294967295),
+    instance_revision INTEGER CHECK (instance_revision BETWEEN 1 AND 4294967295),
+    state TEXT NOT NULL CHECK (state IN ('applied', 'rejected')),
+    fields_json TEXT NOT NULL CHECK (json_valid(fields_json)),
+    reason TEXT CHECK (length(reason) <= 1024),
+    reported_at INTEGER NOT NULL CHECK (reported_at BETWEEN 0 AND 9007199254740991)
+);
 -- The settings an app build declares, attached to its registered client by an
 -- administrator. App settings are checked against it.
 CREATE TABLE auth_client_config_declarations (

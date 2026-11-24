@@ -124,6 +124,7 @@ import type {
   JobsHistoryRequest,
   JobsHistoryResponse,
 } from "./internal_sdk/generated/types/index.js";
+import type { ConfigOutcome } from "./service/config.ts";
 import {
   type EventOpts,
   type GenerationIntakeInstall,
@@ -3760,6 +3761,39 @@ export class Trellis<
     return await this.#requestBuiltRpc<AuthOwnConfigResponse>(
       "Config.Own.Get",
       { atConnect },
+      {
+        subject: action.subject,
+        permission: actionPermission(AUTH_API.identity, action, "call"),
+        input: action.input,
+        output: action.output,
+        callerCapabilities: [],
+        errors: action.errors.map((error) => error.type),
+        declaredErrorTypes: action.errors.map((error) => error.type),
+        runtimeErrors: action.errors,
+      },
+    ).orThrow();
+  }
+
+  /**
+   * Tell Auth whether this service or device applied the settings it read
+   * or its checks rejected them.
+   * @internal
+   */
+  async reportOwnConfig(outcome: ConfigOutcome): Promise<void> {
+    const action = AUTH_API.actions["rpc:Config.Own.Report"];
+    await this.#requestBuiltRpc<Record<string, never>>(
+      "Config.Own.Report",
+      {
+        ...(outcome.revision.deployment === undefined
+          ? {}
+          : { revision: outcome.revision.deployment }),
+        ...(outcome.revision.instance === undefined
+          ? {}
+          : { instanceRevision: outcome.revision.instance }),
+        state: outcome.state,
+        fields: [...outcome.fields],
+        ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+      },
       {
         subject: action.subject,
         permission: actionPermission(AUTH_API.identity, action, "call"),
