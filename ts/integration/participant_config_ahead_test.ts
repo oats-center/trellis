@@ -6,7 +6,9 @@
  * carries them to its deployment. A value that doesn't fit holds a required
  * field until it is fixed, and the waiting service then starts without a
  * restart. While one build runs, values for its next build are set without
- * disturbing it, and the next build's instances start with them.
+ * disturbing it, and the next build's instances start with them. An instance
+ * upgraded to a build that needs a new setting reads as pending, never as
+ * what its earlier build did with the same revision.
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -255,6 +257,93 @@ test("settings for the next build are set while the current one runs, and its in
       assert.deepEqual(heard, [["level"], ["level"]]);
     } finally {
       for (const service of services) await service.stop();
+    }
+  });
+});
+
+test("an instance upgraded to a build that needs a new setting never shows its earlier build's result", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const key = await runtime.services.createInstance({
+      name: "upgraded",
+      deployment: "upgraded",
+      contract: v1,
+      config: {
+        values: { endpoint: "https://one.example" },
+        secrets: { apiKey: "k1" },
+      },
+    });
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    const instance = async () => {
+      const view = await runtime.callAdminRpc("authConfigGet", { target });
+      const found = view.instances.find(
+        (entry) => entry.instanceId === key.instanceId,
+      );
+      return { view, instance: found };
+    };
+    const first = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: v1,
+      seed: key.seed,
+    }).orThrow();
+    const serving = first.wait();
+    await first.ready;
+    const applied = await runtime.waitFor(async () => {
+      const { instance: found } = await instance();
+      return found?.settings?.state === "applied" ? found : undefined;
+    });
+    assert.equal(applied.settings?.revision, 1);
+    await first.stop();
+    await serving;
+
+    // The same instance comes back on v2, which needs settings v1 never
+    // had. Its build only adds settings, so it installs without an
+    // administrator; nothing about the stored settings changes.
+    const controller = new AbortController();
+    const connecting = TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: v2,
+      seed: key.seed,
+      signal: controller.signal,
+    }).orThrow();
+    connecting.catch(() => {});
+    try {
+      const waiting = await runtime.waitFor(async () => {
+        const read = await instance();
+        return read.instance?.connectedAt !== undefined &&
+          read.instance.connectedAt !== applied.connectedAt
+          ? read
+          : undefined;
+      });
+      assert.ok(waiting.view.missing.includes("workers"));
+      // v2 hasn't applied anything: v1's result for the same revision
+      // doesn't stand for it.
+      assert.equal(waiting.instance?.settings?.state, "pending");
+      assert.equal(waiting.instance?.settings?.revision, 1);
+
+      const fixed = await runtime.callAdminRpc("authConfigSet", {
+        target,
+        values: { workers: 2, region: ["east"] },
+        expectedRevision: 1,
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      });
+      const next = await connecting;
+      try {
+        const nextServing = next.wait();
+        await next.ready;
+        await runtime.waitFor(async () => {
+          const { instance: found } = await instance();
+          return found?.settings?.state === "applied" &&
+            found.settings.revision === fixed.revision
+            ? found
+            : undefined;
+        });
+        await next.stop();
+        await nextServing;
+      } finally {
+        await next.stop();
+      }
+    } finally {
+      controller.abort();
     }
   });
 });

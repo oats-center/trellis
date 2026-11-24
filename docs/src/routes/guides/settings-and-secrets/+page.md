@@ -369,7 +369,9 @@ service's startup ends when it first serves, after `service.wait()` (or
 the first time it reads its settings or a derived value. Until then the
 status stays `pending`, and a starting value a check refuses shows as
 `rejected` without first showing as `applied`. A restarted instance's status
-from its earlier run is dropped when it connects. After startup, each new
+from its earlier run is dropped when it connects, and so is an upgraded
+one's: an instance on a new build that waits for a setting the build adds
+reads `pending`, not what its earlier build did with the same revision. After startup, each new
 revision is reported as soon as its checks have run. A report that doesn't
 reach Auth, such as while the server restarts, is sent again with a backoff
 until Auth has it or a newer outcome replaces it, so the status catches up

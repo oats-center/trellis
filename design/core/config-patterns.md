@@ -287,7 +287,11 @@ startup when it first serves, and a device, which has no serving phase, the
 first time it reads its settings or a derived value. A rejection is reported
 at once, so a starting value a startup check refuses goes straight from
 `pending` to `rejected`. The connect-time read drops the instance's earlier
-report, so a restarted instance reads `pending` until this run reports. A
+report, so a restarted instance reads `pending` until this run reports. That
+covers an upgrade too: a service update installs the new build in place, and
+the new build reads at connect before it reports, so its earlier build's
+result never stands for it, even with unchanged revisions while it waits for
+a setting only the new build requires. A
 repeat of the last confirmed report is not sent again. A failed report is
 retried with the shared backoff (250 ms doubling to 30 s) until Auth confirms
 it or a newer outcome replaces it, so a report lost while the connection stays
