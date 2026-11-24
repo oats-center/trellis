@@ -433,6 +433,14 @@ export TRELLIS_TEST_HEALTH_WATCH_BIN="$staged/examples/health_watch"
 [[ "$all" != "--all" ]] || pack_native "$staged"
 echo "built in $(( SECONDS - started ))s; running ${jobs[*]} concurrently"
 
+# Concurrent local suites share a host. Nested consumer builds and Chromium
+# also start workers of their own. Standalone jobs keep their usual parallelism.
+cores="$(nproc)"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(( (cores + 7) / 8 ))}"
+export NEXTEST_TEST_THREADS="${NEXTEST_TEST_THREADS:-$(( (cores + 7) / 8 ))}"
+export TRELLIS_BROWSER_CONCURRENCY="${TRELLIS_BROWSER_CONCURRENCY:-$(( (cores + 7) / 8 ))}"
+export TRELLIS_TEST_CONCURRENCY="${TRELLIS_TEST_CONCURRENCY:-$(( (cores + 3) / 4 ))}"
+
 declare -A pid
 for job in "${jobs[@]}"; do
   TRELLIS_TEST_STAGED=1 bash "$root/scripts/check.sh" "$job" > "$logs/$job.log" 2>&1 &

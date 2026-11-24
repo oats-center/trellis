@@ -55,10 +55,12 @@ may re-link in `target/debug`, then runs formatting, Rust lint
 TypeScript checks (`typescript-checks`), TypeScript tests (`typescript-tests`:
 the packages' own suites and the integration files), Rust testkit tests
 (`testkit-tests`), the demo and documented-example consumers, and the browser
-tests concurrently, logging each to `target/test-logs/`. Each test job runs on
-one runner, not split into shards; its test files run concurrently, one per core
-for TypeScript and one per two cores for browser tests
-(`TRELLIS_TEST_CONCURRENCY` and `TRELLIS_BROWSER_CONCURRENCY` override it). Local
+tests concurrently, logging each to `target/test-logs/`. Standalone jobs use the runner's
+parallelism. In the combined local run on a 32-core host, TypeScript integration
+runs eight files at a time, browser tests run four, nextest runs four tests and
+each Cargo build uses four jobs. These defaults scale with the available cores.
+Set `TRELLIS_TEST_CONCURRENCY`, `TRELLIS_BROWSER_CONCURRENCY`,
+`NEXTEST_TEST_THREADS` or `CARGO_BUILD_JOBS` to override them. Local
 and ordinary CI runs use development builds. Release candidates run the same acceptance suites against their optimized release binaries.
 
 `npm test -- --all` adds the slower packaging and container-image jobs: the Rust
