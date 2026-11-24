@@ -236,6 +236,9 @@ job_demos() {
   local demo
   for demo in service device; do
     (
+      # Both source trees stay independent and Cargo fingerprints their paths.
+      # Reuse registry dependencies across locked and fresh consumer builds.
+      export CARGO_TARGET_DIR="$root/target/demo-consumers"
       cd "demos/rust/$demo"
       PATH="$(dirname "${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}"):$PATH" trellis generate
       cargo check --locked --config "$root/.cargo/publication.toml"

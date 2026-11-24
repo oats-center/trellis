@@ -170,11 +170,11 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: |
           git clean -ffdx --exclude=/target/
-          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
-            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
-            [ -L target ] || rm -rf target
-            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
-          fi
+          # General jobs can clean their whole checkout between builds.
+          cache="${TRELLIS_CI_TARGET_ROOT:-$RUNNER_TOOL_CACHE/trellis/$GITHUB_REPOSITORY}/$GITHUB_JOB"
+          mkdir -p "$cache"
+          [ -L target ] || rm -rf target
+          ln -sfn "$cache" target
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -208,7 +208,7 @@ jobs:
 
       - name: Report installation cache input size
         if: always()
-        run: du -sh target 2>/dev/null || true
+        run: du -sh target/ 2>/dev/null || true
 
       - name: Upload installed artifacts
         uses: actions/upload-artifact@v7
