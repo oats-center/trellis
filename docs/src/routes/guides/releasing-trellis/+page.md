@@ -56,10 +56,9 @@ TypeScript checks (`typescript-checks`), TypeScript tests (`typescript-tests`:
 the packages' own suites and the integration files), Rust testkit tests
 (`testkit-tests`), the demo and documented-example consumers, and the browser
 tests concurrently, logging each to `target/test-logs/`. Standalone jobs use the runner's
-parallelism. In the combined local run on a 32-core host, SDK, TypeScript integration
-and browser suites each run four files at a time. Nextest runs four tests and
+parallelism. In the combined local run on a 32-core host, SDK and browser suites each run four files at a time. Live TypeScript integration runs eight files at a time because many wait for broker events or authorization expiry. Nextest runs four tests and
 each Cargo build uses four jobs. These defaults scale with the available cores.
-Set `TRELLIS_TEST_CONCURRENCY`, `TRELLIS_BROWSER_CONCURRENCY`,
+Set `TRELLIS_INTEGRATION_CONCURRENCY` for just the live TypeScript files. Set `TRELLIS_TEST_CONCURRENCY`, `TRELLIS_BROWSER_CONCURRENCY`,
 `NEXTEST_TEST_THREADS` or `CARGO_BUILD_JOBS` to override them. Local
 and ordinary CI runs use development builds. Release candidates run the same acceptance suites against their optimized release binaries.
 

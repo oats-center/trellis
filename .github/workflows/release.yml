@@ -711,7 +711,7 @@ jobs:
         run: bash scripts/check.sh rust
 
   typescript-checks:
-    name: TypeScript checks
+    name: TypeScript checks and SDK tests
     needs: [install, build]
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 20
@@ -743,7 +743,9 @@ jobs:
         env:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
-        run: bash scripts/check.sh typescript-checks
+        run: |
+          bash scripts/check.sh typescript-checks
+          bash scripts/run-sdk-tests.sh
 
   demos:
     name: Demo consumers
@@ -799,7 +801,7 @@ jobs:
           retention-days: 3
 
   typescript-tests:
-    name: TypeScript tests
+    name: TypeScript integration tests
     needs: [install, build, build-fixtures]
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-ts"]') }}
     timeout-minutes: 45
@@ -837,7 +839,7 @@ jobs:
         env:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
-        run: bash scripts/check.sh typescript-tests
+        run: bash scripts/run-ts-integration.sh
 
   testkit-tests:
     name: Rust testkit tests
