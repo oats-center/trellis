@@ -504,8 +504,11 @@ fn read_values_file(path: &std::path::Path) -> miette::Result<Vec<(String, Value
 }
 
 /// One instance's settings status in a few words: `applied r12`,
-/// `rejected r13: awsSecret: set both or neither`, or `pending r13`.
-pub(super) fn settings_label(status: &Value) -> String {
+/// `rejected r13: awsSecret: set both or neither`, or `pending r13`. While
+/// a setting that applies after a restart still has its connect-time value,
+/// it says so, as in `applied r12, restart pending`: the instance runs only
+/// the newest live values.
+pub(super) fn settings_label(status: &Value, restart_pending: bool) -> String {
     let revision = match (
         status["revision"].as_u64(),
         status["instanceRevision"].as_u64(),
@@ -515,9 +518,14 @@ pub(super) fn settings_label(status: &Value) -> String {
         (None, Some(instance)) => format!(" instance r{instance}"),
         (None, None) => String::new(),
     };
-    let state = output::field(status, "state");
-    if state != "rejected" {
-        return format!("{state}{revision}");
+    let restart = if restart_pending {
+        ", restart pending"
+    } else {
+        ""
+    };
+    let state = format!("{}{revision}{restart}", output::field(status, "state"));
+    if status["state"] != json!("rejected") {
+        return state;
     }
     let fields = output::list(status, "fields")
         .iter()
@@ -526,9 +534,9 @@ pub(super) fn settings_label(status: &Value) -> String {
         .join(", ");
     let reason = output::field(status, "reason");
     if fields.is_empty() {
-        format!("{state}{revision}: {reason}")
+        format!("{state}: {reason}")
     } else {
-        format!("{state}{revision}: {fields}: {reason}")
+        format!("{state}: {fields}: {reason}")
     }
 }
 
@@ -710,7 +718,10 @@ fn show(
         .map(|instance| {
             json!({
                 "title": instance["title"],
-                "settings": settings_label(&instance["settings"]),
+                "settings": settings_label(
+                    &instance["settings"],
+                    instance["restartPending"] == json!(true),
+                ),
             })
         })
         .collect::<Vec<_>>();

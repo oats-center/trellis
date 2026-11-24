@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { ulid } from "ulid";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
@@ -42,6 +43,10 @@ test("one save of plain and secret settings is one revision, and an instance tha
         if (!candidate.endpoint.startsWith("https://"))
           reject(["endpoint"], "must be an https URL");
       });
+      // The starting revision shows as applied once the service serves.
+      // `services.stop()` ends the wait.
+      void service.wait().catch(() => {});
+      await service.ready;
 
       const admin = await launchProfile(runtime);
       try {
@@ -108,6 +113,31 @@ test("one save of plain and secret settings is one revision, and an instance tha
         );
         assert.equal(service.config.current.endpoint, "https://two.example");
         assert.equal(service.config.current.apiKey, "k2");
+
+        // A port applies only after a restart: the instance applies the
+        // revision but still listens on the old one, and says so.
+        const { revision } = await runtime.callAdminRpc("authConfigGet", {
+          target,
+        });
+        await runtime.callAdminRpc("authConfigSet", {
+          target,
+          values: { port: 9090 },
+          ...(revision === undefined ? {} : { expectedRevision: revision }),
+          idempotencyKey: codecs.ulid.decode(ulid()),
+        });
+        await instances
+          .getByText(
+            "Uses the latest settings except those that apply after restart",
+          )
+          .waitFor();
+        await instances.getByText("Restart needed").waitFor();
+        assert.equal(
+          await instances
+            .getByText("Uses the latest settings", { exact: true })
+            .count(),
+          0,
+        );
+        assert.equal(service.config.current.port, 8080);
       } finally {
         await admin.close();
       }

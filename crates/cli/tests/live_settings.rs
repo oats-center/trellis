@@ -390,6 +390,20 @@ async fn refused_settings_show_in_the_cli_and_one_set_carries_several_secrets() 
     }
     assert_eq!(later, ["k2", "k3"]);
 
+    // A port applies only after a restart, so the instance applies the
+    // revision while it still runs its old port, and the status says both.
+    cli.run(&["svc", &deployment, "config", "set", "port=9090"])
+        .await;
+    cli.settings(&deployment, |status| {
+        status["state"] == "applied" && status["revision"] == 8
+    })
+    .await;
+    assert_eq!(config.current().unwrap().port, 8080);
+    let listed = cli.text(&["svc", &deployment, "instances"]).await;
+    assert!(listed.contains("applied r8, restart pending"), "{listed}");
+    let shown = cli.text(&["svc", &deployment, "config"]).await;
+    assert!(shown.contains("applied r8, restart pending"), "{shown}");
+
     listening.abort();
     drop(client);
     drop(config);

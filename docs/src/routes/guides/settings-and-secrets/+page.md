@@ -352,7 +352,10 @@ that refuses one waits until the instance restarts with a fixed value.
 Each instance tells Auth what became of every revision it reads, with
 `Config.Own.Report`. `Config.Get` returns it per instance as `settings`:
 
-- `applied`: the instance accepted the newest revision.
+- `applied`: the instance accepted the newest revision. With `restartPending`
+  on the instance, it took only the values that apply live and keeps the
+  connect-time values of settings that apply after restart until it restarts.
+  The Console shows it as Restart needed.
 - `rejected`: one of its checks or derive builders refused it. `fields` and
   `reason` say why, and the instance keeps the values it accepted last.
 - `pending`: the instance hasn't read the newest revision yet, or is still
@@ -520,7 +523,8 @@ refused, even twice in one file, and nothing is saved.
 
 `trellis svc <ID> instances` shows the same status in its Settings column:
 `applied r12`, `rejected r13: awsSecret: set both or neither`, or
-`pending r13`.
+`pending r13`, with `, restart pending` after the revision while the instance
+still runs older values for settings that apply after restart.
 
 ```sh
 trellis svc orders config set databaseUrl=postgres://db.internal/orders logLevel=debug

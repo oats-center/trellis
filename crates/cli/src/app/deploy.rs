@@ -1164,16 +1164,17 @@ async fn service_instances(
     );
     for instance in &mut instances {
         let id = output::field(instance, "instanceId");
-        let status = settings
+        let entry = settings
             .as_ref()
             .map_or(&[][..], |settings| output::list(settings, "instances"))
             .iter()
-            .find(|entry| output::field(entry, "instanceId") == id)
-            .and_then(|entry| entry.get("settings"))
-            .filter(|status| status.is_object());
-        if let Some(status) = status {
-            let mut status = status.clone();
-            status["label"] = json!(super::config::settings_label(&status));
+            .find(|entry| output::field(entry, "instanceId") == id);
+        if let Some(entry) = entry.filter(|entry| entry["settings"].is_object()) {
+            let mut status = entry["settings"].clone();
+            status["label"] = json!(super::config::settings_label(
+                &status,
+                entry["restartPending"] == json!(true),
+            ));
             instance["status"]["settings"] = status;
         }
     }

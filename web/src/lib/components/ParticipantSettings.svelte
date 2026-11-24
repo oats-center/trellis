@@ -626,38 +626,53 @@
         {behind.length === 1 ? "it" : "them"} to apply settings marked “Applies after
         restart”.</Notice
       >{/if}
-    {#each refusing as { instance, settings } (instance.instanceId)}<Notice
-        variant="warning"
+    {#each refusing as { instance, settings } (instance.instanceId)}
+      <!-- A fixed value for one of these reaches it only when it restarts. -->
+      {@const afterRestart = settings.fields.filter(
+        (name) => view?.fields.find((field) => field.name === name)?.restart,
+      )}<Notice variant="warning"
         >{nameOf(instance)} rejected the latest settings{settings.fields
           .length > 0
           ? ` for ${titlesOf(settings.fields)}`
           : ""}: {settings.reason}. It keeps using the settings it had. Fix them
-        below or restore an earlier version.</Notice
+        below or restore an earlier version.{afterRestart.length > 0
+          ? ` ${titlesOf(afterRestart)} ${afterRestart.length === 1 ? "applies" : "apply"} after restart, so restart it once fixed.`
+          : ""}</Notice
       >{/each}
     {#if applying.length > 0}
       <ul class="grid gap-1 text-sm" aria-label="Instances">
         {#each applying as { instance, settings } (instance.instanceId)}
+          <!-- An instance that applied the latest settings but still runs
+          older values that apply after a restart uses only part of them. -->
+          {@const partly =
+            settings.state === "applied" && instance.restartPending}
           <li class="flex flex-wrap items-center gap-x-2">
             <StatusBadge
               dot
-              label={settings.state === "applied"
-                ? "Applied"
-                : settings.state === "rejected"
-                  ? "Rejected"
-                  : "Waiting"}
-              status={settings.state === "applied"
-                ? "healthy"
-                : settings.state === "rejected"
-                  ? "degraded"
-                  : "offline"}
+              label={partly
+                ? "Restart needed"
+                : settings.state === "applied"
+                  ? "Applied"
+                  : settings.state === "rejected"
+                    ? "Rejected"
+                    : "Waiting"}
+              status={partly
+                ? "degraded"
+                : settings.state === "applied"
+                  ? "healthy"
+                  : settings.state === "rejected"
+                    ? "degraded"
+                    : "offline"}
             />
             <span>{nameOf(instance)}</span>
             <span class="text-base-content/65"
-              >{settings.state === "applied"
-                ? "Uses the latest settings"
-                : settings.state === "rejected"
-                  ? "Rejected the latest settings"
-                  : "Hasn't read the latest settings yet"}</span
+              >{partly
+                ? "Uses the latest settings except those that apply after restart"
+                : settings.state === "applied"
+                  ? "Uses the latest settings"
+                  : settings.state === "rejected"
+                    ? "Rejected the latest settings"
+                    : "Hasn't read the latest settings yet"}</span
             >
           </li>
         {/each}

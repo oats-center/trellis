@@ -479,7 +479,10 @@ safe default since Auth refuses a plain value for one, or when
 `FIELD` as before, or several `FIELD=@PATH`, or `--env-file` with every line
 a secret. `show` lists what each instance did with the newest settings, and
 `trellis svc <ID> instances` has a Settings column: `applied r12`,
-`rejected r13: awsSecret: set both or neither`, or `pending r13`. For a
+`rejected r13: awsSecret: set both or neither`, or `pending r13`. An
+instance with `restartPending` reads `applied r12, restart pending` in both,
+and Restart needed in the Console, since it runs only the live part of the
+revision it applied. For a
 rejected instance, `show` advises the rollback of the layer that holds the
 refused values: the deployment's when the instance has no overrides or, in
 the instance's own view, when none of the refused values is its override; the
