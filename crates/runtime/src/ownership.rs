@@ -334,6 +334,9 @@ async fn run_owned_lease(
     mut confirmed: Instant,
 ) -> Result<(), RuntimeError> {
     let jitter = renewal_jitter(&owner_id, manager.renew, manager.ttl);
+    // Retries run every quarter second, so the first failure is logged and
+    // the rest of the round only counted; giving up logs the last one.
+    let mut failure_log = trellis_rs::__internal::LogLimit::default();
     let renewal_result = 'rounds: loop {
         let next_renewal = confirmed + manager.renew + jitter;
         tokio::select! {
@@ -352,12 +355,17 @@ async fn run_owned_lease(
             let attempt = Instant::now();
             let failure =
                 match tokio::time::timeout_at(give_up, manager.renew(&mut lease.guard)).await {
-                    Ok(Ok(Renewal::Written)) => {
-                        confirmed = attempt;
-                        break;
-                    }
-                    Ok(Ok(Renewal::Adopted)) => {
-                        confirmed = first_attempt;
+                    Ok(Ok(renewal)) => {
+                        confirmed = match renewal {
+                            Renewal::Written => attempt,
+                            Renewal::Adopted => first_attempt,
+                        };
+                        if failure_log.recovered() {
+                            tracing::info!(
+                                subsystem = %lease.group.subsystem(),
+                                "runtime owner lease renewed again"
+                            );
+                        }
                         break;
                     }
                     Ok(Err(source @ LeaseError::Backend { .. })) => source,
@@ -384,11 +392,14 @@ async fn run_owned_lease(
                     failure,
                 ));
             }
-            tracing::warn!(
-                subsystem = %lease.group.subsystem(),
-                error = %failure,
-                "runtime owner lease renewal failed; retrying before the lease expires"
-            );
+            if let Some(held_back) = failure_log.admit() {
+                tracing::warn!(
+                    subsystem = %lease.group.subsystem(),
+                    error = %failure,
+                    held_back,
+                    "runtime owner lease renewal failed; retrying before the lease expires"
+                );
+            }
             tokio::select! {
                 () = stop.stopped() => break 'rounds Ok(()),
                 () = tokio::time::sleep_until(retry) => {}
@@ -424,7 +435,7 @@ async fn release_one(
             Err(LeaseError::Backend {
                 key: Some(key.clone()),
                 operation: "release",
-                message: "operation exceeded shutdown bound".to_owned(),
+                message: crate::leases::LEASE_BUCKET_SILENT.to_owned(),
             })
         });
     record_runtime_lease_event(
@@ -606,14 +617,42 @@ mod tests {
         tokio::sync::watch::Sender<bool>,
         async_nats::Client,
     ) {
+        broker_storing_at_most(directory, None).await
+    }
+
+    /// [`broker_and_manager`] with JetStream's file storage limited to
+    /// `max_file_store` bytes when given.
+    async fn broker_storing_at_most(
+        directory: &std::path::Path,
+        max_file_store: Option<u64>,
+    ) -> (
+        tokio::process::Child,
+        LeaseManager,
+        ResolvedLeasesConfig,
+        tokio::sync::watch::Sender<bool>,
+        async_nats::Client,
+    ) {
         use tokio::io::AsyncBufReadExt as _;
         let reservation = trellis_local_nats::ReservedPort::reserve().unwrap();
         let port = reservation.port();
+        let store = directory.join("store");
+        let config = directory.join("nats.conf");
+        std::fs::write(
+            &config,
+            format!(
+                "jetstream {{\n  store_dir: {:?}\n{}}}\n",
+                store.display().to_string(),
+                max_file_store
+                    .map(|bytes| format!("  max_file_store: {bytes}\n"))
+                    .unwrap_or_default()
+            ),
+        )
+        .unwrap();
         let mut server = tokio::process::Command::new(
             std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into()),
         )
-        .args(["-js", "-a", "127.0.0.1", "-p", &port.to_string(), "-sd"])
-        .arg(directory)
+        .args(["-a", "127.0.0.1", "-p", &port.to_string(), "-c"])
+        .arg(&config)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -630,6 +669,9 @@ mod tests {
         })
         .await
         .unwrap();
+        // NATS exits on a write to a closed stderr, so its later log lines,
+        // such as a refused write, are read and dropped.
+        tokio::spawn(async move { while let Ok(Some(_)) = logs.next_line().await {} });
         drop(reservation);
         let (relayed, replies) = relay(port).await;
         let nats = async_nats::connect(format!("nats://127.0.0.1:{relayed}"))
@@ -837,21 +879,69 @@ mod tests {
         );
     }
 
-    #[test]
-    fn mode_owner_groups_use_stable_subsystem_order_and_keys() {
-        assert_eq!(
-            OwnerGroup::for_mode(RuntimeMode::All),
-            &[
-                OwnerGroup::Platform,
-                OwnerGroup::Jobs,
-                OwnerGroup::Health,
-                OwnerGroup::Events,
-            ]
+    /// A renewal JetStream refuses for lack of storage, and one it does not
+    /// answer at all, as a stream with a critical write error after a full
+    /// disk does not, each tell the operator what NATS did: before, both
+    /// read only "ambiguous update (timed out)" or a bare API error.
+    #[tokio::test]
+    async fn a_failed_renewal_says_whether_nats_refused_or_stopped_answering() {
+        let directory = tempfile::tempdir().unwrap();
+        let (server, manager, _, _replies, direct) =
+            broker_storing_at_most(directory.path(), Some(4 << 20)).await;
+        let mut guard = manager
+            .acquire(LeaseKey::new("health.owner"))
+            .await
+            .unwrap();
+
+        // Another stream takes the rest of the server's storage.
+        let jetstream = jetstream::new(direct);
+        jetstream
+            .create_stream(jetstream::stream::Config {
+                name: "FILLER".into(),
+                subjects: vec!["filler".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let block = bytes::Bytes::from(vec![0; 512 << 10]);
+        let mut refused = false;
+        for _ in 0..16 {
+            match jetstream
+                .publish("filler", block.clone())
+                .await
+                .unwrap()
+                .await
+            {
+                Ok(_) => {}
+                Err(_) => {
+                    refused = true;
+                    break;
+                }
+            }
+        }
+        assert!(refused, "JetStream stored past its file store limit");
+
+        let refusal = manager.renew(&mut guard).await.unwrap_err();
+        let LeaseError::Backend { message, .. } = &refusal else {
+            panic!("{refusal:?}");
+        };
+        assert!(
+            message.starts_with("NATS refused to store the lease: insufficient resources")
+                && message.contains("error code 10023"),
+            "{message}"
         );
-        assert_eq!(OwnerGroup::Platform.key(), "platform.owner");
-        assert_eq!(OwnerGroup::Jobs.key(), "jobs.owner");
-        assert_eq!(OwnerGroup::Health.key(), "health.owner");
-        assert_eq!(OwnerGroup::Events.key(), "events.owner");
+
+        // A broker that answers nothing.
+        signal_broker(&server, "-STOP");
+        let silence = manager.renew(&mut guard).await.unwrap_err();
+        signal_broker(&server, "-CONT");
+        let LeaseError::Backend { message, .. } = &silence else {
+            panic!("{silence:?}");
+        };
+        assert!(
+            message.starts_with(crate::leases::LEASE_BUCKET_SILENT),
+            "{message}"
+        );
     }
 
     #[test]

@@ -556,7 +556,10 @@ pub enum RuntimeError {
         source: Box<LeaseError>,
     },
     /// A complete owner renewal round exceeded the configured renew interval.
-    #[error("runtime owner renewal round timed out for {owner_id}")]
+    #[error(
+        "runtime owner {owner_id} could not renew its lease before it would expire: the lease \
+        bucket stopped answering. Check the NATS log for storage errors, such as a full disk."
+    )]
     OwnerRenewalRoundTimeout {
         /// Process-unique owner identity.
         owner_id: String,

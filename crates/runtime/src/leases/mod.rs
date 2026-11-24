@@ -98,7 +98,7 @@ impl LeaseManager {
             Err(error) => Err(LeaseError::Backend {
                 key: Some(key),
                 operation: "acquire",
-                message: error.to_string(),
+                message: broker_failure(&error),
             }),
         }
     }
@@ -136,7 +136,6 @@ impl LeaseManager {
                     kv::UpdateErrorKind::TimedOut | kv::UpdateErrorKind::WrongLastRevision
                 ) =>
             {
-                let update_error = error.to_string();
                 match store.entry(key.value.clone()).await {
                     Ok(Some(entry))
                         if entry.operation == kv::Operation::Put
@@ -154,7 +153,8 @@ impl LeaseManager {
                             key: Some(key),
                             operation: "renew",
                             message: format!(
-                                "ambiguous update ({update_error}) did not advance the lease revision"
+                                "{} The lease record was not renewed.",
+                                broker_failure(&error)
                             ),
                         })
                     }
@@ -172,8 +172,8 @@ impl LeaseManager {
                         key: Some(key),
                         operation: "renew",
                         message: format!(
-                            "ambiguous update ({update_error}); failed to inspect current lease \
-                            entry: {inspect_error}"
+                            "{} Reading the lease record failed too: {inspect_error}",
+                            broker_failure(&error)
                         ),
                     }),
                 }
@@ -417,7 +417,7 @@ async fn classify_revision_error(
         return LeaseError::Backend {
             key: Some(key),
             operation,
-            message: error.to_string(),
+            message: broker_failure(&error),
         };
     }
 
@@ -437,6 +437,37 @@ async fn classify_revision_error(
         },
     }
 }
+
+/// A lease write NATS did not take, in an operator's words: the broker's own
+/// refusal when JetStream answered with one, or that the bucket stopped
+/// answering when the write timed out. A stream NATS has marked with a
+/// critical storage write error, as after a full disk, answers no writes at
+/// all, so a timeout points at the NATS log, which names the storage error.
+fn broker_failure(error: &(dyn StdError + 'static)) -> String {
+    let mut timed_out = false;
+    let mut next = Some(error);
+    while let Some(error) = next {
+        if let Some(refusal) = error.downcast_ref::<jetstream::Error>() {
+            return format!("NATS refused to store the lease: {refusal}.");
+        }
+        timed_out |= error
+            .downcast_ref::<kv::UpdateError>()
+            .is_some_and(|error| error.kind() == kv::UpdateErrorKind::TimedOut)
+            || error
+                .downcast_ref::<context::PublishError>()
+                .is_some_and(|error| error.kind() == context::PublishErrorKind::TimedOut);
+        next = error.source();
+    }
+    if timed_out {
+        LEASE_BUCKET_SILENT.to_owned()
+    } else {
+        error.to_string()
+    }
+}
+
+/// What a lease write that timed out tells an operator.
+pub(crate) const LEASE_BUCKET_SILENT: &str = "The lease bucket stopped answering: NATS did not \
+    confirm the write in time. Check the NATS log for storage errors, such as a full disk.";
 
 fn is_bucket_create_race(error: &context::CreateKeyValueError) -> bool {
     if error.kind() != context::CreateKeyValueErrorKind::BucketCreate {
