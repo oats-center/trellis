@@ -571,3 +571,90 @@ async fn a_report_auth_never_answered_is_sent_again_once_it_does() {
     drop(service);
     runtime.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_instance_that_rejects_its_own_override_is_told_to_roll_back_the_override() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("overridden")
+        .await
+        .unwrap();
+    runtime
+        .set_config(
+            &identity,
+            json!({ "endpoint": "https://one.example" }),
+            json!({ "apiKey": "k1" }),
+        )
+        .await
+        .unwrap();
+    let deployment = identity.deployment_id().to_owned();
+    let cli = Cli::login(&mut runtime).await;
+    let mut service = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let config = Provider::new(&mut service).config();
+    config.check(https_only).await.unwrap();
+    let lifecycle = service.lifecycle();
+    let running = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the service serves");
+    let view = cli.json(&["svc", &deployment, "config"]).await;
+    let instance = view["instances"][0]["instanceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let on_instance = |args: &[&'static str]| {
+        let mut all = vec!["svc", deployment.as_str(), "config", "--instance"];
+        all.push(instance.as_str());
+        all.extend_from_slice(args);
+        all.into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+    let run = |args: Vec<String>| {
+        let cli = cli.clone();
+        async move {
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            cli.run(&args).await
+        }
+    };
+
+    // The instance's own overrides: one it accepts, then one it refuses.
+    run(on_instance(&["set", "level=debug"])).await;
+    cli.settings(&deployment, |status| {
+        status["state"] == "applied" && status["instanceRevision"] == 1
+    })
+    .await;
+    run(on_instance(&["set", "endpoint=http://plain.example"])).await;
+    cli.settings(&deployment, |status| {
+        status["state"] == "rejected" && status["instanceRevision"] == 2
+    })
+    .await;
+
+    // What an operator is told to run is the contract here. The deployment's
+    // view can't tell which layer holds the refused value, so it names both.
+    let instance_rollback =
+        format!("`trellis svc {deployment} config --instance {instance} rollback REVISION`");
+    let deployment_rollback = format!("`trellis svc {deployment} config rollback REVISION`");
+    let told = String::from_utf8(cli.run(&["svc", &deployment, "config"]).await.stderr).unwrap();
+    assert!(told.contains(&instance_rollback), "{told}");
+    assert!(told.contains(&deployment_rollback), "{told}");
+    // The instance's own view knows the refused endpoint is its override.
+    let told = String::from_utf8(run(on_instance(&[])).await.stderr).unwrap();
+    assert!(told.contains(&instance_rollback), "{told}");
+    assert!(!told.contains(&deployment_rollback), "{told}");
+
+    // Following it brings the instance back, and the deployment's settings
+    // stay as they were.
+    run(on_instance(&["rollback", "1"])).await;
+    let applied = cli
+        .settings(&deployment, |status| status["state"] == "applied")
+        .await;
+    assert_eq!(applied["instanceRevision"], 3);
+    assert_eq!(applied["revision"], 1);
+    assert_eq!(config.current().unwrap().endpoint, "https://one.example");
+    let history = cli.json(&["svc", &deployment, "config", "history"]).await;
+    assert_eq!(history["revisions"].as_array().unwrap().len(), 1);
+
+    drop(config);
+    lifecycle.stop();
+    running.await.unwrap().unwrap();
+    runtime.shutdown().await.unwrap();
+}

@@ -711,7 +711,6 @@ fn show(
             json!({
                 "title": instance["title"],
                 "settings": settings_label(&instance["settings"]),
-                "state": instance["settings"]["state"],
             })
         })
         .collect::<Vec<_>>();
@@ -726,13 +725,48 @@ fn show(
             "",
         )?;
     }
-    for instance in &instances {
-        if instance["state"] == json!("rejected") {
-            output::warning(format!(
-                "{} rejected the newest settings and keeps the ones it accepted last. Fix them, or roll back with `trellis {prefix} {id} config rollback REVISION`.",
-                output::field(instance, "title"),
-            ));
+    // A rollback undoes one layer: the deployment's settings, which every
+    // instance shares, or one instance's overrides. Name the layer that holds
+    // the refused values when it is known, and otherwise both.
+    let instance_view = current["target"]["instanceId"].is_string();
+    for instance in output::list(current, "instances") {
+        let settings = &instance["settings"];
+        if settings["state"] != json!("rejected") {
+            continue;
         }
+        let deployment_rollback = format!("`trellis {prefix} {id} config rollback REVISION`");
+        let instance_rollback = format!(
+            "`trellis {prefix} {id} config --instance {} rollback REVISION`",
+            output::field(instance, "instanceId")
+        );
+        // An instance's own view says where each of its values comes from.
+        let sources = output::list(settings, "fields")
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|name| {
+                output::list(current, "fields")
+                    .iter()
+                    .find(|field| field["name"].as_str() == Some(name))
+                    .and_then(|field| field["source"].as_str())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let known = instance_view && !sources.is_empty();
+        let rollback = if settings["instanceRevision"].is_null()
+            || (known && sources.iter().all(|source| *source != "instance"))
+        {
+            format!("roll back the deployment's settings with {deployment_rollback}")
+        } else if known && sources.iter().all(|source| *source == "instance") {
+            format!("roll back its own overrides with {instance_rollback}")
+        } else {
+            format!(
+                "roll back the layer that holds the refused values: its own overrides with {instance_rollback}, or the deployment's settings, which every instance shares, with {deployment_rollback}"
+            )
+        };
+        output::warning(format!(
+            "{} rejected the newest settings and keeps the ones it accepted last. Fix them, or {rollback}.",
+            output::field(instance, "title"),
+        ));
     }
     for instance in output::list(current, "instances") {
         if instance["restartPending"] == json!(true) {

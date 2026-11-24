@@ -469,7 +469,13 @@ safe default since Auth refuses a plain value for one, or when
 `FIELD` as before, or several `FIELD=@PATH`, or `--env-file` with every line
 a secret. `show` lists what each instance did with the newest settings, and
 `trellis svc <ID> instances` has a Settings column: `applied r12`,
-`rejected r13: awsSecret: set both or neither`, or `pending r13`.
+`rejected r13: awsSecret: set both or neither`, or `pending r13`. For a
+rejected instance, `show` advises the rollback of the layer that holds the
+refused values: the deployment's when the instance has no overrides or, in
+the instance's own view, when none of the refused values is its override; the
+instance's (`--instance ID rollback`) when, in its own view, all of them are.
+Otherwise it names both, so following it never rolls back values every
+instance shares while the override that was refused stays in place.
 
 A service ID or title that names a waiting claim targets the claim, so
 settings can be set before the service connects. `show` lists values the build

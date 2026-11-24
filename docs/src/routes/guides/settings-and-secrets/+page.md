@@ -370,7 +370,13 @@ until Auth has it or a newer outcome replaces it, so the status catches up
 without another save.
 
 Saving never waits for instances, and a rejected revision stays stored, so
-`config rollback` can undo it. While the newest revision is rejected, the
+`config rollback` can undo it. A rollback undoes one layer: the deployment's
+settings, which every instance shares, or with `--instance ID` one instance's
+overrides. For a rejected instance, `config` names the layer that holds the
+refused values when it knows: an instance without overrides takes them from
+its deployment, and `config --instance ID` shows where each of that
+instance's values comes from. The deployment's view of an instance with
+overrides names both commands. While the newest revision is rejected, the
 instance's `settings` health check is degraded with the reason, which makes the
 instance degraded. It recovers with the next accepted revision.
 
