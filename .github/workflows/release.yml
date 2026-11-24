@@ -567,11 +567,12 @@ jobs:
       - name: Remove untracked files except target/
         run: |
           git clean -ffdx --exclude=/target/
-          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
-            mkdir -p "$TRELLIS_CI_TARGET_ROOT/rust"
-            [ -L target ] || rm -rf target
-            ln -sfn "$TRELLIS_CI_TARGET_ROOT/rust" target
-          fi
+          # Unrelated jobs can clean the runner checkout between compilation
+          # and execution. Keep both stages' Cargo output on the work volume.
+          cache="${TRELLIS_CI_TARGET_ROOT:-$RUNNER_TOOL_CACHE/trellis/$GITHUB_REPOSITORY}/rust"
+          mkdir -p "$cache"
+          [ -L target ] || rm -rf target
+          ln -sfn "$cache" target
 
       - name: Restore generated inputs
         uses: ./.github/actions/check-inputs
@@ -631,11 +632,12 @@ jobs:
         if: runner.environment == 'self-hosted' && steps.prepared.outputs.reuse != 'true'
         run: |
           git clean -ffdx --exclude=/target/
-          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
-            mkdir -p "$TRELLIS_CI_TARGET_ROOT/rust"
-            [ -L target ] || rm -rf target
-            ln -sfn "$TRELLIS_CI_TARGET_ROOT/rust" target
-          fi
+          # Unrelated jobs can clean the runner checkout between compilation
+          # and execution. Keep both stages' Cargo output on the work volume.
+          cache="${TRELLIS_CI_TARGET_ROOT:-$RUNNER_TOOL_CACHE/trellis/$GITHUB_REPOSITORY}/rust"
+          mkdir -p "$cache"
+          [ -L target ] || rm -rf target
+          ln -sfn "$cache" target
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
