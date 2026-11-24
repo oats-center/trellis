@@ -9,6 +9,8 @@
 //! An import that waited for an instance finishes once one exists.
 //! An import never reaches past the deployment it creates, and running it
 //! again replaces only a stream it can show it restored itself.
+//! Import sends only the bytes whose digest it checked, and export reports
+//! the digest of the bytes it wrote.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -1459,6 +1461,107 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         assert_eq!(rows, 0, "{} left records", file.display());
         assert_eq!(streams().await, before);
     }
+
+    // The import reads the file once, so content that takes the file's
+    // place after its digest was checked is never sent. A FIFO gives the CLI
+    // `moving`'s bundle on the first open and a bundle Auth refuses on any
+    // later one.
+    let fifo = work.join("swapped.trellis-service");
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    let mut feeder = tokio::process::Command::new("sh")
+        // `exec`, so the process waiting for a second reader is the one
+        // killed below.
+        .args(["-c", r#"cat "$1" > "$3"; exec cat "$2" > "$3""#, "sh"])
+        .args([&moving_file, &claims_keeper, &fifo])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let swapped = new_cli
+        .run(&[
+            "svc",
+            "import",
+            path(&fifo),
+            "--digest",
+            &moving_digest,
+            "--passphrase-file",
+            path(&passphrase),
+            "--check",
+        ])
+        .await;
+    let _ = feeder.start_kill();
+    feeder.wait().await.unwrap();
+    assert!(
+        swapped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&swapped.stderr)
+    );
+    let swapped: Value = serde_json::from_slice(&swapped.stdout).unwrap();
+    assert_eq!(swapped["import"]["applied"], false);
+    assert_eq!(swapped["import"]["report"]["deploymentId"], moving_id);
+
+    // Export reports the digest and size of the bytes it wrote: bytes
+    // another writer adds to the file meanwhile are not counted.
+    let elsewhere = work.join("added-to");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let out = elsewhere.join("moving.trellis-service");
+    let exporting = old_cli
+        .command()
+        .args(["svc", &moving_id, "export", "--out", path(&out)])
+        .args(["--passphrase-file", path(&passphrase)])
+        .stdin(std::process::Stdio::null())
+        .output();
+    let adding = async {
+        use std::os::unix::fs::FileExt as _;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let written = std::fs::read_dir(&elsewhere).unwrap().find_map(|entry| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(entry.ok()?.path())
+                    .ok()
+            });
+            if let Some(file) = written {
+                file.write_all_at(b"added later", 4 << 20).unwrap();
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the export writes no file"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    };
+    let (exported, ()) = tokio::join!(
+        async {
+            tokio::time::timeout(Duration::from_secs(120), exporting)
+                .await
+                .expect("the export finishes")
+                .unwrap()
+        },
+        adding
+    );
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let exported: Value = serde_json::from_slice(&exported.stdout).unwrap();
+    let file = std::fs::read(&out).unwrap();
+    let size = usize::try_from(exported["size"].as_u64().unwrap()).unwrap();
+    assert!(size < file.len());
+    assert_eq!(exported["digest"], bundle::digest(&file[..size]));
+    let passphrase_text = std::fs::read_to_string(&passphrase).unwrap();
+    let written = bundle::entries(&bundle::open(&file[..size], passphrase_text.trim_end()));
+    assert_eq!(
+        bundle::document(&written, "deployment.json")["deploymentId"],
+        moving_id
+    );
 
     // An import that stops after restoring a stream, before it records the
     // stream loaded, resumes when run again: it restores again only a stream

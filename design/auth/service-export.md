@@ -337,10 +337,15 @@ one-version rule in `deny.toml` refuses. The construction is built from
 `argon2` and `ring`, which Trellis already uses for password hashing and for
 sealing with the storage key.
 
-**Integrity.** Export prints the SHA-256 of the bundle file. Import computes
-the file's SHA-256 and refuses it unless it matches `--digest`, or, on a
-terminal, unless the administrator confirms the digest it shows. Without a
-terminal, `--digest` is required.
+**Integrity.** Export prints the SHA-256 and size of the bundle file,
+computed from the bytes as it writes them rather than by reading the file
+back, so a file changed or replaced afterwards does not change what it
+reports. Import reads the file once, into a private temporary file that is
+unlinked as it is created, computing the SHA-256 as it copies. It refuses the
+bundle unless that digest matches `--digest`, or, on a terminal, unless the
+administrator confirms the digest it shows, and then decrypts and sends that
+same copy. A file replaced or rewritten after it was read is never sent.
+Without a terminal, `--digest` is required.
 
 **Versioning.** The header line and the content's format number both carry a
 version. Import refuses a format it does not know. From the first stable

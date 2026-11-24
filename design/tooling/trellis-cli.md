@@ -271,14 +271,15 @@ see `design/auth/service-export.md`. Export starts the
 `Auth.Deployments.Exports.Download`, and encrypts it with a passphrase as it
 arrives, writing a temporary file beside the destination and moving it into
 place with a rename that refuses an existing file, so a file that appeared
-meanwhile, such as another export's, is never replaced. It prints the file's
-SHA-256. `remove` names the installation in its confirmation; for a
+meanwhile, such as another export's, is never replaced. It prints the
+SHA-256 and size of the bytes it wrote. `remove` names the installation in its confirmation; for a
 deployment imported within the last day, `disable` asks the same confirmation
 and `remove` warns, since the installation it moved from has a deployment
-with the same ID. Import refuses a file whose SHA-256 differs from `--digest`;
+with the same ID. Import copies the file once into a private temporary file
+and refuses it when that copy's SHA-256 differs from `--digest`;
 without `--digest` it asks a terminal to confirm the digest and fails
 elsewhere. It checks the passphrase against the bundle's header before it
-connects, then streams the decrypted content as the `Auth.Deployments.Import`
+connects, then streams that copy's decrypted content as the `Auth.Deployments.Import`
 Operation's byte stream and prints the report: webhook URLs at the new
 origin, roles and direct grants to recreate, and what stayed behind. The
 passphrase comes from `--passphrase-file` (`-` for standard input), a
