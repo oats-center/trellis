@@ -118,9 +118,8 @@ import {
 } from "../../provider.ts";
 import { serviceRuntimeLogger } from "./logger.ts";
 import {
-  type ConfigHandle,
+  ConfigHandle,
   loadConfig,
-  NO_CONFIG,
   ownReading,
   type ParticipantConfig,
 } from "../config.ts";
@@ -3558,7 +3557,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           });
           // A connection that ends without stop() must not leave the watch retrying.
           const watching = config;
-          void manager.closed().finally(() => watching.stop());
+          void manager.closed().finally(() => watching.retire());
         }
         transitionConnectionAvailability(service.connection, true, "connected");
         return Result.ok(service);
@@ -3713,7 +3712,13 @@ export class TrellisServiceSession<
 
   /** Settings Trellis keeps for this service. */
   get config(): ParticipantConfig<Record<string, unknown>> {
-    return this[SERVICE_CONFIG] ?? NO_CONFIG;
+    // A service without settings still has a handle of its own, so what it
+    // registers or derives goes with it when it stops.
+    return (this[SERVICE_CONFIG] ??= new ConfigHandle<Record<string, unknown>>(
+      {},
+      { values: {}, revision: {} },
+      this.#log,
+    ));
   }
   /** Event lifecycle surface for service startup listeners and publishers. */
   readonly event: ActiveEventFacade<TTrellisApi>;
@@ -4531,6 +4536,10 @@ export class TrellisServiceSession<
                   );
                 }
               }
+              // Nothing is served any more, so the clients and pools built
+              // from settings can go.
+              enter("settings");
+              await this[SERVICE_CONFIG]?.retire();
               enter("runtime");
               await this.#runtime.stop();
             } finally {

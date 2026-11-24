@@ -255,6 +255,16 @@ for the revision it heard. A replaced value is disposed (TypeScript) or dropped
 (Rust) after its replacement took effect. Builders run only once every check
 has passed, so a refused revision builds nothing.
 
+A participant's handle lives as long as its connection. Every TypeScript
+service, device, and app connection gets a handle of its own, one without
+settings included, so nothing registered on one reaches another. When a
+TypeScript service stops, once its requests have drained, or a connection
+closes, the handle stops following changes and refuses new registrations.
+Once the reading or registration in progress has finished, it disposes every
+derived value still in effect; a value built for that reading never takes
+effect and is disposed with them. `service.stop()` returns after those
+disposers.
+
 Registration is how startup waits. Registering a check or derive tests the
 values in effect immediately. If they fail, the registration's `await` waits:
 the participant prints the rejected fields and reasons with the Console link

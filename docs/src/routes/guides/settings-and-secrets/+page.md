@@ -288,8 +288,11 @@ value from the settings in effect. After that it rebuilds only during the
 check step of a revision that changes one of `fields`; a revision that changes
 other fields keeps the value. A builder that throws rejects that revision for
 `fields` and keeps the old value. `dispose` receives a replaced value after
-its replacement took effect. `context.changed` lists the fields the candidate
-changes.
+its replacement took effect, and the value still in effect when the service
+stops or the device's connection closes, so nothing built from settings
+outlives the participant. A value still being built when it stops never takes
+effect and is disposed too. `service.stop()` returns once those disposers
+have. `context.changed` lists the fields the candidate changes.
 
 In Rust:
 

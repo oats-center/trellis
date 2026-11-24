@@ -2243,7 +2243,8 @@ config.derive(["stripeSecretKey"], (c) => new Stripe(c.stripeSecretKey), {
 dispose: (old) => ... })` builds a value now and rebuilds it only when one of
 its fields changes; a builder that throws rejects those fields and keeps the
 old value, and `dispose` gets the replaced value after its replacement took
-effect. Use `stripe.current`. A rejected revision leaves `current` as it was
+effect, and the value in effect when the participant stops (before
+`service.stop()` returns) or its connection closes. Use `stripe.current`. A rejected revision leaves `current` as it was
 and runs no `onChange` listener; a listener that throws is logged, never a
 rejection. Registering a check or derive tests the values in effect at once
 and, while they fail, keeps waiting (printing the fields, reasons, and Console

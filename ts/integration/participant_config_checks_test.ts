@@ -8,7 +8,8 @@
  * refuses the values a service starts with waits for a fix, and the instance
  * never shows the revision it starts with as applied before it serves. An
  * instance that is not running shows the newest revision as pending, and a
- * report lost on the way to Auth is sent again.
+ * report lost on the way to Auth is sent again. A stopped service disposes
+ * every value it derived.
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -471,4 +472,98 @@ test("a settings report lost on the way to Auth is sent again without another sa
     },
     { interruptibleNativeProxy: true },
   );
+});
+
+test("a stopped service disposes what it derived, a value still being built included, and its next connection starts afresh", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const key = await runtime.services.createInstance({
+      name: "retired",
+      deployment: "retired",
+      contract: participant,
+      config: {
+        values: { endpoint: "https://one.example" },
+        secrets: { apiKey: "k1" },
+      },
+    });
+    const settings = await settingsOf(runtime, key);
+    const connect = () =>
+      TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant,
+        seed: key.seed,
+      }).orThrow();
+    const disposed: string[] = [];
+    const first = await connect();
+    let serving: Promise<void> = Promise.resolve();
+    // The client for k2 is still being built when the service stops.
+    const building = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    try {
+      const client = await first.config.derive(
+        ["apiKey"],
+        async (candidate) => {
+          if (candidate.apiKey === "k2") {
+            building.resolve();
+            await finish.promise;
+          }
+          return { key: candidate.apiKey };
+        },
+        { dispose: (old) => void disposed.push(old.key) },
+      );
+      serving = first.wait();
+      await first.ready;
+      await settings.set({ secrets: { apiKey: "k2" } });
+      await building.promise;
+      const stopping = first.stop();
+      finish.resolve();
+      await stopping;
+      await serving;
+      // Neither outlives the service, and k2 never took effect.
+      assert.deepEqual(disposed.sort(), ["k1", "k2"]);
+      assert.equal(client.current.key, "k1");
+    } finally {
+      finish.resolve();
+      await first.stop();
+      await serving;
+    }
+
+    // The same instance connecting again builds its own value, and only that
+    // one goes when it stops.
+    const second = await connect();
+    try {
+      const again = await second.config.derive(
+        ["apiKey"],
+        (candidate) => ({ key: candidate.apiKey }),
+        { dispose: (old) => void disposed.push(`again ${old.key}`) },
+      );
+      assert.equal(again.current.key, "k2");
+    } finally {
+      await second.stop();
+    }
+    assert.deepEqual(disposed.sort(), ["again k2", "k1", "k2"]);
+
+    // A service without settings has a handle of its own each time too.
+    const plain = participants.EchoProvider.participant;
+    const identity = await runtime.registerService({
+      name: "plain",
+      contract: plain,
+    });
+    const gone: string[] = [];
+    for (const name of ["one", "two"]) {
+      const service = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: plain,
+        seed: identity.seed,
+      }).orThrow();
+      try {
+        const derived = await service.config.derive([], () => name, {
+          dispose: (old) => void gone.push(old),
+        });
+        assert.equal(derived.current, name);
+      } finally {
+        await service.stop();
+      }
+      assert.deepEqual(gone, name === "one" ? ["one"] : ["one", "two"]);
+    }
+  });
 });

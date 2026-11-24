@@ -6,7 +6,7 @@ import type {
   AuthAppConfigResponse,
   AuthOwnConfigResponse,
 } from "../internal_sdk/generated/types/index.js";
-import { logger as noopLogger, type LoggerLike } from "../globals.ts";
+import type { LoggerLike } from "../globals.ts";
 import type { TransportGenerationManager } from "../transport/generations.ts";
 import { Backoff } from "../backoff.ts";
 
@@ -61,7 +61,11 @@ export type ConfigCheck<TValues> = (
 
 /** Options for {@link ParticipantConfig.derive}. */
 export type DeriveOptions<T> = {
-  /** Called with a replaced value once its replacement has taken effect. */
+  /**
+   * Called with a replaced value once its replacement has taken effect, and
+   * with the value in effect when the participant stops or its connection
+   * closes.
+   */
   dispose?: (previous: T) => void | Promise<void>;
 };
 
@@ -109,8 +113,10 @@ export interface ParticipantConfig<TValues> {
    * built now from the values in effect, and rebuilt during the check step
    * of a revision that changes one of `fields`. A builder that throws
    * rejects that revision for `fields` and keeps the old value. `dispose`
-   * receives a replaced value after its replacement takes effect. Resolves
-   * once a value is built, waiting as {@link check} does while it can't be.
+   * receives a replaced value after its replacement takes effect, and the
+   * value in effect when the participant stops. Resolves once a value is
+   * built, waiting as {@link check} does while it can't be; it rejects once
+   * the participant has stopped.
    */
   derive<T>(
     fields: readonly (keyof TValues & string)[],
@@ -205,21 +211,22 @@ export async function connectAppConfig<TValues>(args: {
     };
   };
   // An app without settings reads nothing: it may not hold `config.readApp`.
-  if (Object.keys(fields).length === 0)
-    return new ConfigHandle<TValues>(
-      fields,
-      { values: {}, revision: {} },
-      args.log,
-    );
-  const handle = new ConfigHandle<TValues>(fields, await read(true), args.log);
-  handle.watch({
-    transport: args.transport,
-    subject: AUTH_API.actions["event:Config.Changed"].subject,
-    matches: (event) => event.clientId === args.clientId,
-    read,
-    timeoutMs: args.timeoutMs,
-  });
-  void args.closed.finally(() => handle.stop());
+  const declared = Object.keys(fields).length > 0;
+  const handle = new ConfigHandle<TValues>(
+    fields,
+    declared ? await read(true) : { values: {}, revision: {} },
+    args.log,
+  );
+  if (declared)
+    handle.watch({
+      transport: args.transport,
+      subject: AUTH_API.actions["event:Config.Changed"].subject,
+      matches: (event) => event.clientId === args.clientId,
+      read,
+      timeoutMs: args.timeoutMs,
+    });
+  // What it derived goes with the connection.
+  void args.closed.finally(() => handle.retire());
   return handle;
 }
 
@@ -279,6 +286,7 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
   readonly #stop = new AbortController();
   // Readings, registrations and their checks run one at a time, in order.
   #refreshing: Promise<void> = Promise.resolve();
+  #retired: Promise<void> | undefined;
 
   constructor(
     fields: ConfigFields,
@@ -338,6 +346,7 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
 
   async check(check: ConfigCheck<TValues>): Promise<void> {
     const waiting = await this.#serialize(async () => {
+      this.#stop.signal.throwIfAborted();
       this.#checks.add(check);
       const refused = await this.#run(this.#current, [], [check], []);
       return refused.rejections.length === 0
@@ -362,8 +371,16 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       value: undefined,
     };
     const waiting = await this.#serialize(async () => {
+      this.#stop.signal.throwIfAborted();
       this.#derives.add(slot);
       const refused = await this.#run(this.#current, [], [], [slot]);
+      if (this.#stop.signal.aborted) {
+        // Built for a participant that stopped meanwhile: it never serves.
+        this.#derives.delete(slot);
+        for (const [built, value] of refused.built)
+          await this.#dispose(built, value);
+        this.#stop.signal.throwIfAborted();
+      }
       if (refused.rejections.length > 0)
         return this.#refuseInEffect(refused.rejections);
       slot.value = refused.built.get(slot);
@@ -453,7 +470,7 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
     }
     if (rejections.length > 0) {
       // Values built for a refused revision never take effect.
-      for (const [slot, value] of built) this.#dispose(slot, value);
+      for (const [slot, value] of built) void this.#dispose(slot, value);
       built.clear();
     }
     return { rejections, built };
@@ -503,6 +520,12 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       this.#checks,
       this.#derives,
     );
+    if (this.#stop.signal.aborted) {
+      // The participant stopped while this revision was built: it never
+      // takes effect, and what was built for it goes now.
+      for (const [slot, value] of built) await this.#dispose(slot, value);
+      return;
+    }
     if (rejections.length > 0) {
       this.#settle(rejected(this.#fields, next.revision, rejections));
       return;
@@ -514,7 +537,7 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       const replaced = slot.built ? [slot.value] : [];
       slot.value = value;
       slot.built = true;
-      for (const previous of replaced) this.#dispose(slot, previous);
+      for (const previous of replaced) void this.#dispose(slot, previous);
     }
     this.#settle({ state: "applied", revision: next.revision, fields: [] });
     const accepted = this.#accepted;
@@ -539,14 +562,13 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
     }
   }
 
-  #dispose(slot: DeriveSlot, value: unknown): void {
+  /** Dispose `value`; settles once its disposer has, never rejecting. */
+  async #dispose(slot: DeriveSlot, value: unknown): Promise<void> {
     if (!slot.dispose) return;
-    const failed = (error: unknown) =>
-      this.#log.warn({ error }, "Disposing a derived setting value threw");
     try {
-      void Promise.resolve(slot.dispose(value as never)).catch(failed);
+      await slot.dispose(value as never);
     } catch (error) {
-      failed(error);
+      this.#log.warn({ error }, "Disposing a derived setting value threw");
     }
   }
 
@@ -760,23 +782,40 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
     })();
   }
 
-  /** Stop following changes. @internal */
+  /**
+   * Stop following changes. A registration still waiting rejects, and one
+   * made from now on is refused. @internal
+   */
   stop(): void {
-    this.#stop.abort();
+    if (this.#stop.signal.aborted) return;
+    this.#stop.abort(new Error("The participant stopped"));
     // A registration still waiting for settings that pass never gets them.
     const accepted = this.#accepted;
     void accepted.promise.catch(() => {});
     accepted.reject(new Error("The participant stopped"));
   }
-}
 
-/** The `config` of a participant that declares no settings. */
-export const NO_CONFIG: ParticipantConfig<Record<string, unknown>> =
-  new ConfigHandle<Record<string, unknown>>(
-    {},
-    { values: {}, revision: {} },
-    noopLogger,
-  );
+  /**
+   * Stop, and once the reading or registration in progress has finished,
+   * dispose every derived value still in effect, so a participant that has
+   * stopped leaves none of its clients, pools or timers running. A value
+   * built for a revision that was in progress never takes effect and is
+   * disposed too. Settles once every disposer has. @internal
+   */
+  retire(): Promise<void> {
+    this.stop();
+    this.#retired ??= this.#serialize(async () => {
+      const retiring = [...this.#derives];
+      this.#derives.clear();
+      this.#checks.clear();
+      this.#listeners.clear();
+      for (const slot of retiring) {
+        if (slot.built) await this.#dispose(slot, slot.value);
+      }
+    });
+    return this.#retired;
+  }
+}
 
 /** An outcome refusing `revision` for every field `rejections` name. */
 function rejected(
