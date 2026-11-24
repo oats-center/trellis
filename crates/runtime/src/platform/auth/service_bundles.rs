@@ -2320,11 +2320,25 @@ async fn import(
         record(&loaded).await?;
     }
     let now = crate::clock::unix_now();
-    let active = bundle
-        .instances
-        .instances
-        .iter()
-        .any(|instance| instance.state == "active");
+    // The resources are prepared for an instance that can run now, as this
+    // installation has it: one provisioned after an earlier attempt of this
+    // bundle counts, so running the bundle again finishes the import.
+    let active: bool = {
+        let deployment_id = deployment_id.clone();
+        store
+            .transaction_blocking(move |connection| {
+                Ok(connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM auth_deployments d \
+                    JOIN auth_instances i ON i.deployment_id=d.deployment_id \
+                    JOIN auth_principals p ON p.principal_id=i.principal_id \
+                    WHERE d.deployment_id=?1 AND d.state='active' AND i.state='active' \
+                    AND p.state='active')",
+                    [deployment_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .await?
+    };
     let mut left = Vec::new();
     if active {
         progress("preparing the service's resources", bundle.received.size).await?;
@@ -2357,8 +2371,9 @@ async fn import(
         }
     } else {
         left.push(
-            "the bundle has no active instance, so its resources become ready, and its \
-            waiting jobs move, once an instance is provisioned and the import is run again"
+            "the deployment has no active instance here yet, so its resources become ready, \
+            and its waiting jobs move, once an instance is provisioned or enabled and the \
+            import is run again"
                 .to_owned(),
         );
     }

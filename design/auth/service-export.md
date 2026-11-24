@@ -454,14 +454,17 @@ Import works through these steps and changes nothing until step 4.
 5. **Load the data.** Auth restores each KV and store snapshot, marking each
    loaded as it finishes, then prepares the resources as it does for a new
    instance, which finds the restored streams and makes them `ready`, and
-   then publishes the waiting jobs. A bundle with no active instance stops
-   before preparing the resources, and the report says so.
+   then publishes the waiting jobs. Whether there is an instance to prepare
+   them for is read from this installation: a deployment with no active
+   instance stops before preparing the resources, and the report says so.
 6. **Report.** Import returns the report with the webhook URLs at the new
    origin.
 
-If step 5 fails, running the same import again resumes it: Auth finds the
-import record for the deployment with the same content digest, deletes any
-stream it had only partly restored, and loads the rest. A resource does not
+If step 5 fails, or stops for want of an instance, running the same import
+again resumes it: Auth finds the import record for the deployment with the
+same content digest, deletes any stream it had only partly restored, and
+loads the rest. Readiness is read again, so an instance provisioned or
+enabled since the last attempt lets the import finish. A resource does not
 become `ready` empty, following the existing rule that a missing stream after
 materialization is storage loss, not something to recreate. Running a bundle
 again after its import finished is refused.

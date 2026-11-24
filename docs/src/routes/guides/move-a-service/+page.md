@@ -109,6 +109,16 @@ It ends with a report:
 If the import stops while it loads the data, run the same command again; it
 picks up where it stopped.
 
+A bundle whose instances were all retired or disabled imports without one
+that can run, so the import stops before it prepares the resources and
+queues the waiting jobs. Provision or enable an instance in the new
+installation, then run the same import again to finish it:
+
+```sh
+trellis --profile new svc orders provision
+trellis --profile new svc import orders.trellis-service --digest <sha256>
+```
+
 ## Point the processes at the new installation
 
 Change each process's Trellis URL and start it. It keeps its identity seed.

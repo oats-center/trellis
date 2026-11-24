@@ -6,6 +6,7 @@
 //! The move guide's commands act on the installations they name.
 //! Two exports never replace each other's file.
 //! An export holds only unfinished jobs.
+//! An import that waited for an instance finishes once one exists.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -161,6 +162,7 @@ mod bundle {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine as _;
     use ring::{aead, hmac};
+    use serde_json::{json, Value};
     use sha2::{Digest as _, Sha256};
 
     const CHUNK: usize = 64 * 1024;
@@ -250,6 +252,36 @@ mod bundle {
         content
     }
 
+    /// A bundle file of `content`, sealed with `passphrase` at a low cost.
+    pub fn seal(content: &[u8], passphrase: &str) -> Vec<u8> {
+        let (salt, random): ([u8; 16], [u8; 16]) = (rand::random(), rand::random());
+        let (header, payload) = keys(passphrase, &salt, (8_192, 1, 1), &random);
+        let text = format!(
+            "trellis-service-bundle v1\nargon2id m=8192 t=1 p=1 salt={}\nnonce={}\n",
+            URL_SAFE_NO_PAD.encode(salt),
+            URL_SAFE_NO_PAD.encode(random)
+        );
+        let mac = hmac::sign(&header, text.as_bytes());
+        let mut file = format!("{text}mac={}\n", URL_SAFE_NO_PAD.encode(mac.as_ref())).into_bytes();
+        let chunks: Vec<&[u8]> = if content.is_empty() {
+            vec![&[]]
+        } else {
+            content.chunks(CHUNK).collect()
+        };
+        for (index, chunk) in chunks.iter().enumerate() {
+            let mut chunk = chunk.to_vec();
+            payload
+                .seal_in_place_append_tag(
+                    nonce(index as u64, index + 1 == chunks.len()),
+                    aead::Aad::empty(),
+                    &mut chunk,
+                )
+                .unwrap();
+            file.extend_from_slice(&chunk);
+        }
+        file
+    }
+
     /// The content's named entries, in order, the manifest last.
     pub fn entries(content: &[u8]) -> Vec<(String, Vec<u8>)> {
         assert_eq!(&content[..16], b"TRELLIS-SERVICE\n");
@@ -276,6 +308,54 @@ mod bundle {
         entries
     }
 
+    /// Content of `entries`, with a manifest that lists them as they now are.
+    pub fn content(mut entries: Vec<(String, Vec<u8>)>) -> Vec<u8> {
+        let at = entries
+            .iter()
+            .position(|(name, _)| name == "manifest.json")
+            .unwrap();
+        let (_, manifest) = entries.remove(at);
+        let mut manifest: Value = serde_json::from_slice(&manifest).unwrap();
+        manifest["entries"] = entries
+            .iter()
+            .map(|(name, bytes)| {
+                let sha256: String = Sha256::digest(bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                json!({ "name": name, "size": bytes.len(), "sha256": sha256 })
+            })
+            .collect();
+        entries.push((
+            "manifest.json".into(),
+            serde_json::to_vec(&manifest).unwrap(),
+        ));
+        let mut content = b"TRELLIS-SERVICE\n".to_vec();
+        content.extend_from_slice(&1u32.to_be_bytes());
+        for (name, bytes) in entries {
+            content.extend_from_slice(&u16::try_from(name.len()).unwrap().to_be_bytes());
+            content.extend_from_slice(name.as_bytes());
+            for chunk in bytes.chunks(CHUNK) {
+                content.extend_from_slice(&u32::try_from(chunk.len()).unwrap().to_be_bytes());
+                content.extend_from_slice(chunk);
+            }
+            content.extend_from_slice(&0u32.to_be_bytes());
+        }
+        content
+    }
+
+    /// The JSON document `name` among `entries`.
+    pub fn document(entries: &[(String, Vec<u8>)], name: &str) -> Value {
+        let (_, bytes) = entries.iter().find(|(entry, _)| entry == name).unwrap();
+        serde_json::from_slice(bytes).unwrap()
+    }
+
+    /// Replace the JSON document `name` among `entries`.
+    pub fn set_document(entries: &mut [(String, Vec<u8>)], name: &str, value: &Value) {
+        let (_, bytes) = entries.iter_mut().find(|(entry, _)| entry == name).unwrap();
+        *bytes = serde_json::to_vec(value).unwrap();
+    }
+
     /// The SHA-256 of a file, in lowercase hex, as import's `--digest` takes it.
     pub fn digest(file: &[u8]) -> String {
         Sha256::digest(file)
@@ -283,6 +363,14 @@ mod bundle {
             .map(|byte| format!("{byte:02x}"))
             .collect()
     }
+}
+
+/// Seal `entries` as a bundle file at `out`, and return its digest.
+fn write_bundle(entries: Vec<(String, Vec<u8>)>, passphrase: &Path, out: &Path) -> String {
+    let passphrase = std::fs::read_to_string(passphrase).unwrap();
+    let file = bundle::seal(&bundle::content(entries), passphrase.trim_end());
+    std::fs::write(out, &file).unwrap();
+    bundle::digest(&file)
 }
 
 /// The entries of the bundle file at `file`.
@@ -309,6 +397,20 @@ async fn export(cli: &Cli, id: &str, out: &Path, passphrase: &Path) -> String {
         .as_str()
         .unwrap()
         .to_owned()
+}
+
+/// Import `file` with the production CLI.
+async fn import(cli: &Cli, file: &Path, digest: &str, passphrase: &Path) -> std::process::Output {
+    cli.run(&[
+        "svc",
+        "import",
+        path(file),
+        "--digest",
+        digest,
+        "--passphrase-file",
+        path(passphrase),
+    ])
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -726,6 +828,106 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 
+    lifecycle.stop();
+    running.await.unwrap().unwrap();
+    new.shutdown().await.unwrap();
+    old.shutdown().await.unwrap();
+}
+
+/// A bundle whose deployment has no instance that can run stops before it
+/// prepares the resources and queues the waiting jobs. Once an instance is
+/// provisioned in the new installation, running the same bundle again
+/// finishes: the waiting job runs on the new instance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_import_waiting_for_an_instance_finishes_once_one_is_provisioned() {
+    let mut old = TrellisTestRuntime::builder().start().await.unwrap();
+    let mut new = TrellisTestRuntime::builder().start().await.unwrap();
+    let (old_cli, new_cli) = (Cli::login(&mut old).await, Cli::login(&mut new).await);
+    let identity = old
+        .register_service::<Participant>("waiting")
+        .await
+        .unwrap();
+    let deployment = identity.deployment_id().to_owned();
+    old.set_config(
+        &identity,
+        json!({ "label": "waiting label" }),
+        json!({ "apiKey": "hook-key-0123456789" }),
+    )
+    .await
+    .unwrap();
+    let mut service = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let job = Provider::new(&mut service)
+        .jobs_client()
+        .create_work(payload("work for later"))
+        .await
+        .unwrap();
+    let job_id = job.identity().id.clone();
+    drop(job);
+    drop(service);
+    let work = old.workdir().join("move");
+    std::fs::create_dir_all(&work).unwrap();
+    let passphrase = work.join("passphrase");
+    std::fs::write(&passphrase, "a long enough passphrase\n").unwrap();
+    let exported = work.join("waiting.trellis-service");
+    export(&old_cli, &deployment, &exported, &passphrase).await;
+    // What an export writes once every instance has been retired: no
+    // instance moves, the waiting job does.
+    let mut entries = read_bundle(&exported, &passphrase);
+    let mut instances = bundle::document(&entries, "instances.json");
+    instances["instances"] = json!([]);
+    bundle::set_document(&mut entries, "instances.json", &instances);
+    let bundle_file = work.join("no-instance.trellis-service");
+    let digest = write_bundle(entries, &passphrase, &bundle_file);
+
+    let first = import(&new_cli, &bundle_file, &digest, &passphrase).await;
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let provisioned = new_cli.json(&["svc", &deployment, "provision"]).await;
+    let seed = provisioned["instanceSeed"].as_str().unwrap().to_owned();
+    let again = import(&new_cli, &bundle_file, &digest, &passphrase).await;
+    assert!(
+        again.status.success(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    let again: Value = serde_json::from_slice(&again.stdout).unwrap();
+    assert_eq!(again["import"]["resumed"], true);
+
+    let mut service = tokio::time::timeout(
+        Duration::from_secs(60),
+        Participant::connect(options(&new, &seed).await),
+    )
+    .await
+    .expect("the provisioned instance connects")
+    .unwrap();
+    let mut provider = Provider::new(&mut service);
+    let (ran, mut runs) = tokio::sync::mpsc::unbounded_channel();
+    provider
+        .register_work(move |job| {
+            let ran = ran.clone();
+            async move {
+                let _ = ran.send(job.id().to_owned());
+                Ok::<_, JobProcessError<String>>(job.payload().clone())
+            }
+        })
+        .await
+        .unwrap();
+    provider
+        .runtime_trellis_moving_v1()
+        .register_ping(|_, input| async move { Ok(input) });
+    let lifecycle = service.lifecycle();
+    let running = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the imported service serves");
+    let ran_id = tokio::time::timeout(Duration::from_secs(30), runs.recv())
+        .await
+        .expect("the waiting job runs once the import finishes")
+        .unwrap();
+    assert_eq!(ran_id, job_id);
     lifecycle.stop();
     running.await.unwrap().unwrap();
     new.shutdown().await.unwrap();

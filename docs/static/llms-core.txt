@@ -322,8 +322,8 @@ ask for confirmation naming the installation (`-f` skips it).
 deployment ID or participant already deployed, or an instance key,
 enrollment secret or webhook URL already in use; it keeps the deployment,
 instance and resource IDs, so KV revisions, job subjects and webhook paths
-are unchanged, and a run that stopped while loading data finishes when run
-again. It creates no roles or grants: its report lists the roles and direct
+are unchanged, and a run that stopped while loading data, or for want of an
+active instance, finishes when run again. It creates no roles or grants: its report lists the roles and direct
 grants of the service's APIs to recreate, the webhook URLs at the new origin,
 and what stayed behind (job and settings history, unconsumed events,
 Operations). Both need `users.manage` and `config.manageSecrets`
