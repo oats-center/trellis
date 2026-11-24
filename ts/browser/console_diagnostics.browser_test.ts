@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { rename } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { chromium } from "playwright";
@@ -28,10 +29,12 @@ import {
 // Trellis with its version and certificate. A service then connects without
 // its required settings; checking again names the deployment and the settings
 // it waits for. Two deployments with one title each keep their own row, told
-// apart by ID, across checks. A user without the diagnostics capability gets
-// no Diagnostics item. This catches a page that shows a stale or partial
-// report, misses a waiting instance, merges or swaps rows that share a title,
-// or is offered to users who cannot read it.
+// apart by ID, across checks. With the served certificate's file gone, the
+// page says TLS is served with a certificate it couldn't read. A user without
+// the diagnostics capability gets no Diagnostics item. This catches a page
+// that shows a stale or partial report, misses a waiting instance, merges or
+// swaps rows that share a title, calls an unreadable TLS certificate plain
+// HTTP, or is offered to users who cannot read it.
 test("Diagnostics shows the installation's state and names what needs attention", async () => {
   await withTrellisRuntime(async (runtime) => {
     const credentials = {
@@ -164,6 +167,35 @@ test("Diagnostics shows the installation's state and names what needs attention"
         await echo.stop();
       }
 
+      // The served certificate's file goes away while the listener keeps
+      // serving TLS from memory. The page says Trellis serves TLS with a
+      // certificate it couldn't read, with the finding, never plain HTTP.
+      const served = join(runtime.workdir, "certificates", "server.crt");
+      await rename(served, `${served}.moved`);
+      try {
+        const certificates = page.getByTestId("diagnostics-certificates");
+        const unreadable = certificates.getByText(
+          "the served certificate cannot be read",
+          { exact: false },
+        );
+        await runtime.waitFor(
+          async () => {
+            await page.getByRole("button", { name: "Check again" }).click();
+            await page
+              .locator("button:not([disabled])", { hasText: "Check again" })
+              .waitFor();
+            return (await unreadable.count()) > 0;
+          },
+          { timeoutMs: 30_000 },
+        );
+        await certificates.getByText("Problem", { exact: true }).waitFor();
+        await certificates
+          .getByText("Trellis, with a certificate that couldn't be read")
+          .waitFor();
+        assert.equal(await certificates.getByText(/plain HTTP/).count(), 0);
+      } finally {
+        await rename(`${served}.moved`, served);
+      }
       await assertNoBrowserErrors(errors);
     } finally {
       await context.close();

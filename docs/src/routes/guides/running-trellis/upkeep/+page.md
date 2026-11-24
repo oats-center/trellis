@@ -36,7 +36,9 @@ attention:
   below 10% free and a problem below 5%.
 - **Certificates**: the subject, issuer and expiry of the certificate the
   Trellis listener serves, and of the CA behind a generated one; a warning
-  within 30 days of expiry and a problem once expired.
+  within 30 days of expiry and a problem once expired. A certificate file the
+  server can't read is a problem too; the listener keeps serving TLS with the
+  certificate it loaded, and the Console says so rather than plain HTTP.
 - **Recent server failures**: the last 20 failures the server showed someone
   as a reference, with the route, code and error from their log line. A
   failure in the last hour is a warning. The server keeps the last 50 in

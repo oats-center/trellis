@@ -57,6 +57,25 @@
     return `${bytes(value.used)} used, ${bytes(value.reserved)} reserved ${limit}`;
   }
 
+  /**
+   * Who serves HTTPS when no certificate is listed. A TLS listener whose
+   * certificate couldn't be read still serves TLS; its finding says why.
+   */
+  function servedBy(certificates: Report["certificates"]): string {
+    switch (certificates.transport) {
+      case "proxy":
+        return "The proxy in front of Trellis";
+      case "loopbackDevelopment":
+        return "None: plain HTTP on this computer only";
+      case "tls":
+        return certificates.findings.length > 0
+          ? "Trellis, with a certificate that couldn't be read"
+          : "Trellis";
+      default:
+        return certificates.transport;
+    }
+  }
+
   function uptime(seconds: bigint): string {
     const total = boundedNumber(seconds);
     const days = Math.floor(total / 86_400);
@@ -261,14 +280,7 @@
       {@render heading("Certificates", report.certificates)}
       {@render fields(
         report.certificates.certificates.length === 0
-          ? [
-              [
-                "Served by",
-                report.certificates.transport === "proxy"
-                  ? "The proxy in front of Trellis"
-                  : "None: plain HTTP on this computer only",
-              ],
-            ]
+          ? [["Served by", servedBy(report.certificates)]]
           : report.certificates.certificates.map((certificate) => [
               certificate.role === "served" ? "Served" : "Issuing CA",
               `${certificate.subject}, expires ${formatDate(certificate.notAfter)}`,
