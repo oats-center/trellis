@@ -104,7 +104,9 @@ test("M02 a server whose OTLP collector never answers stops within its shutdown 
   // The collector accepts connections and never replies, so every export
   // waits out its whole timeout, including the final one at shutdown.
   const sockets = new Set<Socket>();
+  let exporting = false;
   const collector = createNetServer((socket) => {
+    exporting = true;
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
     socket.resume();
@@ -113,7 +115,6 @@ test("M02 a server whose OTLP collector never answers stops within its shutdown 
   await once(collector, "listening");
   const address = collector.address();
   assert(address && typeof address !== "string");
-  const exporting = once(collector, "connection");
   const shutdownMs = 10_000;
   try {
     const runtime = await startTrellisRuntime({
@@ -136,7 +137,14 @@ test("M02 a server whose OTLP collector never answers stops within its shutdown 
       },
     });
     try {
-      await exporting;
+      // An exporter that never connects fails here, not at the job timeout.
+      await runtime
+        .waitFor(() => exporting, { timeoutMs: 30_000 })
+        .catch((error: unknown) => {
+          throw new Error(
+            `the OTLP exporter never connected to the collector: ${String(error)}\n${runtime.controlPlaneOutput()}`,
+          );
+        });
       // A served request leaves spans queued for export too.
       await runtime.callAdminRpc("authUsersResolve", {});
       const started = Date.now();
