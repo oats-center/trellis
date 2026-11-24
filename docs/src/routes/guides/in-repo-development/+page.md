@@ -51,8 +51,10 @@ curl http://127.0.0.1:8222/healthz
   `npm run browser:embedded`, then restart the server. It serves the copies
   compiled into it, never the source folders. A development build of the
   server refuses to compile while those copies are older than their sources
-  (`web/`, `portal/` and the TypeScript SDK packages the Console uses), and
-  names the command to run.
+  (`web/`, `portal/` and the TypeScript SDK packages the Console uses),
+  including when a source file was only added, and names the command to run.
+  The sources are listed with Git, so in a source archive without `.git` both
+  the asset build and the server build warn and skip this check.
 - Contract changes: run `cargo xtask install`.
 - CLI changes: `cargo run -p trellis-cli -- <command>`, or
   `cargo install --path crates/cli` to replace your installed `trellis`.

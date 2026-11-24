@@ -315,7 +315,9 @@ The Pipeline's `upgrade` job checks this rule on every candidate, before the
 acceptance gate. It runs `integration/fixtures/testkit/tests/upgrade.rs` with
 the release build from the `build` job and the test binary from
 `build-fixtures`. The test downloads the newest published release no newer than
-the candidate, which is the release the candidate upgrades, and checks it
+the candidate, which is the release the candidate upgrades; for a stable
+candidate that is the newest such stable release when there is one. It reads
+every page of the GitHub release listing to find it, and checks the download
 against its published checksum. Through public APIs it creates a user who
 signs in through a role, a service with a setting, a secret and a webhook
 endpoint, KV and store data, a finished job, and an event its durable consumer

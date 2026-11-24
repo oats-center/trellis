@@ -127,58 +127,89 @@ async fn release_version(cache: &Path, upgraded: Option<&str>) -> Result<String,
             return Ok(cached.version.clone());
         }
     }
-    let releases =
-        match get("https://api.github.com/repos/oats-center/trellis/releases?per_page=50")
-            .await
-            .and_then(|bytes| {
-                serde_json::from_slice::<Vec<GithubRelease>>(&bytes).map_err(|cause| {
-                    error(
-                        TrellisTestErrorKind::InvalidConfiguration,
-                        cause.to_string(),
-                    )
-                })
-            }) {
-            Ok(releases) => releases,
-            Err(cause) => return cached.map(|cached| cached.version).ok_or(cause),
-        };
-    // GitHub lists releases newest first.
-    let mut published: Vec<_> = releases
-        .iter()
-        .filter(|release| !release.draft)
-        .filter_map(|release| {
-            let tag = release.tag_name.trim_start_matches('v');
-            Some((semver::Version::parse(tag).ok()?, release.prerelease))
-        })
-        .collect();
-    if let Some(upgraded) = &upgraded {
-        published.retain(|(version, _)| version <= upgraded);
-        published.sort_by(|a, b| b.0.cmp(&a.0));
+    let chosen = choose_release(RELEASES_PER_PAGE, upgraded.as_ref(), |page| async move {
+        get(&format!(
+            "https://api.github.com/repos/oats-center/trellis/releases\
+            ?per_page={RELEASES_PER_PAGE}&page={page}"
+        ))
+        .await
+    })
+    .await;
+    let version = match chosen {
+        Ok(chosen) => chosen.map(|version| version.to_string()),
+        Err(cause) => return cached.map(|cached| cached.version).ok_or(cause),
     }
-    let stable = upgraded
-        .as_ref()
-        .is_none_or(|upgraded| upgraded.pre.is_empty());
-    let version = published
-        .iter()
-        .find(|(_, prerelease)| stable && !prerelease)
-        .or_else(|| published.first())
-        .map(|(version, _)| version.to_string())
-        .ok_or_else(|| {
-            error(
-                TrellisTestErrorKind::MissingBinary,
-                match &upgraded {
-                    None => "oats-center/trellis has no published release".to_owned(),
-                    Some(upgraded) => {
-                        format!("oats-center/trellis has no published release up to {upgraded}")
-                    }
-                },
-            )
-        })?;
+    .ok_or_else(|| {
+        error(
+            TrellisTestErrorKind::MissingBinary,
+            match &upgraded {
+                None => "oats-center/trellis has no published release".to_owned(),
+                Some(upgraded) => {
+                    format!("oats-center/trellis has no published release up to {upgraded}")
+                }
+            },
+        )
+    })?;
     let latest = LatestRelease {
         version: version.clone(),
         checked_unix: now,
     };
     std::fs::write(&record, serde_json::json!(latest).to_string())?;
     Ok(version)
+}
+
+/// GitHub's largest release listing page.
+const RELEASES_PER_PAGE: usize = 100;
+
+/// Chooses the release to test against from every published release, reading
+/// the listing one page at a time (`page` is 1-based) until a page shorter than
+/// `per_page` ends it. Without `upgraded`, the newest stable release, else the
+/// newest release. With it, the newest release no newer than it, a stable
+/// `upgraded` taking the newest such stable release when there is one.
+///
+/// GitHub orders the listing by creation date, not version, so the whole
+/// listing is read before choosing.
+async fn choose_release<F, Fut>(
+    per_page: usize,
+    upgraded: Option<&semver::Version>,
+    mut page: F,
+) -> Result<Option<semver::Version>, TrellisTestError>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, TrellisTestError>>,
+{
+    let mut published = Vec::new();
+    for number in 1.. {
+        let releases = serde_json::from_slice::<Vec<GithubRelease>>(&page(number).await?).map_err(
+            |cause| {
+                error(
+                    TrellisTestErrorKind::InvalidConfiguration,
+                    cause.to_string(),
+                )
+            },
+        )?;
+        let count = releases.len();
+        published.extend(
+            releases
+                .into_iter()
+                .filter(|release| !release.draft)
+                .filter_map(|release| {
+                    let tag = release.tag_name.trim_start_matches('v');
+                    Some((semver::Version::parse(tag).ok()?, release.prerelease))
+                })
+                .filter(|(version, _)| upgraded.is_none_or(|upgraded| version <= upgraded)),
+        );
+        if count < per_page {
+            break;
+        }
+    }
+    published.sort_by(|a, b| b.0.cmp(&a.0));
+    let stable = upgraded.is_none_or(|upgraded| upgraded.pre.is_empty());
+    Ok(published
+        .iter()
+        .find(|(_, prerelease)| stable && !prerelease)
+        .or_else(|| published.first())
+        .map(|(version, _)| version.clone()))
 }
 #[derive(Deserialize)]
 struct NatsPin {
@@ -548,6 +579,51 @@ async fn install(
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// The listing GitHub returned at 50 releases a page: 53 release
+    /// candidates, reduced to the fields kept per release.
+    const RECORDED_PAGES: [&[u8]; 2] = [
+        include_bytes!("testdata/github-releases-page-1.json"),
+        include_bytes!("testdata/github-releases-page-2.json"),
+    ];
+
+    async fn choose_from(
+        pages: &[Vec<u8>],
+        upgraded: &str,
+    ) -> Result<Option<semver::Version>, TrellisTestError> {
+        let upgraded = semver::Version::parse(upgraded).unwrap();
+        choose_release(50, Some(&upgraded), |page| {
+            std::future::ready(Ok(pages[page - 1].clone()))
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn the_previous_release_is_found_beyond_the_first_listing_page() {
+        let recorded = RECORDED_PAGES.map(<[u8]>::to_vec);
+        // All 50 releases on the first page are newer than rc.4.
+        assert_eq!(
+            choose_from(&recorded, "0.100.0-rc.4").await.unwrap(),
+            Some(semver::Version::parse("0.100.0-rc.4").unwrap())
+        );
+
+        // A stable release older than every release candidate, listed last:
+        // a stable candidate upgrades it, not the newest release candidate.
+        let mut last: Vec<serde_json::Value> = serde_json::from_slice(&recorded[1]).unwrap();
+        last.push(serde_json::json!({
+            "tag_name": "v0.99.0",
+            "name": "v0.99.0",
+            "draft": false,
+            "prerelease": false,
+            "created_at": "2026-10-01T00:00:00Z",
+            "published_at": "2026-10-01T00:00:00Z",
+        }));
+        let with_stable = [recorded[0].clone(), serde_json::to_vec(&last).unwrap()];
+        assert_eq!(
+            choose_from(&with_stable, "0.100.0").await.unwrap(),
+            Some(semver::Version::parse("0.99.0").unwrap())
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn verified_download_serializes_installation_and_repairs_cached_executables_offline() {
