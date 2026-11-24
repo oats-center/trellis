@@ -370,10 +370,26 @@ field per setting. Services read it through `Provider::new(&mut service).config(
 and devices through the generated client's `config()`; both return
 `trellis_rs::service::ConfigHandle<Config>`. `current()` decodes the values in
 effect, `revision()` names the deployment and instance revisions, and
-`changed().await` waits for the next live change. Restart-only fields keep their
+`changed().await` waits for the next accepted live change. Restart-only fields keep their
 connect-time value, and values for fields the build doesn't declare, or that
 don't fit its types, never reach `changed()`. `connect` returns only once every
-required field has a value that fits. Rust native apps have no settings handle.
+required field has a value that fits. Call `current()` at each use; a `Config`
+kept from an earlier call or cloned out of `changed()` keeps the values it was
+read from. `config.check(|c: &Config| -> Result<(), Rejection> { ... }).await?`
+checks every later revision before it takes effect;
+`trellis_rs::service::Rejection::new(["webhook_url"], "must be an https URL")`
+refuses named fields (snake_case or declared names), and any other error
+through `?` refuses every changed field. `let stripe =
+config.derive(["stripe_secret_key"], |c| Ok(Stripe::new(..))).await?` (or
+`derive_async` with an awaiting builder taking an owned `Config`) builds a
+value now and rebuilds it only when one of its fields changes;
+`stripe.current()` returns an `Arc<T>`. A failing builder rejects those fields
+and keeps the old value, and a replaced value drops after its replacement took
+effect. A rejected revision leaves `current()` as it was and never reaches
+`changed()`. Registering a check or derive tests the values in effect at once
+and waits, printing the fields, reasons, and Console link, until a revision
+passes; register them before `run()`.
+Rust native apps have no settings handle.
 In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
 stores values through `Auth.Config.Set`.
 

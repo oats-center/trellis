@@ -164,8 +164,9 @@ const stopWatching = service.config.onChange(({ current, changed }) => {
 `openPool` and `logger` stand for the service's own code. `current` holds the
 values in effect, secrets included. `revision` names the
 deployment and instance revisions behind them. `onChange(listener)` runs after
-an administrator changes a field that applies live and returns a function that
-removes the listener. A browser or native app gets `client.config` with the
+a revision that changes a field that applies live is accepted (see
+[Check settings before they apply](#check-settings-before-they-apply)) and
+returns a function that removes the listener. A browser or native app gets `client.config` with the
 same shape and `revision.app`.
 
 In Rust, the generated `Provider` returns a
@@ -187,8 +188,8 @@ tokio::spawn(async move {
 
 Field names are snake_case (`log_level`). `current()` decodes the values in
 effect. `revision()` returns the revisions
-behind them. `changed().await` waits for the next live change and returns the
-new values. The Rust SDK has no settings handle for apps.
+behind them. `changed().await` waits for the next accepted live change and
+returns the new values. The Rust SDK has no settings handle for apps.
 
 ### At connect
 
@@ -234,6 +235,131 @@ What reaches `onChange` and `changed()`:
 
 A running instance reads through the declaration of the build it runs. A newer
 build installed for the deployment doesn't change what an older instance reads.
+
+### Read settings at each use
+
+`config.current` always holds the revision accepted last, so reading it where
+the value is used is how a service follows live settings. A copy taken once
+keeps the values it was copied from:
+
+```ts
+// Follows changes: read where it is used.
+function headers() {
+  return { authorization: `Bearer ${service.config.current.apiKey}` };
+}
+
+// Pinned: this constant keeps the key the service started with.
+const apiKey = service.config.current.apiKey;
+```
+
+The same goes for a value built from settings: read a derived value's
+`current` at each use, not a copy of it. In Rust, `config.current()` decodes
+the values in effect each time it is called, and a `Config` kept from an
+earlier call, or cloned out of `changed()`, keeps the values it was read from.
+
+### Check settings before they apply
+
+A live change takes effect in two steps. First the service's checks and
+derive builders run against the candidate values. If any of them refuses,
+the revision is rejected: `current` keeps the values accepted last, no
+`onChange` listener runs, and `changed()` returns nothing. Only an accepted
+revision changes the values and reaches `onChange`. A listener that throws is
+logged; it never rejects a revision.
+
+```ts
+await service.config.check((candidate, { reject }) => {
+  if ((candidate.awsKeyId === null) !== (candidate.awsSecret === null))
+    reject(["awsKeyId", "awsSecret"], "set both or neither");
+});
+
+const stripe = await service.config.derive(
+  ["stripeSecretKey"],
+  (candidate) => new Stripe(candidate.stripeSecretKey),
+  { dispose: (old) => old.close() },
+);
+// At each use:
+await stripe.current.charges.create(charge);
+```
+
+A check calls `reject(fields, reason)` for each problem it finds and may be
+async. A check that throws rejects every field the candidate changes, with
+the error's message. `derive(fields, build, { dispose })` builds its first
+value from the settings in effect. After that it rebuilds only during the
+check step of a revision that changes one of `fields`; a revision that changes
+other fields keeps the value. A builder that throws rejects that revision for
+`fields` and keeps the old value. `dispose` receives a replaced value after
+its replacement took effect. `context.changed` lists the fields the candidate
+changes.
+
+In Rust:
+
+```rust
+use trellis_rs::service::Rejection;
+
+let config = Provider::new(&mut service).config();
+config
+    .check(|c: &Config| {
+        if c.webhook_url.starts_with("https://") {
+            Ok(())
+        } else {
+            Err(Rejection::new(["webhook_url"], "must be an https URL"))
+        }
+    })
+    .await?;
+let stripe = config
+    .derive(["stripe_secret_key"], |c| Ok(Stripe::new(&c.stripe_secret_key)))
+    .await?;
+stripe.current().charge(&order).await?; // Arc<Stripe>, read at each use
+```
+
+`Rejection::new(fields, reason)` names fields as the generated struct does
+(`webhook_url`) or as declared (`webhookUrl`). Any other error, through `?`,
+rejects every changed field with its message. `derive_async` takes a builder
+that awaits, such as one that opens a connection. A replaced derived value is
+dropped once its replacement took effect and no caller holds it.
+`changed().await` yields only accepted revisions.
+
+Browser and native apps get `check` and `derive` on `client.config` too. A
+rejection keeps the app's values as they were; apps have no instances, so
+nothing is reported to Auth.
+
+### At startup
+
+Registering a check or a derive checks the values in effect at once. If they
+pass, the `await` returns. If they don't, it keeps waiting: the service prints
+which fields were refused and why, with a link to its Settings section and the
+same link as a QR code, and reports the rejection to Auth. The `await` returns
+once an administrator saves a revision that passes.
+
+```text
+orders-service rejected its settings: webhookUrl: must be an https URL
+It waits for settings that pass.
+Fix them at https://trellis.example/console/admin/services/<deployment>#settings
+or scan:
+<QR code>
+```
+
+Register checks and derives before `service.wait()` (or `run()` in Rust).
+While a registration waits, the service has not started serving, so its
+readiness stays at starting. A `restart` field never changes live, so a check
+that refuses one waits until the instance restarts with a fixed value.
+
+### What each instance did with its settings
+
+Each instance tells Auth what became of every revision it reads, with
+`Config.Own.Report`. `Config.Get` returns it per instance as `settings`:
+
+- `applied`: the instance accepted the newest revision.
+- `rejected`: one of its checks or derive builders refused it. `fields` and
+  `reason` say why, and the instance keeps the values it accepted last.
+- `pending`: the instance hasn't read the newest revision yet. A running
+  instance reads it within seconds; a stopped one reads it when it next
+  starts.
+
+Saving never waits for instances, and a rejected revision stays stored, so
+`config rollback` can undo it. While the newest revision is rejected, the
+instance's `settings` health check is degraded with the reason, which makes the
+instance degraded. It recovers with the next accepted revision.
 
 ### In tests
 
@@ -295,6 +421,9 @@ prints opens it.
   it first asks you to confirm, since you restart the service yourself.
 - **Earlier versions** lists older revisions, each with **Restore** and
   **Delete**.
+- **Instances** lists each instance with **Applied**, **Rejected**, or
+  **Waiting** for the newest settings. An instance that rejected them gets a
+  warning naming the fields and its reason.
 
 **Add service** takes settings too. With an IDL chosen, it shows the IDL's
 fields. Without one, it takes the same name-and-value rows. They are saved right
@@ -307,18 +436,22 @@ the form says to set them on its page.
 config` on a device type, and `trellis clients config CLIENT` on an app. The
 service ID can be a deployment's ID or title, or a waiting claim's.
 
-| Command                           | What it does                                                                                                |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `config` or `config show`         | Each setting with its value, where it comes from, and notes (required, applies after restart, doesn't fit). |
-| `config set FIELD=VALUE ...`      | Set one or more settings in one revision.                                                                   |
-| `config set --null FIELD`         | Store null for a setting whose type allows it. Repeat for several.                                          |
-| `config set-secret FIELD`         | Set a secret: asked for on a terminal, or read from standard input or a file with `--from-file PATH`.       |
-| `config set-secret FIELD --null`  | Store null for a secret whose type allows it.                                                               |
-| `config reveal FIELD`             | Print a saved secret to standard output. Needs `config.manageSecrets`, and each reveal is recorded.         |
-| `config unset FIELD ...`          | Remove stored values, so the default applies, or the deployment's value for an instance.                    |
-| `config history`                  | Revisions, newest first, with what each changed, when, and by whom. Secrets are listed by name.             |
-| `config rollback REVISION`        | Write an earlier revision's values as a new revision.                                                       |
-| `config delete-revision REVISION` | Delete an earlier revision. Not the current one, nor one a build still takes a value from.                  |
+| Command                               | What it does                                                                                                                                                      |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config` or `config show`             | Each setting with its value, where it comes from, and notes (required, applies after restart, doesn't fit), then what each instance did with the newest settings. |
+| `config set FIELD=VALUE ...`          | Set one or more settings in one revision.                                                                                                                         |
+| `config set --null FIELD`             | Store null for a setting whose type allows it. Repeat for several.                                                                                                |
+| `config set ... --secret FIELD=@PATH` | Set secrets from files in the same revision as the settings. `@-` reads standard input. Repeat for several.                                                       |
+| `config set --values-file PATH`       | Set the settings in a JSON object, in the same revision as the rest of the command.                                                                               |
+| `config set --env-file PATH`          | Set the settings in `NAME=VALUE` lines, read as `FIELD=VALUE` arguments are.                                                                                      |
+| `config set-secret FIELD`             | Set a secret: asked for on a terminal, or read from standard input or a file with `--from-file PATH`.                                                             |
+| `config set-secret FIELD=@PATH ...`   | Set several secrets from files in one revision. `--env-file PATH` takes every line as a secret.                                                                   |
+| `config set-secret FIELD --null`      | Store null for a secret whose type allows it.                                                                                                                     |
+| `config reveal FIELD`                 | Print a saved secret to standard output. Needs `config.manageSecrets`, and each reveal is recorded.                                                               |
+| `config unset FIELD ...`              | Remove stored values, so the default applies, or the deployment's value for an instance.                                                                          |
+| `config history`                      | Revisions, newest first, with what each changed, when, and by whom. Secrets are listed by name.                                                                   |
+| `config rollback REVISION`            | Write an earlier revision's values as a new revision.                                                                                                             |
+| `config delete-revision REVISION`     | Delete an earlier revision. Not the current one, nor one a build still takes a value from.                                                                        |
 
 `--instance INSTANCE`, by instance ID or title, works with every subcommand and
 selects that instance's overrides. A waiting claim has no instances yet, and
@@ -340,6 +473,30 @@ After a write the CLI prints the saved revision and shows the settings again,
 with what Auth reports about them. The CLI doesn't check types itself. Fields
 that are still missing are listed as ones the instances wait for, with the
 command to set the first.
+
+Each command writes one revision, so values that only make sense together,
+such as a key ID and its secret, reach the service in one change:
+
+```sh
+trellis svc orders config set level=debug --secret awsKeyId=@key.txt --secret awsSecret=@secret.txt
+trellis svc orders config set --env-file orders.env --secret-keys partnerToken
+trellis svc orders config set-secret awsKeyId=@key.txt awsSecret=@secret.txt
+```
+
+In `--values-file` and `--env-file`, a field the installed build declares
+secret is stored as a secret without being marked, since Auth refuses a plain
+value for it. `--secret-keys a,b` marks others as secrets, such as fields no
+installed build declares yet; every other key is a plain setting. A secret is
+never given as `FIELD=VALUE` on the command line, where shell history and the
+process list would keep it: `set` refuses that for a declared secret and
+names `--secret FIELD=@PATH`. An env file skips blank lines and `#` comments,
+ignores a leading `export `, and takes a value in single quotes as written or
+in double quotes with `\n`, `\"` and `\\` escapes. A field named twice in one
+command is refused.
+
+`trellis svc <ID> instances` shows the same status in its Settings column:
+`applied r12`, `rejected r13: awsSecret: set both or neither`, or
+`pending r13`.
 
 ```sh
 trellis svc orders config set databaseUrl=postgres://db.internal/orders logLevel=debug

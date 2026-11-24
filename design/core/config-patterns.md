@@ -41,7 +41,9 @@ for example with `trellis clients put --source`.
   the deployment.
 - The participant decides how to apply a change. Trellis tells it a newer
   revision exists; it swaps a log level in place or rebuilds a connection pool.
-  A field it cannot apply live is declared `restart`.
+  A field it cannot apply live is declared `restart`. It may also refuse a
+  revision its own checks reject, and Trellis shows that refusal where
+  administrators look.
 - No environment fallback. A second path would live forever and every service
   would pick its own precedence. Local development and tests set settings
   through the same RPCs production uses.
@@ -183,11 +185,12 @@ returns the effective values, secrets included, and records the revisions the
 instance loaded. The participant sees them through a typed handle:
 
 - TypeScript services and devices: `service.config` / `device.config`, with
-  `current`, `revision`, and `onChange(listener)`.
+  `current`, `revision`, `onChange(listener)`, `check`, and `derive`.
 - Rust services: the generated `Provider::config()`; Rust devices: the
   generated client's `config()`. Both return a `ConfigHandle<Config>` whose
-  `current()` decodes the generated `Config` struct and whose `changed()` waits
-  for the next live change.
+  `current()` decodes the generated `Config` struct, whose `changed()` waits
+  for the next accepted live change, and which has `check`, `derive`, and
+  `derive_async` (see [Checks and derived values](#checks-and-derived-values)).
 
 `Config.Changed` carries the target and its current revision, never values. Every
 service and device may subscribe to it, so the event only prompts the SDK to read
@@ -220,6 +223,71 @@ value for one of its `restart` fields. Values for fields that build doesn't
 declare, or that don't fit it, never count, so setting values for the next
 build doesn't ask anyone to restart the current one. Trellis never restarts anything:
 podman, systemd, or whatever runs the process owns its lifecycle.
+
+## Checks and derived values
+
+A live change takes effect in two steps. The participant's checks and derive
+builders run first, against the candidate values: the values in effect with
+the reading's live fields laid over them. If any refuses, the revision is
+rejected. The values in effect stay the ones accepted last, no `onChange`
+listener runs, and the Rust watcher yields nothing. Only an accepted revision
+switches the values, swaps derived values in, and then runs `onChange`. A
+listener's failure is logged and never turns into a rejection, since by then
+the revision has taken effect.
+
+- TypeScript: `config.check((candidate, { reject, changed }) => ...)` and
+  `config.derive(fields, build, { dispose })`, whose result has `current`.
+  `reject(fields, reason)` refuses named fields; a throw refuses every changed
+  field with its message. Apps share the same handle, so `client.config` has
+  both too, without reporting.
+- Rust: `ConfigHandle::check(|c| -> Result<(), Rejection>)`,
+  `derive(fields, |c| Ok(..))`, and `derive_async`, whose `Derived<T>`
+  returns an `Arc<T>` from `current()`. Fields are named as the generated
+  struct names them or as declared. Any `std::error::Error` converts to a
+  rejection of every changed field.
+
+A derived value is built at registration from the values in effect. After that
+it is rebuilt only when a revision changes one of its fields, during the check
+step, so a failing builder rejects the revision for those fields and the old
+value stays. A replaced value is disposed (TypeScript) or dropped (Rust) after
+its replacement took effect. Builders run only once every check has passed,
+so a refused revision builds nothing.
+
+Registration is how startup waits. Registering a check or derive tests the
+values in effect immediately. If they fail, the registration's `await` waits:
+the participant prints the rejected fields and reasons with the Console link
+and QR code, as for a missing value, reports the rejection, and the `await`
+returns once a revision passes. While a registration waits, every reading is
+checked, changed or not. The service has not reached `wait()` or `run()`, so
+it is not serving and its readiness stays at starting.
+
+Settings work live only when read at each use: `config.current`, a derived
+`current`, or Rust's `current()`. A copy kept in a module-level constant, or a
+`Config` cloned out of the watcher, keeps the values it was copied from.
+
+## Reported outcomes
+
+After each reading the SDK calls `Config.Own.Report` with the revisions it read
+and whether it applied them or its checks rejected them, with the refused
+fields and the reason. A repeat of the last confirmed report is not sent
+again, and a failed report is sent with the next reading. `config.readOwn`
+allows it. Auth keeps one row per instance in `auth_config_reports`.
+
+`Config.Get` returns each instance's `settings` as `{ revision,
+instanceRevision, state, fields, reason, at }`. A report on the instance's
+current deployment and instance revisions stands as `applied` or `rejected`.
+Anything else is `pending` with the current revisions and the time the newest
+was saved: the instance hasn't read them yet. So pending needs no write when a
+revision is saved, and a stopped instance shows pending until it starts and
+reads. Saving never waits for instances, and a rejected revision stays
+stored, so a rollback can undo it. An instance whose build declares no
+settings has no `settings`.
+
+The SDK also adds a `settings` health check, the way it adds a
+`webhook:<endpoint>` check per endpoint. It is degraded with the reason while
+the newest revision is rejected and turns ok with the next accepted one. A
+change of outcome publishes a heartbeat at once, so a running instance shows a
+rejection within seconds.
 
 ## Missing configuration
 
@@ -309,6 +377,7 @@ settings screen:
 | `Config.Rollback`         | Write an earlier revision's values as a new revision.                                                                                                          |
 | `Config.Secrets.Reveal`   | Show one stored secret to a holder of `config.manageSecrets`. Audited without the value and rate-limited per administrator.                                    |
 | `Config.Own.Get`          | The calling service or device reads its own effective values.                                                                                                  |
+| `Config.Own.Report`       | The calling service or device reports whether it applied the revision it read or its checks rejected it.                                                       |
 | `Config.Changed` (event)  | A target's settings changed.                                                                                                                                   |
 
 The target is `{ deploymentId }`, `{ deploymentId, instanceId }`,
@@ -378,6 +447,19 @@ stores null for a secret whose type allows it, such as an instance that should
 go without a secret its deployment has; `unset` instead returns the field to
 the deployment's value or, failing that, null.
 
+Each command writes one revision through one `Config.Set`, so related values
+arrive in one change. `set` takes plain `FIELD=VALUE` arguments together with
+`--secret FIELD=@PATH` (repeatable, `@-` for standard input), `--values-file`
+(a JSON object), and `--env-file` (`NAME=VALUE` lines). A field from a file is
+stored as a secret when the installed build declares it secret, which is the
+safe default since Auth refuses a plain value for one, or when
+`--secret-keys` names it; every other is plain. A declared secret given as
+`FIELD=VALUE` is refused before anything is sent. `set-secret` takes one
+`FIELD` as before, or several `FIELD=@PATH`, or `--env-file` with every line
+a secret. `show` lists what each instance did with the newest settings, and
+`trellis svc <ID> instances` has a Settings column: `applied r12`,
+`rejected r13: awsSecret: set both or neither`, or `pending r13`.
+
 A service ID or title that names a waiting claim targets the claim, so
 settings can be set before the service connects. `show` lists values the build
 doesn't use and marks values that don't fit it.
@@ -389,7 +471,9 @@ for the declared values, the values the build doesn't use in their own
 section, each removable after a confirmation, rows to add settings by name and
 value (text, number, on or off, or JSON, optionally secret), the instance
 selector (offered whenever the deployment has an instance), the restart
-notice, and earlier versions to restore or delete. The form reads each field's
+notice, each instance's outcome for the newest settings (applied, rejected
+with its fields and reason, or waiting), and earlier versions to restore or
+delete. The form reads each field's
 JSON Schema, described with the IDL's doc comments, and gives it an input of
 its type: a switch for `bool`, a bounded number input, a choice for an enum
 (open, so it also takes another value), typed rows for `list<T>` that can be

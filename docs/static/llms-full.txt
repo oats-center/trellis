@@ -1511,10 +1511,27 @@ connect the SDK reads the values before handlers start; while a required value
 is missing or doesn't fit, the participant prints which, a Console link, and a
 QR code, and waits until it is fixed. Live fields follow
 changes without a restart, a `restart` field keeps its connect-time value, and
-per-instance overrides take precedence over the deployment's values.
+per-instance overrides take precedence over the deployment's values. Live
+settings work only when code reads the current values at each use; a copy
+taken once keeps the values it was taken from. A change takes effect in two
+steps: the participant's checks and derive builders run against the candidate
+values first, and if any refuses, the revision is rejected and the values in
+effect stay the ones accepted last; only an accepted revision reaches change
+listeners. A derived value is rebuilt only when one of its own fields
+changes. Registering a check or derive tests the values in effect and waits,
+printing the reasons and Console link, until a revision passes. Each instance
+reports what it did with each revision (`Config.Own.Report`); `Config.Get`
+shows it per instance as `settings` (`applied`, `rejected` with `fields` and
+`reason`, or `pending` while it hasn't read the newest revision, such as when
+it is stopped), a rejection degrades the instance's `settings` health check
+until the next accepted revision, saving never waits for instances, and a
+rejected revision stays stored for `rollback`.
 Administrators use `trellis svc <ID> config` (`set FIELD=VALUE` or
-`set --null FIELD`,
-`set-secret FIELD --from-file PATH` or `--null`, `reveal FIELD`, `unset`,
+`set --null FIELD`, with `--secret FIELD=@PATH`, `--values-file PATH`,
+`--env-file PATH`, and `--secret-keys a,b` in the same revision (fields the
+build declares secret are secrets automatically),
+`set-secret FIELD --from-file PATH` or `--null`, `set-secret FIELD=@PATH ...`
+or `--env-file PATH` for several, `reveal FIELD`, `unset`,
 `history`, `rollback`, `delete-revision`, `--instance`), `trellis dev <ID>
 config` for device types, or the Console's Settings section, whose form types
 each input from the field's IDL type (lists, models, maps, switches, bounded
@@ -1534,6 +1551,7 @@ kept until an administrator deletes it with `delete-revision`, which is how a
 replaced secret stops existing; deleting a revision that holds a secret needs
 `config.manageSecrets`, and a revision a build in use still takes a fallback
 value from can't be deleted until a fitting value is set.
+`trellis svc <ID> instances` shows the outcome in a Settings column (`applied r12`, `rejected r13: awsSecret: set both or neither`, `pending r13`), as does the Console per instance.
 `Config.Get` reports `restartPending` for instances whose `restart` fields
 would now read differently; Trellis never restarts anything. Tests set values through the
 same RPCs, never through environment variables. App settings are public to
@@ -2206,9 +2224,25 @@ function. Restart-only fields never appear in `changed`, and neither does a
 change to a field the build doesn't declare or a value that doesn't fit its
 type. `TrellisService.connect` and `TrellisDevice.connect` resolve only once
 every required field has a value that fits.
+Read `config.current` (or a derived value's `current`) at each use; a copy
+in a module-level constant keeps the values it was copied from.
+`await config.check((candidate, { reject, changed }) => ...)` checks every
+later revision before it takes effect: `reject(["awsKeyId", "awsSecret"],
+"set both or neither")` refuses named fields, a throw refuses every changed
+field with its message, and the check may be async. `const stripe = await
+config.derive(["stripeSecretKey"], (c) => new Stripe(c.stripeSecretKey), {
+dispose: (old) => ... })` builds a value now and rebuilds it only when one of
+its fields changes; a builder that throws rejects those fields and keeps the
+old value, and `dispose` gets the replaced value after its replacement took
+effect. Use `stripe.current`. A rejected revision leaves `current` as it was
+and runs no `onChange` listener; a listener that throws is logged, never a
+rejection. Registering a check or derive tests the values in effect at once
+and, while they fail, keeps waiting (printing the fields, reasons, and Console
+link with a QR code) until a revision passes, so register them before
+`service.wait()`.
 Browser and native apps get `client.config` the same way, with
-`config.revision.app`; an app with settings never waits, since its fields have
-defaults. In the testkit, `runtime.services.createInstance({ ..., config: {
+`config.revision.app`, `check`, and `derive`; an app with settings never
+waits, since its fields have defaults, and its rejections are not reported. In the testkit, `runtime.services.createInstance({ ..., config: {
 values, secrets } })` stores initial values through `Auth.Config.Set`, and
 `runtime.registerClient` attaches an app's declaration to its client.
 
@@ -2759,10 +2793,26 @@ field per setting. Services read it through `Provider::new(&mut service).config(
 and devices through the generated client's `config()`; both return
 `trellis_rs::service::ConfigHandle<Config>`. `current()` decodes the values in
 effect, `revision()` names the deployment and instance revisions, and
-`changed().await` waits for the next live change. Restart-only fields keep their
+`changed().await` waits for the next accepted live change. Restart-only fields keep their
 connect-time value, and values for fields the build doesn't declare, or that
 don't fit its types, never reach `changed()`. `connect` returns only once every
-required field has a value that fits. Rust native apps have no settings handle.
+required field has a value that fits. Call `current()` at each use; a `Config`
+kept from an earlier call or cloned out of `changed()` keeps the values it was
+read from. `config.check(|c: &Config| -> Result<(), Rejection> { ... }).await?`
+checks every later revision before it takes effect;
+`trellis_rs::service::Rejection::new(["webhook_url"], "must be an https URL")`
+refuses named fields (snake_case or declared names), and any other error
+through `?` refuses every changed field. `let stripe =
+config.derive(["stripe_secret_key"], |c| Ok(Stripe::new(..))).await?` (or
+`derive_async` with an awaiting builder taking an owned `Config`) builds a
+value now and rebuilds it only when one of its fields changes;
+`stripe.current()` returns an `Arc<T>`. A failing builder rejects those fields
+and keeps the old value, and a replaced value drops after its replacement took
+effect. A rejected revision leaves `current()` as it was and never reaches
+`changed()`. Registering a check or derive tests the values in effect at once
+and waits, printing the fields, reasons, and Console link, until a revision
+passes; register them before `run()`.
+Rust native apps have no settings handle.
 In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
 stores values through `Auth.Config.Set`.
 
