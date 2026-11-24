@@ -435,11 +435,11 @@ echo "built in $(( SECONDS - started ))s; running ${jobs[*]} concurrently"
 
 # Concurrent local suites share a host. Nested consumer builds and Chromium
 # also start workers of their own. Standalone jobs keep their usual parallelism.
-cores="$(nproc)"
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(( (cores + 7) / 8 ))}"
-export NEXTEST_TEST_THREADS="${NEXTEST_TEST_THREADS:-$(( (cores + 7) / 8 ))}"
-export TRELLIS_BROWSER_CONCURRENCY="${TRELLIS_BROWSER_CONCURRENCY:-$(( (cores + 7) / 8 ))}"
-export TRELLIS_TEST_CONCURRENCY="${TRELLIS_TEST_CONCURRENCY:-$(( (cores + 3) / 4 ))}"
+jobs_per_suite=$(( ($(nproc) + 7) / 8 ))
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$jobs_per_suite}"
+export NEXTEST_TEST_THREADS="${NEXTEST_TEST_THREADS:-$jobs_per_suite}"
+export TRELLIS_BROWSER_CONCURRENCY="${TRELLIS_BROWSER_CONCURRENCY:-$jobs_per_suite}"
+export TRELLIS_TEST_CONCURRENCY="${TRELLIS_TEST_CONCURRENCY:-$jobs_per_suite}"
 
 declare -A pid
 for job in "${jobs[@]}"; do

@@ -16,9 +16,15 @@ const files = process.argv.slice(2).flatMap((directory) =>
   ].map((file) => resolve(directory, file)),
 );
 if (files.length === 0) throw new Error("No unit tests discovered");
+const concurrency = process.env.TRELLIS_TEST_CONCURRENCY;
 const result = spawnSync(
   process.execPath,
-  [...process.execArgv, "--test", ...new Set(files)],
+  [
+    ...process.execArgv,
+    "--test",
+    ...(concurrency ? [`--test-concurrency=${concurrency}`] : []),
+    ...new Set(files),
+  ],
   { stdio: "inherit" },
 );
 if (result.error) throw result.error;
