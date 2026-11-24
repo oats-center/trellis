@@ -99,10 +99,28 @@ fn generated_rust_sdk_reuses_the_trellis_models_cargo_resolves() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    // Its own Cargo home gives every registry crate another source path,
-    // which Cargo treats as a change; in a target directory shared with other
-    // fixtures each would rebuild the other's dependencies in place.
     let target = repository.join("target/codegen-consumers/cli-models");
+    fs::create_dir_all(&target).unwrap();
+    // Cargo fingerprints registry crates by source path. Keep this private
+    // Cargo home's path stable across runs, while giving each consumer fresh
+    // registry contents and its own project. A concurrent invocation must not
+    // replace the registry while this consumer is still compiling.
+    let home_lock = fs::File::options()
+        .create(true)
+        .append(true)
+        .open(target.join("consumer-home.lock"))
+        .unwrap();
+    home_lock.lock().unwrap();
+    let cargo_home = target.join("consumer-home");
+    if cargo_home.exists() {
+        fs::remove_dir_all(&cargo_home).unwrap();
+    }
+    let home_directory = tempfile::Builder::new()
+        .prefix("consumer-home")
+        .rand_bytes(0)
+        .tempdir_in(&target)
+        .unwrap();
+    let cargo_home = home_directory.path();
     let cli_version = env!("CARGO_PKG_VERSION");
     // trellis-models keeps its own version, which a release need not bump.
     let models_version = toml::from_str::<toml::Table>(
@@ -122,7 +140,6 @@ fn generated_rust_sdk_reuses_the_trellis_models_cargo_resolves() {
     // Cargo and generation share a Cargo home that holds the real registry
     // crates plus the copies this test adds. A dead proxy keeps every step
     // offline; only the local file:// git repository below is fetched.
-    let cargo_home = root.path().join("cargo-home");
     let real_home = std::env::var_os("CARGO_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::Path::new(&std::env::var_os("HOME").unwrap()).join(".cargo"));
@@ -145,7 +162,9 @@ fn generated_rust_sdk_reuses_the_trellis_models_cargo_resolves() {
             .args(args)
             .current_dir(root)
             .env("CARGO_TARGET_DIR", &target)
-            .env("CARGO_HOME", &cargo_home)
+            .env("CARGO_PROFILE_DEV_DEBUG", "0")
+            .env("CARGO_INCREMENTAL", "1")
+            .env("CARGO_HOME", cargo_home)
             .env("CARGO_HTTP_PROXY", "http://127.0.0.1:9")
             .output()
             .unwrap();
@@ -159,7 +178,7 @@ fn generated_rust_sdk_reuses_the_trellis_models_cargo_resolves() {
         let result = std::process::Command::new(env!("CARGO_BIN_EXE_trellis"))
             .args([command, "--root"])
             .arg(root)
-            .env("CARGO_HOME", &cargo_home)
+            .env("CARGO_HOME", cargo_home)
             .env("CARGO_HTTP_PROXY", "http://127.0.0.1:9")
             .output()
             .unwrap();
