@@ -31,7 +31,8 @@ Design the page around those answers, not around the shape of the API.
   type names, and API IDs are their content, shown as code, with each
   description beside them.
 - Show names, not IDs. When a record only has an ID, show a short, copyable
-  form and work toward giving it a name.
+  form and work toward giving it a name. Names need not be unique: records
+  that share one show their IDs beneath it, and lists key rows by ID.
 - No explanatory prose blocks. A page gets at most one short subtitle. If a
   control needs a paragraph to be understood, redesign the control.
 - Write copy as plain, short sentences: "You haven't allowed the Console to see

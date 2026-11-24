@@ -79,6 +79,17 @@
     unknown: "Unknown",
   };
 
+  /** Titles more than one deployment has, whose rows also show the ID. */
+  const sharedTitles = $derived.by(() => {
+    const seen = new Set<string>();
+    const shared = new Set<string>();
+    for (const { title } of report?.health.deployments ?? []) {
+      if (seen.has(title)) shared.add(title);
+      seen.add(title);
+    }
+    return shared;
+  });
+
   async function load(): Promise<void> {
     loading = true;
     error = null;
@@ -200,16 +211,27 @@
 
     <div class="trellis-section" data-testid="diagnostics-health">
       {@render heading("Health", report.health)}
-      {@render fields(
-        report.health.deployments.map((deployment) => [
-          deployment.title,
-          deployment.instances.length === 0
-            ? "No instances"
-            : deployment.instances
-                .map((instance) => STATES[instance.state] ?? instance.state)
-                .join(", "),
-        ]),
-      )}
+      <dl
+        class="grid gap-x-6 gap-y-2 px-4 pb-4 text-sm sm:grid-cols-[auto_1fr]"
+      >
+        {#each report.health.deployments as deployment (deployment.deploymentId)}
+          <dt class="text-base-content/60">
+            {deployment.title}
+            {#if sharedTitles.has(deployment.title)}
+              <span class="trellis-identifier block text-xs"
+                >{deployment.deploymentId}</span
+              >
+            {/if}
+          </dt>
+          <dd class="min-w-0 break-words">
+            {deployment.instances.length === 0
+              ? "No instances"
+              : deployment.instances
+                  .map((instance) => STATES[instance.state] ?? instance.state)
+                  .join(", ")}
+          </dd>
+        {/each}
+      </dl>
     </div>
 
     <div class="trellis-section" data-testid="diagnostics-jetstream">

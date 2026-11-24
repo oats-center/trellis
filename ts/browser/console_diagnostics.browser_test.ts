@@ -7,6 +7,7 @@ import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { types } from "../packages/trellis-testkit/trellis/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import {
@@ -26,9 +27,11 @@ import {
 // An administrator opens Diagnostics from the sidebar and sees a healthy
 // Trellis with its version and certificate. A service then connects without
 // its required settings; checking again names the deployment and the settings
-// it waits for. A user without the diagnostics capability gets no Diagnostics
-// item. This catches a page that shows a stale or partial report, misses a
-// waiting instance, or is offered to users who cannot read it.
+// it waits for. Two deployments with one title each keep their own row, told
+// apart by ID, across checks. A user without the diagnostics capability gets
+// no Diagnostics item. This catches a page that shows a stale or partial
+// report, misses a waiting instance, merges or swaps rows that share a title,
+// or is offered to users who cannot read it.
 test("Diagnostics shows the installation's state and names what needs attention", async () => {
   await withTrellisRuntime(async (runtime) => {
     const credentials = {
@@ -103,6 +106,64 @@ test("Diagnostics shows the installation's state and names what needs attention"
       await overall.getByText("Some things need fixing.").waitFor();
       await health.getByText("Problem", { exact: true }).waitFor();
       await health.getByText("Waiting for settings").waitFor();
+
+      // Two deployments share a title; only the second runs an instance.
+      // Each keeps its own row, told apart by its ID, through every check.
+      const shared = fixtureName("same-title");
+      const running = await runtime.registerService({
+        name: shared,
+        deployment: shared,
+        contract: participants.EchoProvider.participant,
+      });
+      const idle = await runtime.callAdminRpc("authDeploymentsCreate", {
+        title: shared,
+        kind: "service",
+        participantId: participants.EchoProvider.participant.identity,
+        packageEvidence: types.AuthPackageEvidenceCodec.decode(
+          participants.EchoProvider.participant.packageEvidence,
+        ),
+        acknowledgeSharedApis: true,
+        idempotencyKey: codecs.ulid.decode(ulid()),
+      });
+      const echo = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant: participants.EchoProvider.participant,
+        name: shared,
+        seed: running.seed,
+      }).orThrow();
+      try {
+        const row = (deploymentId: string) =>
+          health
+            .locator("dt", { hasText: deploymentId })
+            .locator("xpath=following-sibling::dd[1]");
+        const idleRow = row(idle.deployment.deploymentId);
+        const runningRow = row(running.deploymentId);
+        await runtime.waitFor(
+          async () => {
+            await page.getByRole("button", { name: "Check again" }).click();
+            await page
+              .locator("button:not([disabled])", { hasText: "Check again" })
+              .waitFor();
+            return (await runningRow.textContent())?.trim() === "Healthy";
+          },
+          { timeoutMs: 60_000 },
+        );
+        for (let check = 0; check < 2; check++) {
+          await page.getByRole("button", { name: "Check again" }).click();
+          await page
+            .locator("button:not([disabled])", { hasText: "Check again" })
+            .waitFor();
+          assert.equal(
+            await health.locator("dt", { hasText: shared }).count(),
+            2,
+          );
+          assert.equal((await idleRow.textContent())?.trim(), "No instances");
+          assert.equal((await runningRow.textContent())?.trim(), "Healthy");
+        }
+      } finally {
+        await echo.stop();
+      }
+
       await assertNoBrowserErrors(errors);
     } finally {
       await context.close();
