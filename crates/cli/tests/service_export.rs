@@ -3,6 +3,7 @@
 //! its process reconnects with the identity seed it already had and finds its
 //! settings, secret, data, waiting job, webhook URL and enrollment secret,
 //! while the installation it left is unchanged.
+//! The move guide's commands act on the installations they name.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -21,31 +22,33 @@ use trellis_testkit::TrellisTestRuntime;
 
 const CLI: &str = env!("CARGO_BIN_EXE_trellis");
 
-/// The production CLI signed in to one runtime as its administrator.
+/// The production CLI signed in to one runtime as its administrator, under
+/// its own configuration or under a profile of a shared one.
 struct Cli {
     config: PathBuf,
+    profile: Option<String>,
 }
 
 impl Cli {
-    async fn login(runtime: &mut TrellisTestRuntime) -> Self {
-        let config = runtime
-            .workdir()
-            .join(format!("cli-{}", ulid::Ulid::generate()));
+    /// Sign in as `trellis --profile <profile> login <url>` does, beside any
+    /// other profile kept in `config`.
+    async fn login_as(
+        runtime: &mut TrellisTestRuntime,
+        config: PathBuf,
+        profile: Option<&str>,
+    ) -> Self {
         std::fs::create_dir_all(&config).unwrap();
-        let mut login = tokio::process::Command::new(CLI)
-            .args([
-                "--format",
-                "json",
-                "login",
-                runtime.trellis_url(),
-                "--ca-certificate",
-            ])
+        let cli = Self {
+            config,
+            profile: profile.map(str::to_owned),
+        };
+        let mut login = cli
+            .command()
+            .args(["login", runtime.trellis_url(), "--ca-certificate"])
             .arg(&runtime.trust_roots()[0])
-            .env("XDG_CONFIG_HOME", &config)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
             .spawn()
             .unwrap();
         let mut lines = BufReader::new(login.stderr.take().unwrap()).lines();
@@ -71,19 +74,29 @@ impl Cli {
             .unwrap()
             .unwrap();
         assert!(status.success(), "login failed");
-        Self { config }
+        cli
+    }
+
+    /// `trellis --format json [--profile <profile>]`, as a script runs it.
+    fn command(&self) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(CLI);
+        command
+            .args(["--format", "json"])
+            .env("XDG_CONFIG_HOME", &self.config)
+            .kill_on_drop(true);
+        if let Some(profile) = &self.profile {
+            command.args(["--profile", profile]);
+        }
+        command
     }
 
     /// Run as a script does, without a terminal, within a deadline.
     async fn run(&self, args: &[&str]) -> std::process::Output {
         tokio::time::timeout(
             Duration::from_secs(120),
-            tokio::process::Command::new(CLI)
-                .args(["--format", "json"])
+            self.command()
                 .args(args)
-                .env("XDG_CONFIG_HOME", &self.config)
                 .stdin(std::process::Stdio::null())
-                .kill_on_drop(true)
                 .output(),
         )
         .await
@@ -136,7 +149,18 @@ async fn options<'a>(runtime: &TrellisTestRuntime, seed: &'a str) -> ServiceConn
 async fn an_exported_service_runs_in_another_installation_with_everything_trellis_kept() {
     let mut old = TrellisTestRuntime::builder().start().await.unwrap();
     let mut new = TrellisTestRuntime::builder().start().await.unwrap();
-    let (old_cli, new_cli) = (Cli::login(&mut old).await, Cli::login(&mut new).await);
+    // One shell, as the move guide has it: each installation is a profile of
+    // the same CLI configuration, and every command names its profile.
+    let shell = old.workdir().join("shell");
+    let old_cli = Cli::login_as(&mut old, shell.clone(), Some("old")).await;
+    let new_cli = Cli::login_as(&mut new, shell, Some("new")).await;
+    for (cli, runtime) in [(&old_cli, &old), (&new_cli, &new)] {
+        let server = cli.json(&["whoami"]).await["server"].clone();
+        assert_eq!(
+            server.as_str().unwrap().trim_end_matches('/'),
+            runtime.trellis_url().trim_end_matches('/')
+        );
+    }
 
     // In the old installation: a service with settings and a secret, a
     // record written twice, a stored file, a job no worker has taken yet,
@@ -217,7 +241,7 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     let exported = old_cli
         .json(&[
             "svc",
-            &deployment,
+            "moving",
             "export",
             "--out",
             path(&bundle),
@@ -489,6 +513,52 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     .await
     .unwrap();
     drop(enrolled);
+
+    // Disabling the deployment just imported, as a cleanup run against the
+    // wrong installation would, is refused without a confirmation, which a
+    // script cannot give, and changes nothing.
+    let state = |shown: Value| shown["deployment"]["state"].clone();
+    assert!(!new_cli
+        .run(&["svc", "moving", "disable"])
+        .await
+        .status
+        .success());
+    assert_eq!(
+        state(new_cli.json(&["svc", "moving", "show"]).await),
+        "enabled"
+    );
+
+    // The guide's cleanup names the old installation: it disables, then
+    // removes, the deployment there, and the moved one keeps serving.
+    old_cli.json(&["svc", "moving", "disable"]).await;
+    assert_eq!(
+        state(old_cli.json(&["svc", &deployment, "show"]).await),
+        "disabled"
+    );
+    assert_eq!(
+        state(new_cli.json(&["svc", "moving", "show"]).await),
+        "enabled"
+    );
+    old_cli.json(&["svc", &deployment, "remove", "-f"]).await;
+    assert_eq!(
+        state(old_cli.json(&["svc", &deployment, "show"]).await),
+        "removed"
+    );
+    assert_eq!(
+        state(new_cli.json(&["svc", "moving", "show"]).await),
+        "enabled"
+    );
+    let response = new
+        .https_client_builder()
+        .build()
+        .unwrap()
+        .post(&new_url)
+        .header("x-hook-token", "hook-key-0123456789")
+        .body("after the cleanup")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
 
     lifecycle.stop();
     running.await.unwrap().unwrap();

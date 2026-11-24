@@ -54,8 +54,19 @@ async fn run_svc_resource(format: OutputFormat, command: SvcResourceCommand) -> 
         SvcResourceAction::Apply(args) => {
             apply_contract(format, DeploymentKind::Service, &command.id, &args).await
         }
-        SvcResourceAction::Disable => toggle_service(format, &command.id, false).await,
-        SvcResourceAction::Enable => toggle_service(format, &command.id, true).await,
+        SvcResourceAction::Disable(args) => {
+            toggle_deployment(
+                format,
+                &command.id,
+                false,
+                DeploymentKind::Service,
+                args.force,
+            )
+            .await
+        }
+        SvcResourceAction::Enable => {
+            toggle_deployment(format, &command.id, true, DeploymentKind::Service, false).await
+        }
         SvcResourceAction::Remove(args) => {
             remove_deployment(format, DeploymentKind::Service, &command.id, &args).await
         }
@@ -316,8 +327,12 @@ async fn run_dev_resource(format: OutputFormat, command: DevResourceCommand) -> 
         DevResourceAction::Apply(args) => {
             apply_contract(format, DeploymentKind::Device, &id, &args).await
         }
-        DevResourceAction::Disable => toggle_device(format, &id, false).await,
-        DevResourceAction::Enable => toggle_device(format, &id, true).await,
+        DevResourceAction::Disable => {
+            toggle_deployment(format, &id, false, DeploymentKind::Device, false).await
+        }
+        DevResourceAction::Enable => {
+            toggle_deployment(format, &id, true, DeploymentKind::Device, false).await
+        }
         DevResourceAction::Remove(args) => {
             remove_deployment(format, DeploymentKind::Device, &id, &args).await
         }
@@ -934,8 +949,49 @@ async fn apply_contract(
     print_deployment_result(format, "Applied the package to", kind, &response.deployment)
 }
 
-async fn toggle_service(format: OutputFormat, id: &str, enable: bool) -> miette::Result<()> {
-    toggle_deployment(format, id, enable, DeploymentKind::Service).await
+/// Ask before `what` (`remove`, `disable`) changes `current`, naming the
+/// installation it acts on, unless `force`. Disabling asks only for a
+/// deployment imported here within the last day.
+///
+/// A moved deployment keeps its ID, so one ID names it in the installation it
+/// left and in the one it moved to, and a command run against the wrong one
+/// takes down the service that was just moved. A fresh import is when the
+/// installation it moved from gets cleaned up, so that is when it is called
+/// out; a day covers the move guide's steps without asking forever.
+fn confirm_change(
+    installation: &str,
+    current: &Value,
+    kind: DeploymentKind,
+    id: &str,
+    what: &str,
+    force: bool,
+) -> miette::Result<()> {
+    let imported = current["importedAt"].as_str().filter(|at| {
+        time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339)
+            .is_ok_and(|at| time::OffsetDateTime::now_utc() - at < time::Duration::DAY)
+    });
+    if force || (what == "disable" && imported.is_none()) {
+        return Ok(());
+    }
+    let title = output::field(current, "title");
+    let deployment_id = output::field(current, "deploymentId");
+    if let Some(at) = imported {
+        output::warning(format!(
+            "{title} ({deployment_id}) was imported into {installation} at {}. The \
+            installation it moved from has a deployment with the same ID; check that \
+            {installation} is the one you mean.",
+            output::absolute_time(at)
+        ));
+    }
+    output::confirm_typed(
+        &format!(
+            "{} {title} ({deployment_id}) on {installation}",
+            kind_noun(kind)
+        ),
+        id,
+        what,
+        "-f",
+    )
 }
 
 async fn toggle_deployment(
@@ -943,9 +999,20 @@ async fn toggle_deployment(
     id: &str,
     enable: bool,
     kind: DeploymentKind,
+    force: bool,
 ) -> miette::Result<()> {
-    let (_, connected) = connect_authenticated_cli_client().await?;
+    let (selection, connected) = connect_authenticated_cli_client().await?;
     let current = find_deployment(&connected, id, kind).await?;
+    if !enable {
+        confirm_change(
+            &selection.scope.issuer,
+            &current,
+            kind,
+            id,
+            "disable",
+            force,
+        )?;
+    }
     let request = auth_types::AuthDeploymentMutationRequest {
         deployment_id: wire(&current["deploymentId"])?,
         expected_revision: wire(&current["revision"])?,
@@ -967,10 +1034,6 @@ async fn toggle_deployment(
     )
 }
 
-async fn toggle_device(format: OutputFormat, id: &str, enable: bool) -> miette::Result<()> {
-    toggle_deployment(format, id, enable, DeploymentKind::Device).await
-}
-
 async fn remove_deployment(
     format: OutputFormat,
     kind: DeploymentKind,
@@ -983,16 +1046,20 @@ async fn remove_deployment(
         "refusing to remove {} without confirmation in JSON mode",
         ref_label(kind, id)
     );
-    let (_state, connected) = connect_authenticated_cli_client().await?;
+    let (selection, connected) = connect_authenticated_cli_client().await?;
     let current = find_deployment(&connected, id, kind).await?;
     // The prompt and the report name the deployment the selector resolved
     // to, so a stale selector never removes a deployment the operator did not see.
     let deployment_id = output::field(&current, "deploymentId");
     let title = output::field(&current, "title");
-    let target = format!("{} {title} ({deployment_id})", kind_noun(kind));
-    if !args.force {
-        output::confirm_typed(&target, id, "remove", "-f")?;
-    }
+    confirm_change(
+        &selection.scope.issuer,
+        &current,
+        kind,
+        id,
+        "remove",
+        args.force,
+    )?;
     let response =
         trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
             .trellis_auth_v1()

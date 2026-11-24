@@ -32,6 +32,12 @@ pub struct Cli {
     /// Increase log verbosity. Repeat for additional detail.
     pub verbose: u8,
 
+    #[arg(long, global = true, value_name = "NAME")]
+    /// Use the login saved under NAME instead of the default one. `trellis
+    /// --profile NAME login <url>` saves it, so commands for two
+    /// installations can each name theirs.
+    pub profile: Option<String>,
+
     #[command(subcommand)]
     pub command: TopLevelCommand,
 }

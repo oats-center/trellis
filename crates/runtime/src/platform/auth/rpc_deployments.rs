@@ -1548,7 +1548,7 @@ pub(super) fn read_deployment(
     connection: &Connection,
     deployment_id: &str,
 ) -> Result<AuthDeployment, AuthError> {
-    let (participant, kind, state, revision, digest, required, optional, title): (
+    let (participant, kind, state, revision, digest, required, optional, title, imported_at): (
         String,
         String,
         String,
@@ -1557,11 +1557,14 @@ pub(super) fn read_deployment(
         String,
         String,
         String,
+        Option<i64>,
     ) = connection
         .query_row(
             "SELECT d.participant_id,d.participant_kind,d.state,b.revision,\
             b.implementation_digest,b.required_capabilities_json,\
-            b.optional_capabilities_json,d.title \
+            b.optional_capabilities_json,d.title,\
+            (SELECT imported_at FROM auth_service_imports i \
+            WHERE i.deployment_id=d.deployment_id) \
             FROM auth_deployments d \
             JOIN auth_deployment_bindings b USING(deployment_id) \
             WHERE deployment_id=?1",
@@ -1576,6 +1579,7 @@ pub(super) fn read_deployment(
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
                 ))
             },
         )
@@ -1599,6 +1603,7 @@ pub(super) fn read_deployment(
             optional_capabilities: serde_json::from_str(&optional)?,
             extra: Default::default(),
         },
+        imported_at: imported_at.map(timestamp).transpose()?,
         extra: Default::default(),
     })
 }

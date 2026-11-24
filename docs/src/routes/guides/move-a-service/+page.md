@@ -40,14 +40,31 @@ Export never changes the installation it reads. Whatever the service writes
 after the export has read it is not in the bundle, so for the real move you
 stop the service's processes first.
 
-## Export
+## Name each installation
 
-Stop the service's processes, then sign in to the old installation and
-export:
+The moved deployment keeps its ID, so `orders` names a deployment in both
+installations, and a command meant for the old one does the same thing to
+the new one if the CLI is signed in there. Give each installation a profile
+of its own and name the profile in every command. A profile is a saved
+login; `--profile` picks which one a command uses.
 
 ```sh
-trellis login https://old.example.org
-trellis svc orders export --out orders.trellis-service
+trellis --profile old login https://old.example.org
+trellis --profile new login https://new.example.org
+trellis --profile old whoami
+trellis --profile new whoami
+```
+
+`whoami` shows the server a profile acts on. Every command below names its
+profile, so you can run them in one shell in any order and each reaches the
+installation it says.
+
+## Export
+
+Stop the service's processes, then export from the old installation:
+
+```sh
+trellis --profile old svc orders export --out orders.trellis-service
 ```
 
 The CLI asks for a passphrase twice. It encrypts the bundle with it as the
@@ -63,9 +80,8 @@ channel you trust: it is how they know the file is the one you exported.
 ## Import
 
 ```sh
-trellis login https://new.example.org
-trellis svc import orders.trellis-service --digest <sha256> --check
-trellis svc import orders.trellis-service --digest <sha256>
+trellis --profile new svc import orders.trellis-service --digest <sha256> --check
+trellis --profile new svc import orders.trellis-service --digest <sha256>
 ```
 
 `--check` verifies the bundle and runs the import in a transaction that is
@@ -102,15 +118,34 @@ installation took over the old hostname.
 
 ## Finish the move
 
-1. Disable the old deployment with `trellis svc orders disable`. Until then,
-   both installations accept the instances' keys and the enrollment secret.
+These steps act on the old installation, so each names the `old` profile.
+
+1. Disable the old deployment. Until then, both installations accept the
+   instances' keys and the enrollment secret.
+
+   ```sh
+   trellis --profile old svc orders disable
+   ```
+
 2. Give webhook senders their new URLs, unless the hostname moved.
-3. Create the roles and grants the report listed and give them to the users
-   who need them. Users sign in to the new installation and consent to the
-   apps they use.
+3. Create the roles and grants the report listed, in the new installation,
+   and give them to the users who need them. Users sign in to the new
+   installation and consent to the apps they use.
 4. Once the new installation has run the service long enough to trust it,
-   remove the old deployment with `trellis svc orders remove`, then destroy
-   its resources with `trellis resources destroy`.
+   remove the old deployment, then destroy its resources:
+
+   ```sh
+   trellis --profile old svc orders remove
+   trellis --profile old resources list
+   trellis --profile old resources destroy <resource-id> \
+     --expected-revision <revision> --confirm-physical-id <physical-id>
+   ```
+
+`remove` asks you to type the deployment's name, and says which
+installation it acts on. For a deployment imported into an installation in
+the last day, `disable` asks the same way and `remove` adds a warning, since
+that is the deployment the cleanup would take down by mistake. Pass `-f` to
+skip the question in a script.
 
 Until step 4, going back is enabling the old deployment again and pointing
 the processes back at the old URL. Anything written in the new installation

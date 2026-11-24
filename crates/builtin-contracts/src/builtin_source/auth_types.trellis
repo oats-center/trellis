@@ -955,6 +955,8 @@ model AuthDeployment {
   selection: AuthCapabilitySelection;
   state: AuthDeploymentState;
   revision: AuthRevision;
+  /// When the deployment was imported into this installation from another one with `Deployments.Import`; unset for a deployment created here.
+  importedAt?: timestamp;
 }
 model AuthDeploymentCreateRequest {
   title: AuthName;

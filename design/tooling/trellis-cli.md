@@ -56,10 +56,15 @@ author wire schemas.
 ## Authentication
 
 ```text
-trellis login <oauth-origin> [--ca-certificate <ca.crt> | --ca-fingerprint <sha256>]
-trellis logout
-trellis whoami
+trellis [--profile <name>] login <oauth-origin> [--ca-certificate <ca.crt> | --ca-fingerprint <sha256>]
+trellis [--profile <name>] logout
+trellis [--profile <name>] whoami
 ```
+
+The CLI keeps one saved login by default. The global `--profile <name>` saves
+and uses another, so a shell can hold logins to two installations and each
+command names the one it acts on; `whoami` shows the server (`server` in
+JSON).
 
 Login uses public OAuth Device Code with explicit capability consent. It prints
 and QR-encodes the issuer's plain code entry link, plus the code to type there
@@ -167,7 +172,8 @@ trellis svc <name> create [--public-key <key>]
 trellis svc <id> apply --source <project> | --package <release> ...
 trellis svc <id> show
 trellis svc <deployment-id> provision [--public-key <key>] [--new]
-trellis svc enable|disable|remove ...
+trellis svc <id> enable
+trellis svc <id> disable|remove [-f]
 trellis svc <deployment-id> updates
 trellis svc <deployment-id> approve|reject [<update-id>] [--acknowledge-shared-apis]
 trellis svc <id> export [--out <file>] [--passphrase-file <path|->]
@@ -264,7 +270,10 @@ see `design/auth/service-export.md`. Export starts the
 `Auth.Deployments.Export` Operation, downloads the content with
 `Auth.Deployments.Exports.Download`, and encrypts it with a passphrase as it
 arrives, writing `<file>.partial` and renaming it once whole. It prints the
-file's SHA-256. Import refuses a file whose SHA-256 differs from `--digest`;
+file's SHA-256. `remove` names the installation in its confirmation; for a
+deployment imported within the last day, `disable` asks the same confirmation
+and `remove` warns, since the installation it moved from has a deployment
+with the same ID. Import refuses a file whose SHA-256 differs from `--digest`;
 without `--digest` it asks a terminal to confirm the digest and fails
 elsewhere. It checks the passphrase against the bundle's header before it
 connects, then streams the decrypted content as the `Auth.Deployments.Import`

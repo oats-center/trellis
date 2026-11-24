@@ -45,6 +45,7 @@ pub async fn run() -> miette::Result<()> {
     let format = cli.format;
     crate::output::init(format);
     crate::prompt::init(cli.no_input);
+    native_auth::init_profile(cli.profile.clone())?;
     // Completion, version, and help stay offline and never start exporters.
     let command_label = cli.command.telemetry_label();
     let telemetry_guard = if command_label.is_some() {

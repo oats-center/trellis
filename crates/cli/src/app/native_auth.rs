@@ -23,6 +23,35 @@ pub(super) struct Selection {
     pub nats_sentinel: Option<String>,
 }
 
+/// The saved login `--profile` names, for this run.
+static PROFILE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// Use the saved login `profile` names for this run, or the default one.
+pub(super) fn init_profile(profile: Option<String>) -> miette::Result<()> {
+    if let Some(name) = &profile {
+        miette::ensure!(
+            !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'),
+            "a profile name has 1 to 64 letters, digits, `-` and `_`: {name:?}"
+        );
+    }
+    let _ = PROFILE.set(profile);
+    Ok(())
+}
+
+/// The file the selected login is saved in: one per profile.
+fn selection_file() -> miette::Result<PathBuf> {
+    Ok(
+        directory()?.join(match PROFILE.get().and_then(Option::as_deref) {
+            Some(profile) => format!("selected.{profile}.json"),
+            None => "selected.json".to_owned(),
+        }),
+    )
+}
+
 pub(super) fn directory() -> miette::Result<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -67,7 +96,7 @@ impl Selection {
             .into_diagnostic()?;
         staged.as_file().sync_all().into_diagnostic()?;
         staged
-            .persist(directory.join("selected.json"))
+            .persist(selection_file()?)
             .map_err(|error| error.error)
             .into_diagnostic()?;
         std::fs::File::open(directory)
@@ -78,14 +107,22 @@ impl Selection {
     }
 
     pub fn load() -> miette::Result<Self> {
-        let path = directory()?.join("selected.json");
+        let path = selection_file()?;
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(miette::miette!(
-                    help = "Run `trellis login <url>` with your Trellis address.",
-                    "not logged in"
-                ))
+                return Err(match PROFILE.get().and_then(Option::as_deref) {
+                    Some(profile) => miette::miette!(
+                        help = format!(
+                            "Run `trellis --profile {profile} login <url>` with its Trellis address."
+                        ),
+                        "profile {profile} is not logged in"
+                    ),
+                    None => miette::miette!(
+                        help = "Run `trellis login <url>` with your Trellis address.",
+                        "not logged in"
+                    ),
+                })
             }
             Err(error) => return Err(error).into_diagnostic(),
         };
@@ -111,7 +148,7 @@ impl Selection {
 
     pub fn clear() -> miette::Result<bool> {
         let directory = directory()?;
-        match std::fs::remove_file(directory.join("selected.json")) {
+        match std::fs::remove_file(selection_file()?) {
             Ok(()) => {
                 std::fs::File::open(directory)
                     .into_diagnostic()?

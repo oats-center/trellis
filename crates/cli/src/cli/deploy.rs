@@ -114,7 +114,7 @@ pub enum SvcResourceAction {
     Show,
     Create(SvcCreateArgs),
     Apply(ApplyArgs),
-    Disable,
+    Disable(DisableArgs),
     Enable,
     Remove(RemoveArgs),
     Instances(SvcInstancesArgs),
@@ -402,8 +402,20 @@ pub struct ApplyArgs {
 }
 
 /// Remove a deployment; enforcement is performed by the native Auth runtime.
+/// The confirmation names the installation it acts on.
 #[derive(Debug, Clone, Eq, PartialEq, Args)]
 pub struct RemoveArgs {
+    /// Remove it without being asked.
+    #[arg(short = 'f', long)]
+    pub force: bool,
+}
+
+/// Disable a service deployment. One imported into this installation within
+/// the last day is disabled only once confirmed, naming the installation,
+/// since the installation it moved from has a deployment with the same ID.
+#[derive(Debug, Clone, Eq, PartialEq, Args)]
+pub struct DisableArgs {
+    /// Disable it without being asked.
     #[arg(short = 'f', long)]
     pub force: bool,
 }

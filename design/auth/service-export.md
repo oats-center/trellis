@@ -75,16 +75,18 @@ are pointed at its URL.
 ## Overview
 
 A move between two installations, `old.example.org` and `new.example.org`,
-takes two commands and a restart. The CLI talks to the installation it is
-signed in to, so the administrator signs in to each in turn.
+takes two commands and a restart. The deployment keeps its ID, so one ID
+names it in both installations. The administrator signs in to each under a
+profile of its own, and every command names the profile it acts on:
 
 ```sh
-trellis login https://old.example.org
-trellis svc orders export --out orders.trellis-service
+trellis --profile old login https://old.example.org
+trellis --profile new login https://new.example.org
+
+trellis --profile old svc orders export --out orders.trellis-service
 #   asks for a passphrase twice, prints the bundle's SHA-256
 
-trellis login https://new.example.org
-trellis svc import orders.trellis-service --digest <sha256>
+trellis --profile new svc import orders.trellis-service --digest <sha256>
 #   asks for the passphrase, prints what moved and what to recreate
 ```
 
@@ -351,6 +353,17 @@ terminal it asks for the passphrase twice; otherwise it reads it from
 `--passphrase-file`, or `-` or piped standard input. A new bundle's
 passphrase has at least 12 characters.
 
+The CLI keeps one saved login by default. `--profile <name>` on any command
+uses the login saved under that name instead, so commands for two
+installations can each name theirs; `trellis --profile <name> whoami` shows
+its server. `trellis svc <id> remove` names the installation it acts on in
+its confirmation. For a deployment imported into the installation within the
+last day, `trellis svc <id> disable` asks for the same confirmation and
+`remove` adds a warning: the installation the service left has a deployment
+with the same ID, and cleaning that one up is the step where a command run
+against the wrong installation takes down the moved service. A day covers a
+move's cleanup without asking forever after. `-f` skips the question.
+
 `import --check` sends the bundle, and Auth verifies it and runs the whole
 import in a transaction it rolls back, then reports what the import would do.
 
@@ -483,20 +496,22 @@ the time to copy the data.
    the new certificate's fingerprint if the certificate is not from a public
    CA. If the new installation takes over the old hostname, have the DNS
    change ready instead.
-4. **Stop the service's processes, then export.** The service stops serving
-   here. Give the importing administrator the printed SHA-256 through a
-   channel you trust, and the passphrase separately.
-5. **Import** into the new installation with `--digest`.
+4. **Stop the service's processes, then export** with the old
+   installation's profile. The service stops serving here. Give the
+   importing administrator the printed SHA-256 through a channel you trust,
+   and the passphrase separately.
+5. **Import** into the new installation with `--digest`, with its profile.
 6. **Point the processes at the new installation and start them.** The
    service serves again as soon as the first instance connects.
-7. **Disable the old deployment** with `trellis svc <id> disable`, so its
-   instance keys and enrollment secrets stop working there.
+7. **Disable the old deployment**, so its instance keys and enrollment
+   secrets stop working there: `trellis --profile old svc <id> disable`.
 8. **Update outside senders.** Give webhook senders their new URLs, unless
    the hostname moved. Create the roles and grants the report lists. Users
    sign in to the new installation and consent to the apps they use.
 9. **Clean up the old installation** once the new one has run long enough to
-   trust it. Remove the old deployment with `trellis svc <id> remove`, then
-   destroy its detached resources with `trellis resources destroy`.
+   trust it. Remove the old deployment, then destroy its detached resources:
+   `trellis --profile old svc <id> remove`, then
+   `trellis --profile old resources destroy`.
 
 A service rarely stands alone. Services in the old installation that call
 the moved service lose it at step 4. Move services that depend on each other

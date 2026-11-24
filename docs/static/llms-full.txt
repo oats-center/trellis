@@ -318,7 +318,12 @@ jobs not yet settled, encrypted by the CLI with the operator's passphrase
 (Argon2id and ChaCha20-Poly1305; the passphrase never reaches Auth), and
 prints the file's SHA-256. Export changes nothing in the old installation;
 stop the service's processes first, and disable then remove the old
-deployment once it runs in the new one. `trellis svc import <file> --digest
+deployment once it runs in the new one. The deployment keeps its ID in both
+installations, so sign in to each under its own `--profile <name>` and name
+the profile in every command (`trellis --profile old svc <id> disable`);
+`disable` of a deployment imported within the last day, and every `remove`,
+ask for confirmation naming the installation (`-f` skips it).
+`trellis svc import <file> --digest
 <sha256> [--check]` refuses a file with another digest, a wrong passphrase, a
 deployment ID or participant already deployed, or an instance key,
 enrollment secret or webhook URL already in use; it keeps the deployment,

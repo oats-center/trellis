@@ -3015,6 +3015,8 @@ async fn status_command(format: OutputFormat) -> miette::Result<()> {
     let me = current_user(&connected).await?;
     let mut response = serde_json::to_value(&me).into_diagnostic()?;
     response["loggedIn"] = Value::Bool(true);
+    // Which installation the commands of this login act on.
+    response["server"] = Value::String(selection.scope.issuer.clone());
     output::emit(format, &response, |me| {
         let login = &me["login"];
         let method = match output::field(login, "method").as_str() {
