@@ -214,8 +214,11 @@ async fn refused_settings_show_in_the_cli_and_one_set_carries_several_secrets() 
         config
             .derive(["api_key", "signing_key"], move |settings_now: &Config| {
                 // Any error refuses the fields the derive is built from.
-                if settings_now.api_key == "bad" {
-                    Err::<(), _>(std::io::Error::other("the key is refused"))?;
+                if settings_now.api_key.starts_with("bad-") {
+                    Err::<(), _>(std::io::Error::other(format!(
+                        "the key {} is refused",
+                        settings_now.api_key
+                    )))?;
                 }
                 builds.fetch_add(1, Ordering::SeqCst);
                 Ok(Client {
@@ -342,13 +345,15 @@ async fn refused_settings_show_in_the_cli_and_one_set_carries_several_secrets() 
     .await;
     assert_eq!(builds.load(Ordering::SeqCst), 2);
 
-    // A builder that fails rejects its fields and keeps the old client.
+    // A builder that fails rejects its fields and keeps the old client. Its
+    // error quotes the key, so the CLI shows a generic reason instead.
+    let bad = format!("bad-{}", ulid::Ulid::generate());
     cli.run(&[
         "svc",
         &deployment,
         "config",
         "set-secret",
-        &format!("apiKey={}", file(&files, "bad.txt", "bad")),
+        &format!("apiKey={}", file(&files, "bad.txt", &bad)),
     ])
     .await;
     let refused = cli
@@ -356,7 +361,18 @@ async fn refused_settings_show_in_the_cli_and_one_set_carries_several_secrets() 
         .await;
     assert_eq!(refused["revision"], 6);
     assert_eq!(refused["fields"], json!(["apiKey", "signingKey"]));
-    assert_eq!(refused["reason"], "the key is refused");
+    assert_eq!(refused["reason"], "building the value failed (Error)");
+    for args in [
+        ["svc", &deployment, "config"],
+        ["svc", &deployment, "instances"],
+    ] {
+        let shown = cli.text(&args).await;
+        assert!(
+            shown.contains("rejected r6: apiKey, signingKey: building the value failed (Error)"),
+            "{shown}"
+        );
+        assert!(!shown.contains(&bad), "{shown}");
+    }
     assert_eq!(client.current().key, "k2");
     assert_eq!(config.current().unwrap().api_key, "k2");
 

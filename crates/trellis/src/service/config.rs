@@ -33,7 +33,8 @@ use crate::generated::ConfigField;
 use super::ServerError;
 
 const AUTH_API: &str = "trellis.auth@v1";
-/// Longest rejection reason Auth records, in characters.
+/// Longest rejection reason the participant prints, logs, and reports, in
+/// characters.
 const REASON_LIMIT: usize = 1024;
 
 /// Revisions behind the values in effect.
@@ -51,14 +52,25 @@ pub(crate) struct ConfigState {
     revision: ConfigRevision,
 }
 
+/// Shortest secret value replaced in a rejection reason, in characters. A
+/// shorter one would blank out ordinary words wherever they occur.
+const REDACT_MIN_LENGTH: usize = 4;
+
 /// Why a check or derive builder refused candidate settings.
 ///
 /// Any [`std::error::Error`] converts into one that refuses every field the
-/// candidate changes, so `?` works inside checks and builders.
+/// candidate changes, so `?` works inside checks and builders. A converted
+/// error that involves a secret field (a check of a revision that changes
+/// one, or a builder of one) is reported by a generic reason and the error's
+/// type, never its message. A reason reaches the status administrators see,
+/// so it should never include a secret value; every secret value in it is
+/// replaced with `[redacted]`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Rejection {
     fields: Option<Vec<String>>,
     reason: String,
+    /// The type of the error this was converted from, if it was.
+    converted: Option<&'static str>,
 }
 
 impl Rejection {
@@ -73,6 +85,7 @@ impl Rejection {
         Self {
             fields: Some(fields.into_iter().map(Into::into).collect()),
             reason: reason.into(),
+            converted: None,
         }
     }
 
@@ -82,6 +95,7 @@ impl Rejection {
         Self {
             fields: None,
             reason: reason.into(),
+            converted: None,
         }
     }
 
@@ -111,7 +125,11 @@ impl fmt::Display for Rejection {
 
 impl<E: std::error::Error> From<E> for Rejection {
     fn from(error: E) -> Self {
-        Self::changed(error.to_string())
+        Self {
+            fields: None,
+            reason: error.to_string(),
+            converted: Some(std::any::type_name::<E>()),
+        }
     }
 }
 
@@ -354,7 +372,42 @@ impl Live {
         checks: &[Check],
         derives: &[Arc<dyn Slot>],
     ) -> Result<Vec<(Arc<dyn Slot>, Built)>, Vec<(Vec<String>, String)>> {
-        let named = |rejection: Rejection, otherwise: &[&'static str]| {
+        // A reason reaches status, health, the log, and the startup wait,
+        // whose readers may not see secrets, so every secret value in effect
+        // or in the candidate is replaced, longest first.
+        let current = Arc::clone(&self.accepted.borrow().values);
+        let mut secrets = Vec::new();
+        for field in self.fields.iter().filter(|field| field.secret) {
+            for values in [candidate, &*current] {
+                if let Some(value) = values.get(field.name) {
+                    texts(value, &mut secrets);
+                }
+            }
+        }
+        secrets.retain(|text| text.chars().count() >= REDACT_MIN_LENGTH);
+        secrets.sort_by(|left, right| right.len().cmp(&left.len()).then(left.cmp(right)));
+        secrets.dedup();
+        let secret = |names: &[&'static str]| {
+            names.iter().any(|name| {
+                self.fields
+                    .iter()
+                    .any(|field| field.name == *name && field.secret)
+            })
+        };
+        // An error converted into a rejection may carry a secret in any form,
+        // so one that involves a secret field is reported by a generic reason
+        // and the error's type. A check registered now reads every value in
+        // effect.
+        let every = self
+            .fields
+            .iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>();
+        let checked = if changed.is_empty() { &every } else { changed };
+        let named = |rejection: Rejection,
+                     otherwise: &[&'static str],
+                     involved: &[&'static str],
+                     failed: &str| {
             let fields = match rejection.fields {
                 Some(fields) => fields
                     .iter()
@@ -363,12 +416,32 @@ impl Live {
                     .collect(),
                 None => otherwise.iter().map(|name| (*name).to_owned()).collect(),
             };
-            (fields, rejection.reason)
+            let reason = match rejection.converted {
+                Some(kind) if secret(involved) => {
+                    // The type without module paths, which differ between
+                    // toolchains: `Error`, or `Box<dyn Error>`.
+                    let mut short = String::new();
+                    for (index, part) in kind.split("::").enumerate() {
+                        if index > 0 {
+                            let module = short
+                                .trim_end_matches(|c: char| c.is_alphanumeric() || c == '_')
+                                .len();
+                            short.truncate(module);
+                        }
+                        short.push_str(part);
+                    }
+                    format!("{failed} ({short})")
+                }
+                _ => secrets.iter().fold(rejection.reason, |reason, secret| {
+                    reason.replace(secret.as_str(), "[redacted]")
+                }),
+            };
+            (fields, reason)
         };
         let refused = checks
             .iter()
             .filter_map(|check| check(candidate).err())
-            .map(|rejection| named(rejection, changed))
+            .map(|rejection| named(rejection, changed, checked, "the check failed"))
             .collect::<Vec<_>>();
         if !refused.is_empty() {
             return Err(refused);
@@ -381,7 +454,12 @@ impl Live {
             }
             match slot.build(candidate.clone()).await {
                 Ok(value) => built.push((Arc::clone(slot), value)),
-                Err(rejection) => refused.push(named(rejection, slot.fields())),
+                Err(rejection) => refused.push(named(
+                    rejection,
+                    slot.fields(),
+                    slot.fields(),
+                    "building the value failed",
+                )),
             }
         }
         // Values built for a refused revision drop here, never taking effect.
@@ -596,7 +674,8 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
     /// refused and why with a link to its settings, reports the rejection to
     /// Trellis, and returns when an administrator saves a revision that
     /// passes. A [`Rejection`] names the fields refused; any other error
-    /// refuses every field the candidate changes.
+    /// refuses every field the candidate changes. See [`Rejection`] for the
+    /// reason Trellis is shown, which never carries a secret value.
     ///
     /// # Errors
     ///
@@ -630,10 +709,11 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
     /// It is built now from the values in effect, and rebuilt during the
     /// check step of a revision that changes one of `fields`; a revision that
     /// changes only other fields keeps it. A builder that fails rejects that
-    /// revision for `fields` and keeps the old value. A replaced value is
-    /// dropped once its replacement takes effect, when no caller holds it.
-    /// Returns once a value is built, waiting as [`Self::check`] does while
-    /// it can't be.
+    /// revision for `fields` and keeps the old value; an error converted into
+    /// a [`Rejection`] gives a generic reason when one of `fields` is secret.
+    /// A replaced value is dropped once its replacement takes effect, when no
+    /// caller holds it. Returns once a value is built, waiting as
+    /// [`Self::check`] does while it can't be.
     ///
     /// # Errors
     ///
@@ -711,6 +791,17 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
             value,
             live: Arc::clone(live),
         })
+    }
+}
+
+/// Every string and number in `value`, as text.
+fn texts(value: &Value, into: &mut Vec<String>) {
+    match value {
+        Value::String(text) => into.push(text.clone()),
+        Value::Number(number) => into.push(number.to_string()),
+        Value::Array(items) => items.iter().for_each(|item| texts(item, into)),
+        Value::Object(fields) => fields.values().for_each(|item| texts(item, into)),
+        Value::Null | Value::Bool(_) => {}
     }
 }
 
@@ -1002,10 +1093,18 @@ pub(crate) fn follow(
         let outcome = checked.upgrade().map(|live| live.outcome.borrow().clone());
         async move {
             match outcome {
-                Some(outcome) if outcome.rejected => ServiceHealthCheck::degraded(format!(
-                    "Settings rejected: {}",
-                    outcome.describe()
-                )),
+                Some(outcome) if outcome.rejected => {
+                    // A heartbeat refuses a longer summary, which would stop
+                    // every check from reaching Trellis.
+                    let summary = format!("Settings rejected: {}", outcome.describe());
+                    ServiceHealthCheck::degraded(if summary.chars().count() > REASON_LIMIT {
+                        let mut cut = summary.chars().take(REASON_LIMIT - 1).collect::<String>();
+                        cut.push('…');
+                        cut
+                    } else {
+                        summary
+                    })
+                }
                 _ => ServiceHealthCheck::ok(),
             }
         }

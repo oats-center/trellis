@@ -1763,7 +1763,8 @@ model AuthConfigOwnReportRequest {
   state: AuthConfigOutcome;
   /// Fields its checks refused; empty for `applied`.
   fields: list<AuthConfigFieldName>;
-  reason?: AuthConfigRejectReason;
+  /// Why, in its own words. Auth keeps the first KiB and marks a cut with `…`.
+  reason?: string;
 }
 model AuthConfigResponse {
   target: AuthConfigTarget;

@@ -382,6 +382,18 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                         .optional()?
                         .ok_or(AuthError::Denied)?;
                     let report = serde_json::to_value(&input)?;
+                    // Status shows the reason in lists and on one line, so
+                    // only its first KiB is kept, cut at a character.
+                    let reason = report["reason"].as_str().map(|reason| {
+                        if reason.len() <= REPORTED_REASON_LIMIT {
+                            return reason.to_owned();
+                        }
+                        let mut end = REPORTED_REASON_LIMIT - '…'.len_utf8();
+                        while !reason.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        format!("{}…", &reason[..end])
+                    });
                     connection.execute(
                         "INSERT INTO auth_config_reports(instance_id,deployment_revision,\
                         instance_revision,state,fields_json,reason,reported_at) \
@@ -396,7 +408,7 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                             report["instanceRevision"].as_u64(),
                             report["state"].as_str(),
                             json(&report["fields"])?,
-                            report["reason"].as_str(),
+                            reason,
                             now
                         ],
                     )?;
@@ -410,6 +422,9 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
         }
     });
 }
+
+/// Longest rejection reason stored from `Config.Own.Report`, in bytes.
+const REPORTED_REASON_LIMIT: usize = 1024;
 
 /// Secrets one administrator may be shown within [`REVEAL_WINDOW_SECONDS`].
 /// Enough to read every secret of a few services in one sitting, too few to

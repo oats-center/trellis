@@ -52,7 +52,10 @@ export type ConfigCheckContext<TValues> = {
 
 /**
  * Validates candidate settings before they take effect. Call `reject` to
- * refuse fields; a throw refuses every changed field with the error's message.
+ * refuse fields; a throw refuses every changed field with the error's message,
+ * or with a generic reason when a changed field is secret. A reason reaches
+ * the status administrators see, so it should never include a secret value;
+ * every secret value in it is replaced with `[redacted]`.
  */
 export type ConfigCheck<TValues> = (
   candidate: TValues,
@@ -112,9 +115,10 @@ export interface ParticipantConfig<TValues> {
    * Build a value from settings, such as a client that holds a key. It is
    * built now from the values in effect, and rebuilt during the check step
    * of a revision that changes one of `fields`. A builder that throws
-   * rejects that revision for `fields` and keeps the old value. `dispose`
-   * receives a replaced value after its replacement takes effect, and the
-   * value in effect when the participant stops. Resolves once a value is
+   * rejects that revision for `fields` and keeps the old value; the error's
+   * message is the reason, or a generic one when one of `fields` is secret.
+   * `dispose` receives a replaced value after its replacement takes effect,
+   * and the value in effect when the participant stops. Resolves once a value is
    * built, waiting as {@link check} does while it can't be; it rejects once
    * the participant has stopped.
    */
@@ -242,8 +246,13 @@ type DeriveSlot = {
 /** One refusal of a candidate revision. */
 type Rejection = { fields: string[]; reason: string };
 
-/** Longest rejection reason Auth records. */
+/** Longest rejection reason the participant prints, logs, and reports. */
 const REASON_LIMIT = 1024;
+/**
+ * Shortest secret value replaced in a rejection reason. A shorter one would
+ * blank out ordinary words wherever they occur.
+ */
+const REDACT_MIN_LENGTH = 4;
 
 /**
  * Live handle over decoded settings.
@@ -410,9 +419,15 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
   } {
     const outcome = this.#outcome;
     if (outcome.state === "applied") return { status: "ok" };
+    // A heartbeat refuses a longer summary, which would stop every check from
+    // reaching Trellis.
+    const summary = [...`Settings rejected: ${describe(outcome)}`];
     return {
       status: "degraded",
-      summary: `Settings rejected: ${describe(outcome)}`,
+      summary:
+        summary.length > REASON_LIMIT
+          ? `${summary.slice(0, REASON_LIMIT - 1).join("")}…`
+          : summary.join(""),
       info: { fields: [...outcome.fields] },
     };
   }
@@ -445,16 +460,46 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
     const rejections: Rejection[] = [];
     const built = new Map<DeriveSlot, unknown>();
     const view = candidate as TValues;
+    // A reason reaches status, health, the log, and the startup wait, whose
+    // readers may not see secrets, so every secret value in effect or in the
+    // candidate is replaced, longest first.
+    const secrets = [
+      ...new Set(
+        Object.entries(this.#fields)
+          .filter(([, field]) => field.secret)
+          .flatMap(([name]) => [
+            ...textsOf(candidate[name]),
+            ...textsOf(this.#current[name]),
+          ])
+          .filter((text) => text.length >= REDACT_MIN_LENGTH),
+      ),
+    ].sort((left, right) => right.length - left.length);
+    const redact = (reason: string): string =>
+      secrets.reduce(
+        (text, secret) => text.replaceAll(secret, "[redacted]"),
+        reason,
+      );
+    const secret = (names: readonly string[]): boolean =>
+      names.some((name) => this.#fields[name]?.secret === true);
+    // An unexpected error's message may carry a secret in any form, so one
+    // that involves a secret field is reported by a generic reason and the
+    // error's name. A check registered now reads every value in effect.
+    const checked = changed.length > 0 ? changed : Object.keys(this.#fields);
     for (const check of checks) {
       const found: Rejection[] = [];
       try {
         await check(view, {
           changed: changed as readonly (keyof TValues & string)[],
           reject: (fields, reason) =>
-            found.push({ fields: [...fields], reason }),
+            found.push({ fields: [...fields], reason: redact(reason) }),
         });
       } catch (error) {
-        found.push({ fields: [...changed], reason: messageOf(error) });
+        found.push({
+          fields: [...changed],
+          reason: secret(checked)
+            ? `the check failed (${nameOf(error)})`
+            : redact(messageOf(error)),
+        });
       }
       rejections.push(...found);
     }
@@ -465,7 +510,12 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       try {
         built.set(slot, await slot.build(view as never));
       } catch (error) {
-        rejections.push({ fields: [...slot.fields], reason: messageOf(error) });
+        rejections.push({
+          fields: [...slot.fields],
+          reason: secret(slot.fields)
+            ? `building the value failed (${nameOf(error)})`
+            : redact(messageOf(error)),
+        });
       }
     }
     if (rejections.length > 0) {
@@ -852,6 +902,22 @@ function describe(outcome: ConfigOutcome): string {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** What was thrown, without its message: `TypeError`, or `string`. */
+function nameOf(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
+/** Every string and number in a decoded value, as text. */
+function textsOf(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (typeof value === "number" || typeof value === "bigint")
+    return [String(value)];
+  if (Array.isArray(value)) return value.flatMap(textsOf);
+  if (typeof value === "object" && value !== null)
+    return Object.values(value).flatMap(textsOf);
+  return [];
 }
 
 /**

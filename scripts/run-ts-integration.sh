@@ -68,6 +68,7 @@ fixture_bins=(
   jobs
   service_update
   configured_growth
+  configured_secrets
   graceful_service
 )
 

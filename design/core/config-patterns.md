@@ -273,6 +273,26 @@ returns once a revision passes. While a registration waits, every reading is
 checked, changed or not. The service has not reached `wait()` or `run()`, so
 it is not serving and its readiness stays at starting.
 
+A reason reaches more readers than the secrets do: the stored status that
+`Config.Get`, the CLI and the Console show, the `settings` health check, the
+participant's log, and what it prints while startup waits. A reason should
+never include a secret value, and the SDKs keep it out before the reason goes
+anywhere:
+
+- Every occurrence of a value of a field the build declares secret, taken from
+  the candidate and from the values in effect, is replaced with `[redacted]`,
+  longest first. Values shorter than four characters are skipped, since
+  replacing them would blank out ordinary words. This covers explicit reasons
+  (`reject`, `Rejection::new`) as well as error messages.
+- An unexpected error (a TypeScript throw, a Rust error converted through
+  `?`) can carry a secret in a form redaction can't find. When it involves a
+  secret field, its message is replaced by a generic reason with the error's
+  type name (in Rust without its module path): `the check failed (TypeError)`
+  for a check whose candidate changes a secret field, or a newly registered
+  check, which reads every value in effect; `building the value failed
+  (Error)` for a builder with a secret among its fields. The message is not
+  logged either. Explicit reasons keep their text.
+
 Settings work live only when read at each use: `config.current`, a derived
 `current`, or Rust's `current()`. A copy kept in a module-level constant, or a
 `Config` cloned out of the watcher, keeps the values it was copied from.
@@ -296,7 +316,10 @@ repeat of the last confirmed report is not sent again. A failed report is
 retried with the shared backoff (250 ms doubling to 30 s) until Auth confirms
 it or a newer outcome replaces it, so a report lost while the connection stays
 up, such as one sent while the server restarts, still arrives without another
-save. `config.readOwn` allows it. Auth keeps one row per instance in `auth_config_reports`.
+save. `config.readOwn` allows it. Auth keeps one row per instance in
+`auth_config_reports`, with the reason cut to its first KiB at a character
+boundary and marked with `…`; each field name is at most 128 characters by
+the request's type.
 
 `Config.Get` returns each instance's `settings` as `{ revision,
 instanceRevision, state, fields, reason, at }`. A report on the instance's
@@ -310,7 +333,9 @@ settings has no `settings`.
 
 The SDK also adds a `settings` health check, the way it adds a
 `webhook:<endpoint>` check per endpoint. It is degraded with the reason while
-the newest revision is rejected and turns ok with the next accepted one. A
+the newest revision is rejected and turns ok with the next accepted one. Its
+summary is cut to the 1024 characters a heartbeat allows, since a longer one
+would keep the whole heartbeat from being published. A
 change of outcome publishes a heartbeat at once, so a running instance shows a
 rejection within seconds.
 
