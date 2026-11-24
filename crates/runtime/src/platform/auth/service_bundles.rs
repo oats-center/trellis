@@ -25,8 +25,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr as _;
 use std::sync::{Arc, Mutex};
 
+use async_nats::jetstream::{context::GetStreamErrorKind, ErrorCode};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use futures_util::StreamExt as _;
@@ -49,6 +51,9 @@ use super::{
     SqliteAuthorizationStore,
 };
 use crate::backup::{restore_stream_from, snapshot_stream_into};
+
+/// The stream metadata key that names the import which restored a stream.
+const IMPORT_MARKER: &str = "trellis.import";
 
 /// The content format this build writes and reads.
 const FORMAT: u32 = 1;
@@ -1806,6 +1811,7 @@ fn owned_stream(config: &Value, resource: &BundledResource) -> bool {
         && ["mirror", "sources", "republish", "subject_transform"]
             .into_iter()
             .all(unset)
+        && matches!(config["metadata"], Value::Null | Value::Object(_))
 }
 
 /// The subject prefix of a job queue's lifecycle messages.
@@ -1816,6 +1822,27 @@ fn job_prefix(deployment_id: &str, resource: &BundledResource) -> Result<String,
         resource.name,
         resource.allocation_id
     ))
+}
+
+/// A line of `jobs.jsonl` and the headers and payload it publishes.
+///
+/// Every part replay sends is decoded here, so preflight refuses a line that
+/// replay could not publish before anything changes.
+fn job_message(line: &[u8]) -> Result<(JobMessage, async_nats::HeaderMap, Vec<u8>), AuthError> {
+    let message: JobMessage =
+        serde_json::from_slice(line).map_err(|error| damaged(format!("{JOBS}: {error}")))?;
+    let mut headers = async_nats::HeaderMap::new();
+    for (name, value) in &message.headers {
+        let refuse = || damaged(format!("{JOBS}: a waiting job's header {name:?}"));
+        headers.append(
+            async_nats::header::HeaderName::from_str(name).map_err(|_| refuse())?,
+            async_nats::header::HeaderValue::from_str(value).map_err(|_| refuse())?,
+        );
+    }
+    let payload = STANDARD
+        .decode(&message.payload)
+        .map_err(|error| damaged(format!("{JOBS}: a waiting job's payload: {error}")))?;
+    Ok((message, headers, payload))
 }
 
 /// One subject token an export writes: letters, digits, `-` and `_`.
@@ -1834,8 +1861,10 @@ fn token(text: &str) -> bool {
 /// has to match. A bundle that names another deployment's stream, a platform
 /// stream, another queue's subjects or any other subject is refused here,
 /// before anything changes; so is one whose stream configuration would read
-/// from or write to another stream. Runs on the blocking pool: it compiles
-/// the build and reads the spooled jobs.
+/// from or write to another stream, and one with a waiting job whose
+/// headers or payload replay could not decode. It runs before `--check`
+/// reports and before a real import writes anything. Runs on the blocking
+/// pool: it compiles the build and reads the spooled jobs.
 fn validate(bundle: &Bundle) -> Result<(), AuthError> {
     let deployment = &bundle.deployment;
     let deployment_id = deployment.deployment_id.as_str();
@@ -2004,8 +2033,7 @@ fn validate(bundle: &Bundle) -> Result<(), AuthError> {
                 "{JOBS} has a line over {MAX_JOB_LINE} bytes"
             )));
         }
-        let message: JobMessage =
-            serde_json::from_slice(&line).map_err(|error| damaged(format!("{JOBS}: {error}")))?;
+        let (message, ..) = job_message(&line)?;
         // `<queue prefix>.<job ID>.<event>`, for one of the bundle's queues.
         let queued = message.subject.rsplitn(3, '.').collect::<Vec<_>>();
         let fits = matches!(queued.as_slice(), [event, job, prefix]
@@ -2117,6 +2145,7 @@ fn apply(
     storage: &OAuthStorage,
     bundle: &Bundle,
     input: &operations::DeploymentsImportInput,
+    import_id: &str,
     actor: &str,
     now: i64,
 ) -> Result<(), AuthError> {
@@ -2351,16 +2380,17 @@ fn apply(
         .map(|resource| resource.resource_id.as_str())
         .collect();
     connection.execute(
-        "INSERT INTO auth_service_imports(deployment_id,content_digest,state,restores_json,\
-        started_json,loaded_json,report_json,imported_by,imported_at) \
-        VALUES(?1,?2,'loading',?3,'[]','[]',?4,?5,?6)",
+        "INSERT INTO auth_service_imports(deployment_id,import_id,content_digest,state,\
+        restores_json,created_json,loaded_json,report_json,imported_by,imported_at) \
+        VALUES(?1,?7,?2,'loading',?3,'{}','[]',?4,?5,?6)",
         params![
             deployment_id,
             bundle.received.digest,
             json(&restores)?,
             bundle.report.to_string(),
             actor,
-            now
+            now,
+            import_id
         ],
     )?;
     connection.execute(
@@ -2448,16 +2478,24 @@ async fn import(
         return Err(refused(&store, &actor, &deployment_id, error).await);
     }
     // An import of this same bundle that stopped while loading resumes.
-    let earlier: Option<(String, String, String, String)> = {
+    let earlier: Option<(String, String, String, String, String)> = {
         let deployment_id = deployment_id.clone();
         store
             .transaction_blocking(move |connection| {
                 Ok(connection
                     .query_row(
-                        "SELECT content_digest,state,started_json,loaded_json \
+                        "SELECT content_digest,state,import_id,created_json,loaded_json \
                         FROM auth_service_imports WHERE deployment_id=?1",
                         [deployment_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
                     )
                     .optional()?)
             })
@@ -2481,6 +2519,10 @@ async fn import(
         _ => false,
     };
     let jetstream = async_nats::jetstream::new(nats.clone());
+    let import_id = match &earlier {
+        Some((_, _, import_id, ..)) if resuming => import_id.clone(),
+        _ => id(),
+    };
     if !resuming {
         // What the Auth database names is reported before what NATS holds,
         // so an existing deployment is named rather than one of its streams.
@@ -2509,16 +2551,19 @@ async fn import(
         }
         let now = crate::clock::unix_now();
         let attempt = {
-            let (storage, bundle, input, actor, check) = (
+            let (storage, bundle, input, import_id, actor, check) = (
                 storage.clone(),
                 Arc::clone(&bundle),
                 input.clone(),
+                import_id.clone(),
                 actor.clone(),
                 input.check == Some(true),
             );
             blocking(move || {
                 let run = |connection: &Connection| {
-                    apply(connection, &storage, &bundle, &input, &actor, now)
+                    apply(
+                        connection, &storage, &bundle, &input, &import_id, &actor, now,
+                    )
                 };
                 if check {
                     storage.authority.rehearse(run)
@@ -2541,14 +2586,14 @@ async fn import(
     } else if input.check == Some(true) {
         return output(false, true, &report);
     }
-    let (mut started, mut loaded): (BTreeSet<String>, BTreeSet<String>) = match &earlier {
-        Some((_, _, started, loaded)) if resuming => (decode(started)?, decode(loaded)?),
-        _ => (BTreeSet::new(), BTreeSet::new()),
+    let (mut created, mut loaded): (BTreeMap<String, String>, BTreeSet<String>) = match &earlier {
+        Some((_, _, _, created, loaded)) if resuming => (decode(created)?, decode(loaded)?),
+        _ => (BTreeMap::new(), BTreeSet::new()),
     };
     // Each step is recorded before the next begins, so a later attempt knows
     // which streams this import made.
-    let record = |column: &'static str, names: &BTreeSet<String>| {
-        let (deployment_id, names) = (deployment_id.clone(), json(names));
+    let record = |column: &'static str, names: Result<String, AuthError>| {
+        let deployment_id = deployment_id.clone();
         let store = Arc::clone(&store);
         async move {
             let names = names?;
@@ -2577,20 +2622,33 @@ async fn import(
             bundle.received.size,
         )
         .await?;
-        if jetstream.get_stream(stream).await.is_ok() {
-            // A stream an earlier attempt began to restore and did not finish
-            // is deleted and restored again. Any other is left alone: this
-            // import did not make it.
-            if !started.contains(&resource.resource_id) {
-                return Err(AuthError::Conflict(format!(
-                    "stream {stream} of {} {} exists, and this import did not create it",
-                    resource.kind, resource.name
-                )));
+        match jetstream.get_stream(stream).await {
+            // A stream an earlier attempt of this import restored and did not
+            // finish loading is deleted and restored again. Only one that
+            // shows it is that stream: it carries this import's ID, which
+            // nobody learns before the import's own stream exists, and the
+            // creation time recorded once the broker made it. Any other
+            // stream under the name is someone else's, and stays as it is.
+            Ok(existing) => {
+                let info = existing.cached_info();
+                let ours = info.config.metadata.get(IMPORT_MARKER) == Some(&import_id)
+                    && created.get(&resource.resource_id) == Some(&info.created.to_string());
+                if !ours {
+                    return Err(AuthError::Conflict(format!(
+                        "stream {stream} of {} {} exists, and this import did not create it; \
+                        it was left as it is",
+                        resource.kind, resource.name
+                    )));
+                }
+                jetstream.delete_stream(stream).await.map_err(broker)?;
             }
-            jetstream.delete_stream(stream).await.map_err(broker)?;
-        }
-        if started.insert(resource.resource_id.clone()) {
-            record("started_json", &started).await?;
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    GetStreamErrorKind::JetStream(error)
+                        if error.error_code() == ErrorCode::STREAM_NOT_FOUND
+                ) => {}
+            Err(error) => return Err(broker(error)),
         }
         let spool = bundle
             .received
@@ -2598,33 +2656,35 @@ async fn import(
             .get(entry)
             .ok_or_else(|| damaged(format!("it has no {entry}")))?;
         let mut snapshot = spool.reader()?;
-        restore_stream_from(
-            nats,
-            stream,
-            &resource.config,
-            &resource.state,
-            &mut snapshot,
-        )
-        .await
-        .map_err(broker)?;
-        // The broker builds the stream from the snapshot, which carries its
-        // own copy of the configuration; it has to be the resource's too.
+        // The broker gives the restored stream this configuration, and with
+        // it the import's ID.
+        let mut config = resource.config.clone();
+        config["metadata"][IMPORT_MARKER] = Value::String(import_id.clone());
+        restore_stream_from(nats, stream, &config, &resource.state, &mut snapshot)
+            .await
+            .map_err(broker)?;
+        // The broker refuses to restore over an existing stream, so the one
+        // there now is this import's. Its configuration has to be the
+        // resource's, with this import's ID.
         let restored = jetstream
             .get_stream(stream)
             .await
             .map_err(broker)?
             .cached_info()
-            .config
             .clone();
-        if !owned_stream(&serde_json::to_value(&restored)?, resource) {
+        if restored.config.metadata.get(IMPORT_MARKER) != Some(&import_id)
+            || !owned_stream(&serde_json::to_value(&restored.config)?, resource)
+        {
             jetstream.delete_stream(stream).await.map_err(broker)?;
             return Err(damaged(format!(
                 "the snapshot of {} {} configures another stream",
                 resource.kind, resource.name
             )));
         }
+        created.insert(resource.resource_id.clone(), restored.created.to_string());
+        record("created_json", json(&created)).await?;
         loaded.insert(resource.resource_id.clone());
-        record("loaded_json", &loaded).await?;
+        record("loaded_json", json(&loaded)).await?;
     }
     let now = crate::clock::unix_now();
     // The resources are prepared for an instance that can run now, as this
@@ -2655,18 +2715,9 @@ async fn import(
                 progress("queueing waiting jobs", bundle.received.size).await?;
                 let lines = std::io::BufReader::new(spool.reader()?);
                 for line in std::io::BufRead::lines(lines) {
-                    let message: JobMessage =
-                        serde_json::from_str(&line.map_err(io)?).map_err(damaged)?;
-                    let mut headers = async_nats::HeaderMap::new();
-                    for (name, value) in &message.headers {
-                        headers.append(name.as_str(), value.as_str());
-                    }
+                    let (message, headers, payload) = job_message(line.map_err(io)?.as_bytes())?;
                     jetstream
-                        .publish_with_headers(
-                            message.subject,
-                            headers,
-                            STANDARD.decode(&message.payload).map_err(damaged)?.into(),
-                        )
+                        .publish_with_headers(message.subject, headers, payload.into())
                         .await
                         .map_err(broker)?
                         .await
@@ -2674,7 +2725,7 @@ async fn import(
                 }
             }
             loaded.insert(JOBS.to_owned());
-            record("loaded_json", &loaded).await?;
+            record("loaded_json", json(&loaded)).await?;
         }
     } else {
         left.push(

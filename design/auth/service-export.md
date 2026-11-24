@@ -337,10 +337,15 @@ one-version rule in `deny.toml` refuses. The construction is built from
 `argon2` and `ring`, which Trellis already uses for password hashing and for
 sealing with the storage key.
 
-**Integrity.** Export prints the SHA-256 of the bundle file. Import computes
-the file's SHA-256 and refuses it unless it matches `--digest`, or, on a
-terminal, unless the administrator confirms the digest it shows. Without a
-terminal, `--digest` is required.
+**Integrity.** Export prints the SHA-256 and size of the bundle file,
+computed from the bytes as it writes them rather than by reading the file
+back, so a file changed or replaced afterwards does not change what it
+reports. Import reads the file once, into a private temporary file that is
+unlinked as it is created, computing the SHA-256 as it copies. It refuses the
+bundle unless that digest matches `--digest`, or, on a terminal, unless the
+administrator confirms the digest it shows, and then decrypts and sends that
+same copy. A file replaced or rewritten after it was read is never sent.
+Without a terminal, `--digest` is required.
 
 **Versioning.** The header line and the content's format number both carry a
 version. Import refuses a format it does not know. From the first stable
@@ -379,6 +384,10 @@ move's cleanup without asking forever after. `-f` skips the question.
 
 `import --check` sends the bundle, and Auth verifies it and runs the whole
 import in a transaction it rolls back, then reports what the import would do.
+Everything Auth itself later decodes from the bundle, each waiting job's
+headers and payload included, is decoded during that verification, for
+`--check` and for a real import alike, before anything is written. Only the
+stream snapshots are read by the broker, when it loads them.
 
 Both commands start an Auth Operation and wait for it:
 
@@ -443,7 +452,9 @@ ID>_<allocation ID>`, and a stream configuration with exactly that name,
    its own subjects and ownership marker, and no mirror, sources, republish
    or subject transform. A waiting job's message has to be on
    `<queue prefix>.<job ID>.<event>` for one of the bundle's queues, with no
-   NATS control header but `Nats-Msg-Id`. Instance, principal, enrollment
+   NATS control header but `Nats-Msg-Id`, and its header names, header
+   values and base64 payload have to decode as they will when the job is
+   published again. Instance, principal, enrollment
    secret, allocation and deployment IDs are ULIDs, a webhook URL ID is 16
    random bytes, and a webhook endpoint is one the build declares. A bundle
    that names a stream of another deployment or of Trellis itself, or any
@@ -469,13 +480,16 @@ ID>_<allocation ID>`, and a stream configuration with exactly that name,
    keys, writes the enrollment secrets, the instance policy, the settings
    with their secrets sealed, and the webhook endpoints, records the
    resources as `pending` under their own resource and allocation IDs, and
-   records the import with its content digest and the streams it will
-   restore. The deployment starts enabled.
-5. **Load the data.** Auth restores each KV and store snapshot, recording
-   that it began before it starts and that it is loaded once it finishes.
-   The broker builds a restored stream from the configuration inside the
-   snapshot, so Auth checks the stream it got against the same rules as step
-   1, and deletes it and stops if it differs. Auth then prepares the
+   records the import with its content digest, the streams it will restore,
+   and a random import ID. The deployment starts enabled.
+5. **Load the data.** Auth restores each KV and store snapshot with the
+   stream configuration from the bundle, adding the import ID to the
+   stream's metadata under `trellis.import`. The broker refuses to restore
+   over an existing stream, so the stream that exists afterwards is the one
+   the import made. Auth checks it against the same rules as step 1 and for
+   the import ID, and deletes it and stops if it differs. It then records
+   the stream's creation time, and after that records the resource loaded.
+   Auth then prepares the
    resources as it does for a new instance, which finds the restored streams
    and makes them `ready`, and publishes the waiting jobs. Whether there is
    an instance to prepare them for is read from this installation: a
@@ -490,10 +504,15 @@ would create the missing streams empty.
 
 If step 5 fails, or stops for want of an instance, running the same import
 again resumes it: Auth finds the import record for the deployment with the
-same content digest, deletes a stream it began to restore and did not
-finish, and loads the rest. It deletes only streams the import record says
-it began; a stream under one of those names that it did not begin is left
-alone and the import stops, naming it. Readiness is read again, so an
+same content digest, deletes a stream it restored and did not record
+loaded, restores it again, and loads the rest. It deletes a stream only
+when the stream's metadata carries the import ID and its creation time is
+the one the import recorded. Any other stream under that name, whether it
+has no import ID, another import's, or another creation time, is left as it
+is, and the import stops with a conflict naming it. This includes a stream
+the import restored just before it stopped and had not yet recorded: Auth
+cannot tell it from someone else's, so the operator removes it before
+running the import again. Readiness is read again, so an
 instance provisioned or enabled since the last attempt lets the import
 finish. A resource does not become `ready` empty, following the existing
 rule that a missing stream after materialization is storage loss, not

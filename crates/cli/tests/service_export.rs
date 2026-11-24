@@ -7,7 +7,10 @@
 //! Two exports never replace each other's file.
 //! An export holds only unfinished jobs.
 //! An import that waited for an instance finishes once one exists.
-//! An import never reaches past the deployment it creates.
+//! An import never reaches past the deployment it creates, and running it
+//! again replaces only a stream it can show it restored itself.
+//! Import sends only the bytes whose digest it checked, and export reports
+//! the digest of the bytes it wrote.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -1266,7 +1269,7 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     let keeper_file = work.join("keeper.trellis-service");
     let keeper_digest = export(&old_cli, keeping.deployment_id(), &keeper_file, &passphrase).await;
     let moving_file = work.join("moving.trellis-service");
-    export(&old_cli, &moving_id, &moving_file, &passphrase).await;
+    let moving_digest = export(&old_cli, &moving_id, &moving_file, &passphrase).await;
     let kv_stream = |entries: &[(String, Vec<u8>)]| {
         bundle::document(entries, "resources.json")
             .as_array()
@@ -1304,6 +1307,26 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         names
     };
 
+    // Where the new installation's Auth keeps its records.
+    let records = {
+        let mut pending = vec![new.workdir().to_path_buf()];
+        let mut found = None;
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path
+                    .file_name()
+                    .is_some_and(|name| name == "platform.sqlite")
+                {
+                    found = Some(path);
+                }
+            }
+        }
+        rusqlite::Connection::open(found.expect("the runtime's platform database")).unwrap()
+    };
+    records.busy_timeout(Duration::from_secs(10)).unwrap();
     // Named before `keeper` is imported, its stream does not exist yet, so
     // nothing in the way shows; the bundle is refused all the same.
     let early = kept_stream.clone();
@@ -1379,6 +1402,22 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         let digest = write_bundle(entries, &passphrase, &file);
         (file, digest)
     };
+    // A waiting job whose payload replay could not decode.
+    let undecodable = {
+        let mut entries = moving_entries.clone();
+        let (_, jobs) = entries
+            .iter_mut()
+            .find(|(name, _)| name == "jobs.jsonl")
+            .unwrap();
+        let mut message: Value =
+            serde_json::from_slice(jobs.split(|byte| *byte == b'\n').next().unwrap()).unwrap();
+        message["payload"] = json!("not base64!");
+        *jobs = serde_json::to_vec(&message).unwrap();
+        jobs.push(b'\n');
+        let file = work.join("undecodable-job.trellis-service");
+        let digest = write_bundle(entries, &passphrase, &file);
+        (file, digest)
+    };
     let unknown = {
         let mut entries = moving_entries.clone();
         entries.insert(0, ("resources/../escape".into(), b"elsewhere".to_vec()));
@@ -1387,7 +1426,20 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         (file, digest)
     };
     let before = streams().await;
-    for (file, digest) in [platform, copies, deletes, unknown] {
+    for (file, digest) in [platform, copies, deletes, undecodable, unknown] {
+        let checked = new_cli
+            .run(&[
+                "svc",
+                "import",
+                path(&file),
+                "--digest",
+                &digest,
+                "--passphrase-file",
+                path(&passphrase),
+                "--check",
+            ])
+            .await;
+        assert!(!checked.status.success(), "{} checks out", file.display());
         assert!(
             !import(&new_cli, &file, &digest, &passphrase)
                 .await
@@ -1397,37 +1449,249 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
             file.display()
         );
         assert!(!new_cli.has_deployment(&moving_id).await);
+        let rows: i64 = records
+            .query_row(
+                "SELECT (SELECT count(*) FROM auth_service_imports WHERE deployment_id=?1) \
+                + (SELECT count(*) FROM auth_resources WHERE owner_id=?1) \
+                + (SELECT count(*) FROM auth_instances WHERE deployment_id=?1)",
+                [&moving_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "{} left records", file.display());
         assert_eq!(streams().await, before);
     }
 
-    // An import whose store snapshot cannot be restored stops partway, and
-    // running it again starts over only what it began itself: `keeper`'s
-    // stream is untouched, and `moving`'s own KV keeps what it loaded.
-    let broken = {
-        let mut entries = moving_entries.clone();
-        let resources = bundle::document(&entries, "resources.json");
-        let store = resources
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|resource| resource["kind"] == "store")
-            .unwrap()["entry"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let (_, snapshot) = entries.iter_mut().find(|(name, _)| *name == store).unwrap();
-        *snapshot = vec![7; 4096];
-        let file = work.join("broken-store.trellis-service");
-        let digest = write_bundle(entries, &passphrase, &file);
-        (file, digest)
+    // The import reads the file once, so content that takes the file's
+    // place after its digest was checked is never sent. A FIFO gives the CLI
+    // `moving`'s bundle on the first open and a bundle Auth refuses on any
+    // later one.
+    let fifo = work.join("swapped.trellis-service");
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    let mut feeder = tokio::process::Command::new("sh")
+        // `exec`, so the process waiting for a second reader is the one
+        // killed below.
+        .args(["-c", r#"cat "$1" > "$3"; exec cat "$2" > "$3""#, "sh"])
+        .args([&moving_file, &claims_keeper, &fifo])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let swapped = new_cli
+        .run(&[
+            "svc",
+            "import",
+            path(&fifo),
+            "--digest",
+            &moving_digest,
+            "--passphrase-file",
+            path(&passphrase),
+            "--check",
+        ])
+        .await;
+    let _ = feeder.start_kill();
+    feeder.wait().await.unwrap();
+    assert!(
+        swapped.status.success(),
+        "{}",
+        String::from_utf8_lossy(&swapped.stderr)
+    );
+    let swapped: Value = serde_json::from_slice(&swapped.stdout).unwrap();
+    assert_eq!(swapped["import"]["applied"], false);
+    assert_eq!(swapped["import"]["report"]["deploymentId"], moving_id);
+
+    // Export reports the digest and size of the bytes it wrote: bytes
+    // another writer adds to the file meanwhile are not counted.
+    let elsewhere = work.join("added-to");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let out = elsewhere.join("moving.trellis-service");
+    let exporting = old_cli
+        .command()
+        .args(["svc", &moving_id, "export", "--out", path(&out)])
+        .args(["--passphrase-file", path(&passphrase)])
+        .stdin(std::process::Stdio::null())
+        .output();
+    let adding = async {
+        use std::os::unix::fs::FileExt as _;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let written = std::fs::read_dir(&elsewhere).unwrap().find_map(|entry| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(entry.ok()?.path())
+                    .ok()
+            });
+            if let Some(file) = written {
+                file.write_all_at(b"added later", 4 << 20).unwrap();
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the export writes no file"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
     };
-    for _ in 0..2 {
-        assert!(!import(&new_cli, &broken.0, &broken.1, &passphrase)
-            .await
-            .status
-            .success());
-    }
+    let (exported, ()) = tokio::join!(
+        async {
+            tokio::time::timeout(Duration::from_secs(120), exporting)
+                .await
+                .expect("the export finishes")
+                .unwrap()
+        },
+        adding
+    );
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let exported: Value = serde_json::from_slice(&exported.stdout).unwrap();
+    let file = std::fs::read(&out).unwrap();
+    let size = usize::try_from(exported["size"].as_u64().unwrap()).unwrap();
+    assert!(size < file.len());
+    assert_eq!(exported["digest"], bundle::digest(&file[..size]));
+    let passphrase_text = std::fs::read_to_string(&passphrase).unwrap();
+    let written = bundle::entries(&bundle::open(&file[..size], passphrase_text.trim_end()));
+    assert_eq!(
+        bundle::document(&written, "deployment.json")["deploymentId"],
+        moving_id
+    );
+
+    // An import that stops after restoring a stream, before it records the
+    // stream loaded, resumes when run again: it restores again only a stream
+    // it made itself. A trigger refuses the record of the store loaded, as a
+    // stop between the two would leave it.
+    let store = bundle::document(&moving_entries, "resources.json")
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|resource| resource["kind"] == "store")
+        .unwrap()
+        .clone();
+    let store_id = store["resourceId"].as_str().unwrap().to_owned();
+    let store_stream = store["stream"].as_str().unwrap().to_owned();
+    records
+        .execute_batch(&format!(
+            "CREATE TRIGGER stop_before_store_loaded BEFORE UPDATE OF loaded_json \
+            ON auth_service_imports WHEN NEW.loaded_json LIKE '%{store_id}%' \
+            BEGIN SELECT RAISE(ABORT, 'stopped'); END"
+        ))
+        .unwrap();
+    let created = |name: String| {
+        let jetstream = jetstream.clone();
+        async move {
+            let mut stream = jetstream.get_stream(&name).await.unwrap();
+            let info = stream.info().await.unwrap();
+            (
+                info.created,
+                info.state.messages,
+                info.config.metadata.clone(),
+            )
+        }
+    };
+    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
+        .await
+        .status
+        .success());
     assert!(new_cli.has_deployment(&moving_id).await);
+    let (made, _, _) = created(store_stream.clone()).await;
+
+    // Someone else's stream under the store's name: one without the
+    // import's mark, then one with another import's.
+    jetstream.delete_stream(&store_stream).await.unwrap();
+    let foreign = jetstream
+        .create_stream(async_nats::jetstream::stream::Config {
+            name: store_stream.clone(),
+            subjects: store["config"]["subjects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|subject| subject.as_str().unwrap().to_owned())
+                .collect(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let foreign_subject = store["config"]["subjects"][0]
+        .as_str()
+        .unwrap()
+        .replace('>', "foreign");
+    jetstream
+        .publish(foreign_subject, "someone else's".into())
+        .await
+        .unwrap()
+        .await
+        .unwrap();
+    let foreign_created = foreign.cached_info().created;
+    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
+        .await
+        .status
+        .success());
+    let (kept_created, kept_messages_now, kept_metadata) = created(store_stream.clone()).await;
+    assert_eq!(
+        (
+            kept_created,
+            kept_messages_now,
+            kept_metadata.get("trellis.import")
+        ),
+        (foreign_created, 1, None),
+        "a stream without the import's mark stays as it is"
+    );
+    let marked = std::collections::HashMap::from([(
+        "trellis.import".to_owned(),
+        ulid::Ulid::generate().to_string(),
+    )]);
+    let mut config = foreign.cached_info().config.clone();
+    config.metadata = marked.clone();
+    jetstream.update_stream(config).await.unwrap();
+    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
+        .await
+        .status
+        .success());
+    let (kept_created, kept_messages_now, kept_metadata) = created(store_stream.clone()).await;
+    assert_eq!(
+        (kept_created, kept_messages_now),
+        (foreign_created, 1),
+        "a stream another import marked stays as it is"
+    );
+    assert_eq!(
+        kept_metadata.get("trellis.import"),
+        marked.get("trellis.import")
+    );
+
+    // Without the stranger's stream the store is restored, and the record
+    // refused again; once the record goes through, the store this import
+    // made is restored again and the import finishes.
+    jetstream.delete_stream(&store_stream).await.unwrap();
+    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
+        .await
+        .status
+        .success());
+    let (made_again, _, _) = created(store_stream.clone()).await;
+    assert_ne!(made_again, made);
+    records
+        .execute_batch("DROP TRIGGER stop_before_store_loaded")
+        .unwrap();
+    let finished = import(&new_cli, &moving_file, &moving_digest, &passphrase).await;
+    assert!(
+        finished.status.success(),
+        "{}",
+        String::from_utf8_lossy(&finished.stderr)
+    );
+    let finished: Value = serde_json::from_slice(&finished.stdout).unwrap();
+    assert_eq!(finished["import"]["resumed"], true);
+    let (restored, messages, _) = created(store_stream.clone()).await;
+    assert_ne!(
+        restored, made_again,
+        "the store's stream was restored again"
+    );
+    assert_eq!(messages, store["messages"].as_u64().unwrap());
     let loaded = jetstream
         .get_stream(&moving_stream)
         .await

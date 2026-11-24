@@ -1314,17 +1314,22 @@ CREATE TABLE auth_webhook_settings (
 -- Deployments created by importing a service bundle. The import commits the
 -- deployment first and loads its data after, so running the same bundle again
 -- finishes an import that stopped partway. `restores_json` names the KV and
--- store resources whose streams the import restores, `started_json` those it
--- began restoring (the only streams a later attempt may delete), and
--- `loaded_json` those whose data is in place, with `jobs.jsonl` once the
--- waiting jobs are queued. No instance prepares a resource of `restores_json`
--- until it is loaded.
+-- store resources whose streams the import restores. `import_id` is a random
+-- ID the import writes into the metadata of each stream it restores, and
+-- `created_json` maps a resource to the creation time of the stream the broker
+-- made for it, recorded once the restore succeeded. A later attempt deletes a
+-- stream only when it carries `import_id` and the recorded creation time; any
+-- other stream under that name is left alone. `loaded_json` names the
+-- resources whose data is in place, with `jobs.jsonl` once the waiting jobs
+-- are queued. No instance prepares a resource of `restores_json` until it is
+-- loaded.
 CREATE TABLE auth_service_imports (
     deployment_id TEXT PRIMARY KEY REFERENCES auth_deployments(deployment_id),
+    import_id TEXT NOT NULL UNIQUE CHECK (length(import_id) = 26),
     content_digest TEXT NOT NULL CHECK (length(content_digest) = 43),
     state TEXT NOT NULL CHECK (state IN ('loading', 'complete')),
     restores_json TEXT NOT NULL CHECK (json_valid(restores_json)),
-    started_json TEXT NOT NULL CHECK (json_valid(started_json)),
+    created_json TEXT NOT NULL CHECK (json_valid(created_json)),
     loaded_json TEXT NOT NULL CHECK (json_valid(loaded_json)),
     report_json TEXT NOT NULL CHECK (json_valid(report_json)),
     imported_by TEXT NOT NULL,
