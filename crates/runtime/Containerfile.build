@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Check's single release build of `trellis-server` and `trellis` on the Debian
+# Pipeline's native build of `trellis-server` and `trellis` on the Debian
 # bookworm baseline the runtime image (Containerfile.release) runs on. Every
 # live, browser, demo, package and image job consumes these executables.
 #
@@ -9,15 +9,18 @@
 # target directory on the build host between runs.
 FROM docker.io/library/rust:bookworm AS build
 
+ARG BUILD_PROFILE=release
+ARG CARGO_INCREMENTAL=0
 WORKDIR /src
 COPY . .
 
 # Version-clean (official) so the CLI and server report the manifest version.
 RUN --mount=type=cache,id=trellis-bookworm-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,id=trellis-bookworm-release-target,target=/src/target,sharing=locked \
-    TRELLIS_OFFICIAL_BUILD=1 cargo build --release -p trellis-server -p trellis-cli \
+    --mount=type=cache,id=trellis-bookworm-${BUILD_PROFILE}-target,target=/src/target,sharing=locked \
+    case "$BUILD_PROFILE" in dev) output=debug ;; release) output=release ;; *) exit 1 ;; esac \
+    && TRELLIS_OFFICIAL_BUILD=1 cargo build --locked --timings --profile "$BUILD_PROFILE" -p trellis-server -p trellis-cli \
     && mkdir /out \
-    && cp target/release/trellis target/release/trellis-server /out/
+    && cp "target/$output/trellis" "target/$output/trellis-server" target/cargo-timings/cargo-timing.html /out/
 
 FROM scratch
 COPY --from=build /out/ /

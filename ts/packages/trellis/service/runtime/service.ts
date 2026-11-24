@@ -105,7 +105,6 @@ import {
   createTrellisInternal,
   logFailure,
 } from "../../session.ts";
-import type { TrellisServiceRuntimeDeps } from "./runtime.ts";
 import { type DownloadSource, ServiceTransfer } from "./transfer.ts";
 import { logger as noopLogger, type LoggerLike } from "../../globals.ts";
 import {
@@ -212,7 +211,7 @@ import {
   SqlOutboxRepository,
   type SqlOutboxTables,
 } from "../outbox_inbox.ts";
-import { loadDefaultServiceRuntimeDeps } from "./bootstrap.ts";
+import { initTelemetry } from "../../telemetry/init.ts";
 import {
   connectWithServiceIdentity,
   serviceIdentityStatus,
@@ -3222,14 +3221,7 @@ function createJobsFacade<
   return jobsFacade as ManagedJobsFacade<TJobs, TClient>;
 }
 
-/**
- * Connects a service with caller-supplied runtime dependencies for tests and
- * Trellis-owned internals. This helper is intentionally not re-exported from
- * public package subpaths.
- *
- * @internal
- */
-export function connectTrellisServiceWithRuntimeDeps<
+function connectServiceSession<
   const TContract extends GeneratedServiceParticipant<
     RuntimeApi,
     RuntimeApi | undefined,
@@ -3238,7 +3230,6 @@ export function connectTrellisServiceWithRuntimeDeps<
   >,
 >(
   args: TrellisServiceConnectArgs<TContract>,
-  deps: Partial<TrellisServiceRuntimeDeps>,
 ): AsyncResult<
   TrellisServiceSession<
     ParticipantOwnedApi<TContract>,
@@ -3254,17 +3245,13 @@ export function connectTrellisServiceWithRuntimeDeps<
       let lifecycle: ServiceLifecycle | undefined;
       const telemetry = startConnectionTelemetry("service");
       try {
-        const runtimeDeps = {
-          ...(await loadDefaultServiceRuntimeDeps()),
-          ...deps,
-        };
         const name = args.name ?? args.participant.identity;
         lifecycle = new ServiceLifecycle(
           args.runtime?.readiness,
           resolveServiceLogger(args.runtime?.log),
         );
         if (args.telemetry !== false && args.telemetry?.enabled !== false)
-          await runtimeDeps.initTelemetry?.(name);
+          await initTelemetry(name);
         let ingress: ServiceProviderIngress | undefined;
         // A development Trellis's own certificate is accepted like a browser
         // would: by its fingerprint, asked once and remembered.
@@ -3291,47 +3278,42 @@ export function connectTrellisServiceWithRuntimeDeps<
           signal: args.signal,
         };
         const connect = () =>
-          connectProvisioned(
-            provisioned,
-            "service",
-            {
-              onPreActivate: async (generation, retainAuthority) => {
-                if (ingress) {
-                  // Readmitted with only the right to submit a build, this
-                  // build no longer answers for its instance: the deployment
-                  // moved past it. It stops rather than linger without
-                  // authority; a current build installs itself on connect.
-                  const lease = retainAuthority();
-                  const metadata =
-                    lease.authority.extensions["trellis.nativeParticipant.v1"];
-                  lease.release();
-                  if (
-                    metadata &&
-                    typeof metadata === "object" &&
-                    !Array.isArray(metadata) &&
-                    metadata.participantDigest === ""
-                  ) {
-                    const error = new Error(
-                      "This build is no longer installed for its instance; restart it with the deployment's current build",
-                    );
-                    void connected?.manager.terminate(error);
-                    throw error;
-                  }
+          connectProvisioned(provisioned, "service", {
+            onPreActivate: async (generation, retainAuthority) => {
+              if (ingress) {
+                // Readmitted with only the right to submit a build, this
+                // build no longer answers for its instance: the deployment
+                // moved past it. It stops rather than linger without
+                // authority; a current build installs itself on connect.
+                const lease = retainAuthority();
+                const metadata =
+                  lease.authority.extensions["trellis.nativeParticipant.v1"];
+                lease.release();
+                if (
+                  metadata &&
+                  typeof metadata === "object" &&
+                  !Array.isArray(metadata) &&
+                  metadata.participantDigest === ""
+                ) {
+                  const error = new Error(
+                    "This build is no longer installed for its instance; restart it with the deployment's current build",
+                  );
+                  void connected?.manager.terminate(error);
+                  throw error;
                 }
-                await ingress?.install({
-                  id: generation.id,
-                  nc: generation.nc,
-                  contextDigest: generation.contextDigest,
-                  retainAuthority,
-                  lease: () => generation.lease(),
-                  registerDisposal: (handle) =>
-                    generation.registerDisposal(handle),
-                });
-              },
-              onDrain: (generation) => ingress?.retireIntake(generation.id),
+              }
+              await ingress?.install({
+                id: generation.id,
+                nc: generation.nc,
+                contextDigest: generation.contextDigest,
+                retainAuthority,
+                lease: () => generation.lease(),
+                registerDisposal: (handle) =>
+                  generation.registerDisposal(handle),
+              });
             },
-            { connect: runtimeDeps.connect },
-          );
+            onDrain: (generation) => ingress?.retireIntake(generation.id),
+          });
         const identity = await connectWithServiceIdentity({
           seed: args.seed,
           enrollment: args.enrollment,
@@ -4303,7 +4285,7 @@ export class TrellisServiceSession<
   > {
     return AsyncResult.from(
       (async () => {
-        const connected = await connectTrellisServiceWithRuntimeDeps(args, {});
+        const connected = await connectServiceSession(args);
         if (isErr(connected)) {
           return connected;
         }

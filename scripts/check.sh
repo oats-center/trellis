@@ -36,7 +36,7 @@ build_packages() {
 }
 
 # The native CLI and server archives, one per binary with its checksum, that
-# packaging jobs consume. CI downloads the release build's into dist/native;
+# packaging jobs consume. CI downloads the producer's archives into dist/native;
 # locally pack_native packs the debug build, once per run when the jobs are
 # staged.
 native_version() {
@@ -351,13 +351,13 @@ job_images() {
   engine="$(command -v docker || command -v podman || true)"
   [[ -n "$engine" ]] || { echo "images needs docker or podman" >&2; exit 1; }
   if [[ "${1:-}" != "--smoke-only" ]]; then
-    # The image runs the binaries on its Debian base, so they come from the
-    # same container release build the pipeline uses, not the host's debug build.
+    # Exercise the same bookworm development binaries as ordinary CI.
     local goarch
     case "$(uname -m)" in x86_64) goarch=amd64 ;; aarch64 | arm64) goarch=arm64 ;; *) goarch="$(uname -m)" ;; esac
     mkdir -p "$temp"
     rm -rf "$temp/release" "dist/native/$goarch"
     "$engine" build --file crates/runtime/Containerfile.build \
+      --build-arg BUILD_PROFILE=dev --build-arg CARGO_INCREMENTAL=1 \
       --output "type=local,dest=$temp/release" .
     mkdir -p "dist/native/$goarch"
     cp "$temp/release/trellis" "$temp/release/trellis-server" "dist/native/$goarch/"

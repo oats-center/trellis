@@ -50,7 +50,8 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rustls.workspace = true
-rust-embed = "8"
+# Both CI profiles run the server outside its build checkout.
+rust-embed = { version = "8", features = ["debug-embed"] }
 sha2.workspace = true
 tempfile = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true, features = ["backup", "hooks"] }

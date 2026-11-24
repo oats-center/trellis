@@ -582,15 +582,16 @@ fn run_build(args: &[String]) -> Result<()> {
 }
 
 fn repo_root() -> Result<PathBuf> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for ancestor in manifest_dir.ancestors() {
+    let current = env::current_dir().into_diagnostic()?;
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for ancestor in current.ancestors().chain(manifest.ancestors()) {
         if ancestor.join("crates/idl/Cargo.toml").exists() && ancestor.join("package.json").exists()
         {
             return Ok(ancestor.to_path_buf());
         }
     }
     Err(miette::miette!(
-        "failed to resolve repository root from xtask manifest"
+        "failed to resolve repository root from current directory"
     ))
 }
 

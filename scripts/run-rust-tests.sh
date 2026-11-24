@@ -19,6 +19,11 @@ cd "$root"
 [[ "${1:-}" == "--" ]] && shift
 features="trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres"
 
+# The persistent runner can compile before the native runtime and fixtures exist.
+if [[ "${1:-}" == --compile-only ]]; then
+  exec cargo test --locked --workspace --features "$features" --no-run
+fi
+
 nats_version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
 nats_bin="${TRELLIS_TEST_NATS_BIN:-${TRELLIS_NATS_SERVER_BIN:-$root/target/test-nats/$nats_version/nats-server}}"
 dex_bin="${TRELLIS_TEST_DEX_BIN:-$root/target/test-identity/$(bash scripts/acquire-test-dex.sh --print-version)/dex}"
