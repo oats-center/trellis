@@ -394,8 +394,6 @@ pub(crate) fn read_custody_key(
     let invalid =
         |reason: &str| RuntimeError::Platform(format!("custody key '{}' {reason}", path.display()));
     let unreadable = |error: std::io::Error| invalid(&format!("cannot be read: {error}"));
-    // Open without following a link and check the opened file, so a swap
-    // between inspection and read cannot substitute another file.
     let metadata = std::fs::symlink_metadata(path).map_err(unreadable)?;
     if !metadata.is_file() {
         return Err(invalid("must be a regular file"));
@@ -414,14 +412,9 @@ pub(crate) fn read_custody_key(
         use std::os::unix::fs::MetadataExt as _;
         // SAFETY: geteuid has no arguments or borrowed memory.
         let owner = unsafe { libc::geteuid() };
-        if metadata.dev() != opened.dev()
-            || metadata.ino() != opened.ino()
-            || opened.mode() & 0o077 != 0
-            || opened.uid() != owner
-            || opened.nlink() != 1
-        {
+        if opened.mode() & 0o077 != 0 || opened.uid() != owner {
             return Err(invalid(
-                "must be a single-link file owned by this user without group or world access",
+                "must be owned by this user without group or world access",
             ));
         }
     }

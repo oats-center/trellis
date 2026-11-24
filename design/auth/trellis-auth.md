@@ -405,9 +405,9 @@ mapped onto one origin.
 Fresh initialization provisions `oauth_storage_key` in `secrets.toml`,
 independently of the online issuer, as a canonical base64url 32-byte key.
 Retain and back up this key together with Auth's database. Issuer rotation does
-not replace it. The runtime refuses a `secrets.toml` that is a symlink, has
-other hard links, is not owned by the process user, is readable by anyone else,
-or exceeds its size bound, opening it without following links. The OAuth
+not replace it. The runtime refuses a `secrets.toml` that is a symlink, is not
+owned by the process user, is readable by anyone else, or exceeds its size
+bound, opening it without following links. The OAuth
 adapter refuses a missing or malformed key and authenticates existing encrypted
 OAuth material before accepting new writes. Startup never generates a
 replacement key.
@@ -1580,8 +1580,7 @@ role in its own process: from its own seed and build, with the same idempotent
 initialization. The caller chooses nothing about what is installed, so a split
 role runs under the revision of the platform's build: upgrade the platform
 first, then its roles. The platform answers one request at a time, with the
-provisioned deployment, a refusal, or the preparation failure; the role checks
-its installed authority against that deployment once it connects. No answer,
+provisioned deployment, a refusal, or the preparation failure. No answer,
 as while no platform runs, counts as Auth being unavailable. A refusal or a
 failed preparation ends the role's process. The request carries no time, so
 clocks on split hosts need not agree; replaying one can only repeat an
@@ -1620,8 +1619,7 @@ to another server, or cannot be reached, the role keeps its lease but stands
 by, is not counted as running, and tries again, waiting 250 ms at first and
 doubling to 15 s, until the provider connects, the lease is lost, or the
 process stops. A provider that can never connect as configured, such as one
-whose installed authority does not match its generated role or whose broker certificate does not verify, still
-ends the process. The platform's own provider
+whose broker certificate does not verify, still ends the process. The platform's own provider
 connects to the Auth it runs, which serves until the platform stops, so it does
 not wait this way.
 

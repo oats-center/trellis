@@ -766,8 +766,7 @@ const STORE_KEY: &str = "store";
 ///
 /// # Errors
 ///
-/// Returns [`RuntimeError::BrokerIdentity`] when the record can't be read, or
-/// isn't kept in persistent, nonexpiring storage.
+/// Returns [`RuntimeError::BrokerIdentity`] when the record can't be read.
 pub(crate) async fn read_broker_identity(
     jetstream: &async_nats::jetstream::Context,
 ) -> Result<
@@ -798,14 +797,6 @@ pub(crate) async fn read_broker_identity(
         }
         Err(error) => return Err(failed(&error)),
     };
-    let status = marker.status().await.map_err(|error| failed(&error))?;
-    if status.info.config.storage != async_nats::jetstream::stream::StorageType::File
-        || !status.max_age().is_zero()
-    {
-        return Err(RuntimeError::BrokerIdentity(
-            "its identity record needs persistent, nonexpiring storage".into(),
-        ));
-    }
     let mut recorded = [None, None];
     for (key, value) in [INSTALLATION_KEY, STORE_KEY].into_iter().zip(&mut recorded) {
         *value = marker

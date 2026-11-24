@@ -220,8 +220,6 @@ impl Secrets {
             use std::os::unix::fs::OpenOptionsExt as _;
             options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
         }
-        // Open without following a link and check the opened file, so a swap
-        // between inspection and read cannot substitute another file.
         let file = options
             .open(path)
             .map_err(|error| invalid(format!("cannot be read: {error}")))?;
@@ -233,16 +231,9 @@ impl Secrets {
             use std::os::unix::fs::MetadataExt as _;
             // SAFETY: geteuid has no arguments or borrowed memory.
             let owner = unsafe { libc::geteuid() };
-            if metadata.dev() != opened.dev()
-                || metadata.ino() != opened.ino()
-                || opened.mode() & 0o077 != 0
-                || opened.uid() != owner
-                || opened.nlink() != 1
-            {
+            if opened.mode() & 0o077 != 0 || opened.uid() != owner {
                 return Err(invalid(
-                    "must be a single-link file owned by this user without group or world \
-                    access (chmod 600)"
-                        .into(),
+                    "must be owned by this user without group or world access (chmod 600)".into(),
                 ));
             }
         }

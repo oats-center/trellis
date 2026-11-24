@@ -7,7 +7,6 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use futures_util::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use trellis_protocol::SessionBinding;
 use trellis_rs::client::{
     RuntimeAuthorizationTrust, ServiceConnectWithContractOptions, SessionAuth, TrellisClient,
     TrellisClientError,
@@ -395,19 +394,5 @@ async fn connect<C: ParticipantDescriptor>(
             _ => RuntimeError::Platform(message),
         }
     })?;
-    let context = client
-        .authorization_context()
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?
-        .ok_or_else(|| {
-            RuntimeError::Platform("built-in provider has no installed authority".into())
-        })?;
-    if !matches!(
-        &context.context.unsigned.binding,
-        SessionBinding::Service { participant_id, .. } if participant_id == C::ID
-    ) {
-        return Err(RuntimeError::Platform(
-            "installed built-in authority does not match the generated role".into(),
-        ));
-    }
     Ok(client)
 }
