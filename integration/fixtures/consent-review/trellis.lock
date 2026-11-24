@@ -4,12 +4,12 @@ root = "localhost/consent-review-fixture"
 [[packages]]
 id = "localhost/consent-review-fixture"
 version = "0.100.0"
-digest = "nGpNP4H1qC_M7Z0zZHnCdNUHVrsJixiF2Ql6PUFq1hY"
-distribution-digest = "sha256:519cba3d558f836d206c9dfa8de3de75d598e7f498410ec80d963fa3d80b0caf"
+digest = "ku4vXmbwujiQbbSybflym48M00ovg4BWyprO1sD7puE"
+distribution-digest = "sha256:a8dee64429a0276ca87ce51d334979a7137f8c88ce6dc5deb5fb76ea24606452"
 
 [[packages.dependencies]]
 id = "trellis"
-version = "0.100.0-rc.54"
+version = "0.100.0-rc.55"
 digest = "A78uddyLxD7CTSmQZdmQg4ov1-l5nn6hdJgNjuLk59M"
 
 [packages.source]
@@ -18,9 +18,9 @@ path = "."
 
 [[packages]]
 id = "trellis"
-version = "0.100.0-rc.54"
+version = "0.100.0-rc.55"
 digest = "A78uddyLxD7CTSmQZdmQg4ov1-l5nn6hdJgNjuLk59M"
-distribution-digest = "sha256:f96ff2072a2c300505c4bee393260de6aac28bb53b6e899803c20bf4a2b36f89"
+distribution-digest = "sha256:e3c415463afd6d761d6ed488d9ae9e1316e8683481d7a6aecbb26b949a7cc562"
 dependencies = []
 
 [packages.source]

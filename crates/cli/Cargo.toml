@@ -27,11 +27,11 @@ semver.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 tokio.workspace = true
-trellis-rs = { path = "../trellis", version = "0.100.0-rc.54", optional = true, features = ["telemetry-otlp"] }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.55", optional = true, features = ["telemetry-otlp"] }
 trellis-runtime-apis = { path = "../runtime-apis", optional = true }
-trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.54" }
-trellis-codegen-ts = { path = "../codegen-ts", version = "0.100.0-rc.54" }
-trellis-idl = { path = "../idl", version = "0.100.0-rc.54" }
+trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.55" }
+trellis-codegen-ts = { path = "../codegen-ts", version = "0.100.0-rc.55" }
+trellis-idl = { path = "../idl", version = "0.100.0-rc.55" }
 trellis-protocol = { path = "../protocol", version = "0.100.0-rc.54" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, optional = true }
@@ -61,8 +61,8 @@ whoami = { version = "2.1.3", default-features = false, features = ["std"] }
 [build-dependencies]
 serde_json.workspace = true
 trellis-builtin-contracts = { path = "../builtin-contracts" }
-trellis-idl = { path = "../idl", version = "0.100.0-rc.54" }
-trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.54" }
+trellis-idl = { path = "../idl", version = "0.100.0-rc.55" }
+trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.55" }
 
 [dev-dependencies]
 reqwest.workspace = true
@@ -70,7 +70,7 @@ rexpect = "0.7.1"
 async-nats.workspace = true
 rusqlite.workspace = true
 runtime-trellis = { path = "../../integration/fixtures/runtime/crates/runtime-trellis" }
-trellis-rs = { path = "../trellis", version = "0.100.0-rc.54" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.55" }
 trellis-testkit = { path = "../trellis-testkit" }
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-multi-thread", "time"] }
 

@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.55] - 2026-11-24
+
 ### Added
 
 - Live settings: `config.check` and `config.derive` in the TypeScript and Rust
@@ -31,6 +33,11 @@ and this project adheres to
 
 ### Fixed
 
+- When NATS stops expiring the runtime lease records, as it does after a
+  storage write error such as a full disk, Trellis says so in its log, in
+  `/readyz`, in its 503 answers and in `trellis doctor`, and tells the operator
+  to free disk space and restart NATS. Lease renewals name the error NATS gave
+  instead of a bare timeout, and doctor warns when the data disk is nearly full.
 - Live settings: status reports are retried until Auth has them, the status
   names pending restart-only fields and the right rollback scope, Rust derived
   values are in place before `changed()` wakes, TypeScript disposes derived
@@ -50,26 +57,6 @@ and this project adheres to
 - A refused startup checks every database before migrating any, new Portal or
   Console files trigger the stale-asset check, embedded apps build without
   Git, and the upgrade test reads every page of releases.
-
-### Added
-
-- `trellis svc <id> export` and `trellis svc import` move a service to another
-  installation in a passphrase-encrypted bundle: the build, deployment,
-  instance keys, enrollment secret hashes, settings and secrets, webhook
-  endpoints, KV and store data and unfinished jobs. Import keeps every ID,
-  refuses conflicts, reports the roles to recreate, and `--check` dry-runs it.
-- `trellis doctor` and the Console's Diagnostics page report server, health,
-  JetStream, disk, certificates, recent failures and stuck work in one view,
-  gated by `diagnostics.read`.
-- `scripts/check.sh quick` runs the Pipeline's fast checks locally, and an
-  `upgrade` Pipeline job tests upgrading from the previous release.
-
-### Changed
-
-- A development server build refuses a stale embedded Portal or Console.
-- A changed database schema is refused at startup naming both Trellis
-  versions, the webhooks database included.
-- `xtask release prepare` moves Unreleased into the release's dated section.
 
 ## [0.100.0-rc.54] - 2026-11-23
 
