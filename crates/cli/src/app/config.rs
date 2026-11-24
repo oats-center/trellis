@@ -112,10 +112,32 @@ pub(super) async fn run(
     };
     match args.command.unwrap_or(ConfigCommand::Show) {
         ConfigCommand::Show => show(format, &label, prefix, id, &current),
-        ConfigCommand::Set { values, null } => {
-            let mut parsed = serde_json::Map::new();
+        ConfigCommand::Set {
+            values,
+            null,
+            secret,
+            values_file,
+            env_file,
+            secret_keys,
+        } => {
+            // Everything named here goes into one revision; a field named
+            // twice is a mistake, not an override.
+            let mut plain = serde_json::Map::new();
+            let mut secrets = serde_json::Map::new();
+            let mut add = |name: String, value: Value, as_secret: bool| {
+                miette::ensure!(
+                    !plain.contains_key(&name) && !secrets.contains_key(&name),
+                    "{name} is given more than once"
+                );
+                if as_secret {
+                    secrets.insert(name, value);
+                } else {
+                    plain.insert(name, value);
+                }
+                Ok(())
+            };
             for name in null {
-                parsed.insert(name, Value::Null);
+                add(name, Value::Null, false)?;
             }
             for pair in values {
                 let (name, text) = pair.split_once('=').ok_or_else(|| {
@@ -124,43 +146,109 @@ pub(super) async fn run(
                         "`{pair}` has no `=`"
                     )
                 })?;
-                parsed.insert(name.to_owned(), parse_value(&current, name, text)?);
+                // A secret on the command line would sit in the shell
+                // history and the process list.
+                miette::ensure!(
+                    !declared_secret(&current, name),
+                    help = format!("Read it from a file: --secret {name}=@PATH"),
+                    "{name} is a secret, so its value isn't taken on the command line"
+                );
+                add(name.to_owned(), parse_value(&current, name, text)?, false)?;
+            }
+            for spec in secret {
+                let (name, value) = secret_from_file(&current, &spec)?;
+                add(name, value, true)?;
+            }
+            let mut listed = Vec::new();
+            if let Some(path) = values_file {
+                let text = std::fs::read_to_string(&path).into_diagnostic()?;
+                let Ok(Value::Object(object)) = serde_json::from_str(&text) else {
+                    miette::bail!("{} is not a JSON object of settings", path.display());
+                };
+                for (name, value) in object {
+                    let as_secret = declared_secret(&current, &name) || secret_keys.contains(&name);
+                    listed.push(name.clone());
+                    add(name, value, as_secret)?;
+                }
+            }
+            if let Some(path) = env_file {
+                for (name, text) in read_env_file(&path)? {
+                    let value = parse_value(&current, &name, &text)?;
+                    let as_secret = declared_secret(&current, &name) || secret_keys.contains(&name);
+                    listed.push(name.clone());
+                    add(name, value, as_secret)?;
+                }
+            }
+            if let Some(stray) = secret_keys.iter().find(|name| !listed.contains(name)) {
+                miette::bail!("--secret-keys names {stray}, which no file given sets");
             }
             let updated = auth
-                .config_set(&wire(set(json!({ "values": parsed })))?)
+                .config_set(&wire(set(json!({ "values": plain, "secrets": secrets })))?)
                 .await
                 .into_diagnostic()?;
             changed(format, &label, prefix, id, &to_value(updated)?)
         }
         ConfigCommand::SetSecret {
-            field,
+            fields,
             from_file,
             null,
+            env_file,
         } => {
-            let value = if null {
-                Value::Null
-            } else {
-                let text = match from_file {
-                    Some(path) if path != std::path::Path::new("-") => {
-                        std::fs::read_to_string(&path).into_diagnostic()?
+            let mut secrets = serde_json::Map::new();
+            match fields.as_slice() {
+                // One field: from a file, piped in, asked for, or null.
+                [field] if !field.contains('=') => {
+                    let value = if null {
+                        Value::Null
+                    } else {
+                        let text = match from_file {
+                            Some(path) if path != std::path::Path::new("-") => {
+                                std::fs::read_to_string(&path).into_diagnostic()?
+                            }
+                            // A terminal never waits silently for end of
+                            // input: it asks, or without questions fails
+                            // naming the flag.
+                            None if std::io::stdin().is_terminal() => {
+                                let mut form = prompt::Form::new(true);
+                                let typed = form.required_secret(
+                                    &format!("Value for {field}"),
+                                    "--from-file PATH",
+                                )?;
+                                form.finish()?;
+                                typed
+                            }
+                            _ => std::io::read_to_string(std::io::stdin()).into_diagnostic()?,
+                        };
+                        secret_value(&current, field, &text)?
+                    };
+                    secrets.insert(field.clone(), value);
+                }
+                specs => {
+                    miette::ensure!(
+                        from_file.is_none() && !null,
+                        help = "Give each as FIELD=@PATH, or one FIELD with --from-file or --null.",
+                        "--from-file and --null take a single FIELD"
+                    );
+                    for spec in specs {
+                        let (name, value) = secret_from_file(&current, spec)?;
+                        miette::ensure!(
+                            secrets.insert(name.clone(), value).is_none(),
+                            "{name} is given more than once"
+                        );
                     }
-                    // A terminal never waits silently for end of input: it
-                    // asks, or without questions fails naming the flag.
-                    None if std::io::stdin().is_terminal() => {
-                        let mut form = prompt::Form::new(true);
-                        let typed = form
-                            .required_secret(&format!("Value for {field}"), "--from-file PATH")?;
-                        form.finish()?;
-                        typed
-                    }
-                    _ => std::io::read_to_string(std::io::stdin()).into_diagnostic()?,
-                };
-                let text = text.trim_end_matches(['\r', '\n']);
-                miette::ensure!(!text.is_empty(), "the secret for {field} is empty");
-                parse_value(&current, &field, text)?
-            };
+                }
+            }
+            if let Some(path) = env_file {
+                for (name, text) in read_env_file(&path)? {
+                    let value = secret_value(&current, &name, &text)?;
+                    miette::ensure!(
+                        secrets.insert(name.clone(), value).is_none(),
+                        "{name} is given more than once"
+                    );
+                }
+            }
             let updated = auth
-                .config_set(&wire(set(json!({ "secrets": { field: value } })))?)
+                .config_set(&wire(set(json!({ "secrets": secrets })))?)
                 .await
                 .into_diagnostic()?;
             changed(format, &label, prefix, id, &to_value(updated)?)
@@ -278,6 +366,122 @@ fn to_value(value: impl serde::Serialize) -> miette::Result<Value> {
     serde_json::to_value(value).into_diagnostic()
 }
 
+/// Whether the installed build declares `name` secret.
+fn declared_secret(current: &Value, name: &str) -> bool {
+    output::list(current, "fields")
+        .iter()
+        .any(|field| field["name"].as_str() == Some(name) && field["secret"] == json!(true))
+}
+
+/// A secret's value from what was read for it: without trailing newlines,
+/// never empty, and parsed as `set` parses a value.
+fn secret_value(current: &Value, name: &str, text: &str) -> miette::Result<Value> {
+    let text = text.trim_end_matches(['\r', '\n']);
+    miette::ensure!(!text.is_empty(), "the secret for {name} is empty");
+    parse_value(current, name, text)
+}
+
+/// `FIELD=@PATH`, or `FIELD=@-` for standard input, read as a secret.
+fn secret_from_file(current: &Value, spec: &str) -> miette::Result<(String, Value)> {
+    let help = "Write each secret as FIELD=@PATH, such as apiKey=@key.txt, or FIELD=@- for standard input.";
+    let (name, source) = spec
+        .split_once('=')
+        .ok_or_else(|| miette::miette!(help = help, "`{spec}` has no `=`"))?;
+    let path = source.strip_prefix('@').ok_or_else(|| {
+        miette::miette!(
+            help = help,
+            "a secret's value isn't taken on the command line; read {name} from a file"
+        )
+    })?;
+    let text = if path == "-" {
+        std::io::read_to_string(std::io::stdin()).into_diagnostic()?
+    } else {
+        std::fs::read_to_string(path)
+            .into_diagnostic()
+            .map_err(|error| error.wrap_err(format!("reading {name} from {path}")))?
+    };
+    Ok((name.to_owned(), secret_value(current, name, &text)?))
+}
+
+/// `NAME=VALUE` lines of an env file, in order. Blank lines and `#` comments
+/// are skipped, a leading `export ` is ignored, and a value in single quotes
+/// is taken as written, one in double quotes with `\n`, `\"` and `\\`
+/// escapes.
+fn read_env_file(path: &std::path::Path) -> miette::Result<Vec<(String, String)>> {
+    let text = std::fs::read_to_string(path)
+        .into_diagnostic()
+        .map_err(|error| error.wrap_err(format!("reading {}", path.display())))?;
+    let mut entries = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let (name, value) = line.split_once('=').ok_or_else(|| {
+            miette::miette!("{}:{}: expected NAME=VALUE", path.display(), number + 1)
+        })?;
+        let value = value.trim();
+        let value = if let Some(quoted) = value
+            .strip_prefix('\'')
+            .and_then(|rest| rest.strip_suffix('\''))
+        {
+            quoted.to_owned()
+        } else if let Some(quoted) = value
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+        {
+            let mut unescaped = String::new();
+            let mut chars = quoted.chars();
+            while let Some(c) = chars.next() {
+                if c != '\\' {
+                    unescaped.push(c);
+                    continue;
+                }
+                match chars.next() {
+                    Some('n') => unescaped.push('\n'),
+                    Some(other) => unescaped.push(other),
+                    None => unescaped.push('\\'),
+                }
+            }
+            unescaped
+        } else {
+            value.to_owned()
+        };
+        entries.push((name.trim().to_owned(), value));
+    }
+    Ok(entries)
+}
+
+/// One instance's settings status in a few words: `applied r12`,
+/// `rejected r13: awsSecret: set both or neither`, or `pending r13`.
+pub(super) fn settings_label(status: &Value) -> String {
+    let revision = match (
+        status["revision"].as_u64(),
+        status["instanceRevision"].as_u64(),
+    ) {
+        (Some(deployment), Some(instance)) => format!(" r{deployment} (instance r{instance})"),
+        (Some(deployment), None) => format!(" r{deployment}"),
+        (None, Some(instance)) => format!(" instance r{instance}"),
+        (None, None) => String::new(),
+    };
+    let state = output::field(status, "state");
+    if state != "rejected" {
+        return format!("{state}{revision}");
+    }
+    let fields = output::list(status, "fields")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let reason = output::field(status, "reason");
+    if fields.is_empty() {
+        format!("{state}{revision}: {reason}")
+    } else {
+        format!("{state}{revision}: {fields}: {reason}")
+    }
+}
+
 /// A text setting takes the text as written; any other declared one is parsed
 /// as JSON, so `port=9090` is a number and `name=9090` stays text. A field the
 /// build doesn't declare is JSON when the text parses as JSON and text
@@ -305,8 +509,12 @@ fn parse_value(current: &Value, name: &str, text: &str) -> miette::Result<Value>
 /// possibly through a `$ref` or as the non-null half of a nullable type.
 fn wants_text(schema: &Value, root: &Value) -> bool {
     if let Some(reference) = schema["$ref"].as_str() {
-        let key = reference.trim_start_matches("#/$defs/");
-        return wants_text(&root["$defs"][key], root);
+        // A JSON pointer (RFC 6901): a workspace's `/` is written `~1`.
+        let key = reference
+            .trim_start_matches("#/$defs/")
+            .replace("~1", "/")
+            .replace("~0", "~");
+        return wants_text(&root["$defs"][key.as_str()], root);
     }
     if let Some(options) = schema["anyOf"].as_array() {
         let mut real = options
@@ -444,6 +652,37 @@ fn show(
         } else {
             format!("trellis {prefix} {id} config set {first}=…")
         });
+    }
+    // What each instance did with the newest settings.
+    let instances = output::list(current, "instances")
+        .iter()
+        .filter(|instance| instance.get("settings").is_some())
+        .map(|instance| {
+            json!({
+                "title": instance["title"],
+                "settings": settings_label(&instance["settings"]),
+                "state": instance["settings"]["state"],
+            })
+        })
+        .collect::<Vec<_>>();
+    if !instances.is_empty() {
+        anstream::println!();
+        output::table(
+            &instances,
+            &[
+                output::col("INSTANCE", "title"),
+                output::col("SETTINGS", "settings"),
+            ],
+            "",
+        )?;
+    }
+    for instance in &instances {
+        if instance["state"] == json!("rejected") {
+            output::warning(format!(
+                "{} rejected the newest settings and keeps the ones it accepted last. Fix them, or roll back with `trellis {prefix} {id} config rollback REVISION`.",
+                output::field(instance, "title"),
+            ));
+        }
     }
     for instance in output::list(current, "instances") {
         if instance["restartPending"] == json!(true) {

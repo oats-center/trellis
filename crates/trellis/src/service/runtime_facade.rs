@@ -1694,12 +1694,12 @@ impl<C> ConnectedServiceRuntime<C> {
     /// `Config` struct. Generated code calls this; services use the generated
     /// `config()` accessor.
     #[must_use]
-    pub fn generated_config<T: serde::de::DeserializeOwned>(&self) -> super::ConfigHandle<T> {
+    pub fn generated_config<T: serde::de::DeserializeOwned + Send + 'static>(
+        &self,
+    ) -> super::ConfigHandle<T> {
         match &self.config {
-            Some(live) => super::ConfigHandle::new(live.state.clone()),
-            None => super::ConfigHandle::new(
-                tokio::sync::watch::channel(super::config::ConfigState::default()).1,
-            ),
+            Some(config) => super::ConfigHandle::new(&config.live),
+            None => super::ConfigHandle::new(&super::config::Live::detached()),
         }
     }
 
@@ -2663,12 +2663,15 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
                 }))
                 .await?;
                 let instance = runtime.client.own_instance_id()?;
+                let waiting = lifecycle.clone();
                 runtime.config = Some(super::config::follow(
                     Arc::clone(&runtime.client),
                     C::CONFIG_FIELDS,
+                    C::ID,
                     loaded,
                     runtime.provider_deployment_id.clone(),
                     instance,
+                    Box::new(move |text| waiting.status(text)),
                 ));
             }
             let owner = runtime.client.authorization_owner();

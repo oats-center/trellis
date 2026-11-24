@@ -1140,18 +1140,43 @@ async fn service_instances(
         .await
         .ok()
         .and_then(|health| serde_json::to_value(health).ok());
+    // What each instance did with its settings; without `config.read` the
+    // listing goes on without them.
+    let settings = client
+        .trellis_auth_v1()
+        .config_get(&wire(
+            json!({ "target": { "deploymentId": deployment_id } }),
+        )?)
+        .await
+        .ok()
+        .and_then(|settings| serde_json::to_value(settings).ok());
     let instances = instances
         .into_iter()
         .map(serde_json::to_value)
         .collect::<Result<Vec<_>, _>>()
         .into_diagnostic()?;
-    let instances = with_status(
+    let mut instances = with_status(
         instances,
         health
             .as_ref()
             .map_or(&[][..], |health| output::list(health, "instances")),
         &output::field(&deployment, "implementationDigest"),
     );
+    for instance in &mut instances {
+        let id = output::field(instance, "instanceId");
+        let status = settings
+            .as_ref()
+            .map_or(&[][..], |settings| output::list(settings, "instances"))
+            .iter()
+            .find(|entry| output::field(entry, "instanceId") == id)
+            .and_then(|entry| entry.get("settings"))
+            .filter(|status| status.is_object());
+        if let Some(status) = status {
+            let mut status = status.clone();
+            status["label"] = json!(super::config::settings_label(&status));
+            instance["status"]["settings"] = status;
+        }
+    }
     print_service_instances_result(format, instances)
 }
 
@@ -1508,6 +1533,7 @@ fn print_service_instances_result<T: serde::Serialize>(
                 output::state_col("State", "status.state"),
                 output::state_col("Health", "status.health.status"),
                 output::col("Build", "status.build.label"),
+                output::col("Settings", "status.settings.label"),
                 output::time_col("Connected", "status.connectedAt"),
                 output::time_col("Last heartbeat", "status.lastHeartbeat"),
                 output::state_col("Enabled", "principal.enabled"),

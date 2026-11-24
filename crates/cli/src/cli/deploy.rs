@@ -218,7 +218,8 @@ pub enum ConfigCommand {
     /// Show each setting, its value, and where the value comes from.
     /// Secrets show only whether they are set.
     Show,
-    /// Set one or more settings, such as `logLevel=debug port=9090`. Any
+    /// Set one or more settings and secrets as one revision, such as
+    /// `logLevel=debug port=9090 --secret apiKey=@key.txt`. Any
     /// lowerCamelCase name is kept, whether or not the installed build
     /// declares it, so values for the next build can be set ahead of it.
     Set {
@@ -226,31 +227,60 @@ pub enum ConfigCommand {
         /// declared one takes JSON, such as `9090`, `true`, or `["a","b"]`.
         /// A field the build doesn't declare takes JSON when the value parses
         /// as JSON and text otherwise; quote it as JSON (`'"9090"'`) to keep
-        /// digits as text.
-        #[arg(value_name = "FIELD=VALUE", required_unless_present = "null")]
+        /// digits as text. A secret is never given here; use `--secret`.
+        #[arg(
+            value_name = "FIELD=VALUE",
+            required_unless_present_any = ["null", "secret", "values_file", "env_file"]
+        )]
         values: Vec<String>,
         /// Store null for this setting, which its type must allow. Repeat it
         /// for several. A text setting would otherwise take `null` as text.
         #[arg(long, value_name = "FIELD")]
         null: Vec<String>,
+        /// `FIELD=@PATH`: set a secret from a file, or `FIELD=@-` from
+        /// standard input, under the same rule as `set-secret`. Repeat it for
+        /// several. The value itself is never taken on the command line.
+        #[arg(long, value_name = "FIELD=@PATH")]
+        secret: Vec<String>,
+        /// A JSON object of settings by field name, each value as JSON.
+        #[arg(long, value_name = "PATH")]
+        values_file: Option<PathBuf>,
+        /// `NAME=VALUE` lines, read as `FIELD=VALUE` arguments are. `#`
+        /// starts a comment, `export ` is ignored, and a value may be quoted.
+        #[arg(long, value_name = "PATH")]
+        env_file: Option<PathBuf>,
+        /// Fields of `--values-file` or `--env-file` to store as secrets.
+        /// Fields the installed build declares secret always are.
+        #[arg(long, value_name = "FIELD,...", value_delimiter = ',')]
+        secret_keys: Vec<String>,
     },
-    /// Set a secret from a file or standard input, so the value never
-    /// appears in the shell history or process list. On a terminal given
-    /// neither, it asks for the value without showing it, twice.
+    /// Set secrets from files or standard input as one revision, so a value
+    /// never appears in the shell history or process list. Given one
+    /// `FIELD` and no file on a terminal, it asks for the value without
+    /// showing it, twice.
     SetSecret {
-        #[arg(value_name = "FIELD")]
-        field: String,
-        /// Read the value from this file, or `-` for standard input. A text
-        /// secret takes the contents without the trailing newline; any other
-        /// takes JSON. A field the build doesn't declare is stored as a
-        /// secret under the same rule as `set`. Without it, a value piped to
-        /// standard input is read, and a terminal is asked.
+        /// `FIELD`, read with `--from-file`, from piped standard input, or
+        /// asked for; or one or more `FIELD=@PATH`, each read from its file
+        /// (`@-` for standard input).
+        #[arg(value_name = "FIELD", required_unless_present = "env_file")]
+        fields: Vec<String>,
+        /// Read the value of a single `FIELD` from this file, or `-` for
+        /// standard input. A text secret takes the contents without the
+        /// trailing newline; any other takes JSON. A field the build doesn't
+        /// declare is stored as a secret under the same rule as `set`.
+        /// Without it, a value piped to standard input is read, and a
+        /// terminal is asked.
         #[arg(long, value_name = "PATH")]
         from_file: Option<PathBuf>,
-        /// Store null instead of reading a value. Only a secret whose type
-        /// allows null takes it, such as one an instance should go without.
+        /// Store null for a single `FIELD` instead of reading a value. Only a
+        /// secret whose type allows null takes it, such as one an instance
+        /// should go without.
         #[arg(long, conflicts_with = "from_file")]
         null: bool,
+        /// `NAME=VALUE` lines, each stored as a secret, read as `set
+        /// --env-file` reads them.
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["from_file", "null"])]
+        env_file: Option<PathBuf>,
     },
     /// Print a stored secret's value to standard output. Needs
     /// `config.manageSecrets`, and Trellis records who asked for which
