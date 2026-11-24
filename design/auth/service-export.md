@@ -488,10 +488,8 @@ ID>_<allocation ID>`, and a stream configuration with exactly that name,
    over an existing stream, so the stream that exists afterwards is the one
    the import made. Auth checks it against the same rules as step 1 and for
    the import ID, and deletes it and stops if it differs. It then records
-   the stream's creation time, and after that records the resource loaded.
-   Auth then prepares the
-   resources as it does for a new instance, which finds the restored streams
-   and makes them `ready`, and publishes the waiting jobs. Whether there is
+   the resource loaded. Auth then prepares the resources as it does for a
+   new instance, which finds the restored streams and makes them `ready`, and publishes the waiting jobs. Whether there is
    an instance to prepare them for is read from this installation: a
    deployment with no active instance stops before preparing the resources,
    and the report says so.
@@ -506,13 +504,14 @@ If step 5 fails, or stops for want of an instance, running the same import
 again resumes it: Auth finds the import record for the deployment with the
 same content digest, deletes a stream it restored and did not record
 loaded, restores it again, and loads the rest. It deletes a stream only
-when the stream's metadata carries the import ID and its creation time is
-the one the import recorded. Any other stream under that name, whether it
-has no import ID, another import's, or another creation time, is left as it
-is, and the import stops with a conflict naming it. This includes a stream
-the import restored just before it stopped and had not yet recorded: Auth
-cannot tell it from someone else's, so the operator removes it before
-running the import again. Readiness is read again, so an
+when the stream's metadata carries the import ID and its configuration
+passes the same rules as step 1. That covers a stream the import restored
+just before it stopped, before it recorded anything about it. Any other
+stream under that name, whether it has no import ID or another import's, is
+left as it is, and the import stops with a conflict naming it. The import
+ID tells Auth's own work apart from a stream someone else made by mistake;
+it is not meant to stop the installation's operator, who controls the
+broker anyway. Readiness is read again, so an
 instance provisioned or enabled since the last attempt lets the import
 finish. A resource does not become `ready` empty, following the existing
 rule that a missing stream after materialization is storage loss, not
