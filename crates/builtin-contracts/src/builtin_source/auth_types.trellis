@@ -1748,6 +1748,11 @@ model AuthConfigApplyStatus {
   state: AuthConfigApplyState;
   /// Fields a check refused. Empty when it refused the revision as a whole.
   fields: list<AuthConfigFieldName>;
+  /// For `rejected`, where each refused field's value came from in the
+  /// revisions the instance refused: its own overrides (`instance`), its
+  /// deployment's settings, or the build's default. Rolling back the layer
+  /// that holds a refused value undoes it.
+  sources?: map<AuthConfigSource>;
   reason?: AuthConfigRejectReason;
   /// When the instance reported it, or for `pending`, when the newest
   /// revision was saved.

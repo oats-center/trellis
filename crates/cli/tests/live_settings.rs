@@ -603,7 +603,7 @@ async fn a_report_auth_never_answered_is_sent_again_once_it_does() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_instance_that_rejects_its_own_override_is_told_to_roll_back_the_override() {
+async fn a_rejected_instance_is_told_to_roll_back_the_layer_that_held_the_refused_value() {
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
     let identity = runtime
         .register_service::<Participant>("overridden")
@@ -658,30 +658,61 @@ async fn an_instance_that_rejects_its_own_override_is_told_to_roll_back_the_over
     })
     .await;
 
-    // What an operator is told to run is the contract here. The deployment's
-    // view can't tell which layer holds the refused value, so it names both.
+    // What an operator is told to run is the contract here: the rollback of
+    // the layer that held the refused value, in the deployment's view and in
+    // the instance's own.
     let instance_rollback =
         format!("`trellis svc {deployment} config --instance {instance} rollback REVISION`");
     let deployment_rollback = format!("`trellis svc {deployment} config rollback REVISION`");
-    let told = String::from_utf8(cli.run(&["svc", &deployment, "config"]).await.stderr).unwrap();
-    assert!(told.contains(&instance_rollback), "{told}");
-    assert!(told.contains(&deployment_rollback), "{told}");
-    // The instance's own view knows the refused endpoint is its override.
-    let told = String::from_utf8(run(on_instance(&[])).await.stderr).unwrap();
-    assert!(told.contains(&instance_rollback), "{told}");
-    assert!(!told.contains(&deployment_rollback), "{told}");
+    let told =
+        |args: Vec<String>| async move { String::from_utf8(run(args).await.stderr).unwrap() };
+    let deployment_view = || {
+        ["svc", deployment.as_str(), "config"]
+            .map(str::to_owned)
+            .to_vec()
+    };
+    for view in [deployment_view(), on_instance(&[])] {
+        let told = told(view).await;
+        assert!(told.contains(&instance_rollback), "{told}");
+        assert!(!told.contains(&deployment_rollback), "{told}");
+    }
 
-    // Following it brings the instance back, and the deployment's settings
-    // stay as they were.
-    run(on_instance(&["rollback", "1"])).await;
+    // The deployment's endpoint goes plain too, which the override hides;
+    // then the override is removed, so the refused endpoint is the
+    // deployment's, and rolling back the instance would change nothing.
+    cli.run(&[
+        "svc",
+        &deployment,
+        "config",
+        "set",
+        "endpoint=http://two.example",
+    ])
+    .await;
+    cli.settings(&deployment, |status| {
+        status["state"] == "rejected" && status["revision"] == 2
+    })
+    .await;
+    run(on_instance(&["unset", "endpoint"])).await;
+    cli.settings(&deployment, |status| {
+        status["state"] == "rejected" && status["instanceRevision"] == 3
+    })
+    .await;
+    for view in [deployment_view(), on_instance(&[])] {
+        let told = told(view).await;
+        assert!(told.contains(&deployment_rollback), "{told}");
+        assert!(!told.contains(&instance_rollback), "{told}");
+    }
+
+    // Following it brings the instance back on the deployment's earlier
+    // endpoint, and its own overrides stay as they are.
+    cli.run(&["svc", &deployment, "config", "rollback", "1"])
+        .await;
     let applied = cli
         .settings(&deployment, |status| status["state"] == "applied")
         .await;
+    assert_eq!(applied["revision"], 3);
     assert_eq!(applied["instanceRevision"], 3);
-    assert_eq!(applied["revision"], 1);
     assert_eq!(config.current().unwrap().endpoint, "https://one.example");
-    let history = cli.json(&["svc", &deployment, "config", "history"]).await;
-    assert_eq!(history["revisions"].as_array().unwrap().len(), 1);
 
     drop(config);
     lifecycle.stop();

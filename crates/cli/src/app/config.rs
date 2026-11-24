@@ -737,9 +737,9 @@ fn show(
         )?;
     }
     // A rollback undoes one layer: the deployment's settings, which every
-    // instance shares, or one instance's overrides. Name the layer that holds
-    // the refused values when it is known, and otherwise both.
-    let instance_view = current["target"]["instanceId"].is_string();
+    // instance shares, or one instance's overrides. Name the layer that held
+    // the refused values in the revisions refused, and both when they came
+    // from both or the check refused the revision as a whole.
     for instance in output::list(current, "instances") {
         let settings = &instance["settings"];
         if settings["state"] != json!("rejected") {
@@ -750,19 +750,16 @@ fn show(
             "`trellis {prefix} {id} config --instance {} rollback REVISION`",
             output::field(instance, "instanceId")
         );
-        // An instance's own view says where each of its values comes from.
-        let sources = output::list(settings, "fields")
-            .iter()
-            .filter_map(Value::as_str)
-            .map(|name| {
-                output::list(current, "fields")
-                    .iter()
-                    .find(|field| field["name"].as_str() == Some(name))
-                    .and_then(|field| field["source"].as_str())
-                    .unwrap_or_default()
+        let sources = settings["sources"]
+            .as_object()
+            .map(|sources| {
+                sources
+                    .values()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
-        let known = instance_view && !sources.is_empty();
+            .unwrap_or_default();
+        let known = !sources.is_empty();
         let rollback = if settings["instanceRevision"].is_null()
             || (known && sources.iter().all(|source| *source != "instance"))
         {

@@ -1437,6 +1437,10 @@ fn response(
             }
         };
         let declared = &*declared;
+        let own = Target::Instance {
+            deployment: target.deployment().unwrap_or_default().to_owned(),
+            instance: instance.clone(),
+        };
         // A report on the current revisions stands; any other means the
         // instance has not read the newest settings yet.
         let settings = if declared.fields.is_empty() {
@@ -1445,11 +1449,43 @@ fn response(
             && reported == deployment_current
             && reported_instance == instance_current
         {
+            let fields = fields
+                .as_deref()
+                .map(decode::<Vec<String>>)
+                .transpose()?
+                .unwrap_or_default();
+            // Where each refused value came from in the revisions refused,
+            // so the advice names the layer whose rollback undoes it.
+            let sources = if state.as_deref() == Some("rejected") {
+                let refused = effective(
+                    declared,
+                    &self::layers(
+                        connection,
+                        storage,
+                        declared,
+                        &own,
+                        Some((reported_instance, reported)),
+                    )?,
+                );
+                Some(
+                    fields
+                        .iter()
+                        .filter_map(|name| {
+                            refused
+                                .get(name)
+                                .map(|value| (name.clone(), json!(value.source)))
+                        })
+                        .collect::<Map<String, Value>>(),
+                )
+            } else {
+                None
+            };
             Some(json!({
                 "revision": reported,
                 "instanceRevision": reported_instance,
                 "state": state,
-                "fields": fields.as_deref().map(decode::<Value>).transpose()?.unwrap_or(json!([])),
+                "fields": fields,
+                "sources": sources,
                 "reason": reason,
                 "at": reported_at.map(timestamp).transpose()?,
             }))
@@ -1475,10 +1511,6 @@ fn response(
         let restart_pending = match connected {
             None => false,
             Some(_) => {
-                let own = Target::Instance {
-                    deployment: target.deployment().unwrap_or_default().to_owned(),
-                    instance: instance.clone(),
-                };
                 let now = effective(
                     declared,
                     &self::layers(connection, storage, declared, &own, None)?,

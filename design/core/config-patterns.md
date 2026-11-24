@@ -515,13 +515,17 @@ a secret. `show` lists what each instance did with the newest settings, and
 `rejected r13: awsSecret: set both or neither`, or `pending r13`. An
 instance with `restartPending` reads `applied r12, restart pending` in both,
 and Restart needed in the Console, since it runs only the live part of the
-revision it applied. For a
-rejected instance, `show` advises the rollback of the layer that holds the
-refused values: the deployment's when the instance has no overrides or, in
-the instance's own view, when none of the refused values is its override; the
-instance's (`--instance ID rollback`) when, in its own view, all of them are.
-Otherwise it names both, so following it never rolls back values every
-instance shares while the override that was refused stays in place.
+revision it applied. For a rejected instance, `Config.Get` gives each
+refused field's `sources` entry: where its value came from in the revisions
+the instance refused (`instance`, `deployment` or `default`), worked out from
+those revisions rather than from the overrides stored now. `show`, in the
+deployment's view and the instance's alike, advises the rollback of that
+layer: the deployment's when the instance has no overrides or none of the
+refused values was its override, the instance's (`--instance ID rollback`)
+when all of them were. When they came from both, or the check refused the
+revision as a whole, it names both. Following it never rolls back values
+every instance shares while the override that was refused stays in place,
+or the reverse.
 
 A service ID or title that names a waiting claim targets the claim, so
 settings can be set before the service connects. `show` lists values the build

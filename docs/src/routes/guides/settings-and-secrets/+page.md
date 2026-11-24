@@ -409,11 +409,13 @@ without another save.
 Saving never waits for instances, and a rejected revision stays stored, so
 `config rollback` can undo it. A rollback undoes one layer: the deployment's
 settings, which every instance shares, or with `--instance ID` one instance's
-overrides. For a rejected instance, `config` names the layer that holds the
-refused values when it knows: an instance without overrides takes them from
-its deployment, and `config --instance ID` shows where each of that
-instance's values comes from. The deployment's view of an instance with
-overrides names both commands. While the newest revision is rejected, the
+overrides. For a rejected instance, `config` names the rollback of the layer
+each refused value came from in the revisions it refused (`Config.Get` lists
+them as the status's `sources`): the instance's own overrides or the
+deployment's settings. If an override was refused and then removed, and the
+instance now refuses the deployment's value, it names the deployment's
+rollback. When the refused values came from both layers, or a check refused
+the revision as a whole, it names both commands. While the newest revision is rejected, the
 instance's `settings` health check is degraded with the reason, which makes the
 instance degraded. It recovers with the next accepted revision.
 
