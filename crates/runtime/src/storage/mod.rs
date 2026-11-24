@@ -262,6 +262,52 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// The first migration applied to this existing database that differs
+    /// from this release's migration of the same version, read without
+    /// writing anything. `None` when the database does not exist, has no
+    /// migrations applied or only lacks later ones.
+    #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
+    fn divergent_migration(&self) -> Result<Option<String>, StoreError> {
+        if !self.exists() {
+            return Ok(None);
+        }
+        let mut connection = self.open_read_only()?;
+        let migrate_error = |source| StoreError::MigrateSqlite {
+            path: self.config.path.clone(),
+            subsystem: self.schema.name(),
+            source,
+        };
+        let has_history = connection
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master \
+                WHERE type = 'table' AND name = 'refinery_schema_history')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|source| StoreError::OpenSqlite {
+                path: self.config.path.clone(),
+                source,
+            })?;
+        if !has_history {
+            return Ok(None);
+        }
+        let runner = self.schema.runner();
+        let applied = runner
+            .get_applied_migrations(&mut connection)
+            .map_err(migrate_error)?;
+        // As in `migrate_sqlite`, an applied migration this schema lacks
+        // belongs to another subsystem sharing the history table.
+        Ok(applied
+            .iter()
+            .find(|applied| {
+                runner
+                    .get_migrations()
+                    .iter()
+                    .any(|embedded| embedded.version() == applied.version() && embedded != *applied)
+            })
+            .map(ToString::to_string))
+    }
+
     pub(crate) fn open(&self) -> Result<Connection, StoreError> {
         open_sqlite(&self.config)
     }
@@ -345,9 +391,11 @@ impl RuntimeStores {
     ///
     /// A database whose applied schema differs from this release's, as one a
     /// different release candidate created, is refused with an error naming
-    /// both releases (see [`StoreError::IncompatibleSchema`]).
+    /// both releases (see [`StoreError::IncompatibleSchema`]). Every existing
+    /// database is checked before any is migrated or created, so a refused
+    /// start leaves the data directory as it found it.
     pub(crate) fn migrate_all(&self) -> Result<(), StoreError> {
-        for store in [
+        let stores = [
             &self.platform,
             &self.webhooks,
             &self.jobs,
@@ -355,24 +403,19 @@ impl RuntimeStores {
             &self.events,
         ]
         .into_iter()
-        .flatten()
-        {
-            store.migrate().map_err(|error| match &error {
-                StoreError::MigrateSqlite {
-                    subsystem, source, ..
-                } => match source.kind() {
-                    refinery::error::Kind::DivergentVersion(applied, _) => {
-                        StoreError::IncompatibleSchema {
-                            subsystem,
-                            migration: applied.to_string(),
-                            release: env!("CARGO_PKG_VERSION"),
-                            installed: self.installed_release(),
-                        }
-                    }
-                    _ => error,
-                },
-                _ => error,
-            })?;
+        .flatten();
+        for store in stores.clone() {
+            if let Some(applied) = store.divergent_migration()? {
+                return Err(StoreError::IncompatibleSchema {
+                    subsystem: store.schema.name(),
+                    migration: applied,
+                    release: env!("CARGO_PKG_VERSION"),
+                    installed: self.installed_release(),
+                });
+            }
+        }
+        for store in stores {
+            store.migrate()?;
         }
         Ok(())
     }

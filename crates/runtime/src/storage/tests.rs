@@ -318,45 +318,62 @@ fn runtime_stores_split_mode_ignores_unselected_storage() -> Result<(), Box<dyn 
 
 #[test]
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
-fn a_changed_webhooks_baseline_is_refused_before_the_other_databases_are_touched(
+fn a_changed_baseline_in_the_last_database_is_refused_before_any_database_is_touched(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
+    let path = |name: &str| directory.path().join(name);
     let mut config = runtime_config();
-    config.platform = Some(subsystem_config(directory.path().join("platform.sqlite")));
-    config.jobs = Some(subsystem_config(directory.path().join("jobs.sqlite")));
-    config.health = Some(subsystem_config(directory.path().join("health.sqlite")));
-    config.events = Some(subsystem_config(directory.path().join("events.sqlite")));
+    config.platform = Some(subsystem_config(path("platform.sqlite")));
+    config.jobs = Some(subsystem_config(path("jobs.sqlite")));
+    config.health = Some(subsystem_config(path("health.sqlite")));
+    config.events = Some(subsystem_config(path("events.sqlite")));
     let stores = RuntimeStores::from_config(&config, RuntimeMode::All)?;
     stores.migrate_all()?;
 
-    // The webhooks database was made by a release whose baseline differs
-    // from this one's, and that release had not yet made the jobs database.
-    Connection::open(directory.path().join(WEBHOOKS_DATABASE))?.execute(
+    // The events database, migrated last, was made by a release whose
+    // baseline differs from this one's. That release had not yet made the
+    // jobs database, and the health database exists but is not migrated.
+    Connection::open(path("events.sqlite"))?.execute(
         "UPDATE refinery_schema_history SET checksum = substr(checksum, 1, length(checksum) - 1) \
         || CASE substr(checksum, -1) WHEN '0' THEN '1' ELSE '0' END",
         [],
     )?;
-    let jobs = directory.path().join("jobs.sqlite");
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = fs::remove_file(format!("{}{suffix}", jobs.display()));
+    for name in ["jobs.sqlite", "health.sqlite"] {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = fs::remove_file(format!("{}{suffix}", path(name).display()));
+        }
     }
+    Connection::open(path("health.sqlite"))?
+        .execute_batch("CREATE TABLE unrelated (id INTEGER)")?;
+    let earlier = ["platform.sqlite", WEBHOOKS_DATABASE, "health.sqlite"];
+    let before = earlier
+        .map(|name| fs::read(path(name)))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     let error = stores.migrate_all().unwrap_err();
     assert!(
         matches!(
             &error,
             StoreError::IncompatibleSchema {
-                subsystem: "webhooks",
+                subsystem: "events",
                 release,
                 ..
             } if *release == env!("CARGO_PKG_VERSION")
         ),
         "{error}"
     );
+    let after = earlier
+        .map(|name| fs::read(path(name)))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
     assert!(
-        !jobs.exists(),
+        before == after,
+        "the refused start changed an earlier database"
+    );
+    assert!(
+        !path("jobs.sqlite").exists(),
         "the refused start created the jobs database"
     );
-    assert!(stores.check_all().is_err());
     Ok(())
 }
