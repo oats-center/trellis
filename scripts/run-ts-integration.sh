@@ -76,21 +76,6 @@ fixture_bins=(
 # environment by hand.
 in_ci="${CI:-}${TRELLIS_TEST_STAGED:-}"
 
-require_or_build() {
-  local path="$1"
-  local build="$2"
-  if [[ -n "$in_ci" ]]; then
-    [[ -x "$path" ]] || {
-      echo "missing staged executable $path" >&2
-      exit 1
-    }
-    return
-  fi
-  # Locally every build runs: cargo is incremental, so this is cheap and can
-  # never leave a stale executable behind.
-  eval "$build"
-}
-
 build_fixtures() {
   echo "building integration fixture helpers"
   CARGO_TARGET_DIR="$root/target" cargo build --bins \
@@ -144,10 +129,14 @@ build_health_watch() {
   CARGO_TARGET_DIR="$root/target" cargo build -p trellis-runtime --example health_watch
 }
 
-require_or_build "$testkit_live" build_testkit_live
-require_or_build "$server_bin" build_workspace_bins
-require_or_build "$cli_bin" build_workspace_bins
-require_or_build "$health_watch_bin" build_health_watch
+if [[ -z "$in_ci" ]]; then
+  build_testkit_live
+  build_workspace_bins
+  build_health_watch
+fi
+for bin in "$testkit_live" "$server_bin" "$cli_bin" "$health_watch_bin"; do
+  [[ -x "$bin" ]] || { echo "missing executable $bin" >&2; exit 1; }
+done
 
 export TRELLIS_TEST_FIXTURE_BIN_DIR="$fixture_dir"
 export TRELLIS_TESTKIT_LIVE_BIN="$testkit_live"

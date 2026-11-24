@@ -10,13 +10,9 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  sourceFingerprint,
-  writeFingerprint,
-} from "../../ts/tools/embedded_fingerprint.ts";
+import { embeddedBuild } from "../../ts/tools/embedded_fingerprint.ts";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const repository = dirname(root);
 const parent = join(root, "../crates/runtime/generated");
 const destination = join(parent, "portal");
 // Everything the Portal build reads; trellis-runtime refuses a development
@@ -33,7 +29,11 @@ const inputs = [
   "ts/tools/embedded_fingerprint.ts",
   "package-lock.json",
 ];
-const fingerprint = sourceFingerprint(repository, inputs);
+const build = embeddedBuild(root, inputs, [], destination);
+if (build.current) {
+  console.log("Reusing embedded portal build");
+  process.exit(0);
+}
 await mkdir(parent, { recursive: true });
 const stage = await mkdtemp(join(parent, ".portal-build-"));
 const backup = `${stage}-previous`;
@@ -52,6 +52,7 @@ try {
   if (command.status !== 0)
     throw new Error(`Portal build failed (${command.status})`);
   await writeFile(join(stage, ".trellis-portal-owned"), "portal\n");
+  const record = build.record(stage);
   const info = await lstat(destination).catch((error: unknown) => {
     if (error instanceof Error && "code" in error && error.code === "ENOENT")
       return undefined;
@@ -77,7 +78,7 @@ try {
   try {
     await rename(stage, destination);
     promoted = true;
-    writeFingerprint(fingerprint, inputs, join(parent, "portal.fingerprint"));
+    record();
   } catch (error) {
     if (previous) await rename(backup, destination);
     throw error;

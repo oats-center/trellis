@@ -107,14 +107,20 @@ job_clippy() {
 # The integration fixture helpers, the health_watch example and the testkit
 # test binaries, built into target/debug for the jobs that run them.
 job_build_fixtures() {
-  CARGO_TARGET_DIR="$root/target" cargo build --bins \
+  mkdir -p "$temp"
+  CARGO_TARGET_DIR="$root/target" cargo build --bins --message-format=json-render-diagnostics \
     --manifest-path integration/fixtures/runtime/Cargo.toml \
     --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
     --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
-    --config "patch.crates-io.trellis-models.path=\"$root/crates/models\""
+    --config "patch.crates-io.trellis-models.path=\"$root/crates/models\"" > "$temp/runtime-fixtures.json"
+  if [[ -n "${1:-}" ]]; then
+    mkdir -p "$1"
+    while IFS= read -r executable; do
+      cp "$executable" "$1/"
+    done < <(jq -r 'select(.executable != null and .target.kind == ["bin"]) | .executable' "$temp/runtime-fixtures.json")
+  fi
   CARGO_TARGET_DIR="$root/target" cargo build --manifest-path Cargo.toml \
     -p trellis-runtime --example health_watch
-  mkdir -p "$temp"
   CARGO_TARGET_DIR="$root/target" cargo test --no-run \
     --manifest-path integration/fixtures/testkit/Cargo.toml \
     --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
@@ -374,6 +380,12 @@ job_images() {
   rm -rf "$shim"
 }
 
+job_prepare_tests() {
+  cargo build -p trellis-cli --bin trellis -p trellis-server --bin trellis-server
+  job_build_fixtures "$root/target/debug/fixtures"
+  TRELLIS_TEST_STAGED=1 TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-rust-tests.sh
+}
+
 run_job() {
   local job="$1"
   shift
@@ -403,17 +415,9 @@ if [[ -z "${TRELLIS_TEST_SKIP_PREPARE:-}" ]]; then
   } > "$logs/prepare.log" 2>&1 \
     || { echo "preparation failed; see $logs/prepare.log" >&2; exit 1; }
 fi
-# Builds share Cargo's lock, so the runners build one at a time.
 echo "building executables and test binaries"
-{
-  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-rust-tests.sh
-  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-ts-integration.sh
-  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-sdk-tests.sh
-  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-browser-tests.sh
-  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-testkit-tests.sh
-  # Only build-fixtures builds the test binary the upgrade job runs.
-  [[ "$all" != "--all" ]] || bash scripts/check.sh build-fixtures
-} > "$logs/build.log" 2>&1 || { echo "build failed; see $logs/build.log" >&2; exit 1; }
+bash "$root/scripts/check.sh" prepare-tests > "$logs/build.log" 2>&1 \
+  || { echo "build failed; see $logs/build.log" >&2; exit 1; }
 # The jobs run copies, as CI jobs run the producer's executables: the rust job
 # still builds into target/debug and re-links what it finds stale there.
 staged="$root/target/check-bin"

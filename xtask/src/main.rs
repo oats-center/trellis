@@ -399,6 +399,33 @@ fn stage_bindings(
     Ok((stage, fresh, target))
 }
 
+fn same_generated_tree(staged: &Path, target: &Path) -> std::io::Result<bool> {
+    let existing = match target.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    let fresh = staged.symlink_metadata()?;
+    if fresh.is_file() && existing.is_file() {
+        return Ok(
+            fresh.len() == existing.len() && std::fs::read(staged)? == std::fs::read(target)?
+        );
+    }
+    if !fresh.is_dir() || !existing.is_dir() {
+        return Ok(false);
+    }
+    let entries = std::fs::read_dir(staged)?.collect::<std::io::Result<Vec<_>>>()?;
+    if entries.len() != std::fs::read_dir(target)?.count() {
+        return Ok(false);
+    }
+    for entry in entries {
+        if !same_generated_tree(&entry.path(), &target.join(entry.file_name()))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn publish_generated_directories(outputs: &[(&Path, &Path, &Path)]) -> Result<()> {
     for (_, _, backup) in outputs {
         miette::ensure!(
@@ -407,7 +434,15 @@ fn publish_generated_directories(outputs: &[(&Path, &Path, &Path)]) -> Result<()
             backup.display()
         );
     }
-    for (index, (staged, target, backup)) in outputs.iter().enumerate() {
+    let mut changed = Vec::new();
+    for &(staged, target, backup) in outputs {
+        if same_generated_tree(staged, target).into_diagnostic()? {
+            std::fs::remove_dir_all(staged).into_diagnostic()?;
+        } else {
+            changed.push((staged, target, backup));
+        }
+    }
+    for (index, (staged, target, backup)) in changed.iter().enumerate() {
         let result = (|| -> std::io::Result<()> {
             if target.exists() {
                 std::fs::rename(target, backup)?;
@@ -421,7 +456,7 @@ fn publish_generated_directories(outputs: &[(&Path, &Path, &Path)]) -> Result<()
                     recovery_errors.push(error.to_string());
                 }
             }
-            for (staged, target, backup) in outputs[..index].iter().rev() {
+            for (staged, target, backup) in changed[..index].iter().rev() {
                 if let Err(error) = std::fs::rename(target, staged) {
                     recovery_errors.push(error.to_string());
                     continue;
