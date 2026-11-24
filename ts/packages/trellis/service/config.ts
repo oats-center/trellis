@@ -298,6 +298,8 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
   // Readings, registrations and their checks run one at a time, in order.
   #refreshing: Promise<void> = Promise.resolve();
   #retired: Promise<void> | undefined;
+  // Disposals still running, which retirement waits for.
+  readonly #disposing = new Set<Promise<void>>();
 
   constructor(
     fields: ConfigFields,
@@ -613,14 +615,24 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
     }
   }
 
-  /** Dispose `value`; settles once its disposer has, never rejecting. */
-  async #dispose(slot: DeriveSlot, value: unknown): Promise<void> {
-    if (!slot.dispose) return;
-    try {
-      await slot.dispose(value as never);
-    } catch (error) {
-      this.#log.warn({ error }, "Disposing a derived setting value threw");
-    }
+  /**
+   * Dispose `value`; settles once its disposer has, never rejecting. Until
+   * then retirement waits for it, so a participant that stopped has released
+   * what an earlier revision built too.
+   */
+  #dispose(slot: DeriveSlot, value: unknown): Promise<void> {
+    const dispose = slot.dispose;
+    if (!dispose) return Promise.resolve();
+    const disposing = (async () => {
+      try {
+        await dispose(value as never);
+      } catch (error) {
+        this.#log.warn({ error }, "Disposing a derived setting value threw");
+      }
+    })();
+    this.#disposing.add(disposing);
+    void disposing.then(() => this.#disposing.delete(disposing));
+    return disposing;
   }
 
   /** Record what became of a reading, tell Auth, and say why on a refusal. */
@@ -851,7 +863,8 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
    * dispose every derived value still in effect, so a participant that has
    * stopped leaves none of its clients, pools or timers running. A value
    * built for a revision that was in progress never takes effect and is
-   * disposed too. Settles once every disposer has. @internal
+   * disposed too, and earlier values still disposing are waited for.
+   * Settles once every disposer has. @internal
    */
   retire(): Promise<void> {
     this.stop();
@@ -863,6 +876,9 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       for (const slot of retiring) {
         if (slot.built) await this.#dispose(slot, slot.value);
       }
+      // Values a refused revision built, and values a later revision
+      // replaced, may still be disposing.
+      while (this.#disposing.size > 0) await Promise.all(this.#disposing);
     });
     return this.#retired;
   }

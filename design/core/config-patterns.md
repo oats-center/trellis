@@ -262,8 +262,10 @@ TypeScript service stops, once its requests have drained, or a connection
 closes, the handle stops following changes and refuses new registrations.
 Once the reading or registration in progress has finished, it disposes every
 derived value still in effect; a value built for that reading never takes
-effect and is disposed with them. `service.stop()` returns after those
-disposers.
+effect and is disposed with them. Disposals started earlier, of a value a
+later revision replaced or one built for a refused revision, may still be
+running; retirement waits for them too. `service.stop()` returns after all
+those disposers.
 
 Registration is how startup waits. Registering a check or derive tests the
 values in effect immediately. If they fail, the registration's `await` waits:

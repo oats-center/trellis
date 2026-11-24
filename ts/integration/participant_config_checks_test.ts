@@ -9,7 +9,8 @@
  * never shows the revision it starts with as applied before it serves. An
  * instance that is not running shows the newest revision as pending, and a
  * report lost on the way to Auth is sent again. A stopped service disposes
- * every value it derived.
+ * every value it derived, and stopping waits for a replaced value that is
+ * still being disposed.
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -565,6 +566,68 @@ test("a stopped service disposes what it derived, a value still being built incl
         await service.stop();
       }
       assert.deepEqual(gone, name === "one" ? ["one"] : ["one", "two"]);
+    }
+  });
+});
+
+test("stopping a service waits for a replaced value still being disposed", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const key = await runtime.services.createInstance({
+      name: "draining",
+      deployment: "draining",
+      contract: participant,
+      config: {
+        values: { endpoint: "https://one.example" },
+        secrets: { apiKey: "k1" },
+      },
+    });
+    const settings = await settingsOf(runtime, key);
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant,
+      seed: key.seed,
+    }).orThrow();
+    const disposed: string[] = [];
+    // Closing the k1 client takes until the test lets it finish.
+    const closing = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let serving: Promise<void> = Promise.resolve();
+    try {
+      await service.config.derive(
+        ["apiKey"],
+        (candidate) => ({ key: candidate.apiKey }),
+        {
+          dispose: async (old) => {
+            if (old.key === "k1") {
+              closing.resolve();
+              await release.promise;
+            }
+            disposed.push(old.key);
+          },
+        },
+      );
+      serving = service.wait();
+      await service.ready;
+      // k2 takes effect, and the k1 client it replaced starts closing.
+      await settings.set({ secrets: { apiKey: "k2" } });
+      await closing.promise;
+
+      let stopped = false;
+      const stopping = service.stop().then(() => {
+        stopped = true;
+      });
+      // Everything else about stopping finishes well within this; only the
+      // k1 client holds it up.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      assert.equal(stopped, false, "stop resolved while k1 was still closing");
+      release.resolve();
+      await stopping;
+      await serving;
+      assert.deepEqual(disposed.sort(), ["k1", "k2"]);
+    } finally {
+      release.resolve();
+      await service.stop();
+      await serving;
     }
   });
 });

@@ -293,7 +293,7 @@ its replacement took effect, and the value still in effect when the service
 stops or the device's connection closes, so nothing built from settings
 outlives the participant. A value still being built when it stops never takes
 effect and is disposed too. `service.stop()` returns once those disposers
-have. `context.changed` lists the fields the candidate changes.
+have, and any disposal still running for a value replaced earlier. `context.changed` lists the fields the candidate changes.
 
 In Rust:
 

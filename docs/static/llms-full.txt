@@ -2268,7 +2268,8 @@ its fields changes; a builder that throws rejects those fields and keeps the
 old value (with a generic reason when the build declares a secret), and `dispose` gets the
 replaced value after its replacement took
 effect, and the value in effect when the participant stops (before
-`service.stop()` returns) or its connection closes. Use `stripe.current`. A rejected revision leaves `current` as it was
+`service.stop()` returns, after any earlier disposal still running) or its
+connection closes. Use `stripe.current`. A rejected revision leaves `current` as it was
 and runs no `onChange` listener; a listener that throws is logged, never a
 rejection. Registering a check or derive tests the values in effect at once
 and, while they fail, keeps waiting (printing the fields, reasons, and Console
