@@ -323,7 +323,7 @@ jobs:
   build-fixtures:
     name: Build integration fixture binaries
     needs: [install]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -339,11 +339,11 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: |
           git clean -ffdx --exclude=/target/
-          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
-            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
-            [ -L target ] || rm -rf target
-            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
-          fi
+          # General jobs can clean their whole checkout between builds.
+          cache="${TRELLIS_CI_TARGET_ROOT:-$RUNNER_TOOL_CACHE/trellis/$GITHUB_REPOSITORY}/$GITHUB_JOB"
+          mkdir -p "$cache"
+          [ -L target ] || rm -rf target
+          ln -sfn "$cache" target
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
