@@ -2362,6 +2362,11 @@ impl<C> ConnectedServiceRuntime<C> {
                     // requests.
                     event_drain.open();
                     lifecycle.set(super::lifecycle::ServicePhase::Serving);
+                    // Every check and derive registered before run() has
+                    // run, so the starting revision's outcome is final.
+                    if let Some(config) = &self.config {
+                        config.live.start();
+                    }
                     follower = Some(tokio::spawn(follow_transport(
                         lifecycle.clone(),
                         client.subscribe_transport_publication(),
@@ -2671,7 +2676,7 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
                     loaded,
                     runtime.provider_deployment_id.clone(),
                     instance,
-                    Box::new(move |text| waiting.status(text)),
+                    Some(Box::new(move |text| waiting.status(text))),
                 ));
             }
             let owner = runtime.client.authorization_owner();

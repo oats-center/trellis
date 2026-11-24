@@ -733,7 +733,9 @@ impl Client {
                 loaded,
                 client.own_deployment_id()?,
                 client.own_instance_id()?,
-                Box::new(|_| {}),
+                // A device has no serving phase: reading its settings is
+                // putting them to use, after the checks it registers at startup.
+                None,
             )));
         }
         Ok(connected)

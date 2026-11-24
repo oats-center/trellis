@@ -5,8 +5,9 @@
  * to Auth and in its health, and a later revision that passes takes effect.
  * A derived value is rebuilt only when its own fields change and the one it
  * replaces is disposed after the replacement took effect. A registration that
- * refuses the values a service starts with waits for a fix, and an instance
- * that is not running shows the newest revision as pending.
+ * refuses the values a service starts with waits for a fix, and the instance
+ * never shows the revision it starts with as applied before it serves. An
+ * instance that is not running shows the newest revision as pending.
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -23,7 +24,6 @@ import { withTrellisRuntime } from "./_support/runtime.ts";
 
 const participant = participants.ConfiguredService.participant;
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
-
 /** Admin helpers for one deployment's settings and its instance's health. */
 async function settingsOf(
   runtime: Runtime,
@@ -105,6 +105,7 @@ test("a check refuses a live change, which leaves the service as it was until a 
       participant,
       seed: key.seed,
     }).orThrow();
+    let serving: Promise<void> = Promise.resolve();
     try {
       const changes: string[][] = [];
       service.config.onChange(({ changed }) => changes.push([...changed]));
@@ -116,6 +117,8 @@ test("a check refuses a live change, which leaves the service as it was until a 
       service.config.onChange(() => {
         throw new Error("listener failure");
       });
+      serving = service.wait();
+      await service.ready;
       await settings.status((status) => status.state === "applied");
 
       const refused = await settings.set({
@@ -171,6 +174,7 @@ test("a check refuses a live change, which leaves the service as it was until a 
       await settings.health((check) => check.status === "ok");
     } finally {
       await service.stop();
+      await serving;
     }
   });
 });
@@ -192,6 +196,7 @@ test("a derived value is rebuilt only for its own fields and disposed after its 
       participant,
       seed: key.seed,
     }).orThrow();
+    let serving: Promise<void> = Promise.resolve();
     try {
       let builds = 0;
       const disposed: { key: string; current: string }[] = [];
@@ -210,6 +215,8 @@ test("a derived value is rebuilt only for its own fields and disposed after its 
       );
       assert.equal(client.current.key, "k1");
       assert.equal(builds, 1);
+      serving = service.wait();
+      await service.ready;
 
       // Another field changing leaves the derived value as it is.
       const level = await settings.set({ values: { level: "debug" } });
@@ -243,11 +250,12 @@ test("a derived value is rebuilt only for its own fields and disposed after its 
       assert.deepEqual(disposed, [{ key: "k1", current: "k2" }]);
     } finally {
       await service.stop();
+      await serving;
     }
   });
 });
 
-test("a service whose check refuses its starting values waits for a fix, then serves", async () => {
+test("a restarted service whose check refuses its starting values never shows them applied, waits for a fix, then serves", async () => {
   await withTrellisRuntime(async (runtime) => {
     const key = await runtime.services.createInstance({
       name: "refused-start",
@@ -259,11 +267,36 @@ test("a service whose check refuses its starting values waits for a fix, then se
       },
     });
     const settings = await settingsOf(runtime, key);
-    const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant,
-      seed: key.seed,
-    }).orThrow();
+    const connect = () =>
+      TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant,
+        seed: key.seed,
+      }).orThrow();
+    // A first run without the check serves and applies revision 1.
+    const first = await connect();
+    const firstServing = first.wait();
+    await first.ready;
+    await settings.status(
+      (status) => status.state === "applied" && status.revision === 1,
+    );
+    await first.stop();
+    await firstServing;
+
+    // The next run adds a check that refuses the same revision.
+    const service = await connect();
+    // Every status from connect until the rejection, read as fast as Auth
+    // answers.
+    const seen: string[] = [];
+    const watching = (async () => {
+      for (;;) {
+        const status = (await settings.read()).instances.find(
+          (instance) => instance.instanceId === key.instanceId,
+        )?.settings;
+        if (status) seen.push(`${status.state} r${status.revision}`);
+        if (status?.state === "rejected") return;
+      }
+    })();
     const printed: string[] = [];
     let serving: Promise<void> = Promise.resolve();
     const error = console.error;
@@ -271,6 +304,8 @@ test("a service whose check refuses its starting values waits for a fix, then se
       printed.push(args.map(String).join(" "));
     };
     try {
+      // The check registers only after Auth has been asked at least once.
+      await runtime.waitFor(async () => seen.length > 0 || undefined);
       let registered = false;
       const registering = service.config
         .check((candidate, { reject }) => {
@@ -280,9 +315,16 @@ test("a service whose check refuses its starting values waits for a fix, then se
         .then(() => {
           registered = true;
         });
-      const rejected = await settings.status(
-        (status) => status.state === "rejected",
+      // A failure below stops the service, which ends this wait; the
+      // failure is the one to report.
+      registering.catch(() => {});
+      await watching;
+      assert.ok(
+        !seen.includes("applied r1"),
+        `revision 1 showed as applied before the check ran: ${seen.join(", ")}`,
       );
+      const rejected = await settings.status(() => true);
+      assert.equal(rejected.state, "rejected");
       assert.equal(rejected.revision, 1);
       assert.deepEqual(rejected.fields, ["endpoint"]);
       const waiting = await settings.health(
@@ -309,12 +351,16 @@ test("a service whose check refuses its starting values waits for a fix, then se
       });
       await registering;
       assert.equal(service.config.current.endpoint, "https://one.example");
+      // Accepted, but the service has not served yet.
+      const accepted = await settings.status(() => true);
+      assert.equal(accepted.state, "pending");
+      assert.equal(accepted.revision, fixed.revision);
+      serving = service.wait();
+      await service.ready;
       await settings.status(
         (status) =>
           status.state === "applied" && status.revision === fixed.revision,
       );
-      serving = service.wait();
-      await service.ready;
       await settings.health((check) => check.status === "ok");
     } finally {
       console.error = error;
@@ -348,10 +394,13 @@ test("an instance that is not running shows the newest revision as pending until
         seed: key.seed,
       }).orThrow();
     let service = await connect();
+    let serving = service.wait();
+    await service.ready;
     await settings.status(
       (status) => status.state === "applied" && status.revision === 1,
     );
     await service.stop();
+    await serving;
 
     const saved = await settings.set({ values: { level: "debug" } });
     const pending = await settings.status(() => true);
@@ -361,12 +410,15 @@ test("an instance that is not running shows the newest revision as pending until
 
     service = await connect();
     try {
+      serving = service.wait();
+      await service.ready;
       await settings.status(
         (status) =>
           status.state === "applied" && status.revision === saved.revision,
       );
     } finally {
       await service.stop();
+      await serving;
     }
   });
 });

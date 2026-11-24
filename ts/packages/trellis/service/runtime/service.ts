@@ -4387,6 +4387,9 @@ export class TrellisServiceSession<
           };
           this.connection.subscribe(follow);
           follow();
+          // Every check and derive registered before wait() has run, so the
+          // starting revision's outcome is final and Auth hears it now.
+          this[SERVICE_CONFIG]?.started();
         }
         // Supervise the logical connection: an authoritative terminal failure of
         // the logical transport must stop the service. A single physical

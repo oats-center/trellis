@@ -2,8 +2,10 @@
 //! shows what each instance did with them: a revision a check or a derive
 //! builder refuses leaves the service on the values it had, shows as
 //! rejected in `config show` and `instances` and in the instance's health,
-//! and can be rolled back. One `config set` writes plain values and several
-//! secrets as one revision, which the service hears as one change.
+//! and can be rolled back. The revision an instance starts with shows as
+//! applied only once it serves, so one a startup check refuses never does.
+//! One `config set` writes plain values and several secrets as one revision,
+//! which the service hears as one change.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,6 +24,7 @@ use trellis_testkit::TrellisTestRuntime;
 const CLI: &str = env!("CARGO_BIN_EXE_trellis");
 
 /// The production CLI signed in to `runtime` as its administrator.
+#[derive(Clone)]
 struct Cli {
     config: PathBuf,
 }
@@ -235,6 +238,9 @@ async fn refused_settings_show_in_the_cli_and_one_set_carries_several_secrets() 
     let cli = Cli::login(&mut runtime).await;
     let files = runtime.workdir().join("settings-files");
     std::fs::create_dir_all(&files).unwrap();
+    let lifecycle = service.lifecycle();
+    let running = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the service serves");
     cli.settings(&deployment, |status| {
         status["state"] == "applied" && status["revision"] == 1
     })
@@ -385,12 +391,13 @@ async fn refused_settings_show_in_the_cli_and_one_set_carries_several_secrets() 
     listening.abort();
     drop(client);
     drop(config);
-    drop(service);
+    lifecycle.stop();
+    running.await.unwrap().unwrap();
     runtime.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_check_that_refuses_the_starting_values_waits_for_a_fix() {
+async fn a_check_that_refuses_the_starting_values_never_shows_them_applied() {
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
     let identity = runtime
         .register_service::<Participant>("starting")
@@ -405,19 +412,55 @@ async fn a_check_that_refuses_the_starting_values_waits_for_a_fix() {
         .await
         .unwrap();
     let deployment = identity.deployment_id().to_owned();
+    let cli = Cli::login(&mut runtime).await;
     let mut service = Participant::connect(identity.connect_options())
         .await
         .unwrap();
     let lifecycle = service.lifecycle();
     let config = Provider::new(&mut service).config();
+    // Every status `config show` gives from connect until the rejection.
+    let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let watching = tokio::spawn({
+        let (cli, deployment) = (cli.clone(), deployment.clone());
+        async move {
+            loop {
+                let view = cli.json(&["svc", &deployment, "config"]).await;
+                let status = &view["instances"][0]["settings"];
+                let shown = format!(
+                    "{} r{}",
+                    status["state"].as_str().unwrap(),
+                    status["revision"]
+                );
+                let _ = seen_tx.send(shown.clone());
+                if status["state"] == "rejected" {
+                    return;
+                }
+            }
+        }
+    });
+    // The check registers only once the CLI has read the status.
+    let first = tokio::time::timeout(Duration::from_secs(30), seen.recv())
+        .await
+        .unwrap()
+        .unwrap();
     let registering = tokio::spawn({
         let config = config.clone();
         async move { config.check(https_only).await }
     });
-    let cli = Cli::login(&mut runtime).await;
-    let rejected = cli
-        .settings(&deployment, |status| status["state"] == "rejected")
-        .await;
+    tokio::time::timeout(Duration::from_secs(30), watching)
+        .await
+        .expect("the rejection shows")
+        .unwrap();
+    let mut statuses = vec![first];
+    while let Ok(shown) = seen.try_recv() {
+        statuses.push(shown);
+    }
+    assert!(
+        !statuses.iter().any(|shown| shown == "applied r1"),
+        "revision 1 showed as applied before the check ran: {statuses:?}"
+    );
+    let rejected = cli.settings(&deployment, |_| true).await;
+    assert_eq!(rejected["state"], "rejected");
     assert_eq!(rejected["revision"], 1);
     assert_eq!(rejected["fields"], json!(["endpoint"]));
     // Still starting: the check has not returned and nothing serves.
@@ -443,11 +486,18 @@ async fn a_check_that_refuses_the_starting_values_waits_for_a_fix() {
         .unwrap()
         .unwrap();
     assert_eq!(config.current().unwrap().endpoint, "https://one.example");
+    // Accepted, but it shows as applied only once the service serves.
+    let accepted = cli.settings(&deployment, |_| true).await;
+    assert_eq!(accepted["state"], "pending");
+    assert_eq!(accepted["revision"], 2);
+    let running = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the service serves");
     cli.settings(&deployment, |status| {
         status["state"] == "applied" && status["revision"] == 2
     })
     .await;
     drop(config);
-    drop(service);
+    lifecycle.stop();
+    running.await.unwrap().unwrap();
     runtime.shutdown().await.unwrap();
 }

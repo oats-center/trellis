@@ -269,7 +269,13 @@ Settings work live only when read at each use: `config.current`, a derived
 
 After each reading the SDK calls `Config.Own.Report` with the revisions it read
 and whether it applied them or its checks rejected them, with the refused
-fields and the reason. A repeat of the last confirmed report is not sent
+fields and the reason. An `applied` outcome is held back until startup ends,
+so the checks and derives registered at startup have all run: a service ends
+startup when it first serves, and a device, which has no serving phase, the
+first time it reads its settings or a derived value. A rejection is reported
+at once, so a starting value a startup check refuses goes straight from
+`pending` to `rejected`. The connect-time read drops the instance's earlier
+report, so a restarted instance reads `pending` until this run reports. A repeat of the last confirmed report is not sent
 again, and a failed report is sent with the next reading. `config.readOwn`
 allows it. Auth keeps one row per instance in `auth_config_reports`.
 

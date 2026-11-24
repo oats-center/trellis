@@ -352,9 +352,19 @@ Each instance tells Auth what became of every revision it reads, with
 - `applied`: the instance accepted the newest revision.
 - `rejected`: one of its checks or derive builders refused it. `fields` and
   `reason` say why, and the instance keeps the values it accepted last.
-- `pending`: the instance hasn't read the newest revision yet. A running
-  instance reads it within seconds; a stopped one reads it when it next
-  starts.
+- `pending`: the instance hasn't read the newest revision yet, or is still
+  starting. A running instance reads a new revision within seconds; a stopped
+  one reads it when it next starts.
+
+An instance reports the revision it starts with as `applied` only once its
+startup is done, so the checks and derives it registers have all run first. A
+service's startup ends when it first serves, after `service.wait()` (or
+`run()` in Rust) begins. A device has no serving phase, so its startup ends
+the first time it reads its settings or a derived value. Until then the
+status stays `pending`, and a starting value a check refuses shows as
+`rejected` without first showing as `applied`. A restarted instance's status
+from its earlier run is dropped when it connects. After startup, each new
+revision is reported as soon as its checks have run.
 
 Saving never waits for instances, and a rejected revision stays stored, so
 `config rollback` can undo it. While the newest revision is rejected, the

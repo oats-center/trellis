@@ -2025,7 +2025,7 @@ pub(super) fn missing_settings(
 /// A service or device reads its own effective configuration, secrets
 /// included, as the build it runs declares it. At connect, the revisions it
 /// loaded are recorded so restart-only settings show which instances still
-/// run older values.
+/// run older values, and the previous run's report is dropped.
 fn own_config(
     storage: &OAuthStorage,
     principal: &str,
@@ -2080,6 +2080,13 @@ fn own_config(
                 ON CONFLICT(instance_id) DO UPDATE SET deployment_revision=excluded.deployment_revision,\
                 instance_revision=excluded.instance_revision,connected_at=excluded.connected_at",
                 params![instance, deployment_revision, instance_revision, now],
+            )?;
+            // What an earlier run reported says nothing about this one, whose
+            // checks may refuse the same revision: it reads pending until
+            // this run reports.
+            connection.execute(
+                "DELETE FROM auth_config_reports WHERE instance_id=?1",
+                [&instance],
             )?;
         }
         let section = if kind == "device" { "devices" } else { "services" };

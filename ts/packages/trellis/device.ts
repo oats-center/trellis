@@ -659,6 +659,9 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
         read,
         report: (outcome) => trellis.reportOwnConfig(outcome),
         log: resolveDeviceLogger(args.log),
+        // A device has no serving phase: reading its settings is putting
+        // them to use, after the checks it registers at startup.
+        startsOnRead: true,
       });
       config.watch({
         transport: manager,

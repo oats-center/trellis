@@ -248,6 +248,12 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
   readonly #participantId: string;
   readonly #report?: (outcome: ConfigOutcome) => Promise<void>;
   readonly #status?: (text: string) => void;
+  // Startup ends when a service first serves, or when a device first reads
+  // its settings. Until then an `applied` outcome is held back, so a check
+  // registered during startup that refuses the starting values is the first
+  // thing Auth hears; a rejection is reported at once.
+  readonly #startsOnRead: boolean;
+  #started = false;
   // Accepted values by field name; `current` presents them as `TValues`.
   #current: Record<string, unknown>;
   #revision: ConfigRevision;
@@ -280,8 +286,11 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       report?: (outcome: ConfigOutcome) => Promise<void>;
       /** Reports what the participant waits for, such as to systemd. */
       status?: (text: string) => void;
+      /** A device ends its startup the first time it reads its settings. */
+      startsOnRead?: boolean;
     } = {},
   ) {
+    this.#startsOnRead = options.startsOnRead ?? false;
     this.#fields = fields;
     this.#log = log;
     this.#participantId = options.participantId ?? "This participant";
@@ -296,11 +305,24 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
   }
 
   get current(): TValues {
+    if (this.#startsOnRead) this.started();
     return this.#current as TValues;
   }
 
   get revision(): ConfigRevision {
+    if (this.#startsOnRead) this.started();
     return this.#revision;
+  }
+
+  /**
+   * End startup: every check and derive registered so far has run, so the
+   * outcome held back is reported now. Services call it when they first
+   * serve. @internal
+   */
+  started(): void {
+    if (this.#started) return;
+    this.#started = true;
+    this.#send(this.#outcome);
   }
 
   onChange(listener: (change: ConfigChange<TValues>) => void): () => void {
@@ -345,8 +367,12 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       return undefined;
     });
     await waiting?.accepted;
+    const read = () => {
+      if (this.#startsOnRead) this.started();
+    };
     return {
       get current(): T {
+        read();
         return slot.value as T;
       },
     };
@@ -548,7 +574,14 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
           : `\n${this.#participantId} rejected its settings: ${detail}\n${next}\nFix them at ${this.#configUrl}\nor scan:\n${renderUnicodeCompact(this.#configUrl)}`,
       );
     }
+    this.#send(outcome);
+  }
+
+  /** Tell Auth what became of a reading, unless it heard it already. */
+  #send(outcome: ConfigOutcome): void {
     const report = this.#report;
+    if (outcome.state === "applied" && !this.#started) return;
+    const key = JSON.stringify(outcome);
     if (!report || this.#reported === key) return;
     this.#reported = key;
     this.#reporting = this.#reporting.then(() =>
@@ -733,6 +766,8 @@ export async function loadConfig<
   log: LoggerLike;
   /** Reports what the participant waits for, such as to systemd. */
   status?: (text: string) => void;
+  /** A device ends its startup the first time it reads its settings. */
+  startsOnRead?: boolean;
   signal?: AbortSignal;
 }): Promise<ConfigHandle<TValues>> {
   const signal = args.signal;
@@ -758,6 +793,7 @@ export async function loadConfig<
             participantId: args.participantId,
             report: args.report,
             ...(args.status ? { status: args.status } : {}),
+            ...(args.startsOnRead ? { startsOnRead: true } : {}),
           },
         );
       }

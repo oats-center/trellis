@@ -16,6 +16,7 @@ use std::any::Any;
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -23,7 +24,7 @@ use futures_util::future::BoxFuture;
 use futures_util::{FutureExt as _, StreamExt as _};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{watch, Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::client::{ServiceHealthCheck, TrellisClient, TrellisClientError};
@@ -143,6 +144,8 @@ impl Outcome {
     }
 }
 
+/// Where a participant reports what it waits for, such as to systemd.
+type Status = Box<dyn Fn(&str) + Send + Sync>;
 type Check = Arc<dyn Fn(&Map<String, Value>) -> Result<(), Rejection> + Send + Sync>;
 type Built = Box<dyn Any + Send + Sync>;
 type Builder<T, D> = Arc<dyn Fn(T) -> BoxFuture<'static, Result<D, Rejection>> + Send + Sync>;
@@ -197,12 +200,14 @@ where
 /// A value built from settings, rebuilt when the fields it reads change.
 pub struct Derived<D> {
     value: Arc<RwLock<Option<Arc<D>>>>,
+    live: Arc<Live>,
 }
 
 impl<D> Clone for Derived<D> {
     fn clone(&self) -> Self {
         Self {
             value: Arc::clone(&self.value),
+            live: Arc::clone(&self.live),
         }
     }
 }
@@ -218,6 +223,7 @@ impl<D> Derived<D> {
     /// value kept from an earlier call is the one built then.
     #[must_use]
     pub fn current(&self) -> Arc<D> {
+        self.live.on_read();
         let value = self.value.read().expect("derived value");
         Arc::clone(
             value
@@ -252,6 +258,14 @@ pub(crate) struct Live {
     /// Where outcomes are reported; absent for a participant without settings.
     client: Option<Arc<TrellisClient>>,
     status: Box<dyn Fn(&str) + Send + Sync>,
+    /// Startup ends when a service first serves, or when a device first
+    /// reads its settings. Until then an applied outcome is held back, so a
+    /// check registered during startup that refuses the starting values is
+    /// the first thing Auth hears; a rejection is reported at once.
+    starts_on_read: bool,
+    started: AtomicBool,
+    /// Wakes the following task to report the outcome held back.
+    starting: Notify,
     accepted: watch::Sender<ConfigState>,
     outcome: watch::Sender<Outcome>,
     /// Revisions accepted so far; a waiting registration resolves once it grows.
@@ -268,6 +282,7 @@ impl Live {
             String::new(),
             None,
             Box::new(|_| {}),
+            false,
             ConfigState::default(),
         );
         live.stopped.cancel();
@@ -279,6 +294,7 @@ impl Live {
         participant: String,
         client: Option<Arc<TrellisClient>>,
         status: Box<dyn Fn(&str) + Send + Sync>,
+        starts_on_read: bool,
         initial: ConfigState,
     ) -> Arc<Self> {
         let revision = initial.revision;
@@ -287,6 +303,9 @@ impl Live {
             participant,
             client,
             status,
+            starts_on_read,
+            started: AtomicBool::new(false),
+            starting: Notify::new(),
             accepted: watch::channel(initial).0,
             outcome: watch::channel(Outcome::applied(revision)).0,
             acceptances: watch::channel(0).0,
@@ -296,6 +315,28 @@ impl Live {
                 ..Registry::default()
             }),
         })
+    }
+
+    /// End startup: every check and derive registered so far has run, so the
+    /// outcome held back is reported. Services call it when they first serve.
+    pub(crate) fn start(&self) {
+        if !self.started.swap(true, Ordering::AcqRel) {
+            self.starting.notify_one();
+        }
+    }
+
+    /// A read of the settings, which ends a device's startup.
+    fn on_read(&self) {
+        if self.starts_on_read {
+            self.start();
+        }
+    }
+
+    /// Report the outcome held back during startup, unless Auth has it.
+    async fn report_started(&self) {
+        let mut registry = self.registry.lock().await;
+        let outcome = self.outcome.borrow().clone();
+        self.send(&mut registry, outcome).await;
     }
 
     /// The declared name of `name`, given as declared or as the generated
@@ -468,7 +509,15 @@ impl Live {
                 registry.config_url.as_deref(),
             );
         }
+        self.send(registry, outcome).await;
+    }
+
+    /// Tell Auth what became of a reading, unless it heard it already.
+    async fn send(&self, registry: &mut Registry, outcome: Outcome) {
         let Some(client) = &self.client else { return };
+        if !outcome.rejected && !self.started.load(Ordering::Acquire) {
+            return;
+        }
         if registry.reported.as_ref() == Some(&outcome) {
             return;
         }
@@ -527,12 +576,14 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
     /// Returns [`ServerError::Internal`] if the stored values do not decode as
     /// `T`, which means the generated struct and the running build disagree.
     pub fn current(&self) -> Result<T, ServerError> {
+        self.live.on_read();
         decode(&self.state.borrow().values)
     }
 
     /// The revisions behind [`Self::current`].
     #[must_use]
     pub fn revision(&self) -> ConfigRevision {
+        self.live.on_read();
         self.state.borrow().revision
     }
 
@@ -545,6 +596,7 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
     /// Returns [`ServerError::Internal`] once the participant stopped and no
     /// further change can arrive, or if the values do not decode as `T`.
     pub async fn changed(&mut self) -> Result<T, ServerError> {
+        self.live.on_read();
         tokio::select! {
             changed = self.state.changed() => changed
                 .map_err(|_| ServerError::Internal("the participant stopped".into()))?,
@@ -673,7 +725,10 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
         if let Some(after) = waiting {
             live.wait_accepted(after).await?;
         }
-        Ok(Derived { value })
+        Ok(Derived {
+            value,
+            live: Arc::clone(live),
+        })
     }
 }
 
@@ -876,7 +931,9 @@ fn merge(
 /// Follow `Config.Changed` for this participant. An event only prompts a
 /// fresh authenticated read, so its payload is never trusted for values. The
 /// `settings` health check reports a rejected revision until one is accepted;
-/// `status` hears what a waiting registration waits for.
+/// a service's lifecycle `status` hears what a waiting registration waits
+/// for. A device has no lifecycle, so it passes none and its startup ends the
+/// first time it reads its settings.
 pub(crate) fn follow(
     client: Arc<TrellisClient>,
     fields: &'static [ConfigField],
@@ -884,13 +941,15 @@ pub(crate) fn follow(
     initial: ConfigState,
     deployment: String,
     instance: String,
-    status: Box<dyn Fn(&str) + Send + Sync>,
+    status: Option<Status>,
 ) -> LiveConfig {
+    let starts_on_read = status.is_none();
     let live = Live::new(
         fields,
         participant.to_owned(),
         Some(Arc::clone(&client)),
-        status,
+        status.unwrap_or_else(|| Box::new(|_| {})),
+        starts_on_read,
         initial,
     );
     // Weak, so the check the client holds doesn't keep the settings alive.
@@ -923,6 +982,7 @@ pub(crate) fn follow(
                 Err(error) => tracing::warn!(%error, "could not read changed settings"),
             }
         };
+        let mut announced = false;
         loop {
             // Taken before acquiring, so a publication made while acquiring is
             // still seen as a change.
@@ -970,6 +1030,10 @@ pub(crate) fn follow(
                             continue;
                         }
                         refresh().await;
+                    }
+                    () = live.starting.notified(), if !announced => {
+                        announced = true;
+                        live.report_started().await;
                     }
                     () = lease.wait_lost() => break,
                     // A successor's publication ends this subscription. The
