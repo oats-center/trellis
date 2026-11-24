@@ -7,7 +7,8 @@
 //! Two exports never replace each other's file.
 //! An export holds only unfinished jobs.
 //! An import that waited for an instance finishes once one exists.
-//! An import never reaches past the deployment it creates.
+//! An import never reaches past the deployment it creates, and running it
+//! again replaces only a stream it can show it restored itself.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -1266,7 +1267,7 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     let keeper_file = work.join("keeper.trellis-service");
     let keeper_digest = export(&old_cli, keeping.deployment_id(), &keeper_file, &passphrase).await;
     let moving_file = work.join("moving.trellis-service");
-    export(&old_cli, &moving_id, &moving_file, &passphrase).await;
+    let moving_digest = export(&old_cli, &moving_id, &moving_file, &passphrase).await;
     let kv_stream = |entries: &[(String, Vec<u8>)]| {
         bundle::document(entries, "resources.json")
             .as_array()
@@ -1400,34 +1401,154 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         assert_eq!(streams().await, before);
     }
 
-    // An import whose store snapshot cannot be restored stops partway, and
-    // running it again starts over only what it began itself: `keeper`'s
-    // stream is untouched, and `moving`'s own KV keeps what it loaded.
-    let broken = {
-        let mut entries = moving_entries.clone();
-        let resources = bundle::document(&entries, "resources.json");
-        let store = resources
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|resource| resource["kind"] == "store")
-            .unwrap()["entry"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let (_, snapshot) = entries.iter_mut().find(|(name, _)| *name == store).unwrap();
-        *snapshot = vec![7; 4096];
-        let file = work.join("broken-store.trellis-service");
-        let digest = write_bundle(entries, &passphrase, &file);
-        (file, digest)
+    // An import that stops after restoring a stream, before it records the
+    // stream loaded, resumes when run again: it restores again only a stream
+    // it made itself. A trigger refuses the record of the store loaded, as a
+    // stop between the two would leave it.
+    let store = bundle::document(&moving_entries, "resources.json")
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|resource| resource["kind"] == "store")
+        .unwrap()
+        .clone();
+    let store_id = store["resourceId"].as_str().unwrap().to_owned();
+    let store_stream = store["stream"].as_str().unwrap().to_owned();
+    let platform = {
+        let mut pending = vec![new.workdir().to_path_buf()];
+        let mut found = None;
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path
+                    .file_name()
+                    .is_some_and(|name| name == "platform.sqlite")
+                {
+                    found = Some(path);
+                }
+            }
+        }
+        rusqlite::Connection::open(found.expect("the runtime's platform database")).unwrap()
     };
-    for _ in 0..2 {
-        assert!(!import(&new_cli, &broken.0, &broken.1, &passphrase)
-            .await
-            .status
-            .success());
-    }
+    platform.busy_timeout(Duration::from_secs(10)).unwrap();
+    platform
+        .execute_batch(&format!(
+            "CREATE TRIGGER stop_before_store_loaded BEFORE UPDATE OF loaded_json \
+            ON auth_service_imports WHEN NEW.loaded_json LIKE '%{store_id}%' \
+            BEGIN SELECT RAISE(ABORT, 'stopped'); END"
+        ))
+        .unwrap();
+    let created = |name: String| {
+        let jetstream = jetstream.clone();
+        async move {
+            let mut stream = jetstream.get_stream(&name).await.unwrap();
+            let info = stream.info().await.unwrap();
+            (
+                info.created,
+                info.state.messages,
+                info.config.metadata.clone(),
+            )
+        }
+    };
+    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
+        .await
+        .status
+        .success());
     assert!(new_cli.has_deployment(&moving_id).await);
+    let (made, _, _) = created(store_stream.clone()).await;
+
+    // Someone else's stream under the store's name: one without the
+    // import's mark, then one with another import's.
+    jetstream.delete_stream(&store_stream).await.unwrap();
+    let foreign = jetstream
+        .create_stream(async_nats::jetstream::stream::Config {
+            name: store_stream.clone(),
+            subjects: store["config"]["subjects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|subject| subject.as_str().unwrap().to_owned())
+                .collect(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let foreign_subject = store["config"]["subjects"][0]
+        .as_str()
+        .unwrap()
+        .replace('>', "foreign");
+    jetstream
+        .publish(foreign_subject, "someone else's".into())
+        .await
+        .unwrap()
+        .await
+        .unwrap();
+    let foreign_created = foreign.cached_info().created;
+    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
+        .await
+        .status
+        .success());
+    let (kept_created, kept_messages_now, kept_metadata) = created(store_stream.clone()).await;
+    assert_eq!(
+        (
+            kept_created,
+            kept_messages_now,
+            kept_metadata.get("trellis.import")
+        ),
+        (foreign_created, 1, None),
+        "a stream without the import's mark stays as it is"
+    );
+    let marked = std::collections::HashMap::from([(
+        "trellis.import".to_owned(),
+        ulid::Ulid::generate().to_string(),
+    )]);
+    let mut config = foreign.cached_info().config.clone();
+    config.metadata = marked.clone();
+    jetstream.update_stream(config).await.unwrap();
+    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
+        .await
+        .status
+        .success());
+    let (kept_created, kept_messages_now, kept_metadata) = created(store_stream.clone()).await;
+    assert_eq!(
+        (kept_created, kept_messages_now),
+        (foreign_created, 1),
+        "a stream another import marked stays as it is"
+    );
+    assert_eq!(
+        kept_metadata.get("trellis.import"),
+        marked.get("trellis.import")
+    );
+
+    // Without the stranger's stream the store is restored, and the record
+    // refused again; once the record goes through, the store this import
+    // made is restored again and the import finishes.
+    jetstream.delete_stream(&store_stream).await.unwrap();
+    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
+        .await
+        .status
+        .success());
+    let (made_again, _, _) = created(store_stream.clone()).await;
+    assert_ne!(made_again, made);
+    platform
+        .execute_batch("DROP TRIGGER stop_before_store_loaded")
+        .unwrap();
+    let finished = import(&new_cli, &moving_file, &moving_digest, &passphrase).await;
+    assert!(
+        finished.status.success(),
+        "{}",
+        String::from_utf8_lossy(&finished.stderr)
+    );
+    let finished: Value = serde_json::from_slice(&finished.stdout).unwrap();
+    assert_eq!(finished["import"]["resumed"], true);
+    let (restored, messages, _) = created(store_stream.clone()).await;
+    assert_ne!(
+        restored, made_again,
+        "the store's stream was restored again"
+    );
+    assert_eq!(messages, store["messages"].as_u64().unwrap());
     let loaded = jetstream
         .get_stream(&moving_stream)
         .await

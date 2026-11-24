@@ -469,13 +469,16 @@ ID>_<allocation ID>`, and a stream configuration with exactly that name,
    keys, writes the enrollment secrets, the instance policy, the settings
    with their secrets sealed, and the webhook endpoints, records the
    resources as `pending` under their own resource and allocation IDs, and
-   records the import with its content digest and the streams it will
-   restore. The deployment starts enabled.
-5. **Load the data.** Auth restores each KV and store snapshot, recording
-   that it began before it starts and that it is loaded once it finishes.
-   The broker builds a restored stream from the configuration inside the
-   snapshot, so Auth checks the stream it got against the same rules as step
-   1, and deletes it and stops if it differs. Auth then prepares the
+   records the import with its content digest, the streams it will restore,
+   and a random import ID. The deployment starts enabled.
+5. **Load the data.** Auth restores each KV and store snapshot with the
+   stream configuration from the bundle, adding the import ID to the
+   stream's metadata under `trellis.import`. The broker refuses to restore
+   over an existing stream, so the stream that exists afterwards is the one
+   the import made. Auth checks it against the same rules as step 1 and for
+   the import ID, and deletes it and stops if it differs. It then records
+   the stream's creation time, and after that records the resource loaded.
+   Auth then prepares the
    resources as it does for a new instance, which finds the restored streams
    and makes them `ready`, and publishes the waiting jobs. Whether there is
    an instance to prepare them for is read from this installation: a
@@ -490,10 +493,15 @@ would create the missing streams empty.
 
 If step 5 fails, or stops for want of an instance, running the same import
 again resumes it: Auth finds the import record for the deployment with the
-same content digest, deletes a stream it began to restore and did not
-finish, and loads the rest. It deletes only streams the import record says
-it began; a stream under one of those names that it did not begin is left
-alone and the import stops, naming it. Readiness is read again, so an
+same content digest, deletes a stream it restored and did not record
+loaded, restores it again, and loads the rest. It deletes a stream only
+when the stream's metadata carries the import ID and its creation time is
+the one the import recorded. Any other stream under that name, whether it
+has no import ID, another import's, or another creation time, is left as it
+is, and the import stops with a conflict naming it. This includes a stream
+the import restored just before it stopped and had not yet recorded: Auth
+cannot tell it from someone else's, so the operator removes it before
+running the import again. Readiness is read again, so an
 instance provisioned or enabled since the last attempt lets the import
 finish. A resource does not become `ready` empty, following the existing
 rule that a missing stream after materialization is storage loss, not
