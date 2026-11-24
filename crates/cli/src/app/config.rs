@@ -161,11 +161,7 @@ pub(super) async fn run(
             }
             let mut listed = Vec::new();
             if let Some(path) = values_file {
-                let text = std::fs::read_to_string(&path).into_diagnostic()?;
-                let Ok(Value::Object(object)) = serde_json::from_str(&text) else {
-                    miette::bail!("{} is not a JSON object of settings", path.display());
-                };
-                for (name, value) in object {
+                for (name, value) in read_values_file(&path)? {
                     let as_secret = declared_secret(&current, &name) || secret_keys.contains(&name);
                     listed.push(name.clone());
                     add(name, value, as_secret)?;
@@ -455,9 +451,56 @@ fn read_env_file(path: &std::path::Path) -> miette::Result<Vec<(String, String)>
         } else {
             value.to_owned()
         };
-        entries.push((name.trim().to_owned(), value));
+        let name = name.trim();
+        // Within one file the last value would otherwise win unnoticed.
+        miette::ensure!(
+            !entries.iter().any(|(seen, _)| seen == name),
+            "{}:{}: {name} is given more than once",
+            path.display(),
+            number + 1
+        );
+        entries.push((name.to_owned(), value));
     }
     Ok(entries)
+}
+
+/// The settings in a JSON object file, in order. A name the object repeats is
+/// refused: a map would keep only its last value without a word.
+fn read_values_file(path: &std::path::Path) -> miette::Result<Vec<(String, Value)>> {
+    struct Entries(Vec<(String, Value)>);
+    impl<'de> serde::Deserialize<'de> for Entries {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct Object;
+            impl<'de> serde::de::Visitor<'de> for Object {
+                type Value = Entries;
+                fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    formatter.write_str("a JSON object of settings")
+                }
+                fn visit_map<A: serde::de::MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> Result<Entries, A::Error> {
+                    let mut entries: Vec<(String, Value)> = Vec::new();
+                    while let Some((name, value)) = map.next_entry::<String, Value>()? {
+                        if entries.iter().any(|(seen, _)| *seen == name) {
+                            return Err(serde::de::Error::custom(format!(
+                                "{name} is given more than once"
+                            )));
+                        }
+                        entries.push((name, value));
+                    }
+                    Ok(Entries(entries))
+                }
+            }
+            deserializer.deserialize_map(Object)
+        }
+    }
+    let text = std::fs::read_to_string(path)
+        .into_diagnostic()
+        .map_err(|error| error.wrap_err(format!("reading {}", path.display())))?;
+    serde_json::from_str::<Entries>(&text)
+        .map(|entries| entries.0)
+        .map_err(|error| miette::miette!("{}: {error}", path.display()))
 }
 
 /// One instance's settings status in a few words: `applied r12`,
@@ -753,6 +796,41 @@ mod tests {
                 ("literal".to_owned(), r"C:\new".to_owned()),
                 ("trailing".to_owned(), r"ends\".to_owned()),
             ]
+        );
+    }
+
+    /// The error a file's entries fail with, as an operator reads it.
+    fn refusal(result: miette::Result<impl std::fmt::Debug>) -> String {
+        result.expect_err("the file is refused").to_string()
+    }
+
+    #[test]
+    fn a_setting_named_twice_in_one_file_is_refused_naming_it() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            r#"{ "level": "debug", "endpoint": "https://one.example", "level": "info" }"#,
+        )
+        .unwrap();
+        // The message is what the operator acts on: it names the setting.
+        let refused = refusal(read_values_file(file.path()));
+        assert!(
+            refused.contains("level is given more than once"),
+            "{refused}"
+        );
+        std::fs::write(file.path(), r#"{ "level": "debug", "port": 8080 }"#).unwrap();
+        assert_eq!(
+            read_values_file(file.path()).unwrap(),
+            [
+                ("level".to_owned(), json!("debug")),
+                ("port".to_owned(), json!(8080)),
+            ]
+        );
+
+        let refused = refusal(env_file("level=debug\n# again\nexport level=info\n"));
+        assert!(
+            refused.ends_with(":3: level is given more than once"),
+            "{refused}"
         );
     }
 }

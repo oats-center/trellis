@@ -504,7 +504,7 @@ ignores a leading `export `, and quotes values as dotenv files do: a value in
 single quotes is taken as written, and in double quotes `\n`, `\r`, `\t`,
 `\"` and `\\` are escapes while any other backslash stays, so
 `dataDir="C:\data"` is `C:\data`. A field named twice in one command is
-refused.
+refused, even twice in one file, and nothing is saved.
 
 `trellis svc <ID> instances` shows the same status in its Settings column:
 `applied r12`, `rejected r13: awsSecret: set both or neither`, or
