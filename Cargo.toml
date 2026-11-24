@@ -57,6 +57,11 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 1
 
+# Development servers validate and compile contract evidence while serving
+# deployment requests. Keep that CPU-bound path fast in live tests too.
+[profile.dev.package.trellis-idl]
+opt-level = 1
+
 # Shipped binaries carry no symbol tables, so a panic reports its file and line
 # but its backtrace names no functions. Whole-program optimization takes the server from
 # 66 to 53 MB and the CLI from 33 to 25 MB, for a build about four times

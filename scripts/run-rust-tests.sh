@@ -64,6 +64,14 @@ if [[ -n "${TRELLIS_TEST_BUILD_ONLY:-}" ]]; then
   exit 0
 fi
 
+# Generated-consumer tests run nested Cargo builds alongside live servers.
+# Share the runner among those builds after workspace precompilation.
+if [[ -n "${CI:-}" ]]; then
+  cores="$(nproc)"
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(( (cores + 3) / 4 ))}"
+  export NEXTEST_TEST_THREADS="${NEXTEST_TEST_THREADS:-$(( (cores + 1) / 2 ))}"
+fi
+
 # Documentation examples run even when the main catalog fails.
 status=0
 if cargo nextest --version >/dev/null 2>&1; then
