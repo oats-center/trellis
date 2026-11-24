@@ -381,15 +381,20 @@ pub(super) async fn export(
         .into_diagnostic()?,
     )
     .into_diagnostic()?;
-    // Written beside the destination and renamed once whole, so a stopped
-    // export leaves no file behind that looks finished.
-    let partial = out.with_extension("trellis-service.partial");
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&partial)
-        .map_err(|error| miette::miette!("cannot write {}: {error}", partial.display()))?;
+    // Written to a file of its own beside the destination and linked into
+    // place once whole, so a stopped export leaves no file that looks
+    // finished, and two exports to one destination never replace each other.
+    let directory = match out.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let partial = tempfile::Builder::new()
+        .prefix(".trellis-service-")
+        .suffix(".partial")
+        .tempfile_in(directory)
+        .map_err(|error| miette::miette!("cannot write in {}: {error}", directory.display()))?;
     let written = async {
+        let file = partial.as_file().try_clone().into_diagnostic()?;
         let mut encryptor = Encryptor::new(std::io::BufWriter::new(file), &passphrase)?;
         let (mut source, mut sink) = tokio::io::duplex(CHUNK);
         let received = async {
@@ -420,11 +425,19 @@ pub(super) async fn export(
         Ok::<_, miette::Report>(info)
     }
     .await;
-    if let Err(error) = written {
-        let _ = std::fs::remove_file(&partial);
-        return Err(error);
-    }
-    std::fs::rename(&partial, &out).into_diagnostic()?;
+    // Dropping the partial file on any failure deletes it.
+    written?;
+    partial.persist_noclobber(&out).map_err(|error| {
+        if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+            miette::miette!(
+                help = "Run the export again with another file for --out.",
+                "{} appeared while the export ran; it was left as it is and nothing was written",
+                out.display()
+            )
+        } else {
+            miette::miette!("cannot write {}: {}", out.display(), error.error)
+        }
+    })?;
     let digest = file_digest(&out)?;
     let size = std::fs::metadata(&out).into_diagnostic()?.len();
     let report = &result["report"];

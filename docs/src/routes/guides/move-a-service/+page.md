@@ -77,6 +77,11 @@ characters) and send it apart from the file. In a script, give it with
 The export prints the bundle's SHA-256. Give it to whoever imports, through a
 channel you trust: it is how they know the file is the one you exported.
 
+The export writes a temporary file beside `--out` and moves it into place
+once the bundle is whole. It refuses to replace a file, including one that
+appeared while it ran, such as another export to the same name; the file
+that was there stays as it was.
+
 ## Import
 
 ```sh

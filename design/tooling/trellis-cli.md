@@ -269,7 +269,9 @@ no authority show/plan/reconcile commands.
 see `design/auth/service-export.md`. Export starts the
 `Auth.Deployments.Export` Operation, downloads the content with
 `Auth.Deployments.Exports.Download`, and encrypts it with a passphrase as it
-arrives, writing `<file>.partial` and renaming it once whole. It prints the
+arrives, writing a temporary file beside the destination and moving it into
+place with a rename that refuses an existing file, so a file that appeared
+meanwhile, such as another export's, is never replaced. It prints the
 file's SHA-256. `remove` names the installation in its confirmation; for a
 deployment imported within the last day, `disable` asks the same confirmation
 and `remove` warns, since the installation it moved from has a deployment

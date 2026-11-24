@@ -4,6 +4,7 @@
 //! settings, secret, data, waiting job, webhook URL and enrollment secret,
 //! while the installation it left is unchanged.
 //! The move guide's commands act on the installations they name.
+//! Two exports never replace each other's file.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -30,6 +31,13 @@ struct Cli {
 }
 
 impl Cli {
+    async fn login(runtime: &mut TrellisTestRuntime) -> Self {
+        let config = runtime
+            .workdir()
+            .join(format!("cli-{}", ulid::Ulid::generate()));
+        Self::login_as(runtime, config, None).await
+    }
+
     /// Sign in as `trellis --profile <profile> login <url>` does, beside any
     /// other profile kept in `config`.
     async fn login_as(
@@ -143,6 +151,38 @@ async fn options<'a>(runtime: &TrellisTestRuntime, seed: &'a str) -> ServiceConn
         .await
         .unwrap();
     ServiceConnectOptions::new(server.nats_servers, server.trust, seed)
+}
+
+/// The bundle format of `design/auth/service-export.md`, written from the
+/// design rather than taken from the CLI, so a test can open a bundle the CLI
+/// wrote and seal content the CLI never would.
+mod bundle {
+    use sha2::{Digest as _, Sha256};
+
+    /// The SHA-256 of a file, in lowercase hex, as import's `--digest` takes it.
+    pub fn digest(file: &[u8]) -> String {
+        Sha256::digest(file)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+}
+
+/// Export `id` with the production CLI into `out` and return the digest.
+async fn export(cli: &Cli, id: &str, out: &Path, passphrase: &Path) -> String {
+    cli.json(&[
+        "svc",
+        id,
+        "export",
+        "--out",
+        path(out),
+        "--passphrase-file",
+        path(passphrase),
+    ])
+    .await["digest"]
+        .as_str()
+        .unwrap()
+        .to_owned()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -564,4 +604,87 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     running.await.unwrap().unwrap();
     new.shutdown().await.unwrap();
     old.shutdown().await.unwrap();
+}
+
+/// Two exports to the same file, the second already past its check that
+/// the file is free, never replace each other: the first writes the file,
+/// the second refuses and leaves it as the first wrote it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_exports_to_one_file_never_replace_each_other() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime).await;
+    let identity = runtime
+        .register_service::<Participant>("twice")
+        .await
+        .unwrap();
+    let work = runtime.workdir().join("export");
+    std::fs::create_dir_all(&work).unwrap();
+    let passphrase = work.join("passphrase");
+    std::fs::write(&passphrase, "a long enough passphrase\n").unwrap();
+    let out = work.join("twice.trellis-service");
+    // The second export reads its passphrase from a FIFO, so it waits there,
+    // after its check that the file is free, until this test writes it.
+    let fifo = work.join("passphrase.fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let second = cli
+        .command()
+        .args([
+            "svc",
+            identity.deployment_id(),
+            "export",
+            "--out",
+            path(&out),
+            "--passphrase-file",
+            path(&fifo),
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Opening the FIFO to write returns once the second export opened it.
+    let writer = {
+        let fifo = fifo.clone();
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(fifo)),
+        )
+        .await
+        .expect("the second export asks for its passphrase")
+        .unwrap()
+        .unwrap()
+    };
+    let first = export(&cli, identity.deployment_id(), &out, &passphrase).await;
+    let written = std::fs::read(&out).unwrap();
+    assert_eq!(bundle::digest(&written), first);
+    {
+        use std::io::Write as _;
+        let mut writer = writer;
+        writer.write_all(b"another long passphrase\n").unwrap();
+    }
+    let second = tokio::time::timeout(Duration::from_secs(120), second.wait_with_output())
+        .await
+        .expect("the second export ends")
+        .unwrap();
+    assert!(
+        !second.status.success(),
+        "the second export replaced the first: {}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    assert_eq!(std::fs::read(&out).unwrap(), written);
+    let mut left: Vec<String> = std::fs::read_dir(&work)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        ["passphrase", "passphrase.fifo", "twice.trellis-service"],
+        "no partial file stays behind"
+    );
+    runtime.shutdown().await.unwrap();
 }

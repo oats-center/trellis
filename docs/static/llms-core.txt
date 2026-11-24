@@ -310,7 +310,7 @@ enrollment secret hashes, current settings with their secrets, webhook
 endpoints with their URL IDs, KV and store snapshots, and the lifecycle of
 jobs not yet settled, encrypted by the CLI with the operator's passphrase
 (Argon2id and ChaCha20-Poly1305; the passphrase never reaches Auth), and
-prints the file's SHA-256. Export changes nothing in the old installation;
+prints the file's SHA-256; it never replaces an existing file. Export changes nothing in the old installation;
 stop the service's processes first, and disable then remove the old
 deployment once it runs in the new one. The deployment keeps its ID in both
 installations, so sign in to each under its own `--profile <name>` and name

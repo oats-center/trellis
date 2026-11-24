@@ -347,11 +347,15 @@ trellis svc import <file> [--digest <sha256>] [--passphrase-file <path>] [--chec
 ```
 
 Export writes `<id>.trellis-service` by default and refuses to overwrite a
-file. It writes `<file>.partial` first and renames it once the download is
-whole, so an interrupted export leaves no file that looks finished. On a
-terminal it asks for the passphrase twice; otherwise it reads it from
-`--passphrase-file`, or `-` or piped standard input. A new bundle's
-passphrase has at least 12 characters.
+file. It writes a temporary file of its own beside the destination, readable
+only by its owner, and moves it into place once the download is whole with a
+rename that refuses an existing destination (`renameat2` with
+`RENAME_NOREPLACE`, or a hard link and unlink where that is missing). An
+interrupted export therefore leaves no file that looks finished, and two
+exports to the same name never replace each other: the second refuses and
+deletes its temporary file. On a terminal it asks for the passphrase twice;
+otherwise it reads it from `--passphrase-file`, or `-` or piped standard
+input. A new bundle's passphrase has at least 12 characters.
 
 The CLI keeps one saved login by default. `--profile <name>` on any command
 uses the login saved under that name instead, so commands for two
