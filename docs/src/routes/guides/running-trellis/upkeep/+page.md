@@ -23,8 +23,10 @@ attention:
   instance waiting for settings names them, one waiting for an administrator
   to approve its update says so, and every degraded or failed check is listed
   with its message, including Auth's `enforcement` check and each
-  `webhook:<endpoint>` check. Devices appear only when they report degraded
-  or unhealthy.
+  `webhook:<endpoint>` check. A connected instance that hasn't reported its
+  health yet is a warning. Devices appear only when they report degraded or
+  unhealthy. A health record the server couldn't read is a problem, named as
+  such, and the instances it was for show as unknown, never as healthy.
 - **JetStream**: storage and memory used and reserved against the account's
   and the server's limits, a warning at 85% of a limit, and a problem for each
   stream NATS refused for lack of room. These are the numbers from

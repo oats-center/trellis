@@ -8,7 +8,8 @@
 //! requests it serves. Health comes from this host's Health database, read
 //! only, as `Health.Storage` reads every database; JetStream comes from the
 //! same capacity read `Health.Storage` uses. Each section reports what it
-//! could not read as a finding instead of failing the report.
+//! could not read as a problem instead of failing the report: a read that
+//! failed never passes for an empty one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -169,12 +170,16 @@ struct Stored {
     work: (Status, Value),
 }
 
+/// This host's Health database: `Ok(None)` when it is on another host, the
+/// error when it is here but could not be opened.
+type HealthReader = Result<Option<HealthStore>, String>;
+
 fn stored_sections(oauth: &OAuthEngine, config: &RuntimeConfig, now: OffsetDateTime) -> Stored {
-    let health_store = crate::health::open_reader(config);
+    let health_store = crate::health::open_reader(config).map_err(|error| error.to_string());
     Stored {
-        health: health(oauth, health_store.as_ref(), now),
+        health: health(oauth, &health_store, now),
         disk: disk(config),
-        work: work(oauth, health_store.as_ref()),
+        work: work(oauth, &health_store),
     }
 }
 
@@ -182,11 +187,11 @@ fn stored_sections(oauth: &OAuthEngine, config: &RuntimeConfig, now: OffsetDateT
 /// of each (connected, waiting for settings or approval) joined with the
 /// health it reports on its current connection, as `svc <id> instances` shows
 /// it. Devices are listed only when they report degraded or unhealthy.
-fn health(
-    oauth: &OAuthEngine,
-    store: Option<&HealthStore>,
-    now: OffsetDateTime,
-) -> (Status, Value) {
+///
+/// A health read that fails is a problem, and the instances it was for are
+/// `unknown`: a failed read never passes for an instance that has not
+/// reported yet, nor for a healthy one.
+fn health(oauth: &OAuthEngine, store: &HealthReader, now: OffsetDateTime) -> (Status, Value) {
     let mut findings = Findings::new();
     let storage = oauth.server.store();
     let read = storage.authority.read(|connection| {
@@ -230,36 +235,74 @@ fn health(
     let (deployments, instances) = match read {
         Ok(read) => read,
         Err(error) => {
-            findings.push((Status::Problem, format!("cannot read deployments: {error}")));
+            findings.push((
+                Status::Problem,
+                format!("couldn't read deployments: {error}"),
+            ));
             return section(&findings, json!({ "deployments": [] }));
         }
     };
-    if store.is_none() {
-        findings.push((
-            Status::Warning,
-            "the Health database is not on this host, so instance health is not shown".into(),
-        ));
-    }
+    let unreadable = store.is_err();
+    let store = match store {
+        Ok(Some(store)) => Some(store),
+        Ok(None) => {
+            findings.push((
+                Status::Warning,
+                "the Health database is not on this host, so instance health is not shown".into(),
+            ));
+            None
+        }
+        Err(error) => {
+            findings.push((
+                Status::Problem,
+                format!("couldn't read the Health database: {error}"),
+            ));
+            None
+        }
+    };
     let now_ns = i64::try_from(now.unix_timestamp_nanos()).unwrap_or(i64::MAX);
     let mut listed = Vec::new();
     for (deployment_id, participant_id, title) in deployments {
-        let reports = store
-            .and_then(|store| {
-                let request = HealthInspectRequest {
-                    contract_id: HealthInspectRequestContractId(participant_id.clone()),
-                    history_limit: Some(HealthInspectRequestHistoryLimit(1.into())),
-                    history_since: None,
-                    instance_id: None,
-                    participant_kind: HealthInspectRequestParticipantKind::Service,
-                    extra: Default::default(),
-                };
-                store.inspect(&request, now_ns).ok().flatten()
-            })
-            .and_then(|inspected| serde_json::to_value(inspected).ok());
-        let reports = reports
-            .as_ref()
-            .and_then(|reports| reports["instances"].as_array())
-            .map_or(&[][..], Vec::as_slice);
+        // `None` when there is nothing to read the reports from, or the read
+        // failed; an empty list when it read no report.
+        let reports = store.and_then(|store| {
+            let request = HealthInspectRequest {
+                contract_id: HealthInspectRequestContractId(participant_id.clone()),
+                history_limit: Some(HealthInspectRequestHistoryLimit(1.into())),
+                history_since: None,
+                instance_id: None,
+                participant_kind: HealthInspectRequestParticipantKind::Service,
+                extra: Default::default(),
+            };
+            let read = store
+                .inspect(&request, now_ns)
+                .map_err(|error| error.to_string())
+                .and_then(|inspected| {
+                    serde_json::to_value(inspected).map_err(|error| error.to_string())
+                });
+            match read {
+                Ok(inspected) => Some(
+                    inspected["instances"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+                Err(error) => {
+                    findings.push((
+                        Status::Problem,
+                        format!("couldn't read the health of {title}: {error}"),
+                    ));
+                    None
+                }
+            }
+        });
+        // Health that should be here but couldn't be read makes each connected
+        // instance a problem; health on another host leaves Auth's view alone.
+        let unread = if store.is_some() || unreadable {
+            Status::Problem
+        } else {
+            Status::Ok
+        };
         let mut deployment_status = Status::Ok;
         let mut connected = 0;
         let mut rows = Vec::new();
@@ -269,7 +312,11 @@ fn health(
         {
             let id = instance["instanceId"].as_str().unwrap_or_default();
             let name = format!("{title}: instance {id}");
-            let (state, status) = instance_state(instance, reports, &name, &mut findings);
+            let (state, mut status) =
+                instance_state(instance, reports.as_deref(), &name, &mut findings);
+            if state == "unknown" {
+                status = status.max(unread);
+            }
             if state != "offline" {
                 connected += 1;
             }
@@ -307,28 +354,34 @@ fn health(
             ]),
             extra: Default::default(),
         };
-        if let Some(devices) = store
+        let read = store
             .query(&request, now_ns)
-            .ok()
-            .and_then(|devices| serde_json::to_value(devices).ok())
-        {
-            for device in devices["items"].as_array().map_or(&[][..], Vec::as_slice) {
-                let status = device["effectiveStatus"].as_str().unwrap_or_default();
-                if status != "degraded" && status != "unhealthy" {
-                    continue;
+            .map_err(|error| error.to_string())
+            .and_then(|devices| serde_json::to_value(devices).map_err(|error| error.to_string()));
+        match read {
+            Err(error) => findings.push((
+                Status::Problem,
+                format!("couldn't read device health: {error}"),
+            )),
+            Ok(devices) => {
+                for device in devices["items"].as_array().map_or(&[][..], Vec::as_slice) {
+                    let status = device["effectiveStatus"].as_str().unwrap_or_default();
+                    if status != "degraded" && status != "unhealthy" {
+                        continue;
+                    }
+                    findings.push((
+                        if status == "unhealthy" {
+                            Status::Problem
+                        } else {
+                            Status::Warning
+                        },
+                        format!(
+                            "device {} ({}) is {status}",
+                            device["participantName"].as_str().unwrap_or_default(),
+                            device["contractId"].as_str().unwrap_or_default()
+                        ),
+                    ));
                 }
-                findings.push((
-                    if status == "unhealthy" {
-                        Status::Problem
-                    } else {
-                        Status::Warning
-                    },
-                    format!(
-                        "device {} ({}) is {status}",
-                        device["participantName"].as_str().unwrap_or_default(),
-                        device["contractId"].as_str().unwrap_or_default()
-                    ),
-                ));
             }
         }
     }
@@ -338,10 +391,13 @@ fn health(
 /// One instance's state and status, adding a finding for each thing wrong.
 ///
 /// A report from an earlier connection says nothing about the current one,
-/// so health counts only once the instance reports on this connection.
+/// so health counts only once the instance reports on this connection. A
+/// connected instance without such a report is a warning. With no `reports`
+/// to look in, a connected instance's health is `unknown`, and the caller
+/// says why.
 fn instance_state(
     instance: &Value,
-    reports: &[Value],
+    reports: Option<&[Value]>,
     name: &str,
     findings: &mut Findings,
 ) -> (&'static str, Status) {
@@ -368,10 +424,12 @@ fn instance_state(
         findings.push((Status::Problem, message));
         return ("waitingForSettings", Status::Problem);
     }
-    let report = reports
-        .iter()
-        .find(|report| report["instanceId"] == instance["instanceId"])
-        .filter(|report| parse(&report["observedAt"]).is_some_and(|at| at >= connected_at));
+    let report = reports.and_then(|reports| {
+        reports
+            .iter()
+            .find(|report| report["instanceId"] == instance["instanceId"])
+            .filter(|report| parse(&report["observedAt"]).is_some_and(|at| at >= connected_at))
+    });
     let Some(report) = report else {
         if !waiting["update"].is_null() {
             let mut message = format!("{name} waits for an administrator to approve its update");
@@ -381,7 +439,14 @@ fn instance_state(
             findings.push((Status::Warning, message));
             return ("waitingForApproval", Status::Warning);
         }
-        return ("starting", Status::Ok);
+        if reports.is_none() {
+            return ("unknown", Status::Ok);
+        }
+        findings.push((
+            Status::Warning,
+            format!("{name} is connected but hasn't reported its health yet"),
+        ));
+        return ("starting", Status::Warning);
     };
     let (state, mut status) = match report["effectiveStatus"].as_str() {
         Some("healthy") => ("healthy", Status::Ok),
@@ -667,13 +732,15 @@ fn failures(now: OffsetDateTime) -> (Status, Value) {
 /// Enforcement whose pages keep failing is a problem: sessions it should end
 /// stay usable. Effects and health status events set aside are a warning:
 /// they never happened, and are kept for inspection.
-fn work(oauth: &OAuthEngine, health: Option<&HealthStore>) -> (Status, Value) {
+///
+/// A read that fails is a problem: what it would have found is not known.
+fn work(oauth: &OAuthEngine, health: &HealthReader) -> (Status, Value) {
     let mut findings = Findings::new();
     let authority = &oauth.server.store().authority;
     let stuck = authority.stuck_enforcement(LISTED).unwrap_or_else(|error| {
         findings.push((
             Status::Problem,
-            format!("cannot read enforcement work: {error}"),
+            format!("couldn't read enforcement work: {error}"),
         ));
         Vec::new()
     });
@@ -690,8 +757,8 @@ fn work(oauth: &OAuthEngine, health: Option<&HealthStore>) -> (Status, Value) {
         .set_aside_effects(LISTED)
         .unwrap_or_else(|error| {
             findings.push((
-                Status::Warning,
-                format!("cannot read set-aside effects: {error}"),
+                Status::Problem,
+                format!("couldn't read set-aside Auth effects: {error}"),
             ));
             Vec::new()
         })
@@ -711,9 +778,20 @@ fn work(oauth: &OAuthEngine, health: Option<&HealthStore>) -> (Status, Value) {
             ),
         ));
     }
-    let health_set_aside = health
-        .and_then(|store| store.set_aside_transitions(LISTED).ok())
-        .unwrap_or_default();
+    let read = match health {
+        Ok(Some(store)) => store
+            .set_aside_transitions(LISTED)
+            .map_err(|error| error.to_string()),
+        Ok(None) => Ok(Vec::new()),
+        Err(error) => Err(error.clone()),
+    };
+    let health_set_aside = read.unwrap_or_else(|error| {
+        findings.push((
+            Status::Problem,
+            format!("couldn't read set-aside health status events: {error}"),
+        ));
+        Vec::new()
+    });
     if let Some((at, error)) = health_set_aside.first() {
         findings.push((
             Status::Warning,

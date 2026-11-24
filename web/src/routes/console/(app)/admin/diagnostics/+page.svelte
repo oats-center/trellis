@@ -76,6 +76,7 @@
     starting: "Starting",
     waitingForSettings: "Waiting for settings",
     waitingForApproval: "Waiting for approval",
+    unknown: "Unknown",
   };
 
   async function load(): Promise<void> {

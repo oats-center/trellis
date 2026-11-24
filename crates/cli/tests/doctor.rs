@@ -96,6 +96,24 @@ impl Cli {
         });
         (output.status.success(), report)
     }
+
+    /// The report once `doctor` passes. A just-started runtime warns until
+    /// its own instance first reports its health.
+    async fn passing(&self) -> Value {
+        let mut last = Value::Null;
+        let passed = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let (passed, report) = self.doctor().await;
+                if passed {
+                    return report;
+                }
+                last = report;
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await;
+        passed.unwrap_or_else(|_| panic!("doctor never passed: {last:#}"))
+    }
 }
 
 /// Every finding's message in `report`, with its status.
@@ -131,8 +149,7 @@ async fn doctor_passes_a_healthy_trellis_and_names_what_needs_attention() {
         .unwrap();
     let cli = Cli::login(&mut runtime).await;
 
-    let (passed, report) = cli.doctor().await;
-    assert!(passed, "{report:#}");
+    let report = cli.passing().await;
     assert_eq!(report["status"], "ok", "{report:#}");
     assert_eq!(
         report["server"]["version"],
@@ -198,7 +215,7 @@ async fn doctor_passes_a_healthy_trellis_and_names_what_needs_attention() {
 
     // A second login signs out while every enforcement page is refused.
     let leaving = Cli::login(&mut runtime).await;
-    let database = rusqlite::Connection::open(platform_database(&runtime)).unwrap();
+    let database = rusqlite::Connection::open(database(&runtime, "platform.sqlite")).unwrap();
     database.busy_timeout(Duration::from_secs(10)).unwrap();
     database
         .execute_batch(
@@ -265,20 +282,90 @@ async fn doctor_passes_a_healthy_trellis_and_names_what_needs_attention() {
     runtime.shutdown().await.unwrap();
 }
 
-fn platform_database(runtime: &TrellisTestRuntime) -> PathBuf {
+// Health records that exist but cannot be read: a row in the latest-health
+// table and a set-aside status event whose times are not numbers, written by
+// another process. Doctor reports each health read it could not make, marks
+// the platform's own instance unknown, and fails; before, the failed reads
+// passed for "no report yet" and doctor exited 0. Once the rows are gone,
+// doctor passes again. This catches a doctor that treats an unreadable
+// health table as an empty one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn doctor_fails_when_health_records_cannot_be_read() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let cli = Cli::login(&mut runtime).await;
+    cli.passing().await;
+
+    let health = rusqlite::Connection::open(database(&runtime, "health.sqlite")).unwrap();
+    health.busy_timeout(Duration::from_secs(10)).unwrap();
+    health
+        .execute_batch(
+            "INSERT INTO health_latest VALUES ('device', 'unreadable', 'unreadable', \
+                'unreadable', 'unreadable', 'unreadable', 'unreadable', 'healthy', 'offline', \
+                'not a time', 0, 0, '2026-01-01T00:00:00Z', 1000, 'rust', NULL, NULL, '{}', 0); \
+            INSERT INTO health_transition_outbox \
+                (event_id, participant_kind, contract_id, instance_id, payload_json, \
+                 created_at_ns, published_at_ns, set_aside_at_ns) \
+                VALUES ('unreadable', 'device', 'unreadable', 'unreadable', '{}', 0, \
+                 9000000000000000000, 'not a time');",
+        )
+        .unwrap();
+
+    let (passed, report) = cli.doctor().await;
+    assert!(!passed, "{report:#}");
+    assert_eq!(report["status"], "problem", "{report:#}");
+    assert_eq!(report["health"]["status"], "problem", "{report:#}");
+    assert_eq!(report["work"]["status"], "problem", "{report:#}");
+    let messages = findings(&report);
+    for wanted in [
+        "couldn't read the health of platform",
+        "couldn't read device health",
+        "couldn't read set-aside health status events",
+    ] {
+        assert!(
+            messages
+                .iter()
+                .any(|(status, message)| status == "problem" && message.contains(wanted)),
+            "{wanted}: {report:#}"
+        );
+    }
+    let platform = report["health"]["deployments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|deployment| deployment["title"] == "platform")
+        .unwrap_or_else(|| panic!("no platform deployment: {report:#}"));
+    assert_eq!(platform["status"], "problem", "{report:#}");
+    assert_eq!(platform["instances"][0]["state"], "unknown", "{report:#}");
+
+    let text = cli.run(&["doctor"]).await;
+    assert!(
+        !text.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text.stdout)
+    );
+
+    health
+        .execute_batch(
+            "DELETE FROM health_latest WHERE contract_id = 'unreadable'; \
+            DELETE FROM health_transition_outbox WHERE event_id = 'unreadable';",
+        )
+        .unwrap();
+    cli.passing().await;
+    runtime.shutdown().await.unwrap();
+}
+
+/// The runtime's SQLite database named `file`.
+fn database(runtime: &TrellisTestRuntime, file: &str) -> PathBuf {
     let mut pending = vec![runtime.workdir().to_path_buf()];
     while let Some(directory) = pending.pop() {
         for entry in std::fs::read_dir(&directory).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 pending.push(path);
-            } else if path
-                .file_name()
-                .is_some_and(|name| name == "platform.sqlite")
-            {
+            } else if path.file_name().is_some_and(|name| name == file) {
                 return path;
             }
         }
     }
-    panic!("the runtime has no platform database");
+    panic!("the runtime has no {file}");
 }

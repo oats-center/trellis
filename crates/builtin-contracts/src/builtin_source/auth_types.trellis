@@ -650,6 +650,7 @@ model AuthDiagnosticsInstance {
   /// `offline`, `waitingForSettings`, `waitingForApproval` or `starting`
   /// before it reports on its current connection, then the health it reports:
   /// `healthy`, `degraded`, `unhealthy`, or `unresponsive` once its heartbeats stop.
+  /// `unknown` when its health couldn't be read or is kept on another host.
   state: string;
   status: AuthDiagnosticsStatus;
 }

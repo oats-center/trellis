@@ -50,7 +50,20 @@ test("Diagnostics shows the installation's state and names what needs attention"
       await waitForConsoleShell(page);
       await page.getByRole("link", { name: "Diagnostics" }).first().click();
       const overall = page.getByTestId("diagnostics-status");
-      await overall.getByText("Everything looks fine.").waitFor();
+      // A just-started Trellis warns until its own instance first reports.
+      const fine = overall.getByText("Everything looks fine.");
+      await overall.getByText(/Checked/).waitFor();
+      await runtime.waitFor(
+        async () => {
+          if ((await fine.count()) > 0) return true;
+          await page.getByRole("button", { name: "Check again" }).click();
+          await page
+            .locator("button:not([disabled])", { hasText: "Check again" })
+            .waitFor();
+          return (await fine.count()) > 0;
+        },
+        { timeoutMs: 30_000 },
+      );
       await page
         .getByTestId("diagnostics-server")
         .getByText(/^\d+\.\d+\.\d+/)

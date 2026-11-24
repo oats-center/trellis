@@ -190,20 +190,25 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
 /// This host's Health database opened read-only, for diagnostics answered by
 /// another subsystem. `None` when the configured database is not a file on
 /// this host, such as when Health runs on another one.
-pub(crate) fn open_reader(config: &crate::RuntimeConfig) -> Option<HealthStore> {
+///
+/// # Errors
+///
+/// When the file is here but cannot be opened.
+pub(crate) fn open_reader(
+    config: &crate::RuntimeConfig,
+) -> Result<Option<HealthStore>, rusqlite::Error> {
     let Ok(crate::StorageBackend::Sqlite(sqlite)) = config.health_storage_backend() else {
-        return None;
+        return Ok(None);
     };
     if !sqlite.path.is_file() {
-        return None;
+        return Ok(None);
     }
     let connection = rusqlite::Connection::open_with_flags(
         &sqlite.path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .ok()?;
-    connection.busy_timeout(sqlite.busy_timeout()).ok()?;
-    Some(HealthStore::reader(connection))
+    )?;
+    connection.busy_timeout(sqlite.busy_timeout())?;
+    Ok(Some(HealthStore::reader(connection)))
 }
 
 fn build_router(

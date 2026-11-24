@@ -1785,4 +1785,6 @@ disk where the Auth database lives; the served certificate's subject, issuer
 and expiry; the last 20 failure references the Auth process logged (route,
 code and error, kept in memory, the last 50); and stuck Auth enforcement and
 set-aside effects. Each section and finding is `ok`, `warning` or `problem`,
-and `trellis doctor` exits non-zero unless everything is `ok`.
+and `trellis doctor` exits non-zero unless everything is `ok`. A record the
+report couldn't read is a `problem` finding, never an empty or healthy result,
+and a connected instance that hasn't reported health yet is a `warning`.

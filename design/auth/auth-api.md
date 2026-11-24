@@ -340,10 +340,15 @@ response's `status` is the worst section's:
   for an update's approval) with the health it reports on its current
   connection, as `trellis svc <id> instances` does; missing settings are a
   problem, an awaited approval a warning, degraded a warning and unhealthy or
-  stopped heartbeats a problem, with one finding per failing check. Devices
-  appear only as findings, when degraded or unhealthy. Health comes from this
-  host's Health database opened read-only; when it is elsewhere the section
-  says so and shows Auth's view only.
+  stopped heartbeats a problem, with one finding per failing check. A
+  connected instance with no report on its current connection yet is a
+  warning. Devices appear only as findings, when degraded or unhealthy.
+  Health comes from this host's Health database opened read-only; when it is
+  elsewhere the section says so and shows Auth's view only, with each
+  connected instance's state `unknown`. A read that fails (the database won't
+  open, or a deployment's or the devices' records can't be read) is a problem
+  finding, and the instances it was for are `unknown` with status `problem`:
+  a failed read never passes for an empty one.
 - `jetstream`: the capacity read `Health.Storage` makes; a limit 85% committed
   is a warning and a refusal for lack of room a problem.
 - `disk`: the file system holding the Auth database; below 10% free is a
@@ -357,7 +362,7 @@ response's `status` is the worst section's:
   installs. One in the last hour is a warning.
 - `work`: Auth enforcement work whose pages keep failing (a problem: sessions
   it should end stay usable), and Auth effects and health status events set
-  aside (a warning).
+  aside (a warning). A read of any of them that fails is a problem.
 
 ### User Management
 
