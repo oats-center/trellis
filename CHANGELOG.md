@@ -8,8 +8,24 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Live settings: `config.check` and `config.derive` in the TypeScript and Rust
+  SDKs. Checks run before a revision takes effect; a rejection keeps the
+  current values, names the fields and reason, and waits at startup with the
+  Console link instead of exiting. Derived clients rebuild only when their own
+  fields change.
+- Each instance reports whether it applied, rejected or hasn't read the latest
+  settings revision. `Config.Get`, `config show`, `instances` and the Console
+  show it, and a rejected revision makes the instance's health degraded.
+- `config set` mixes plain and secret fields (`--secret F=@file`,
+  `--values-file`, `--env-file`, `--secret-keys`), and `set-secret` takes
+  several fields, each as one revision.
+
 ### Fixed
 
+- Service import: a retry replaces any stream it tagged, even one it never
+  recorded, so a crash mid-import no longer needs a manual cleanup.
 - Service import: a retry after provisioning an instance finishes it, every
   restored resource must belong to the imported deployment, export streams
   unfinished jobs instead of loading job history, and never overwrites a file
