@@ -156,8 +156,9 @@ trait Slot: Send + Sync {
     fn fields(&self) -> &[&'static str];
     fn built(&self) -> bool;
     fn build(&self, values: Map<String, Value>) -> BoxFuture<'static, Result<Built, Rejection>>;
-    /// Take a value built for an accepted revision; the replaced one drops here.
-    fn install(&self, value: Built);
+    /// Take a value built for an accepted revision, returning the one it
+    /// replaces for the caller to drop once the revision is in effect.
+    fn install(&self, value: Built) -> Option<Built>;
 }
 
 struct DeriveSlot<T, D> {
@@ -189,11 +190,10 @@ where
         .boxed()
     }
 
-    fn install(&self, value: Built) {
-        if let Ok(value) = value.downcast::<Arc<D>>() {
-            let replaced = self.value.write().expect("derived value").replace(*value);
-            drop(replaced);
-        }
+    fn install(&self, value: Built) -> Option<Built> {
+        let value = value.downcast::<Arc<D>>().ok()?;
+        let replaced = self.value.write().expect("derived value").replace(*value)?;
+        Some(Box::new(replaced))
     }
 }
 
@@ -428,6 +428,13 @@ impl Live {
             }
             Ok(built) => {
                 registry.blocked = false;
+                // Derived values are replaced before the change is published,
+                // so a consumer `changed()` wakes reads the ones built for it.
+                // The values they replace drop once the change is in effect.
+                let replaced = built
+                    .into_iter()
+                    .filter_map(|(slot, value)| slot.install(value))
+                    .collect::<Vec<_>>();
                 // Only a change to a live field wakes `changed()`.
                 let live = !changed.is_empty();
                 self.accepted.send_if_modified(|state| {
@@ -437,9 +444,7 @@ impl Live {
                     }
                     live
                 });
-                for (slot, value) in built {
-                    slot.install(value);
-                }
+                drop(replaced);
                 self.settle(&mut registry, Outcome::applied(revision)).await;
             }
         }
@@ -715,7 +720,8 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
             match live.run(&current, &[], &[], &[slot]).await {
                 Ok(built) => {
                     for (slot, value) in built {
-                        slot.install(value);
+                        // The slot was empty: nothing is replaced.
+                        drop(slot.install(value));
                     }
                     None
                 }
@@ -1106,5 +1112,79 @@ mod tests {
             merge(FIELDS, &previous, &values(serde_json::json!({"port": 80})));
         assert_eq!(candidate, previous);
         assert!(changed.is_empty());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Settings {
+        level: String,
+    }
+
+    /// Set once the consumer has read what it was woken for.
+    type Read = Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
+
+    /// A derived value whose drop holds up the task replacing it until the
+    /// consumer has read, or for at most two seconds.
+    struct Holding(Read);
+
+    impl Drop for Holding {
+        fn drop(&mut self) {
+            let (read, signal) = &*self.0;
+            let guard = read.lock().unwrap();
+            drop(
+                signal
+                    .wait_timeout_while(guard, Duration::from_secs(2), |read| !*read)
+                    .unwrap(),
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_consumer_woken_by_a_change_reads_the_values_derived_from_it() {
+        let live = Live::new(
+            FIELDS,
+            "ordered".to_owned(),
+            None,
+            Box::new(|_| {}),
+            false,
+            ConfigState {
+                values: Arc::new(values(serde_json::json!({"level": "info", "port": 80}))),
+                revision: ConfigRevision::default(),
+            },
+        );
+        let config = ConfigHandle::<Settings>::new(&live);
+        let read: Read = Arc::default();
+        // Replacing this one drops the old value first, which waits for the
+        // consumer; the level is replaced after it.
+        let holding = Arc::clone(&read);
+        let _held = config
+            .derive(["level"], move |_: &Settings| {
+                Ok(Holding(Arc::clone(&holding)))
+            })
+            .await
+            .unwrap();
+        let level = config
+            .derive(["level"], |settings: &Settings| Ok(settings.level.clone()))
+            .await
+            .unwrap();
+        let mut watcher = config.clone();
+        let signal = Arc::clone(&read);
+        let consumer = tokio::spawn(async move {
+            let changed = watcher.changed().await.unwrap();
+            let derived = level.current();
+            let (read, woken) = &*signal;
+            *read.lock().unwrap() = true;
+            woken.notify_all();
+            (changed.level, derived.as_str().to_owned())
+        });
+        tokio::task::yield_now().await;
+
+        live.take(&serde_json::json!({
+            "values": {"level": "debug", "port": 80},
+            "deploymentRevision": 2,
+        }))
+        .await;
+        let (changed, derived) = consumer.await.unwrap();
+        assert_eq!(changed, "debug");
+        assert_eq!(derived, "debug", "woken before its derived value was built");
     }
 }

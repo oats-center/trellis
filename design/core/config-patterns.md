@@ -249,9 +249,11 @@ the revision has taken effect.
 A derived value is built at registration from the values in effect. After that
 it is rebuilt only when a revision changes one of its fields, during the check
 step, so a failing builder rejects the revision for those fields and the old
-value stays. A replaced value is disposed (TypeScript) or dropped (Rust) after
-its replacement took effect. Builders run only once every check has passed,
-so a refused revision builds nothing.
+value stays. Derived values are swapped in before the change is announced, so
+a consumer that `onChange` or `changed()` wakes reads the derived values built
+for the revision it heard. A replaced value is disposed (TypeScript) or dropped
+(Rust) after its replacement took effect. Builders run only once every check
+has passed, so a refused revision builds nothing.
 
 Registration is how startup waits. Registering a check or derive tests the
 values in effect immediately. If they fail, the registration's `await` waits:

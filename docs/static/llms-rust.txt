@@ -383,7 +383,8 @@ through `?` refuses every changed field. `let stripe =
 config.derive(["stripe_secret_key"], |c| Ok(Stripe::new(..))).await?` (or
 `derive_async` with an awaiting builder taking an owned `Config`) builds a
 value now and rebuilds it only when one of its fields changes;
-`stripe.current()` returns an `Arc<T>`. A failing builder rejects those fields
+`stripe.current()` returns an `Arc<T>`, already rebuilt when `changed()`
+returns the revision it was built for. A failing builder rejects those fields
 and keeps the old value, and a replaced value drops after its replacement took
 effect. A rejected revision leaves `current()` as it was and never reaches
 `changed()`. Registering a check or derive tests the values in effect at once
