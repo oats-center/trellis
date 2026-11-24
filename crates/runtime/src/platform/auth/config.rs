@@ -1353,6 +1353,7 @@ fn response(
         FROM auth_instances i JOIN auth_deployments d ON d.deployment_id=i.deployment_id \
         LEFT JOIN auth_config_connections c ON c.instance_id=i.instance_id \
         LEFT JOIN auth_config_reports r ON r.instance_id=i.instance_id \
+        AND c.installed_revision=i.installed_revision \
         WHERE i.deployment_id=?1 AND i.state='active' AND (?2 IS NULL OR i.instance_id=?2) \
         ORDER BY i.instance_id",
     )?;
@@ -1442,7 +1443,9 @@ fn response(
             instance: instance.clone(),
         };
         // A report on the current revisions stands; any other means the
-        // instance has not read the newest settings yet.
+        // instance has not read the newest settings yet. Only a report from
+        // the build installed now is joined: once another build is
+        // installed, the earlier build's report says nothing about it.
         let settings = if declared.fields.is_empty() {
             None
         } else if state.is_some()
@@ -2123,10 +2126,11 @@ fn own_config(
         if at_connect {
             connection.execute(
                 "INSERT INTO auth_config_connections(instance_id,deployment_revision,\
-                instance_revision,connected_at) VALUES(?1,?2,?3,?4) \
+                instance_revision,installed_revision,connected_at) VALUES(?1,?2,?3,?4,?5) \
                 ON CONFLICT(instance_id) DO UPDATE SET deployment_revision=excluded.deployment_revision,\
-                instance_revision=excluded.instance_revision,connected_at=excluded.connected_at",
-                params![instance, deployment_revision, instance_revision, now],
+                instance_revision=excluded.instance_revision,\
+                installed_revision=excluded.installed_revision,connected_at=excluded.connected_at",
+                params![instance, deployment_revision, instance_revision, revision, now],
             )?;
             // What an earlier run reported says nothing about this one, whose
             // checks may refuse the same revision: it reads pending until

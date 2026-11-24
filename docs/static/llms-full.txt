@@ -1526,7 +1526,8 @@ printing the reasons and Console link, until a revision passes. Each instance
 reports what it did with each revision (`Config.Own.Report`); `Config.Get`
 shows it per instance as `settings` (`applied`, `rejected` with `fields`,
 `reason`, and `sources`, the layer each refused value came from, or `pending`
-while it hasn't read the newest revision, such as when it is stopped). That reason also reaches the CLI, the Console, the `settings`
+while it hasn't read the newest revision with the build installed now, such
+as when it is stopped or an upgrade was installed since). That reason also reaches the CLI, the Console, the `settings`
 health check, the participant's log and its startup output, so it must never
 include a secret value: the SDKs replace every secret field's value (four
 characters or longer, candidate or in effect) with `[redacted]`, and an

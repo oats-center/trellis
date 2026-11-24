@@ -1249,17 +1249,21 @@ CREATE TABLE auth_config_secret_generations (
     CHECK ((predecessor IS NULL) = (predecessor_revision IS NULL))
 );
 -- What each instance loaded when it last connected, so administrators see
--- which instances still run settings that only apply after a restart.
+-- which instances still run settings that only apply after a restart, and
+-- the build it connected with: a report from that build says nothing about
+-- another one installed since.
 CREATE TABLE auth_config_connections (
     instance_id TEXT PRIMARY KEY REFERENCES auth_instances(instance_id) ON DELETE CASCADE,
     deployment_revision INTEGER,
     instance_revision INTEGER,
+    installed_revision INTEGER NOT NULL,
     connected_at INTEGER NOT NULL CHECK (connected_at BETWEEN 0 AND 9007199254740991)
 );
 -- What each instance last reported about the settings it read: the
 -- revisions, and whether it applied them or its own checks rejected them. An
--- instance whose report names older revisions than the current ones has not
--- read the newest yet, which administrators see as pending.
+-- instance whose report names older revisions than the current ones, or that
+-- connected with a build other than the one installed now, has not read the
+-- newest yet, which administrators see as pending.
 CREATE TABLE auth_config_reports (
     instance_id TEXT PRIMARY KEY REFERENCES auth_instances(instance_id) ON DELETE CASCADE,
     deployment_revision INTEGER CHECK (deployment_revision BETWEEN 1 AND 4294967295),

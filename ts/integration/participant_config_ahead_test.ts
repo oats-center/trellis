@@ -8,7 +8,8 @@
  * restart. While one build runs, values for its next build are set without
  * disturbing it, and the next build's instances start with them. An instance
  * upgraded to a build that needs a new setting reads as pending, never as
- * what its earlier build did with the same revision.
+ * what its earlier build did with the same revision, from the moment the
+ * upgrade is installed, before the new build ever reads its settings.
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -21,10 +22,13 @@ import { ulid } from "ulid";
 
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as later } from "../../integration/fixtures/runtime-pinned/packages/runtime-trellis/index.js";
+import { participants as stored } from "../../integration/fixtures/runtime-removed/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 const v1 = participants.ConfiguredService.participant;
 const v2 = later.ConfiguredService.participant;
+/** A build with a store v1 never had, so installing it waits for approval. */
+const withStore = stored.ConfiguredService.participant;
 
 test("a service added without its IDL starts with the settings set before it connected", async () => {
   await withTrellisRuntime(async (runtime) => {
@@ -345,6 +349,73 @@ test("an instance upgraded to a build that needs a new setting never shows its e
     } finally {
       controller.abort();
     }
+  });
+});
+
+test("an upgrade installed while its instance is stopped shows the instance pending at once", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const key = await runtime.services.createInstance({
+      name: "stopped-upgrade",
+      deployment: "stopped-upgrade",
+      contract: v1,
+      config: {
+        values: { endpoint: "https://one.example" },
+        secrets: { apiKey: "k1" },
+      },
+    });
+    const target = { deploymentId: codecs.ulid.decode(key.deploymentId) };
+    const settings = async () =>
+      (await runtime.callAdminRpc("authConfigGet", { target })).instances.find(
+        (entry) => entry.instanceId === key.instanceId,
+      )?.settings;
+    const first = await TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: v1,
+      seed: key.seed,
+    }).orThrow();
+    const serving = first.wait();
+    await first.ready;
+    await runtime.waitFor(async () =>
+      (await settings())?.state === "applied" ? true : undefined,
+    );
+    await first.stop();
+    await serving;
+
+    // The new build introduces itself and waits for approval; it gives up
+    // before an administrator answers, so nothing runs when it installs.
+    const controller = new AbortController();
+    const connecting = TrellisService.connect({
+      trellisUrl: runtime.trellisUrl,
+      participant: withStore,
+      seed: key.seed,
+      signal: controller.signal,
+    }).orThrow();
+    const update = await runtime.waitFor(async () => {
+      const { items } = await runtime.callAdminRpc(
+        "authServiceUpdatesList",
+        {},
+      );
+      return items.find(
+        (item) =>
+          item.state === "pending" && item.deploymentId === key.deploymentId,
+      );
+    });
+    controller.abort();
+    await assert.rejects(connecting);
+    // Until then the instance runs v1, whose result stands.
+    assert.equal((await settings())?.state, "applied");
+
+    await runtime.callAdminRpc("authServiceUpdatesDecide", {
+      updateId: update.updateId,
+      decision: "approved",
+      expectedRevision: update.revision,
+      idempotencyKey: codecs.ulid.decode(ulid()),
+    });
+    // The settings didn't change, but v1's result says nothing about the
+    // build installed now, which hasn't read them.
+    const upgraded = await settings();
+    assert.equal(upgraded?.state, "pending");
+    assert.equal(upgraded?.revision, 1);
   });
 });
 
