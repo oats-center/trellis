@@ -277,9 +277,12 @@ startup when it first serves, and a device, which has no serving phase, the
 first time it reads its settings or a derived value. A rejection is reported
 at once, so a starting value a startup check refuses goes straight from
 `pending` to `rejected`. The connect-time read drops the instance's earlier
-report, so a restarted instance reads `pending` until this run reports. A repeat of the last confirmed report is not sent
-again, and a failed report is sent with the next reading. `config.readOwn`
-allows it. Auth keeps one row per instance in `auth_config_reports`.
+report, so a restarted instance reads `pending` until this run reports. A
+repeat of the last confirmed report is not sent again. A failed report is
+retried with the shared backoff (250 ms doubling to 30 s) until Auth confirms
+it or a newer outcome replaces it, so a report lost while the connection stays
+up, such as one sent while the server restarts, still arrives without another
+save. `config.readOwn` allows it. Auth keeps one row per instance in `auth_config_reports`.
 
 `Config.Get` returns each instance's `settings` as `{ revision,
 instanceRevision, state, fields, reason, at }`. A report on the instance's

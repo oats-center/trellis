@@ -7,7 +7,8 @@
  * replaces is disposed after the replacement took effect. A registration that
  * refuses the values a service starts with waits for a fix, and the instance
  * never shows the revision it starts with as applied before it serves. An
- * instance that is not running shows the newest revision as pending.
+ * instance that is not running shows the newest revision as pending, and a
+ * report lost on the way to Auth is sent again.
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -421,4 +422,53 @@ test("an instance that is not running shows the newest revision as pending until
       await serving;
     }
   });
+});
+
+test("a settings report lost on the way to Auth is sent again without another save", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const key = await runtime.services.createInstance({
+        name: "reporting",
+        deployment: "reporting",
+        contract: participant,
+        config: {
+          values: { endpoint: "https://one.example" },
+          secrets: { apiKey: "k1" },
+        },
+      });
+      const settings = await settingsOf(runtime, key);
+      const service = await TrellisService.connect({
+        trellisUrl: runtime.trellisUrl,
+        participant,
+        seed: key.seed,
+      }).orThrow();
+      let serving: Promise<void> = Promise.resolve();
+      try {
+        serving = service.wait();
+        await service.ready;
+        await settings.status(
+          (status) => status.state === "applied" && status.revision === 1,
+        );
+
+        // The report of the next revision never reaches Auth, while the
+        // service's connection stays up and nothing else changes.
+        const dropped = runtime
+          .nativeTransportGate()
+          .dropNextRequest(
+            `rpc.v1.${Buffer.from("trellis.auth@v1").toString("base64url")}.Config.Own.Report`,
+          );
+        const saved = await settings.set({ values: { level: "debug" } });
+        await dropped;
+        assert.equal(service.config.current.level, "debug");
+        await settings.status(
+          (status) =>
+            status.state === "applied" && status.revision === saved.revision,
+        );
+      } finally {
+        await service.stop();
+        await serving;
+      }
+    },
+    { interruptibleNativeProxy: true },
+  );
 });

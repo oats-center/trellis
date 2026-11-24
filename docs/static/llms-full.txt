@@ -1531,7 +1531,8 @@ only once startup ends, when a service first serves (after `wait()` or
 `run()` begins) or a device first reads its settings, so a starting value a
 startup check refuses shows `rejected` without first showing `applied`; until
 then it reads `pending`, and a restarted instance's earlier report is dropped
-when it connects. A rejection degrades the instance's `settings` health check
+when it connects. A report that fails is retried with backoff until Auth has
+it or a newer outcome replaces it, without another save. A rejection degrades the instance's `settings` health check
 until the next accepted revision, saving never waits for instances, and a
 rejected revision stays stored for `rollback`.
 Administrators use `trellis svc <ID> config` (`set FIELD=VALUE` or
@@ -2814,7 +2815,8 @@ through `?` refuses every changed field. `let stripe =
 config.derive(["stripe_secret_key"], |c| Ok(Stripe::new(..))).await?` (or
 `derive_async` with an awaiting builder taking an owned `Config`) builds a
 value now and rebuilds it only when one of its fields changes;
-`stripe.current()` returns an `Arc<T>`. A failing builder rejects those fields
+`stripe.current()` returns an `Arc<T>`, already rebuilt when `changed()`
+returns the revision it was built for. A failing builder rejects those fields
 and keeps the old value, and a replaced value drops after its replacement took
 effect. A rejected revision leaves `current()` as it was and never reaches
 `changed()`. Registering a check or derive tests the values in effect at once

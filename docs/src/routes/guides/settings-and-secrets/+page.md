@@ -364,7 +364,10 @@ the first time it reads its settings or a derived value. Until then the
 status stays `pending`, and a starting value a check refuses shows as
 `rejected` without first showing as `applied`. A restarted instance's status
 from its earlier run is dropped when it connects. After startup, each new
-revision is reported as soon as its checks have run.
+revision is reported as soon as its checks have run. A report that doesn't
+reach Auth, such as while the server restarts, is sent again with a backoff
+until Auth has it or a newer outcome replaces it, so the status catches up
+without another save.
 
 Saving never waits for instances, and a rejected revision stays stored, so
 `config rollback` can undo it. While the newest revision is rejected, the

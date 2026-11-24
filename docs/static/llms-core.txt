@@ -1525,7 +1525,8 @@ only once startup ends, when a service first serves (after `wait()` or
 `run()` begins) or a device first reads its settings, so a starting value a
 startup check refuses shows `rejected` without first showing `applied`; until
 then it reads `pending`, and a restarted instance's earlier report is dropped
-when it connects. A rejection degrades the instance's `settings` health check
+when it connects. A report that fails is retried with backoff until Auth has
+it or a newer outcome replaces it, without another save. A rejection degrades the instance's `settings` health check
 until the next accepted revision, saving never waits for instances, and a
 rejected revision stays stored for `rollback`.
 Administrators use `trellis svc <ID> config` (`set FIELD=VALUE` or

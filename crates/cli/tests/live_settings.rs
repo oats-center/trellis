@@ -3,7 +3,8 @@
 //! builder refuses leaves the service on the values it had, shows as
 //! rejected in `config show` and `instances` and in the instance's health,
 //! and can be rolled back. The revision an instance starts with shows as
-//! applied only once it serves, so one a startup check refuses never does.
+//! applied only once it serves, so one a startup check refuses never does,
+//! and a report Auth never answered is sent again once it answers.
 //! One `config set` writes plain values and several secrets as one revision,
 //! which the service hears as one change.
 
@@ -12,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures_util::StreamExt as _;
 use runtime_trellis::participants::runtime_trellis_configured_service::{
     Config, Participant, Provider,
 };
@@ -19,7 +21,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use trellis_rs::generated::Nullable;
 use trellis_rs::service::{ConfigHandle, Rejection, ServicePhase};
-use trellis_testkit::TrellisTestRuntime;
+use trellis_testkit::{TestNatsUser, TrellisTestRuntime};
 
 const CLI: &str = env!("CARGO_BIN_EXE_trellis");
 
@@ -499,5 +501,73 @@ async fn a_check_that_refuses_the_starting_values_never_shows_them_applied() {
     drop(config);
     lifecycle.stop();
     running.await.unwrap().unwrap();
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_report_auth_never_answered_is_sent_again_once_it_does() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("reporting")
+        .await
+        .unwrap();
+    runtime
+        .set_config(
+            &identity,
+            json!({ "endpoint": "http://plain.example" }),
+            json!({ "apiKey": "k1" }),
+        )
+        .await
+        .unwrap();
+    let deployment = identity.deployment_id().to_owned();
+    let cli = Cli::login(&mut runtime).await;
+    let mut service = Participant::connect(identity.connect_options().with_timeout_ms(3_000))
+        .await
+        .unwrap();
+    let config = Provider::new(&mut service).config();
+    // Sees the service's report on the broker, which keeps running while
+    // the server is stopped.
+    let nats = async_nats::ConnectOptions::with_credentials(
+        &runtime.nats_creds(TestNatsUser::Trellis).await.unwrap(),
+    )
+    .unwrap()
+    .add_root_certificates(runtime.trust_roots()[0].clone())
+    .connect(runtime.nats_url())
+    .await
+    .unwrap();
+    let mut reports = nats
+        .subscribe(
+            trellis_protocol::derive_rpc_subject("trellis.auth@v1", "Config.Own.Report").unwrap(),
+        )
+        .await
+        .unwrap();
+    nats.flush().await.unwrap();
+
+    // The check refuses the starting values while Auth is stopped, so the
+    // rejection's report goes unanswered.
+    runtime.stop_server().await.unwrap();
+    let registering = tokio::spawn({
+        let config = config.clone();
+        async move { config.check(https_only).await }
+    });
+    tokio::time::timeout(Duration::from_secs(30), reports.next())
+        .await
+        .expect("the rejection is reported")
+        .unwrap();
+    drop(reports);
+
+    // Nothing is saved and the service's connection stays up: the report is
+    // sent again until Auth takes it.
+    runtime.restart().await.unwrap();
+    let rejected = cli
+        .settings(&deployment, |status| status["state"] == "rejected")
+        .await;
+    assert_eq!(rejected["revision"], 1);
+    assert_eq!(rejected["fields"], json!(["endpoint"]));
+    assert!(!registering.is_finished());
+
+    registering.abort();
+    drop(config);
+    drop(service);
     runtime.shutdown().await.unwrap();
 }

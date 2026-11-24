@@ -233,7 +233,7 @@ impl<D> Derived<D> {
     }
 }
 
-/// Checks, derives, and what the participant reported last.
+/// Checks, derives, and what the participant printed last.
 #[derive(Default)]
 struct Registry {
     checks: Vec<Check>,
@@ -246,8 +246,6 @@ struct Registry {
     config_url: Option<String>,
     /// The rejection printed last, so a repeat prints nothing.
     shown: Option<Outcome>,
-    /// The outcome Auth confirmed last, so a repeat is not sent again.
-    reported: Option<Outcome>,
 }
 
 /// Live settings shared by every [`ConfigHandle`] of one participant and the
@@ -264,9 +262,11 @@ pub(crate) struct Live {
     /// the first thing Auth hears; a rejection is reported at once.
     starts_on_read: bool,
     started: AtomicBool,
-    /// Wakes the following task to report the outcome held back.
+    /// Wakes the reporting task to report the outcome held back.
     starting: Notify,
     accepted: watch::Sender<ConfigState>,
+    /// What became of the reading taken last, which the reporting task
+    /// tells Auth.
     outcome: watch::Sender<Outcome>,
     /// Revisions accepted so far; a waiting registration resolves once it grows.
     acceptances: watch::Sender<u64>,
@@ -330,13 +330,6 @@ impl Live {
         if self.starts_on_read {
             self.start();
         }
-    }
-
-    /// Report the outcome held back during startup, unless Auth has it.
-    async fn report_started(&self) {
-        let mut registry = self.registry.lock().await;
-        let outcome = self.outcome.borrow().clone();
-        self.send(&mut registry, outcome).await;
     }
 
     /// The declared name of `name`, given as declared or as the generated
@@ -417,14 +410,13 @@ impl Live {
                 state.revision = revision;
                 false
             });
-            self.settle(&mut registry, Outcome::applied(revision)).await;
+            self.settle(&mut registry, Outcome::applied(revision));
             return;
         }
         let (checks, derives) = (registry.checks.clone(), registry.derives.clone());
         match self.run(&candidate, &changed, &checks, &derives).await {
             Err(refused) => {
-                self.settle(&mut registry, rejected(revision, refused))
-                    .await;
+                self.settle(&mut registry, rejected(revision, refused));
             }
             Ok(built) => {
                 registry.blocked = false;
@@ -445,14 +437,14 @@ impl Live {
                     live
                 });
                 drop(replaced);
-                self.settle(&mut registry, Outcome::applied(revision)).await;
+                self.settle(&mut registry, Outcome::applied(revision));
             }
         }
     }
 
     /// A new registration refused the values in effect: record it and return
     /// the acceptance count to wait past.
-    async fn refuse_in_effect(
+    fn refuse_in_effect(
         &self,
         registry: &mut Registry,
         refused: Vec<(Vec<String>, String)>,
@@ -461,7 +453,7 @@ impl Live {
         let revision = self.accepted.borrow().revision;
         // A newer revision already refused stays the one reported.
         if registry.latest == revision {
-            self.settle(registry, rejected(revision, refused)).await;
+            self.settle(registry, rejected(revision, refused));
         }
         *self.acceptances.borrow()
     }
@@ -479,8 +471,9 @@ impl Live {
         }
     }
 
-    /// Record what became of a reading, tell Auth, and say why on a refusal.
-    async fn settle(&self, registry: &mut Registry, outcome: Outcome) {
+    /// Record what became of a reading for the reporting task to tell Auth,
+    /// and say why on a refusal.
+    fn settle(&self, registry: &mut Registry, outcome: Outcome) {
         if !outcome.rejected {
             self.acceptances.send_modify(|count| *count += 1);
         }
@@ -513,23 +506,6 @@ impl Live {
                 "Fix them",
                 registry.config_url.as_deref(),
             );
-        }
-        self.send(registry, outcome).await;
-    }
-
-    /// Tell Auth what became of a reading, unless it heard it already.
-    async fn send(&self, registry: &mut Registry, outcome: Outcome) {
-        let Some(client) = &self.client else { return };
-        if !outcome.rejected && !self.started.load(Ordering::Acquire) {
-            return;
-        }
-        if registry.reported.as_ref() == Some(&outcome) {
-            return;
-        }
-        match report(client, &outcome).await {
-            Ok(_) => registry.reported = Some(outcome),
-            // The next reading reports again.
-            Err(error) => tracing::warn!(%error, "could not report applied settings"),
         }
     }
 }
@@ -640,7 +616,7 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
             let current = Arc::clone(&live.accepted.borrow().values);
             match live.run(&current, &[], &[check], &[]).await {
                 Ok(_) => None,
-                Err(refused) => Some(live.refuse_in_effect(&mut registry, refused).await),
+                Err(refused) => Some(live.refuse_in_effect(&mut registry, refused)),
             }
         };
         match waiting {
@@ -725,7 +701,7 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
                     }
                     None
                 }
-                Err(refused) => Some(live.refuse_in_effect(&mut registry, refused).await),
+                Err(refused) => Some(live.refuse_in_effect(&mut registry, refused)),
             }
         };
         if let Some(after) = waiting {
@@ -770,12 +746,74 @@ fn rejected(revision: ConfigRevision, refused: Vec<(Vec<String>, String)>) -> Ou
 pub(crate) struct LiveConfig {
     pub(crate) live: Arc<Live>,
     task: tokio::task::JoinHandle<()>,
+    reporting: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for LiveConfig {
     fn drop(&mut self) {
         self.task.abort();
+        self.reporting.abort();
         self.live.stopped.cancel();
+    }
+}
+
+/// Tell Auth what became of the newest reading until it confirms it. A
+/// report that fails is sent again after a backoff, or at once when a newer
+/// outcome replaces it, so the status administrators see catches up without
+/// another save. An applied outcome waits for startup to end.
+///
+/// Every failure is retried: the only refusal Auth gives is for an instance
+/// that is no longer active, whose connection ends with it.
+async fn report_outcomes(live: Arc<Live>, client: Arc<TrellisClient>) {
+    let mut outcomes = live.outcome.subscribe();
+    let mut reported: Option<Outcome> = None;
+    let mut backoff = crate::retry::Backoff::default();
+    let mut failures = crate::retry::LogLimit::default();
+    loop {
+        let outcome = outcomes.borrow_and_update().clone();
+        let mut retry = None;
+        if (outcome.rejected || live.started.load(Ordering::Acquire))
+            && reported.as_ref() != Some(&outcome)
+        {
+            match report(&client, &outcome).await {
+                Ok(_) => {
+                    backoff.succeeded();
+                    if failures.recovered() {
+                        tracing::info!(participant = live.participant, "Settings reported again");
+                    }
+                    reported = Some(outcome);
+                }
+                Err(error) => {
+                    let delay = backoff.failed();
+                    if let Some(held) = failures.admit() {
+                        tracing::warn!(
+                            participant = live.participant,
+                            %error,
+                            held,
+                            retry_in_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                            "Could not report what became of the settings; retrying"
+                        );
+                    }
+                    retry = Some(delay);
+                }
+            }
+        }
+        let retrying = async {
+            match retry {
+                Some(delay) => tokio::time::sleep(delay).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            changed = outcomes.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+            () = live.starting.notified() => {}
+            () = retrying => {}
+            () = live.stopped.cancelled() => return,
+        }
     }
 }
 
@@ -972,6 +1010,7 @@ pub(crate) fn follow(
             }
         }
     });
+    let reporting = tokio::spawn(report_outcomes(Arc::clone(&live), Arc::clone(&client)));
     let following = Arc::clone(&live);
     let task = tokio::spawn(async move {
         let live = following;
@@ -988,7 +1027,6 @@ pub(crate) fn follow(
                 Err(error) => tracing::warn!(%error, "could not read changed settings"),
             }
         };
-        let mut announced = false;
         loop {
             // Taken before acquiring, so a publication made while acquiring is
             // still seen as a change.
@@ -1037,10 +1075,6 @@ pub(crate) fn follow(
                         }
                         refresh().await;
                     }
-                    () = live.starting.notified(), if !announced => {
-                        announced = true;
-                        live.report_started().await;
-                    }
                     () = lease.wait_lost() => break,
                     // A successor's publication ends this subscription. The
                     // next pass subscribes on the successor and reads again,
@@ -1059,7 +1093,11 @@ pub(crate) fn follow(
             }
         }
     });
-    LiveConfig { live, task }
+    LiveConfig {
+        live,
+        task,
+        reporting,
+    }
 }
 
 #[cfg(test)]

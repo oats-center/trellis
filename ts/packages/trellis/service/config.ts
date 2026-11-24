@@ -268,9 +268,13 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
   #blocked = false;
   #accepted = Promise.withResolvers<void>();
   #outcome: ConfigOutcome;
+  // The outcome Auth confirmed last, and a newer one still to report.
   #reported = "";
+  #unreported: ConfigOutcome | undefined;
+  #reporting = false;
+  // Ends a report retry's wait early, for a newer outcome.
+  #wakeReporting: (() => void) | undefined;
   #shown = "";
-  #reporting: Promise<void> = Promise.resolve();
   readonly #outcomeListeners = new Set<() => void>();
   readonly #stop = new AbortController();
   // Readings, registrations and their checks run one at a time, in order.
@@ -579,18 +583,80 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
 
   /** Tell Auth what became of a reading, unless it heard it already. */
   #send(outcome: ConfigOutcome): void {
-    const report = this.#report;
+    if (!this.#report) return;
     if (outcome.state === "applied" && !this.#started) return;
-    const key = JSON.stringify(outcome);
-    if (!report || this.#reported === key) return;
-    this.#reported = key;
-    this.#reporting = this.#reporting.then(() =>
-      report(outcome).catch((error: unknown) => {
-        // The next reading reports again.
-        if (this.#reported === key) this.#reported = "";
-        this.#log.warn({ error }, "Could not report applied settings");
-      }),
-    );
+    // An outcome Auth has supersedes one still being retried.
+    this.#unreported =
+      JSON.stringify(outcome) === this.#reported ? undefined : outcome;
+    this.#wakeReporting?.();
+    if (!this.#reporting) void this.#reportUnreported(this.#report);
+  }
+
+  /**
+   * Report the newest outcome until Auth confirms it. A report that fails is
+   * sent again after a backoff, or at once when a newer outcome replaces it,
+   * so the status administrators see catches up without another save. Every
+   * failure is retried: the only refusal Auth gives is for an instance that
+   * is no longer active, whose connection ends with it.
+   */
+  async #reportUnreported(
+    report: (outcome: ConfigOutcome) => Promise<void>,
+  ): Promise<void> {
+    this.#reporting = true;
+    const backoff = new Backoff(250, 30_000);
+    const signal = this.#stop.signal;
+    // The first failure is logged, then at most one a minute until recovery.
+    let loggedAt: number | undefined;
+    let held = 0;
+    try {
+      while (this.#unreported !== undefined && !signal.aborted) {
+        const outcome = this.#unreported;
+        try {
+          await report(outcome);
+          this.#reported = JSON.stringify(outcome);
+          if (this.#unreported === outcome) this.#unreported = undefined;
+          backoff.succeeded();
+          if (loggedAt !== undefined) {
+            loggedAt = undefined;
+            held = 0;
+            this.#log.info(
+              { participant: this.#participantId },
+              "Settings reported again",
+            );
+          }
+        } catch (error) {
+          const delayMs = backoff.failed();
+          if (loggedAt === undefined || Date.now() - loggedAt >= 60_000) {
+            loggedAt = Date.now();
+            this.#log.warn(
+              {
+                participant: this.#participantId,
+                error,
+                held,
+                retryInMs: delayMs,
+              },
+              "Could not report what became of the settings; retrying",
+            );
+            held = 0;
+          } else {
+            held += 1;
+          }
+          await new Promise<void>((resolve) => {
+            const done = () => {
+              clearTimeout(timer);
+              signal.removeEventListener("abort", done);
+              this.#wakeReporting = undefined;
+              resolve();
+            };
+            const timer = setTimeout(done, delayMs);
+            signal.addEventListener("abort", done, { once: true });
+            this.#wakeReporting = done;
+          });
+        }
+      }
+    } finally {
+      this.#reporting = false;
+    }
   }
 
   /**
