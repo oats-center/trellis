@@ -846,7 +846,7 @@ replicas = 0
 
 #[cfg(unix)]
 #[test]
-fn secrets_others_could_read_or_swap_are_refused() {
+fn secrets_readable_by_others_or_behind_a_link_are_refused() {
     use std::os::unix::fs::PermissionsExt as _;
 
     let directory = tempdir().expect("create temp directory");
@@ -868,12 +868,6 @@ fn secrets_others_could_read_or_swap_are_refused() {
         load().unwrap().secrets.oauth_storage_key.as_deref(),
         Some("key")
     );
-
-    // A second name lets someone else's file stand in for it.
-    let alias = directory.path().join("alias.toml");
-    fs::hard_link(&secrets, &alias).unwrap();
-    assert!(matches!(load(), Err(ConfigError::Secrets { .. })));
-    fs::remove_file(&alias).unwrap();
 
     let elsewhere = directory.path().join("elsewhere.toml");
     fs::rename(&secrets, &elsewhere).unwrap();

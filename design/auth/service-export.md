@@ -84,9 +84,9 @@ trellis --profile old login https://old.example.org
 trellis --profile new login https://new.example.org
 
 trellis --profile old svc orders export --out orders.trellis-service
-#   asks for a passphrase twice, prints the bundle's SHA-256
+#   asks for a passphrase twice
 
-trellis --profile new svc import orders.trellis-service --digest <sha256>
+trellis --profile new svc import orders.trellis-service
 #   asks for the passphrase, prints what moved and what to recreate
 ```
 
@@ -337,15 +337,12 @@ one-version rule in `deny.toml` refuses. The construction is built from
 `argon2` and `ring`, which Trellis already uses for password hashing and for
 sealing with the storage key.
 
-**Integrity.** Export prints the SHA-256 and size of the bundle file,
-computed from the bytes as it writes them rather than by reading the file
-back, so a file changed or replaced afterwards does not change what it
-reports. Import reads the file once, into a private temporary file that is
-unlinked as it is created, computing the SHA-256 as it copies. It refuses the
-bundle unless that digest matches `--digest`, or, on a terminal, unless the
-administrator confirms the digest it shows, and then decrypts and sends that
-same copy. A file replaced or rewritten after it was read is never sent.
-Without a terminal, `--digest` is required.
+**Integrity.** The passphrase is the proof that a bundle is whole and comes
+from whoever holds it. A file changed, cut short or made without the
+passphrase fails the header's MAC or a chunk's tag, and import stops there.
+Import decrypts the file as it reads it and sends the content to Auth, which
+checks every entry against the manifest. There is no separate digest to
+confirm: it would prove nothing the passphrase does not.
 
 **Versioning.** The header line and the content's format number both carry a
 version. Import refuses a format it does not know. From the first stable
@@ -356,7 +353,7 @@ wrote, the same promise Trellis makes for upgrades.
 
 ```text
 trellis svc <id> export [--out <file>] [--passphrase-file <path>]
-trellis svc import <file> [--digest <sha256>] [--passphrase-file <path>] [--check]
+trellis svc import <file> [--passphrase-file <path>] [--check]
                    [--acknowledge-shared-apis] [--acknowledge-unauthenticated-webhooks]
 ```
 
@@ -558,9 +555,8 @@ the time to copy the data.
    change ready instead.
 4. **Stop the service's processes, then export** with the old
    installation's profile. The service stops serving here. Give the
-   importing administrator the printed SHA-256 through a channel you trust,
-   and the passphrase separately.
-5. **Import** into the new installation with `--digest`, with its profile.
+   importing administrator the bundle, and the passphrase separately.
+5. **Import** into the new installation with its profile.
 6. **Point the processes at the new installation and start them.** The
    service serves again as soon as the first instance connects.
 7. **Disable the old deployment**, so its instance keys and enrollment
@@ -601,9 +597,9 @@ secrets and all of its data.
   cannot impersonate an instance.
 - **A swapped bundle.** Anyone who can export from some installation can make
   a bundle that registers their own key as an instance of a deployment. The
-  digest check stops this: the importing administrator confirms the digest
-  the export printed. The report shows the source installation and every
-  instance key.
+  passphrase stops this: a bundle opens only with the passphrase it was
+  sealed with, so one made by anyone who does not hold it fails the header's
+  MAC. The report shows the source installation and every instance key.
 - **Two installations that accept one key.** Until the old deployment is
   disabled or removed, both installations accept the instances' keys and the
   enrollment secrets. Step 7 of the procedure ends that.

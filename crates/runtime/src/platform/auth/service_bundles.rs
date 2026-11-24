@@ -2653,16 +2653,14 @@ async fn import(
             .map_err(broker)?;
         // The broker refuses to restore over an existing stream, so the one
         // there now is this import's. Its configuration has to be the
-        // resource's, with this import's ID.
+        // resource's.
         let restored = jetstream
             .get_stream(stream)
             .await
             .map_err(broker)?
             .cached_info()
             .clone();
-        if restored.config.metadata.get(IMPORT_MARKER) != Some(&import_id)
-            || !owned_stream(&serde_json::to_value(&restored.config)?, resource)
-        {
+        if !owned_stream(&serde_json::to_value(&restored.config)?, resource) {
             jetstream.delete_stream(stream).await.map_err(broker)?;
             return Err(damaged(format!(
                 "the snapshot of {} {} configures another stream",

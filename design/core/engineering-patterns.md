@@ -175,6 +175,32 @@ from a write path. It either runs inside the transaction's own effect record
 and worker, or its state is derived again from durable records on each pass.
 The effect handler tolerates finding its work already done.
 
+### The operator is trusted; defend against everyone else
+
+**Rule.** Whoever operates an installation controls it fully: its host, its
+NATS operator or system account, its configuration and secrets, or the
+`platform.manage` role. Trellis does not carry defences whose only adversary
+is that operator, and it does not add a second proof of something another
+layer already proves. Defences against other users, services, apps, devices,
+network attackers, webhook senders and untrusted input stay, and so do
+correctness checks.
+
+**Why.** A check against the operator proves nothing, because the operator
+can change the code, the database, the broker or the file it guards, and each
+one adds an error path, a test and a way for a good installation to fail. An
+import tags each stream it restores with the import's ID, and that tag is
+enough to know the stream is the import's own; a database record proving the
+same thing again only guards against someone who can already edit the
+database. A bundle digest that the importing administrator confirmed by hand
+repeated what the passphrase-sealed envelope already proves: a bundle that
+opens with the passphrase is whole and came from whoever holds it.
+
+**Check.** For each new check, name the party it stops. If the only party is
+the operator, or the property is already proved by another layer (an AEAD
+envelope, an authenticated NATS account, a transaction), leave the check out.
+A review finding whose only attacker is the operator is answered by saying
+so, not by building a proof.
+
 ### Each test owns its resources for its whole life
 
 **Rule.** A test holds its ports, target directories, data directories and

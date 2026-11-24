@@ -106,6 +106,9 @@ inventories, or evidence ledgers to enforce this section.
   carry an earlier pre-release database forward. Keep the migration runners,
   history/checksum validation, checks, and baseline files. At the first release,
   freeze each shipped baseline; later schema changes add ordered migrations.
+- The operator of an installation is trusted. Do not add defences or second
+  proofs whose only adversary is the operator; see "The operator is trusted"
+  in `design/core/engineering-patterns.md`.
 - Preserve the platform boundary from `design/core/trellis-patterns.md`: the
   Trellis platform repo owns runtime, protocol, tooling, and Trellis-owned
   contracts; cloud repos own domain services, apps, and domain models unless a

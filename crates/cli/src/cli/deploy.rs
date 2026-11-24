@@ -33,10 +33,6 @@ pub struct SvcImportArgs {
     /// The bundle file.
     #[arg(value_name = "FILE")]
     pub file: PathBuf,
-    /// The bundle's SHA-256, as its export printed it. Without it, a terminal
-    /// shows the file's digest and asks whether it matches.
-    #[arg(long, value_name = "SHA256")]
-    pub digest: Option<String>,
     /// Read the bundle's passphrase from this file, or `-` for standard
     /// input. Without it, a terminal asks for it, and otherwise it is read
     /// from standard input.
