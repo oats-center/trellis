@@ -500,9 +500,11 @@ installed build declares yet; every other key is a plain setting. A secret is
 never given as `FIELD=VALUE` on the command line, where shell history and the
 process list would keep it: `set` refuses that for a declared secret and
 names `--secret FIELD=@PATH`. An env file skips blank lines and `#` comments,
-ignores a leading `export `, and takes a value in single quotes as written or
-in double quotes with `\n`, `\"` and `\\` escapes. A field named twice in one
-command is refused.
+ignores a leading `export `, and quotes values as dotenv files do: a value in
+single quotes is taken as written, and in double quotes `\n`, `\r`, `\t`,
+`\"` and `\\` are escapes while any other backslash stays, so
+`dataDir="C:\data"` is `C:\data`. A field named twice in one command is
+refused.
 
 `trellis svc <ID> instances` shows the same status in its Settings column:
 `applied r12`, `rejected r13: awsSecret: set both or neither`, or

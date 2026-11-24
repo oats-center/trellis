@@ -403,10 +403,11 @@ fn secret_from_file(current: &Value, spec: &str) -> miette::Result<(String, Valu
     Ok((name.to_owned(), secret_value(current, name, &text)?))
 }
 
-/// `NAME=VALUE` lines of an env file, in order. Blank lines and `#` comments
-/// are skipped, a leading `export ` is ignored, and a value in single quotes
-/// is taken as written, one in double quotes with `\n`, `\"` and `\\`
-/// escapes.
+/// `NAME=VALUE` lines of an env file, in order, quoted as dotenv files are.
+/// Blank lines and `#` comments are skipped, a leading `export ` is ignored,
+/// and a value in single quotes is taken as written. In double quotes, `\n`,
+/// `\r`, `\t`, `\"` and `\\` are escapes, and any other backslash is kept as
+/// written, so `"C:\data"` stays `C:\data`.
 fn read_env_file(path: &std::path::Path) -> miette::Result<Vec<(String, String)>> {
     let text = std::fs::read_to_string(path)
         .into_diagnostic()
@@ -440,7 +441,13 @@ fn read_env_file(path: &std::path::Path) -> miette::Result<Vec<(String, String)>
                 }
                 match chars.next() {
                     Some('n') => unescaped.push('\n'),
-                    Some(other) => unescaped.push(other),
+                    Some('r') => unescaped.push('\r'),
+                    Some('t') => unescaped.push('\t'),
+                    Some(escaped @ ('"' | '\\')) => unescaped.push(escaped),
+                    Some(other) => {
+                        unescaped.push('\\');
+                        unescaped.push(other);
+                    }
                     None => unescaped.push('\\'),
                 }
             }
@@ -710,4 +717,42 @@ fn changed(
         output::field(updated, "revision")
     ));
     show(format, label, prefix, id, updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_file(text: &str) -> miette::Result<Vec<(String, String)>> {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), text).unwrap();
+        read_env_file(file.path())
+    }
+
+    #[test]
+    fn a_double_quoted_env_value_keeps_backslashes_that_escape_nothing() {
+        let entries = env_file(concat!(
+            r#"dataDir="C:\data\new\x""#,
+            "\n",
+            r#"pattern="^\d+\.\w$""#,
+            "\n",
+            r#"banner="say \"hi\"\tthen\\ \\n""#,
+            "\n",
+            r"literal='C:\new'",
+            "\n",
+            r#"trailing="ends\""#,
+            "\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            entries,
+            [
+                ("dataDir".to_owned(), "C:\\data\new\\x".to_owned()),
+                ("pattern".to_owned(), r"^\d+\.\w$".to_owned()),
+                ("banner".to_owned(), "say \"hi\"\tthen\\ \\n".to_owned()),
+                ("literal".to_owned(), r"C:\new".to_owned()),
+                ("trailing".to_owned(), r"ends\".to_owned()),
+            ]
+        );
+    }
 }
