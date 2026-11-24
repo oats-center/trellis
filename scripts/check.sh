@@ -36,7 +36,7 @@ build_packages() {
 }
 
 # The native CLI and server archives, one per binary with its checksum, that
-# packaging jobs consume. CI downloads the release build's into dist/native;
+# packaging jobs consume. CI downloads the producer's archives into dist/native;
 # locally pack_native packs the debug build, once per run when the jobs are
 # staged.
 native_version() {
@@ -107,14 +107,18 @@ job_clippy() {
 # The integration fixture helpers, the health_watch example and the testkit
 # test binaries, built into target/debug for the jobs that run them.
 job_build_fixtures() {
-  CARGO_TARGET_DIR="$root/target" cargo build --bins \
+  mkdir -p "$temp"
+  CARGO_TARGET_DIR="$root/target" cargo build --bins --example health_watch --message-format=json-render-diagnostics \
     --manifest-path integration/fixtures/runtime/Cargo.toml \
     --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
     --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
-    --config "patch.crates-io.trellis-models.path=\"$root/crates/models\""
-  CARGO_TARGET_DIR="$root/target" cargo build --manifest-path Cargo.toml \
-    -p trellis-runtime --example health_watch
-  mkdir -p "$temp"
+    --config "patch.crates-io.trellis-models.path=\"$root/crates/models\"" > "$temp/runtime-fixtures.json"
+  if [[ -n "${1:-}" ]]; then
+    mkdir -p "$1"
+    while IFS= read -r executable; do
+      cp "$executable" "$1/"
+    done < <(jq -r 'select(.executable != null and .target.kind == ["bin"]) | .executable' "$temp/runtime-fixtures.json")
+  fi
   CARGO_TARGET_DIR="$root/target" cargo test --no-run \
     --manifest-path integration/fixtures/testkit/Cargo.toml \
     --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
@@ -232,6 +236,9 @@ job_demos() {
   local demo
   for demo in service device; do
     (
+      # Both source trees stay independent and Cargo fingerprints their paths.
+      # Reuse registry dependencies across locked and fresh consumer builds.
+      export CARGO_TARGET_DIR="$root/target/demo-consumers"
       cd "demos/rust/$demo"
       PATH="$(dirname "${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}"):$PATH" trellis generate
       cargo check --locked --config "$root/.cargo/publication.toml"
@@ -351,13 +358,13 @@ job_images() {
   engine="$(command -v docker || command -v podman || true)"
   [[ -n "$engine" ]] || { echo "images needs docker or podman" >&2; exit 1; }
   if [[ "${1:-}" != "--smoke-only" ]]; then
-    # The image runs the binaries on its Debian base, so they come from the
-    # same container release build the pipeline uses, not the host's debug build.
+    # Exercise the same bookworm development binaries as ordinary CI.
     local goarch
     case "$(uname -m)" in x86_64) goarch=amd64 ;; aarch64 | arm64) goarch=arm64 ;; *) goarch="$(uname -m)" ;; esac
     mkdir -p "$temp"
     rm -rf "$temp/release" "dist/native/$goarch"
     "$engine" build --file crates/runtime/Containerfile.build \
+      --build-arg BUILD_PROFILE=dev --build-arg CARGO_INCREMENTAL=1 \
       --output "type=local,dest=$temp/release" .
     mkdir -p "dist/native/$goarch"
     cp "$temp/release/trellis" "$temp/release/trellis-server" "dist/native/$goarch/"
@@ -372,6 +379,13 @@ job_images() {
   ln -s "$engine" "$shim/docker"
   PATH="$shim:$PATH" bash scripts/smoke-trellis-image.sh --image trellis-smoke:test
   rm -rf "$shim"
+}
+
+job_prepare_tests() {
+  local staged="${1:-$root/target/debug}"
+  cargo build -p trellis-cli --bin trellis -p trellis-server --bin trellis-server
+  job_build_fixtures "$staged/fixtures"
+  TRELLIS_TEST_EVENTS_BIN="$staged/fixtures/events" TRELLIS_TEST_STAGED=1 TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-rust-tests.sh
 }
 
 run_job() {
@@ -403,31 +417,35 @@ if [[ -z "${TRELLIS_TEST_SKIP_PREPARE:-}" ]]; then
   } > "$logs/prepare.log" 2>&1 \
     || { echo "preparation failed; see $logs/prepare.log" >&2; exit 1; }
 fi
-# Builds share Cargo's lock, so the runners build one at a time.
 echo "building executables and test binaries"
-{
-  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-rust-tests.sh
-  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-ts-integration.sh
-  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-sdk-tests.sh
-  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-browser-tests.sh
-  TRELLIS_TEST_BUILD_ONLY=1 bash scripts/run-testkit-tests.sh
-  # Only build-fixtures builds the test binary the upgrade job runs.
-  [[ "$all" != "--all" ]] || bash scripts/check.sh build-fixtures
-} > "$logs/build.log" 2>&1 || { echo "build failed; see $logs/build.log" >&2; exit 1; }
-# The jobs run copies, as CI jobs run the producer's executables: the rust job
-# still builds into target/debug and re-links what it finds stale there.
 staged="$root/target/check-bin"
 rm -rf "$staged"
 mkdir -p "$staged/examples"
+bash "$root/scripts/check.sh" prepare-tests "$staged" > "$logs/build.log" 2>&1 \
+  || { echo "build failed; see $logs/build.log" >&2; exit 1; }
+# The jobs run copies, as CI jobs run the producer's executables: the rust job
+# still builds into target/debug and re-links what it finds stale there.
 cp target/debug/trellis target/debug/trellis-server target/debug/trellis-testkit-live "$staged/"
 cp target/debug/examples/health_watch "$staged/examples/"
-cp -R target/debug/fixtures target/debug/testkit-tests "$staged/"
+cp -R target/debug/testkit-tests "$staged/"
 export TRELLIS_TEST_CLI_BIN="$staged/trellis" TRELLIS_TEST_SERVER_BIN="$staged/trellis-server"
 export TRELLIS_TEST_EVENTS_BIN="$staged/fixtures/events" TRELLIS_TEST_FIXTURE_BIN_DIR="$staged/fixtures"
 export TRELLIS_TESTKIT_LIVE_BIN="$staged/trellis-testkit-live" TRELLIS_TESTKIT_TESTS_DIR="$staged/testkit-tests"
 export TRELLIS_TEST_HEALTH_WATCH_BIN="$staged/examples/health_watch"
 [[ "$all" != "--all" ]] || pack_native "$staged"
 echo "built in $(( SECONDS - started ))s; running ${jobs[*]} concurrently"
+
+# Concurrent local suites share a host. Nested consumer builds and Chromium
+# also start workers of their own. Standalone jobs keep their usual parallelism.
+jobs_per_suite=$(( ($(nproc) + 7) / 8 ))
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$jobs_per_suite}"
+export NEXTEST_TEST_THREADS="${NEXTEST_TEST_THREADS:-$jobs_per_suite}"
+export TRELLIS_BROWSER_CONCURRENCY="${TRELLIS_BROWSER_CONCURRENCY:-$jobs_per_suite}"
+integration_jobs="${TRELLIS_TEST_CONCURRENCY:-$(( ($(nproc) + 3) / 4 ))}"
+export TRELLIS_TEST_CONCURRENCY="${TRELLIS_TEST_CONCURRENCY:-$jobs_per_suite}"
+# Live integration spends much of its wall time waiting for broker events and
+# authorization lifetimes. Give it more slots than CPU-heavy SDK and Rust jobs.
+export TRELLIS_INTEGRATION_CONCURRENCY="${TRELLIS_INTEGRATION_CONCURRENCY:-$integration_jobs}"
 
 declare -A pid
 for job in "${jobs[@]}"; do

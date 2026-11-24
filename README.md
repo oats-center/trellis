@@ -94,7 +94,8 @@ Each contract project owns `trellis.toml`, commits `trellis.lock`, and
 consumes its generated SDK through the configured TypeScript or Rust output.
 Generated implementations are ignored build artifacts, not committed source.
 `cargo xtask build [cargo args]` runs the install, builds the embedded Console
-and Portal, and then runs `cargo build`.
+and Portal, and then runs `cargo build`. Repeated builds preserve unchanged
+built-in bindings and reuse intact browser bundles when the inputs match.
 
 [In-repo development](/guides/in-repo-development) covers running the server
 from source. `npm test` runs the Pipeline's check jobs on this host through

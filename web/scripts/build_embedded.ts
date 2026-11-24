@@ -10,10 +10,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  sourceFingerprint,
-  writeFingerprint,
-} from "../../ts/tools/embedded_fingerprint.ts";
+import { embeddedBuild } from "../../ts/tools/embedded_fingerprint.ts";
 
 const webDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const destination = join(webDir, "../crates/runtime/generated/web");
@@ -34,16 +31,28 @@ const inputs = [
   "ts/tools/embedded_fingerprint.ts",
   "package-lock.json",
 ];
-const fingerprint = sourceFingerprint(dirname(webDir), inputs);
-
 const parent = dirname(destination);
+const build = embeddedBuild(
+  webDir,
+  inputs,
+  [
+    join(webDir, "trellis"),
+    join(webDir, "../ts/packages/trellis/internal_sdk/generated"),
+    join(webDir, "../ts/packages/trellis/auth/protocol_wasm"),
+  ],
+  destination,
+);
+if (build.current) {
+  console.log("Reusing embedded web build");
+  process.exit(0);
+}
 await mkdir(parent, { recursive: true });
 const buildDir = await mkdtemp(join(parent, ".web-build-"));
 const backup = `${buildDir}-previous`;
 let previous = false;
 let promoted = false;
 try {
-  const build = spawnSync("npm", ["run", "build:prepared"], {
+  const command = spawnSync("npm", ["run", "build:prepared"], {
     cwd: webDir,
     env: {
       ...process.env,
@@ -52,9 +61,9 @@ try {
     },
     stdio: "inherit",
   });
-  if (build.error) throw build.error;
-  if (build.status !== 0)
-    throw new Error(`Console build failed (${build.status})`);
+  if (command.error) throw command.error;
+  if (command.status !== 0)
+    throw new Error(`Console build failed (${command.status})`);
 
   const fallbackPath = join(buildDir, "200.html");
   let fallback = await readFile(fallbackPath, "utf8");
@@ -92,6 +101,7 @@ try {
   await writeFile(fallbackPath, fallback);
 
   await writeFile(join(buildDir, ".trellis-web-owned"), "web\n");
+  const record = build.record(buildDir);
   const info = await lstat(destination).catch((error: unknown) => {
     if (error instanceof Error && "code" in error && error.code === "ENOENT")
       return undefined;
@@ -114,7 +124,7 @@ try {
   try {
     await rename(buildDir, destination);
     promoted = true;
-    writeFingerprint(fingerprint, inputs, join(parent, "web.fingerprint"));
+    record();
   } catch (error) {
     if (previous) await rename(backup, destination);
     throw error;

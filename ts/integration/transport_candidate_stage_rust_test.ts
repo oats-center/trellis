@@ -30,7 +30,7 @@
 import assert from "node:assert/strict";
 import { Readable, Writable } from "node:stream";
 import { TextDecoderStream } from "node:stream/web";
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import { Result } from "@oatscenter/trellis";
 import { codecs } from "@oatscenter/trellis/generated";
 import { ulid } from "ulid";
@@ -474,121 +474,137 @@ async function reduceExtend(
   });
 }
 
-for (const outcome of ["recover", "root-revoked", "shutdown"] as const) {
-  test(`missed optional retirement after context expiry: ${outcome}`, async () => {
-    await withTrellisRuntime(async (runtime) => {
-      const ctx = await prepareSubjects(runtime);
-      // Isolate this caller's real TCP path; administration and the provider
-      // must remain connected while its ordered revocation coverage is lost.
-      const native = await TcpProxy.start(runtime.natsUrl, { scheme: "tls" });
-      try {
-        await withTransportGrowthLeg(
-          runtime,
-          ctx.subjectInstance.seed,
-          180_000,
-          async (leg) => {
-            await leg.waitFor("TRANSPORT_GROWTH_READY");
-            await leg.send("ADVANCE");
-            await leg.waitFor("TRANSPORT_GROWTH_ADVANCE_OK");
-            await leg.send("TRY_EXTEND");
-            await leg.waitFor("TRANSPORT_GROWTH_EXTEND_OK");
-            await leg.send("CONTEXT");
-            const line = await leg.waitForAny(["NATIVE_CONTEXT "]);
-            const opening: {
-              sessionId: string;
-              expiresAt: number;
-              digest: string;
-            } = JSON.parse(line.slice("NATIVE_CONTEXT ".length));
-            assert.equal(ctx.advanceCallers[0]?.sessionId, opening.sessionId);
+// Each case owns its server, broker and proxy. Their real authorization
+// lifetimes can elapse together.
+describe(
+  "missed optional retirement after context expiry",
+  { concurrency: 3 },
+  () => {
+    for (const outcome of ["recover", "root-revoked", "shutdown"] as const) {
+      test(outcome, async () => {
+        await withTrellisRuntime(async (runtime) => {
+          const ctx = await prepareSubjects(runtime);
+          // Isolate this caller's real TCP path; administration and the provider
+          // must remain connected while its ordered revocation coverage is lost.
+          const native = await TcpProxy.start(runtime.natsUrl, {
+            scheme: "tls",
+          });
+          try {
+            await withTransportGrowthLeg(
+              runtime,
+              ctx.subjectInstance.seed,
+              180_000,
+              async (leg) => {
+                await leg.waitFor("TRANSPORT_GROWTH_READY");
+                await leg.send("ADVANCE");
+                await leg.waitFor("TRANSPORT_GROWTH_ADVANCE_OK");
+                await leg.send("TRY_EXTEND");
+                await leg.waitFor("TRANSPORT_GROWTH_EXTEND_OK");
+                await leg.send("CONTEXT");
+                const line = await leg.waitForAny(["NATIVE_CONTEXT "]);
+                const opening: {
+                  sessionId: string;
+                  expiresAt: number;
+                  digest: string;
+                } = JSON.parse(line.slice("NATIVE_CONTEXT ".length));
+                assert.equal(
+                  ctx.advanceCallers[0]?.sessionId,
+                  opening.sessionId,
+                );
 
-            // Stop delivery before the authoritative mutation, so this owner cannot
-            // learn the old session's cutoff from its mirror or a surviving carrier.
-            native.interrupt();
-            await reduceExtend(runtime, ctx.subjectId);
-            if (outcome === "root-revoked") {
-              await runtime.callAdminRpc("authServiceInstancesRemove", {
-                instanceId: codecs.ulid.decode(ctx.subjectInstance.instanceId),
-                expectedRevision: 1n,
-                idempotencyKey: codecs.ulid.decode(ulid()),
-              });
-            } else if (outcome === "shutdown") {
-              await leg.send("SHUTDOWN_NATIVE");
-              await leg.waitFor("TRANSPORT_GROWTH_CLOSED_AND_WAITING");
-            }
-            await runtime.waitFor(
-              () =>
-                Date.now() >= opening.expiresAt * 1_000 ? true : undefined,
-              {
-                timeoutMs:
-                  Math.max(0, opening.expiresAt * 1_000 - Date.now()) + 5_000,
-                intervalMs: 100,
+                // Stop delivery before the authoritative mutation, so this owner cannot
+                // learn the old session's cutoff from its mirror or a surviving carrier.
+                native.interrupt();
+                await reduceExtend(runtime, ctx.subjectId);
+                if (outcome === "root-revoked") {
+                  await runtime.callAdminRpc("authServiceInstancesRemove", {
+                    instanceId: codecs.ulid.decode(
+                      ctx.subjectInstance.instanceId,
+                    ),
+                    expectedRevision: 1n,
+                    idempotencyKey: codecs.ulid.decode(ulid()),
+                  });
+                } else if (outcome === "shutdown") {
+                  await leg.send("SHUTDOWN_NATIVE");
+                  await leg.waitFor("TRANSPORT_GROWTH_CLOSED_AND_WAITING");
+                }
+                await runtime.waitFor(
+                  () =>
+                    Date.now() >= opening.expiresAt * 1_000 ? true : undefined,
+                  {
+                    timeoutMs:
+                      Math.max(0, opening.expiresAt * 1_000 - Date.now()) +
+                      5_000,
+                    intervalMs: 100,
+                  },
+                );
+                native.restore();
+                if (outcome === "shutdown") {
+                  await leg.send("REFRESH_AFTER_SHUTDOWN");
+                  await leg.waitFor("TRANSPORT_GROWTH_REFRESH_REFUSED");
+                  await leg.send("PING");
+                  await leg.waitFor("TRANSPORT_GROWTH_PONG");
+                  assert.equal(
+                    (await attachmentsFor(runtime, ctx.subjectId)).length,
+                    0,
+                  );
+                } else if (outcome === "root-revoked") {
+                  await leg.send("WAIT_REPLACEMENT");
+                  assert.equal(
+                    await leg.waitForAny([
+                      "TRANSPORT_GROWTH_REPLACED",
+                      "TRANSPORT_GROWTH_REPLACEMENT_UNAVAILABLE",
+                    ]),
+                    "TRANSPORT_GROWTH_REPLACEMENT_UNAVAILABLE",
+                  );
+                  await leg.send("TRY_ADVANCE");
+                  await leg.waitFor("TRANSPORT_GROWTH_ADVANCE_DENIED");
+                  assert.equal(ctx.advanceCallers.length, 1);
+                  assert.equal(
+                    (await attachmentsFor(runtime, ctx.subjectId)).length,
+                    0,
+                  );
+                } else {
+                  await leg.send("WAIT_REPLACEMENT");
+                  assert.equal(
+                    await leg.waitForAny([
+                      "TRANSPORT_GROWTH_REPLACED",
+                      "TRANSPORT_GROWTH_REPLACEMENT_UNAVAILABLE",
+                    ]),
+                    "TRANSPORT_GROWTH_REPLACED",
+                  );
+                  await leg.send("ADVANCE");
+                  await leg.waitFor("TRANSPORT_GROWTH_ADVANCE_OK", 2);
+                  assert.notEqual(
+                    ctx.advanceCallers.at(-1)?.sessionId,
+                    opening.sessionId,
+                  );
+                  assert.notEqual(
+                    ctx.advanceCallers.at(-1)?.authorityDigest,
+                    opening.digest,
+                  );
+                  await leg.send("TRY_EXTEND");
+                  await leg.waitFor("TRANSPORT_GROWTH_EXTEND_DENIED");
+                }
+                assert.equal(
+                  ctx.extendCalls(),
+                  1,
+                  "withdrawn optional authority never executes again",
+                );
               },
+              true,
+              native.url,
             );
+          } finally {
             native.restore();
-            if (outcome === "shutdown") {
-              await leg.send("REFRESH_AFTER_SHUTDOWN");
-              await leg.waitFor("TRANSPORT_GROWTH_REFRESH_REFUSED");
-              await leg.send("PING");
-              await leg.waitFor("TRANSPORT_GROWTH_PONG");
-              assert.equal(
-                (await attachmentsFor(runtime, ctx.subjectId)).length,
-                0,
-              );
-            } else if (outcome === "root-revoked") {
-              await leg.send("WAIT_REPLACEMENT");
-              assert.equal(
-                await leg.waitForAny([
-                  "TRANSPORT_GROWTH_REPLACED",
-                  "TRANSPORT_GROWTH_REPLACEMENT_UNAVAILABLE",
-                ]),
-                "TRANSPORT_GROWTH_REPLACEMENT_UNAVAILABLE",
-              );
-              await leg.send("TRY_ADVANCE");
-              await leg.waitFor("TRANSPORT_GROWTH_ADVANCE_DENIED");
-              assert.equal(ctx.advanceCallers.length, 1);
-              assert.equal(
-                (await attachmentsFor(runtime, ctx.subjectId)).length,
-                0,
-              );
-            } else {
-              await leg.send("WAIT_REPLACEMENT");
-              assert.equal(
-                await leg.waitForAny([
-                  "TRANSPORT_GROWTH_REPLACED",
-                  "TRANSPORT_GROWTH_REPLACEMENT_UNAVAILABLE",
-                ]),
-                "TRANSPORT_GROWTH_REPLACED",
-              );
-              await leg.send("ADVANCE");
-              await leg.waitFor("TRANSPORT_GROWTH_ADVANCE_OK", 2);
-              assert.notEqual(
-                ctx.advanceCallers.at(-1)?.sessionId,
-                opening.sessionId,
-              );
-              assert.notEqual(
-                ctx.advanceCallers.at(-1)?.authorityDigest,
-                opening.digest,
-              );
-              await leg.send("TRY_EXTEND");
-              await leg.waitFor("TRANSPORT_GROWTH_EXTEND_DENIED");
-            }
-            assert.equal(
-              ctx.extendCalls(),
-              1,
-              "withdrawn optional authority never executes again",
-            );
-          },
-          true,
-          native.url,
-        );
-      } finally {
-        native.restore();
-        await native.stop();
-        await closeSubjects(ctx);
-      }
-    }, runtimeOptions);
-  });
-}
+            await native.stop();
+            await closeSubjects(ctx);
+          }
+        }, runtimeOptions);
+      });
+    }
+  },
+);
 
 test("a no-survivor reduction recovers on one staged socket that becomes current", async () => {
   await withTrellisRuntime(async (runtime) => {

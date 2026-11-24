@@ -47,12 +47,13 @@ test("failed compilation and unowned output cannot replace the last-good portal 
         type: "module",
       }),
     );
+    await mkdir(join(app, "src"));
     await writeFile(
       join(app, "index.html"),
-      '<script type="module" src="/main.js"></script>',
+      '<script type="module" src="/src/main.js"></script>',
     );
     await writeFile(
-      join(app, "main.js"),
+      join(app, "src/main.js"),
       'document.body.textContent = "last-good";',
     );
 
@@ -66,7 +67,23 @@ test("failed compilation and unowned output cannot replace the last-good portal 
     const assets = await readdir(join(output, "assets"));
     const javascript = await readFile(join(output, "assets", assets[0]));
 
-    await writeFile(join(app, "main.js"), "export const = ;");
+    // A missing chunk would leave a cached HTML entrypoint that cannot load.
+    await rm(join(output, "assets", assets[0]));
+    const repaired = spawnSync(
+      process.execPath,
+      ["scripts/build_embedded.ts"],
+      {
+        cwd: app,
+        encoding: "utf8",
+      },
+    );
+    strictEqual(repaired.status, 0, repaired.stderr + repaired.stdout);
+    deepStrictEqual(
+      await readFile(join(output, "assets", assets[0])),
+      javascript,
+    );
+
+    await writeFile(join(app, "src/main.js"), "export const = ;");
     const failed = spawnSync(process.execPath, ["scripts/build_embedded.ts"], {
       cwd: app,
       encoding: "utf8",
@@ -79,7 +96,7 @@ test("failed compilation and unowned output cannot replace the last-good portal 
     );
 
     await writeFile(
-      join(app, "main.js"),
+      join(app, "src/main.js"),
       'document.body.textContent = "replacement";',
     );
     await rm(join(output, ".trellis-portal-owned"));

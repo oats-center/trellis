@@ -76,24 +76,9 @@ fixture_bins=(
 # environment by hand.
 in_ci="${CI:-}${TRELLIS_TEST_STAGED:-}"
 
-require_or_build() {
-  local path="$1"
-  local build="$2"
-  if [[ -n "$in_ci" ]]; then
-    [[ -x "$path" ]] || {
-      echo "missing staged executable $path" >&2
-      exit 1
-    }
-    return
-  fi
-  # Locally every build runs: cargo is incremental, so this is cheap and can
-  # never leave a stale executable behind.
-  eval "$build"
-}
-
 build_fixtures() {
   echo "building integration fixture helpers"
-  CARGO_TARGET_DIR="$root/target" cargo build --bins \
+  CARGO_TARGET_DIR="$root/target" cargo build --bins --example health_watch \
     --manifest-path integration/fixtures/runtime/Cargo.toml \
     --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
     --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
@@ -139,15 +124,13 @@ build_workspace_bins() {
   CARGO_TARGET_DIR="$root/target" cargo build -p trellis-server -p trellis-cli
 }
 
-build_health_watch() {
-  echo "building the health_watch example"
-  CARGO_TARGET_DIR="$root/target" cargo build -p trellis-runtime --example health_watch
-}
-
-require_or_build "$testkit_live" build_testkit_live
-require_or_build "$server_bin" build_workspace_bins
-require_or_build "$cli_bin" build_workspace_bins
-require_or_build "$health_watch_bin" build_health_watch
+if [[ -z "$in_ci" ]]; then
+  build_testkit_live
+  build_workspace_bins
+fi
+for bin in "$testkit_live" "$server_bin" "$cli_bin" "$health_watch_bin"; do
+  [[ -x "$bin" ]] || { echo "missing executable $bin" >&2; exit 1; }
+done
 
 export TRELLIS_TEST_FIXTURE_BIN_DIR="$fixture_dir"
 export TRELLIS_TESTKIT_LIVE_BIN="$testkit_live"
@@ -160,7 +143,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 # Each file mostly waits on its own server and broker, so one file per core.
-concurrency="${TRELLIS_TEST_CONCURRENCY:-$(( $(nproc) > 4 ? $(nproc) : 4 ))}"
+concurrency="${TRELLIS_INTEGRATION_CONCURRENCY:-${TRELLIS_TEST_CONCURRENCY:-$(( $(nproc) > 4 ? $(nproc) : 4 ))}}"
 echo "Running up to $concurrency test files at once on $(nproc) cores"
 # A timed-out test keeps running, so without a forced exit its file never ends.
 exec node --test \

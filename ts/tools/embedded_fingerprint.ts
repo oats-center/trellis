@@ -1,7 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 
 /**
  * The fingerprint recorded when the sources cannot be listed. It matches no
@@ -85,4 +91,90 @@ export function writeFingerprint(
   destination: string,
 ): void {
   writeFileSync(destination, `${fingerprint}\n${pathspecs.join("\n")}\n`);
+}
+
+/** Hashes a build tree including file names and contents. Missing paths and
+ * symbolic links cannot match an intact generated directory. */
+function treeDigest(root: string): string {
+  const digest = createHash("sha256");
+  function visit(relative: string): void {
+    const path = join(root, relative);
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    digest.update(JSON.stringify(relative));
+    if (stat?.isDirectory()) {
+      digest.update("directory");
+      for (const name of readdirSync(path).sort()) visit(join(relative, name));
+    } else if (
+      stat?.isFile() ||
+      (stat?.isSymbolicLink() &&
+        statSync(path, { throwIfNoEntry: false })?.isFile())
+    ) {
+      digest.update(stat.isSymbolicLink() ? "linked-file" : "file");
+      digest.update(createHash("sha256").update(readFileSync(path)).digest());
+    } else {
+      digest.update("missing or unsupported");
+    }
+  }
+  visit("");
+  return digest.digest("hex");
+}
+
+/** Checks the embedded bundle against its sources, build environment and output
+ * contents. Capture the new record from staging and write it after promotion. */
+export function embeddedBuild(
+  app: string,
+  inputs: string[],
+  generated: string[],
+  destination: string,
+) {
+  const sources = sourceFingerprint(dirname(app), inputs);
+  const sourceRecord = [sources, ...inputs, ""].join("\n");
+  const env = Object.entries(process.env)
+    .filter(
+      ([key]) =>
+        key.startsWith("VITE_") ||
+        key.startsWith("PUBLIC_") ||
+        ["SITE_BASE_PATH", "NODE_ENV"].includes(key),
+    )
+    .sort();
+  const files = [
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.production.local",
+  ].map((name) => join(app, name));
+  const inputKey = createHash("sha256")
+    .update(
+      JSON.stringify([
+        sources,
+        process.version,
+        env,
+        ...[...files, ...generated].map(treeDigest),
+      ]),
+    )
+    .digest("hex");
+  const cachePath = destination + ".build-key";
+  const fingerprintPath = destination + ".fingerprint";
+  function readRecord(path: string) {
+    try {
+      return readFileSync(path, "utf8");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return undefined;
+      throw error;
+    }
+  }
+  return {
+    current:
+      sources !== UNCHECKED &&
+      readRecord(fingerprintPath) === sourceRecord &&
+      readRecord(cachePath) === inputKey + treeDigest(destination),
+    record(staged: string) {
+      const key = inputKey + treeDigest(staged);
+      return () => {
+        writeFileSync(cachePath, key);
+        writeFingerprint(sources, inputs, fingerprintPath);
+      };
+    },
+  };
 }

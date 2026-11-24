@@ -229,7 +229,6 @@ pub(crate) fn run_release(repo_root: &Path, command: ReleaseCommand) -> Result<(
                 check_changelog(repo_root, &version, since.as_deref())?;
             }
             println!("Release metadata verification passed for {checked_version}.");
-            println!("Before publishing, require a successful Check run for the release base.");
             Ok(())
         }
         ReleaseCommand::PretagCheck { tag, git_ref } => run_pretag_check(repo_root, &tag, &git_ref),

@@ -21,13 +21,10 @@ const contract = participants.ConfiguredGrowthService.participant;
 const capabilityId =
   "localhost/runtime-trellis.transport_growth.v1:growth.extend";
 
-/**
- * Authority lives 90s and renews about halfway through, which is when a
- * service adopts a grant. The old attachment then has some 45s of authority
- * left, so closing well within that proves it drained rather than expired.
- */
+// The service adopts the new grant at its normal renewal. The recorded
+// authority expiry distinguishes voluntary drain from broker expiration.
 const runtimeOptions = {
-  authorization: { contextLifetimeSeconds: 90, allowedClockSkewSeconds: 2 },
+  authorization: { contextLifetimeSeconds: 45, allowedClockSkewSeconds: 2 },
 };
 
 /**
@@ -65,29 +62,48 @@ async function registerGrowable(runtime: TrellisTestRuntime) {
         const items = await admitted();
         return items.length === 1 ? items[0] : undefined;
       });
+      const sessions = await runtime.callAdminRpc(
+        "authAuthorizationSessionsList",
+        { principalId: grant.principalId },
+      );
+      const session = sessions.items.find(
+        (row) => row.authorizationSessionId === initial.authorizationSessionId,
+      );
+      assert(session?.maximumContextExpiresAt);
+      const expiry = Date.parse(session.maximumContextExpiresAt);
       await runtime.callAdminRpc("authCapabilityGrantsGrant", {
         principalId: grant.principalId,
         capabilityId,
         expectedRevision: 0n,
         idempotencyKey: codecs.ulid.decode(ulid()),
       });
-      // The service adopts the grant when it next renews its authority.
-      await runtime.waitFor(
-        async () => (await admitted()).length >= 2 || undefined,
-        { timeoutMs: 90_000 },
-      );
-      // The old attachment's authority still has most of its lifetime left,
-      // so it can only close this soon by draining.
-      await runtime.waitFor(
+      // A prompt drain may close the old attachment between two polls. Read
+      // its recorded close alongside the replacement's admitted policy.
+      const closedAt = await runtime.waitFor(
         async () => {
-          const items = await admitted();
-          return (
-            (items.length === 1 &&
-              items[0].attachmentId !== initial.attachmentId) ||
-            undefined
+          const { items } = await runtime.callAdminRpc("authConnectionsList", {
+            principalId: grant.principalId,
+          });
+          const previous = items.find(
+            (item) => item.attachmentId === initial.attachmentId,
           );
+          const active = items.filter((item) => item.state === "admitted");
+          return previous?.state === "closed" &&
+            active.length === 1 &&
+            active[0].admittedTransportPolicyDigest !==
+              initial.admittedTransportPolicyDigest
+            ? previous.closedAt
+            : undefined;
         },
-        { timeoutMs: 20_000 },
+        {
+          timeoutMs:
+            runtimeOptions.authorization.contextLifetimeSeconds * 1_000,
+        },
+      );
+      assert(
+        Date.parse(closedAt) <
+          expiry - runtimeOptions.authorization.allowedClockSkewSeconds * 1_000,
+        "the previous attachment must drain before its authority expires",
       );
     },
     /** Change the live `level` setting. */

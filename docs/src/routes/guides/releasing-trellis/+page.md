@@ -45,8 +45,7 @@ Before pushing, run every suite the pipeline runs:
 npm test
 ```
 
-The pipeline and `npm test` share one script, `scripts/check.sh`: every pipeline
-job runs `scripts/check.sh <job>`, and `npm test` runs every job on this host. It
+The pipeline and local `npm test` use the same suite runners. CI runs SDK package tests with the TypeScript checks and starts live integration as soon as the executable fixtures arrive. Local `npm test` runs all these suites on one host. It
 builds once (contract artifacts, the embedded Console and Portal, npm packages,
 and every executable the jobs launch), copies the executables to
 `target/check-bin` so no job runs a binary that the Rust tests' own Cargo build
@@ -55,11 +54,12 @@ may re-link in `target/debug`, then runs formatting, Rust lint
 TypeScript checks (`typescript-checks`), TypeScript tests (`typescript-tests`:
 the packages' own suites and the integration files), Rust testkit tests
 (`testkit-tests`), the demo and documented-example consumers, and the browser
-tests concurrently, logging each to `target/test-logs/`. Each test job runs on
-one runner, not split into shards; its test files run concurrently, one per core
-for TypeScript and one per two cores for browser tests
-(`TRELLIS_TEST_CONCURRENCY` and `TRELLIS_BROWSER_CONCURRENCY` override it). Local
-runs use debug builds; the pipeline tests its release build.
+tests concurrently, logging each to `target/test-logs/`. Standalone jobs use the runner's
+parallelism. In the combined local run on a 32-core host, SDK and browser suites each run four files at a time. Live TypeScript integration runs eight files at a time because many wait for broker events or authorization expiry. Nextest runs four tests and
+each Cargo build uses four jobs. These defaults scale with the available cores.
+Set `TRELLIS_INTEGRATION_CONCURRENCY` for just the live TypeScript files. Set `TRELLIS_TEST_CONCURRENCY`, `TRELLIS_BROWSER_CONCURRENCY`,
+`NEXTEST_TEST_THREADS` or `CARGO_BUILD_JOBS` to override them. Local
+and ordinary CI runs use development builds. Release candidates run the same acceptance suites against their optimized release binaries.
 
 `npm test -- --all` adds the slower packaging and container-image jobs: the Rust
 testkit crate bundle and its artifact-only consumer, the npm testkit package,
@@ -191,9 +191,13 @@ Verify the benchmark with Performance's ordinary command:
 `cargo build --release --locked --manifest-path benchmarks/runtime/native/Cargo.toml --target-dir target`.
 Performance consumes that frozen lock; it does not repair it during execution.
 
-The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so the pipeline verifies exactly what ships. `Pipeline` is the one workflow. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds the CLI and server archives and assembles and smokes the images; packages the Rust and npm packages; runs the artifact-only package consumer; and reports through one acceptance gate. Formatting, lint/type checks, library tests, generation before consumption, and live integration are part of that graph. On a `release/v*` push the publish jobs follow the acceptance gate in the same run: they publish that run's verified artifacts (crates, npm, canonical APIs, images) without rebuilding the product, and publishing the GitHub release last creates an unsigned lightweight release tag on the verified commit. If verification fails, nothing is published, no tag is created, and the same version can be retried. The workflow file keeps the name `release.yml` because crates.io and npm trusted publishing name it.
+The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so the pipeline verifies exactly what ships. `Pipeline` is the one workflow. It runs on `main`, on pull requests, and on `release/*` pushes; builds the runtime once per architecture and reuses it for live, browser, console, and demo tests; builds the CLI and server archives and assembles and smokes the images; packages the Rust and npm packages; runs the artifact-only package consumer; and reports through one acceptance gate. Formatting, lint/type checks, library tests, generation before consumption, and live integration are part of that graph. On a `release/v*` push the publish jobs follow the acceptance gate in the same run: they publish that run's verified artifacts (crates, npm, canonical APIs, images) without rebuilding the product, and publishing the GitHub release last creates an unsigned lightweight release tag on the verified commit. If verification fails, nothing is published, no tag is created, and the same version can be retried. The workflow file keeps the name `release.yml` because crates.io and npm trusted publishing name it.
 
-The compile-heavy jobs (`install`, which also builds the protocol WASM and the embedded Console and Portal, `clippy`, `build-fixtures`, `build`) run on the self-hosted runners labelled `trellis-build` (keep that label on one host's runners so its caches stay warm; move the label to move the role, and note these jobs wait if no labelled runner is online) and keep `target/` between runs (every other untracked file is removed after checkout), so Cargo rebuilds only what changed; on GitHub-hosted runners they restore `target/` from the Actions cache instead. The Rust tests job and the crate packaging also compile, so they run on these runners too. With only a few `trellis-build` runners, each one's `target/` for each job stays warm; `build` compiles inside its container with its own persistent cache. The TypeScript tests run on runners labelled `trellis-ts` and the browser tests on runners labelled `trellis-browser`; give each label to a different host's runners so the two largest suites never share one machine's cores (they wait if no labelled runner is online). Every other test job runs on any self-hosted runner, starting from a clean checkout and using the binaries the build jobs produced; the hosts provide Chromium's system libraries and `certutil`. Pull requests whose head branch lives outside this repository (forks) run every job on GitHub-hosted runners, so their code never runs on the self-hosted machines. That is the trust boundary for the persistent caches: the self-hosted `target/` directories, `TRELLIS_CI_TARGET_ROOT`, the Docker build cache `build` uses for the release executables, the Playwright browsers and the installed Cargo tools are written only by code from people with write access (pushes, manual runs, and pull requests from this repository's own branches), and release runs read them. A fork's GitHub-hosted jobs use the Actions cache, whose entries GitHub scopes to the pull request, so `main` and release runs never restore them. Keep anything that runs code no writer has reviewed (a bot opening pull requests from a branch of this repository, for example) on GitHub-hosted runners too. Image builds and publication run on GitHub-hosted runners, which download faster. Each runner keeps its own `target/` unless its environment sets `TRELLIS_CI_TARGET_ROOT` (for example in the runner's `.env` file) to a directory every runner on that host can write. Runners in separate containers need that directory mounted into each container at the same path; then each compile job links `target/` to `$TRELLIS_CI_TARGET_ROOT/<job>`, so a host warms once for all its runners, and Cargo's lock serializes two runners building the same job at once. These directories grow over time; delete them to reclaim disk.
+Generation and integration fixture compilation use the general pool so both can progress while the native build workers are busy. Their Cargo targets live outside the checkout and survive cleanup by other jobs. The x86-64 runtime container build uses the `trellis-build` pool. Rust lint uses `trellis-lint` on the TypeScript host, where integration tests start later. A separate `trellis-rust` runner compiles workspace tests after generation and runs them once the CLI, server and fixtures arrive. Both Rust jobs keep the same incremental Cargo target outside the checkout, including when a different job has cleaned the prepared source tree. TypeScript and browser suites use `trellis-ts` and `trellis-browser` on separate hosts. Give `trellis-general` to the runners on those hosts that can also run demos, package and adapter checks. Keep the build pool separate from general and browser work. The hosts supply Chromium's system libraries and `certutil`.
+
+The container builds the CLI and server with Cargo's development profile on ordinary runs. Release branches use the stripped, fat-LTO release profile. Each native build uploads its Cargo timing report. Compare warm runs after a runtime edit and an SDK edit, including queue time, native build time, Rust compilation and execution, artifact sizes and elapsed time to acceptance. Batch related commits into one push when a single verification result covers them.
+
+Pull requests whose head branch lives outside this repository (forks) run every job on GitHub-hosted runners, so their code never runs on the self-hosted machines. That is the trust boundary for the persistent caches: the self-hosted `target/` directories, `TRELLIS_CI_TARGET_ROOT`, the Docker build cache `build` uses for the release executables, the Playwright browsers and the installed Cargo tools are written only by code from people with write access (pushes, manual runs, and pull requests from this repository's own branches), and release runs read them. A fork's GitHub-hosted jobs use the Actions cache, whose entries GitHub scopes to the pull request, so `main` and release runs never restore them. Keep anything that runs code no writer has reviewed (a bot opening pull requests from a branch of this repository, for example) on GitHub-hosted runners too. Image builds and publication run on GitHub-hosted runners, which download faster. Each runner keeps its own `target/` unless its environment sets `TRELLIS_CI_TARGET_ROOT` (for example in the runner's `.env` file) to a directory every runner on that host can write. Runners in separate containers need that directory mounted into each container at the same path; then each compile job links `target/` to `$TRELLIS_CI_TARGET_ROOT/<job>`, so a host warms once for all its runners, and Cargo's lock serializes two runners building the same job at once. These directories grow over time; delete them to reclaim disk.
 
 The `Deploy Site to GitHub Pages` workflow deploys on every push to `main`. The Pipeline's `docs` job checks and builds the same site (`npm run check` and `npm run build` in the `@trellis/docs` workspace) on every push and on each pull request that touches `docs/`, `design/` or the root npm manifests. A pull request that changes only Markdown, design docs or `docs/static/` skips the build and test graph; site code under `docs/src` (Svelte, TypeScript, configuration) runs the whole graph. The site root shows the newest stable release and `/current/` shows `main`; until the first stable release exists, the root shows the newest prerelease. After a release publishes, `publish-docs` starts that workflow so the root moves to the new release; it does so for stable releases, and for prereleases only while no stable release exists. The workflow installs each worktree's locked APIs from source before building the released and current guide and Console sites.
 
@@ -313,7 +317,7 @@ as before.
 
 The Pipeline's `upgrade` job checks this rule on every candidate, before the
 acceptance gate. It runs `integration/fixtures/testkit/tests/upgrade.rs` with
-the release build from the `build` job and the test binary from
+the candidate server from the `build` job and the test binary from
 `build-fixtures`. The test downloads the newest published release no newer than
 the candidate, which is the release the candidate upgrades; for a stable
 candidate that is the newest such stable release when there is one. It reads
@@ -521,7 +525,7 @@ less "$tmpdir/release-notes.md"
 ## 5. Confirm correctness and package locally
 
 `Pipeline` is the single authoritative verification workflow: it builds the
-release-profile runtime, the CLI and server archives and the images; packages the Rust and
+runtime, the CLI and server archives and the images; packages the Rust and
 npm packages; runs the artifact-only package consumer; and runs formatting,
 lint/type, generation, and full live-integration suites behind one acceptance
 gate. On a release branch, publication follows in the same run from the same
@@ -633,19 +637,13 @@ git push origin HEAD:refs/heads/release/$RELEASE_TAG
 
 For example, `RELEASE_TAG=v0.100.0-rc.1` pushes `release/v0.100.0-rc.1`.
 
-Push the release branch before you push the same commit to `main`. The `main`
-run's `changes` job then finds the release run for that commit and waits for
-its acceptance gate (up to 140 minutes). When the gate succeeded, the `main`
-run skips its own build and tests, so the commit is verified once, by the run
-that publishes it. When the gate failed or was cancelled, when no release run
-exists, or when the wait runs out, the `main` run verifies the commit itself:
+Wait for the release run's **Acceptance gate** to succeed, then push that same commit to `main`. The main run checks the release verdict once and reuses it for the exact SHA. An earlier main push, a failed release gate or a commit without an accepted release runs ordinary verification immediately.
 
 ```sh
-git push origin HEAD:refs/heads/release/$RELEASE_TAG
 git push origin HEAD:main
 ```
 
-The pipeline's `release-metadata` job fails early if the final release tag already exists. If verification fails, fix the release commit and push the release branch again; the version is not consumed because no tag has been created.
+The release builds its `xtask` helper once on Ubuntu and reuses it for metadata and crate publication. The pipeline's `release-metadata` job fails if the final release tag already exists. If verification fails, fix the release commit and push the release branch again; the version is not consumed because no tag has been created.
 
 After the acceptance gate passes, the same run publishes in gated stages. A
 version stays invisible until every component is available: the GitHub release

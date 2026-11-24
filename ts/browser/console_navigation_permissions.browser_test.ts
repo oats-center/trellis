@@ -24,7 +24,15 @@ test("a denied administrative read preserves ordinary account access and navigat
     try {
       const page = await context.newPage();
       const errors = await captureBrowserErrors(page);
+      await page.goto(`${runtime.trellisUrl}/healthz`);
+      const { version } = JSON.parse(
+        await page.locator("body").innerText(),
+      ) as { version: string };
       await openConsole(page, runtime, credentials);
+      const header = page.getByTestId("runtime-version");
+      await header.getByText(`Trellis ${version}`, { exact: true }).waitFor();
+      assert.equal(await header.getByRole("link").count(), 0);
+
       await page.goto(`${runtime.consoleUrl}/console/profile`);
       await page.getByText("How you sign in", { exact: true }).waitFor();
       try {

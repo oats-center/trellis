@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       check_run_id:
-        description: Successful Check run on the exact commit to measure (artifacts must still exist)
+        description: Successful Pipeline push or manual run with native artifacts on the commit to measure
         required: true
         type: string
 
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   prepare:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, trellis-general]
     timeout-minutes: 30
     outputs:
       sha: ${{ steps.checked.outputs.sha }}
@@ -36,7 +36,11 @@ jobs:
           set -euo pipefail
           [[ "$CHECK_RUN" =~ ^[0-9]+$ ]]
           gh api "repos/${{ github.repository }}/actions/runs/$CHECK_RUN" > "$RUNNER_TEMP/performance-check.json"
-          jq -e '.name == "Check" and .status == "completed" and .conclusion == "success"' "$RUNNER_TEMP/performance-check.json"
+          jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .path == ".github/workflows/release.yml" and .head_repository.full_name == $repo and
+            (.event == "push" or .event == "workflow_dispatch") and
+            .status == "completed" and .conclusion == "success"
+          ' "$RUNNER_TEMP/performance-check.json"
           echo "sha=$(jq -r .head_sha "$RUNNER_TEMP/performance-check.json")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
@@ -86,7 +90,7 @@ jobs:
 
   measure:
     needs: prepare
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, trellis-general]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4

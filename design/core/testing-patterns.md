@@ -203,7 +203,9 @@ Verification has three explicit tiers:
   and the matching TypeScript and Rust live tests.
 - **Tier 3, integrated gate:** the `Pipeline` workflow owns formatting,
   lint/type checks, generated freshness, package tests, and the complete
-  unfiltered live suites with no hidden skips. On a release branch its publish
+  unfiltered live suites with no hidden skips. Ordinary CI runs use development
+  runtime binaries. Release candidates exercise the optimized binaries produced
+  by that same run. On a release branch its publish
   jobs follow the acceptance gate and publish that run's verified packages,
   archives and images without repeating the checks.
   Trellis supports current stable Rust only; no older compiler compatibility is

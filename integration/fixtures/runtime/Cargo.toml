@@ -21,3 +21,15 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 ulid = "3"
 tracing-opentelemetry = "0.34.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Compile the public OAuth example with the other client fixtures, without
+# linking the server crate or compiling its CLI dev-dependency to exercise it.
+[[example]]
+name = "health_watch"
+path = "../../../crates/runtime/examples/health_watch.rs"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev]
+debug = "line-tables-only"

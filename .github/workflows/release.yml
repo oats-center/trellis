@@ -24,6 +24,7 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_HTTP_MULTIPLEXING: false
   REGISTRY: ghcr.io
+  RUNTIME_PROFILE: ${{ startsWith(github.ref, 'refs/heads/release/v') && 'release' || 'dev' }}
   # CI debug/test artifacts retain file-and-line backtraces, not full DWARF.
   # Production release optimization and debug assertions remain unchanged.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -69,14 +70,12 @@ jobs:
   # A pull request that touches only prose skips the build and test graph; the
   # docs job builds the site whenever the docs or design docs change, and the
   # acceptance gate still reports. A main push of a commit a `release/v*` run
-  # already verified skips both: this job waits for that run's acceptance gate
-  # and skips only when it succeeded. Otherwise, and for every other push or
+  # already verified skips both after that run's acceptance gate succeeds. Otherwise, and for every other push or
   # manual run, verification runs in full.
   changes:
     name: Detect code changes
     runs-on: ubuntu-latest
-    # Long enough to wait out the release run's verification.
-    timeout-minutes: 150
+    timeout-minutes: 5
     permissions:
       actions: read
       contents: read
@@ -95,42 +94,18 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # The release branch is pushed first, so its run may still be
-          # starting or verifying; wait for its acceptance gate.
-          deadline=$((SECONDS + 140 * 60))
-          while :; do
-            runs="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/release.yml/runs" \
-              -f head_sha="$SHA" -f event=push -f per_page=100 \
-              --jq '[.workflow_runs[] | select(.head_branch | startswith("release/v")) | {id, branch: .head_branch, status}]')"
-            pending=false
-            for run in $(jq -r '.[] | @base64' <<<"$runs"); do
-              id="$(base64 -d <<<"$run" | jq -r .id)"
-              gate="$(gh api "repos/$REPOSITORY/actions/runs/$id/jobs?per_page=100" \
-                --jq '[.jobs[] | select(.name == "Acceptance gate")][0].conclusion // ""')"
-              if [ "$gate" = success ]; then
-                echo "branch=$(base64 -d <<<"$run" | jq -r .branch)" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              if [ -z "$gate" ] && [ "$(base64 -d <<<"$run" | jq -r .status)" != completed ]; then
-                pending=true
-              fi
-            done
-            # A release branch at this commit whose run has not appeared yet.
-            if [ "$(jq length <<<"$runs")" = 0 ] && git ls-remote "https://github.com/$REPOSITORY" 'refs/heads/release/v*' |
-              awk -v sha="$SHA" '$1 == sha { found = 1 } END { exit !found }'; then
-              pending=true
-            fi
-            if [ "$pending" != true ]; then
-              echo "No release run verified $SHA; verifying here"
+          runs="$(gh api -X GET "repos/$REPOSITORY/actions/workflows/release.yml/runs" \
+            -f head_sha="$SHA" -f event=push -f per_page=100 \
+            --jq '.workflow_runs[] | select(.head_branch | startswith("release/v")) | [.id,.head_branch] | @tsv')"
+          while IFS=$'\t' read -r id branch; do
+            [[ -n "$id" ]] || continue
+            gate="$(gh api "repos/$REPOSITORY/actions/runs/$id/jobs?per_page=100" \
+              --jq 'any(.jobs[]; .name == "Acceptance gate" and .conclusion == "success")')"
+            if [[ "$gate" == true ]]; then
+              echo "branch=$branch" >> "$GITHUB_OUTPUT"
               break
             fi
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              echo "The release run did not finish verifying $SHA in time; verifying here"
-              break
-            fi
-            sleep 60
-          done
-          echo "branch=" >> "$GITHUB_OUTPUT"
+          done <<< "$runs"
 
       # Markdown and the other prose skip the code graph; site code does not.
       - name: Classify changed paths
@@ -179,7 +154,7 @@ jobs:
     name: Generate artifacts, protocol WASM and browser apps
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -195,11 +170,11 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: |
           git clean -ffdx --exclude=/target/
-          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
-            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
-            [ -L target ] || rm -rf target
-            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
-          fi
+          # General jobs can clean their whole checkout between builds.
+          cache="${TRELLIS_CI_TARGET_ROOT:-$RUNNER_TOOL_CACHE/trellis/$GITHUB_REPOSITORY}/$GITHUB_JOB"
+          mkdir -p "$cache"
+          [ -L target ] || rm -rf target
+          ln -sfn "$cache" target
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -233,7 +208,7 @@ jobs:
 
       - name: Report installation cache input size
         if: always()
-        run: du -sh target 2>/dev/null || true
+        run: du -sh target/ 2>/dev/null || true
 
       - name: Upload installed artifacts
         uses: actions/upload-artifact@v7
@@ -293,7 +268,7 @@ jobs:
   clippy:
     name: Rust lint
     needs: [install]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-lint"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -348,7 +323,7 @@ jobs:
   build-fixtures:
     name: Build integration fixture binaries
     needs: [install]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -364,11 +339,11 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: |
           git clean -ffdx --exclude=/target/
-          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
-            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
-            [ -L target ] || rm -rf target
-            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
-          fi
+          # General jobs can clean their whole checkout between builds.
+          cache="${TRELLIS_CI_TARGET_ROOT:-$RUNNER_TOOL_CACHE/trellis/$GITHUB_REPOSITORY}/$GITHUB_JOB"
+          mkdir -p "$cache"
+          [ -L target ] || rm -rf target
+          ln -sfn "$cache" target
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
@@ -457,16 +432,24 @@ jobs:
           protocol-wasm: true
           portal: true
 
-      # The one release build every live, browser, demo, package, and image job
+      # The one native build every live, browser, demo, package, and image job
       # runs, compiled against the runtime image's Debian bookworm glibc. See
       # crates/runtime/Containerfile.build for why it is a container build.
-      - name: Build release binaries
+      - name: Build runtime binaries with the selected profile
         run: |
           set -euo pipefail
           docker buildx build --builder default --pull \
+            --build-arg CARGO_INCREMENTAL="${{ runner.environment == 'self-hosted' && env.RUNTIME_PROFILE == 'dev' && '1' || '0' }}" \
+            --build-arg BUILD_PROFILE="$RUNTIME_PROFILE" \
             --file crates/runtime/Containerfile.build \
             --output "type=local,dest=$RUNNER_TEMP/release" \
             .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cargo-timing-x86_64-${{ env.RUNTIME_PROFILE }}
+          path: ${{ runner.temp }}/release/cargo-timing.html
+          retention-days: 3
 
       - name: Stage runtime binaries and CLI archives
         run: |
@@ -493,6 +476,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: check-runtime-binaries
+          compression-level: 0
           path: ${{ runner.temp }}/runtime-binaries.tar.gz
           retention-days: 1
 
@@ -500,12 +484,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: trellis-cli-x86_64-unknown-linux-gnu
+          compression-level: 0
           path: |
             dist/*.tar.gz
             dist/*.sha256
           retention-days: 3
 
-  # The same container release build on a native arm64 runner, for the arm64
+  # The same container build on a native arm64 runner, for the arm64
   # release archives and the arm64 half of the trellis-server image. Only the
   # x86-64 build is tested.
   build-arm64:
@@ -524,13 +509,20 @@ jobs:
           protocol-wasm: true
           portal: true
 
-      - name: Build release binaries
+      - name: Build runtime binaries with the selected profile
         run: |
           set -euo pipefail
           docker buildx build --builder default --pull \
+            --build-arg BUILD_PROFILE="$RUNTIME_PROFILE" \
             --file crates/runtime/Containerfile.build \
             --output "type=local,dest=$RUNNER_TEMP/release" \
             .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cargo-timing-aarch64-${{ env.RUNTIME_PROFILE }}
+          path: ${{ runner.temp }}/release/cargo-timing.html
+          retention-days: 3
 
       - name: Stage CLI archives
         run: |
@@ -548,17 +540,64 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: trellis-cli-aarch64-unknown-linux-gnu
+          compression-level: 0
           path: |
             dist/*.tar.gz
             dist/*.sha256
           retention-days: 3
 
-  rust:
-    name: Rust tests
-    needs: [install, build, build-fixtures]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-build"]') }}
+  rust-compile:
+    name: Compile Rust tests
+    needs: install
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, trellis-rust]
     timeout-minutes: 45
     env:
+      CARGO_INCREMENTAL: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
+          clean: false
+
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
+      - name: Remove untracked files except target/
+        run: |
+          git clean -ffdx --exclude=/target/
+          # Unrelated jobs can clean the runner checkout between compilation
+          # and execution. Keep both stages' Cargo output on the work volume.
+          cache="${TRELLIS_CI_TARGET_ROOT:-$RUNNER_TOOL_CACHE/trellis/$GITHUB_REPOSITORY}/rust"
+          mkdir -p "$cache"
+          [ -L target ] || rm -rf target
+          ln -sfn "$cache" target
+
+      - name: Restore generated inputs
+        uses: ./.github/actions/check-inputs
+        with:
+          generated: true
+          protocol-wasm: true
+          portal: true
+
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile workspace tests in the execution runner's persistent target
+        run: |
+          bash scripts/run-rust-tests.sh --compile-only
+          echo "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$GITHUB_SHA" > .rust-test-workspace
+
+  rust:
+    name: Rust tests
+    needs: [install, build, build-fixtures, rust-compile]
+    if: >-
+      !cancelled() && needs.install.result == 'success' && needs.build.result == 'success' &&
+      needs.build-fixtures.result == 'success' && (needs.rust-compile.result == 'success' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-rust"]') }}
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && '0' || '1' }}
       NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
       TRELLIS_CACHE_DIR: ${{ github.workspace }}/target/trellis-nats-cache
       TRELLIS_TEST_NATS_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
@@ -567,7 +606,20 @@ jobs:
       TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
       TRELLIS_TEST_EVENTS_BIN: ${{ github.workspace }}/dist/runtime-binaries/fixtures/events
     steps:
+      # Another job can use this runner between compilation and execution.
+      # Its checkout cleans the marker along with the generated inputs.
+      - name: Check for this attempt's compiled workspace
+        id: prepared
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          if [[ -f .rust-test-workspace && "$(cat .rust-test-workspace)" == "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT/$GITHUB_SHA" ]] &&
+            [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] && git diff --quiet HEAD; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check out repository
+        if: steps.prepared.outputs.reuse != 'true'
         uses: actions/checkout@v4
         with:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
@@ -577,21 +629,22 @@ jobs:
       # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
       # target/ with the other runners on its host.
       - name: Remove untracked files except target/
-        if: runner.environment == 'self-hosted'
+        if: runner.environment == 'self-hosted' && steps.prepared.outputs.reuse != 'true'
         run: |
           git clean -ffdx --exclude=/target/
-          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
-            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
-            [ -L target ] || rm -rf target
-            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
-          fi
+          # Unrelated jobs can clean the runner checkout between compilation
+          # and execution. Keep both stages' Cargo output on the work volume.
+          cache="${TRELLIS_CI_TARGET_ROOT:-$RUNNER_TOOL_CACHE/trellis/$GITHUB_REPOSITORY}/rust"
+          mkdir -p "$cache"
+          [ -L target ] || rm -rf target
+          ln -sfn "$cache" target
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
         with:
-          generated: true
-          protocol-wasm: true
-          portal: true
+          generated: ${{ steps.prepared.outputs.reuse != 'true' }}
+          protocol-wasm: ${{ steps.prepared.outputs.reuse != 'true' }}
+          portal: ${{ steps.prepared.outputs.reuse != 'true' }}
           node: true
 
       - name: Download runtime and fixture binaries
@@ -660,9 +713,9 @@ jobs:
         run: bash scripts/check.sh rust
 
   typescript-checks:
-    name: TypeScript checks
+    name: TypeScript checks and SDK tests
     needs: [install, build]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -692,12 +745,14 @@ jobs:
         env:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
-        run: bash scripts/check.sh typescript-checks
+        run: |
+          bash scripts/check.sh typescript-checks
+          bash scripts/run-sdk-tests.sh
 
   demos:
     name: Demo consumers
     needs: [install, build]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -748,7 +803,7 @@ jobs:
           retention-days: 3
 
   typescript-tests:
-    name: TypeScript tests
+    name: TypeScript integration tests
     needs: [install, build, build-fixtures]
     runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-ts"]') }}
     timeout-minutes: 45
@@ -786,12 +841,12 @@ jobs:
         env:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
-        run: bash scripts/check.sh typescript-tests
+        run: bash scripts/run-ts-integration.sh
 
   testkit-tests:
     name: Rust testkit tests
     needs: [install, build, build-fixtures]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 45
     steps:
       - name: Check out repository
@@ -826,7 +881,7 @@ jobs:
       - name: Run Rust testkit tests
         run: bash scripts/check.sh testkit-tests
 
-  # The candidate's release build starts on an installation the previous
+  # The candidate starts on an installation the previous
   # published release made: it must upgrade it once both are stable releases,
   # and may refuse it, changing nothing, only between release candidates. The
   # test binary comes from build-fixtures and the server from build; nothing
@@ -834,7 +889,7 @@ jobs:
   upgrade:
     name: Upgrade from the previous release
     needs: [install, build, build-fixtures]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -869,7 +924,7 @@ jobs:
   examples:
     name: Documented examples
     needs: [install, build]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -1029,7 +1084,7 @@ jobs:
   rust-testkit-consumer:
     name: Rust testkit artifact-only consumer
     needs: [rust-testkit-package]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 45
     steps:
       # A self-hosted runner reuses its workspace; this job has no checkout to clean it.
@@ -1171,7 +1226,7 @@ jobs:
   typescript-testkit-package:
     name: npm packages on Node ${{ matrix.node }}
     needs: [install, demos, build]
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "X64", "trellis-general"]') }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -1272,10 +1327,24 @@ jobs:
   # compares what a registry already holds with the verified artifact, skips
   # it when identical and fails when it differs; it never overwrites a
   # published version.
+  release-helper:
+    name: Build release helper
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --locked -p xtask && strip target/debug/xtask
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-helper
+          path: target/debug/xtask
+          retention-days: 3
+
   release-metadata:
     name: Release metadata
-    if: startsWith(github.ref, 'refs/heads/release/v')
-    needs: [rust-testkit-package]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/v')
+    needs: [rust-testkit-package, release-helper]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -1312,13 +1381,19 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-helper
+          path: ${{ runner.temp }}/bin
+      - run: chmod +x "$RUNNER_TEMP/bin/xtask"
+
       - name: Validate release metadata and write the notes
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          cargo xtask release check-metadata --version "${RELEASE_TAG#v}"
-          cargo xtask release write-notes --tag "$RELEASE_TAG" --output dist/release-notes.md
+          "$RUNNER_TEMP/bin/xtask" release check-metadata --version "${RELEASE_TAG#v}"
+          "$RUNNER_TEMP/bin/xtask" release write-notes --tag "$RELEASE_TAG" --output dist/release-notes.md
 
       - name: Download the verified public crates
         uses: actions/download-artifact@v8
@@ -1330,7 +1405,8 @@ jobs:
       # contents changed under a kept version would never reach anyone. Every
       # publish job waits on this job, so a mismatch publishes nothing.
       - name: Require published crate versions to match
-        run: cargo xtask release check-published --packages "$RUNNER_TEMP/crates"
+        run: >-
+          "$RUNNER_TEMP/bin/xtask" release check-published --packages "$RUNNER_TEMP/crates"
 
       - name: Upload release notes
         uses: actions/upload-artifact@v7
@@ -1465,10 +1541,17 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-helper
+          path: ${{ runner.temp }}/bin
+      - run: chmod +x "$RUNNER_TEMP/bin/xtask"
+
       # A resumed run first proves that what crates.io already holds is what
       # this run verified.
       - name: Compare published versions with the verified crates
-        run: cargo xtask release check-published --packages "$RUNNER_TEMP/crates"
+        run: >-
+          "$RUNNER_TEMP/bin/xtask" release check-published --packages "$RUNNER_TEMP/crates"
 
       - name: Authenticate with crates.io
         id: auth
@@ -1510,7 +1593,7 @@ jobs:
             archive="target/package/$crate-${version[$crate]}.crate"
             rm -f -- "$archive"
             cargo package --no-verify --allow-dirty --locked --config .cargo/publication.toml -p "$crate"
-            cargo xtask release compare-crate "$RUNNER_TEMP/crates/$crate-${version[$crate]}.crate" "$archive"
+            "$RUNNER_TEMP/bin/xtask" release compare-crate "$RUNNER_TEMP/crates/$crate-${version[$crate]}.crate" "$archive"
           done
 
           # Each dependency reaches the index before its consumer publishes.
@@ -1523,7 +1606,8 @@ jobs:
           done
 
       - name: Require the published crates to match the verified ones
-        run: cargo xtask release check-published --packages "$RUNNER_TEMP/crates"
+        run: >-
+          "$RUNNER_TEMP/bin/xtask" release check-published --packages "$RUNNER_TEMP/crates"
 
   publish-images:
     name: Publish ${{ matrix.image }} image

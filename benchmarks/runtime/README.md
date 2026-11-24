@@ -101,9 +101,9 @@ npm run bench:runtime -- --providers=4 --output=/tmp/opencode/provider-perf
 ### CI tracking
 
 `.github/workflows/performance.yml` is explicitly dispatched with a successful
-**Check run ID**, pins that run's exact commit, and consumes its already-built
+**Pipeline run ID** from a trusted push or manual run that built artifacts. It pins that commit and consumes its already-built
 server/CLI and generated/WASM artifacts. A producer builds native/browser
-workloads once; the execution job does not rebuild. Check artifacts currently
+workloads once. Compare runs with the same runtime profile; release pushes measure the shipped optimization settings. Pipeline artifacts currently
 expire after one day, so start performance measurement while they still exist.
 Markdown appears in the job summary; the full report tree and raw evidence are
 retained as a 30-day artifact. Nothing is published externally, and no automatic

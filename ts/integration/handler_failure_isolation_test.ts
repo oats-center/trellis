@@ -8,6 +8,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { Result, UnexpectedError } from "@oatscenter/result";
+import {
+  ensureTelemetryRuntime,
+  useHostTelemetryProviders,
+} from "@oatscenter/trellis/telemetry";
 import { TrellisService } from "@oatscenter/trellis/service";
 
 import {
@@ -76,9 +80,18 @@ test("a TypeScript Live handler's failure reaches its caller only as a reference
       trellisUrl: runtime.trellisUrl,
       participant: participants.LiveV1Provider.participant,
       seed: identity.seed,
+      telemetry: false,
       runtime: { log },
     }).orThrow();
     try {
+      const host = useHostTelemetryProviders({ traces: true });
+      assert.equal(
+        await ensureTelemetryRuntime({
+          serviceName: "live-failures-ts",
+          role: "service",
+        }),
+        host,
+      );
       await provider.handleWatch(async ({ input, emit }) => {
         if (input.value === "fail") {
           throw new Error("fixture live failure: the store is unreachable");

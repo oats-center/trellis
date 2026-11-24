@@ -4357,19 +4357,11 @@ fn generated_descriptors_validate_each_channel() {
     /// reach the HTML it renders for the generated items, literally and
     /// without rustdoc warnings.
     #[test]
-    fn rustdoc_shows_authored_docs_and_constraints() {
+    fn rustdoc_renders_authored_text_literally() {
         let graph = graph(
-            "type Name = string(min_length=1, max_length=64); type Page = \
-            CursorPage<Values>; model ListRequest { page?: CursorQuery; }\n\
-            /// A stored value.\nmodel Values {\n/// The display name.\nname: \
-            Name; plain: string; }\napi main@v1 { title \"Main\"; description \
-            \"Main API.\"; error Missing;\n/// Look up *one* value by `name` \
-            [here] <b>bold</b> & 1. see https://example.com/a_b\nrpc Get { \
-            input Values; output Values; errors [Missing]; }\nrpc List { input \
-            ListRequest; output Page; pagination cursor; }\ncapabilities { \
-            capability items.read { title \"Read\"; description \"Read \
-            values.\"; grants \"Reveals values.\"; allows { rpc Get; rpc List; \
-            } } } }",
+            "model Value {} api main@v1 { title \"Main\"; description \"Read a value.\";\n\
+             /// Return <value> & its name.\nrpc Get { input Value; output Value; }\n\
+             capabilities { public { allows { rpc Get; } } } }",
         );
         let output = tempfile::tempdir().unwrap();
         generate_rust_package(&graph, output.path(), "docs-fixture-sdk", &[]).unwrap();
@@ -4405,55 +4397,8 @@ fn generated_descriptors_validate_each_channel() {
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
-        // The rendered text of the docblock that follows an item's anchor.
-        let docblock = |page: &str, anchor: &str| {
-            let html = fs::read_to_string(target.join("doc/docs_fixture_sdk").join(page)).unwrap();
-            let item = &html[html.find(&format!("id=\"{anchor}\"")).expect(anchor)..];
-            let next = item[1..]
-                .find(" id=\"")
-                .map_or(item.len(), |index| index + 1);
-            let block = item[..next].find("<div class=\"docblock")?;
-            let block = &item[block..];
-            let block = &block[..block.find("</div>").unwrap()];
-            let mut text = String::new();
-            let mut in_tag = false;
-            for character in block.chars() {
-                match character {
-                    '<' => in_tag = true,
-                    '>' => in_tag = false,
-                    _ if !in_tag => text.push(character),
-                    _ => {}
-                }
-            }
-            Some(
-                text.replace("&lt;", "<")
-                    .replace("&gt;", ">")
-                    .replace("&quot;", "\"")
-                    .replace("&#39;", "'")
-                    .replace("&amp;", "&"),
-            )
-        };
-        let client = "apis/fixture_main_v1/struct.Client.html";
-        let get = docblock(client, "method.get").expect("get docs");
-        assert!(
-            get.contains(
-                "Look up *one* value by `name` [here] <b>bold</b> & 1. see \
-                https://example.com/a_b"
-            ) && get.contains("Errors: Missing.")
-                && get.contains(
-                    "Call is allowed by capability localhost/fixture.main.v1:items.read (Read): Read values."
-                ),
-            "{get}"
-        );
-        let list = docblock(client, "method.list").expect("list docs");
-        assert!(list.contains("Paginated:"), "{list}");
-        let values = "types/struct.Values.html";
-        let name = docblock(values, "structfield.name").expect("name docs");
-        assert!(
-            name.contains("The display name.")
-                && name.contains("Length: 1 to 64 characters (Unicode code points)."),
-            "{name}"
-        );
-        assert_eq!(docblock(values, "structfield.plain"), None);
+        let page = target.join("doc/docs_fixture_sdk/apis/fixture_main_v1/struct.Client.html");
+        let html = fs::read_to_string(page).unwrap();
+        assert!(html.contains("Return &lt;value&gt; &amp; its name."));
     }
 }

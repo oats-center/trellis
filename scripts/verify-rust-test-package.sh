@@ -55,7 +55,9 @@ safe_extract() {
   tar -xzf "$archive" -C "$dest" --no-same-owner
 }
 
-work="$(mktemp -d)"
+# Keep Cargo targets on the runner work volume. A self-hosted runner can
+# have a small memory-backed /tmp, and the final consumer link is large.
+work="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/testkit-consumer.XXXXXXXX")"
 extracted=""
 cleanup() { rm -rf "$work" ${extracted:+"$extracted"}; }
 trap cleanup EXIT
