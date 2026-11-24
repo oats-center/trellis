@@ -9,10 +9,6 @@ fn main() {
     let manifest_dir = Path::new(&manifest_dir);
     println!(
         "cargo:rerun-if-changed={}",
-        trellis_builtin_contracts::source_root().display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
         manifest_dir.join("../models/Cargo.toml").display()
     );
     let builtin = trellis_builtin_contracts::compile().expect("compile built-in model snapshot");
@@ -35,7 +31,9 @@ fn main() {
     let files = std::iter::once("trellis.toml".to_owned())
         .chain(manifest.sources.values().cloned())
         .map(|path| {
-            let text = std::fs::read_to_string(root.join(&path)).expect("built-in source");
+            let source = root.join(&path);
+            println!("cargo:rerun-if-changed={}", source.display());
+            let text = std::fs::read_to_string(source).expect("built-in source");
             (path, text)
         })
         .collect::<std::collections::BTreeMap<_, _>>();
