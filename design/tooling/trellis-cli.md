@@ -177,7 +177,7 @@ trellis svc <id> disable|remove [-f]
 trellis svc <deployment-id> updates
 trellis svc <deployment-id> approve|reject [<update-id>] [--acknowledge-shared-apis]
 trellis svc <id> export [--out <file>] [--passphrase-file <path|->]
-trellis svc import <file> [--digest <sha256>] [--passphrase-file <path|->] [--check]
+trellis svc import <file> [--passphrase-file <path|->] [--check]
                    [--acknowledge-shared-apis] [--acknowledge-unauthenticated-webhooks]
 
 trellis dev <name> create --source <project> | --package <release> ...
@@ -272,20 +272,17 @@ see `design/auth/service-export.md`. Export starts the
 arrives, writing a temporary file beside the destination and moving it into
 place with a rename that refuses an existing file, so a file that appeared
 meanwhile, such as another export's, is never replaced. It prints the
-SHA-256 and size of the bytes it wrote. `remove` names the installation in its confirmation; for a
+file's size. `remove` names the installation in its confirmation; for a
 deployment imported within the last day, `disable` asks the same confirmation
 and `remove` warns, since the installation it moved from has a deployment
-with the same ID. Import copies the file once into a private temporary file
-and refuses it when that copy's SHA-256 differs from `--digest`;
-without `--digest` it asks a terminal to confirm the digest and fails
-elsewhere. It checks the passphrase against the bundle's header before it
-connects, then streams that copy's decrypted content as the `Auth.Deployments.Import`
+with the same ID. Import checks the passphrase against the bundle's header
+before it connects, then streams the file's decrypted content as the `Auth.Deployments.Import`
 Operation's byte stream and prints the report: webhook URLs at the new
 origin, roles and direct grants to recreate, and what stayed behind. The
 passphrase comes from `--passphrase-file` (`-` for standard input), a
 terminal question (asked twice for export), or piped standard input, and is
 never sent to Auth. With `--format json`, export prints `{ file, size,
-digest, deploymentId, report }` and import `{ digest, import }`.
+deploymentId, report }` and import `{ import }`.
 
 Provisioning returns one-use service/device material once. The CLI does not
 persist returned private identity material unless the caller explicitly directs

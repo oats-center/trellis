@@ -74,9 +74,6 @@ every secret of the service, so use a long passphrase (at least 12
 characters) and send it apart from the file. In a script, give it with
 `--passphrase-file PATH`, or `-` to read standard input.
 
-The export prints the bundle's SHA-256. Give it to whoever imports, through a
-channel you trust: it is how they know the file is the one you exported.
-
 The export writes a temporary file beside `--out` and moves it into place
 once the bundle is whole. It refuses to replace a file, including one that
 appeared while it ran, such as another export to the same name; the file
@@ -85,15 +82,14 @@ that was there stays as it was.
 ## Import
 
 ```sh
-trellis --profile new svc import orders.trellis-service --digest <sha256> --check
-trellis --profile new svc import orders.trellis-service --digest <sha256>
+trellis --profile new svc import orders.trellis-service --check
+trellis --profile new svc import orders.trellis-service
 ```
 
 `--check` verifies the bundle and runs the import in a transaction that is
-rolled back, so you see what it would do. Without `--digest`, the CLI shows
-the file's SHA-256 on a terminal and asks you to confirm it; a script must
-pass it. A wrong passphrase, or a file that changed since the export, is
-refused before the new installation changes.
+rolled back, so you see what it would do. A wrong passphrase, or a file that
+changed since the export, is refused before the new installation changes:
+the passphrase is what proves the file is the one you exported.
 
 The import refuses, and names what is in the way, when the deployment's ID
 already exists in the new installation, when the same service is already
@@ -126,7 +122,7 @@ installation, then run the same import again to finish it:
 
 ```sh
 trellis --profile new svc orders provision
-trellis --profile new svc import orders.trellis-service --digest <sha256>
+trellis --profile new svc import orders.trellis-service
 ```
 
 ## Point the processes at the new installation

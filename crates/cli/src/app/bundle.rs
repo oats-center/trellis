@@ -4,11 +4,11 @@
 //! Auth reads the service into a bundle's content and sends it over the
 //! signed-in session; this command encrypts it with the operator's passphrase
 //! as it arrives, so the file is never written in the clear and the
-//! passphrase never leaves this process. Export reports the SHA-256 of the
-//! bytes it wrote. Import copies the file once into a private temporary file,
-//! checks that copy's SHA-256, decrypts the same copy as it sends it, and
-//! Auth checks every part against the bundle's manifest before it changes
-//! anything.
+//! passphrase never leaves this process. Import decrypts the file as it
+//! sends it, and Auth checks every part against the bundle's manifest before
+//! it changes anything. The passphrase is the proof that a bundle is whole and
+//! comes from whoever holds it: a changed, cut or swapped file fails the
+//! header's MAC or a chunk's tag.
 //!
 //! The file is a short text header followed by the content in chunks:
 //!
@@ -27,7 +27,7 @@
 //! key derived from it and the nonce. A wrong passphrase fails the header's
 //! MAC; any change to the content, or cutting it short, fails a chunk's tag.
 
-use std::io::{BufRead, Read, Seek as _, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -37,7 +37,6 @@ use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305};
 use ring::hmac;
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde_json::{json, Value};
-use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::app::{connect_authenticated_cli_client, wire};
@@ -303,48 +302,6 @@ fn passphrase(file: Option<&Path>, new: bool) -> miette::Result<String> {
     Ok(text)
 }
 
-/// Writes through to `inner`, keeping the SHA-256 and length of every byte
-/// it took, so a digest is of exactly the bytes moved.
-struct Hashing<W: Write> {
-    inner: W,
-    hash: Sha256,
-    size: u64,
-}
-
-impl<W: Write> Hashing<W> {
-    fn new(inner: W) -> Self {
-        Self {
-            inner,
-            hash: Sha256::new(),
-            size: 0,
-        }
-    }
-
-    /// The writer, and the SHA-256 in lowercase hex and length of what it took.
-    fn finish(self) -> (W, String, u64) {
-        let digest = self
-            .hash
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        (self.inner, digest, self.size)
-    }
-}
-
-impl<W: Write> Write for Hashing<W> {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        let written = self.inner.write(data)?;
-        self.hash.update(&data[..written]);
-        self.size += written as u64;
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
-}
-
 /// The message of a failed Operation, or its state when it ended otherwise.
 fn ended(
     state: &str,
@@ -419,8 +376,7 @@ pub(super) async fn export(
         .map_err(|error| miette::miette!("cannot write in {}: {error}", directory.display()))?;
     let written = async {
         let file = partial.as_file().try_clone().into_diagnostic()?;
-        let mut encryptor =
-            Encryptor::new(std::io::BufWriter::new(Hashing::new(file)), &passphrase)?;
+        let mut encryptor = Encryptor::new(std::io::BufWriter::new(file), &passphrase)?;
         let (mut source, mut sink) = tokio::io::duplex(CHUNK);
         let received = async {
             let info = connected
@@ -442,19 +398,16 @@ pub(super) async fn export(
             Ok::<_, miette::Report>(())
         };
         tokio::try_join!(received, encrypted)?;
-        // The digest and size are of the bytes written, not of whatever the
-        // file holds by the time they are reported.
-        let (file, digest, size) = encryptor
+        let file = encryptor
             .finish()?
             .into_inner()
-            .map_err(|error| miette::miette!("cannot write the bundle: {error}"))?
-            .finish();
+            .map_err(|error| miette::miette!("cannot write the bundle: {error}"))?;
         file.sync_all().into_diagnostic()?;
-        Ok::<_, miette::Report>((digest, size))
+        Ok::<_, miette::Report>(file.metadata().into_diagnostic()?.len())
     }
     .await;
     // Dropping the partial file on any failure deletes it.
-    let (digest, size) = written?;
+    let size = written?;
     partial.persist_noclobber(&out).map_err(|error| {
         if error.error.kind() == std::io::ErrorKind::AlreadyExists {
             miette::miette!(
@@ -471,7 +424,6 @@ pub(super) async fn export(
         return output::print_json(&json!({
             "file": out,
             "size": size,
-            "digest": digest,
             "deploymentId": deployment_id,
             "report": report,
         }));
@@ -480,61 +432,23 @@ pub(super) async fn export(
     output::Details::untitled()
         .field("File", out.display())
         .field("Size", format!("{size} bytes"))
-        .field("SHA-256", &digest)
         .print();
     print_report(report);
     output::note(
-        "Give the importing administrator the SHA-256 above through a channel you trust, \
-        and the passphrase separately. This installation still runs the service: stop or \
-        remove it once it runs in the new one.",
+        "Give the importing administrator the passphrase separately from the file. This \
+        installation still runs the service: stop or remove it once it runs in the new one.",
     );
-    output::next(&format!(
-        "trellis svc import {} --digest {digest}",
-        out.display()
-    ));
+    output::next(&format!("trellis svc import {}", out.display()));
     Ok(())
 }
 
 /// Import a bundle written by `trellis svc <ID> export`.
 pub(super) async fn import(format: OutputFormat, args: &SvcImportArgs) -> miette::Result<()> {
-    // The file is read once, into a copy no other process can open. The
-    // digest confirmed is that copy's, and the copy is what is decrypted
-    // and sent, so a file replaced or changed while the import runs cannot
-    // send content other than the confirmed.
-    let mut source = std::fs::File::open(&args.file)
+    let file = std::fs::File::open(&args.file)
         .map_err(|error| miette::miette!("cannot read {}: {error}", args.file.display()))?;
-    let mut copy = Hashing::new(
-        tempfile::tempfile()
-            .map_err(|error| miette::miette!("cannot copy the bundle to read it: {error}"))?,
-    );
-    std::io::copy(&mut source, &mut copy)
-        .map_err(|error| miette::miette!("cannot read {}: {error}", args.file.display()))?;
-    drop(source);
-    let (mut copy, digest, _) = copy.finish();
-    copy.seek(std::io::SeekFrom::Start(0)).into_diagnostic()?;
-    match &args.digest {
-        Some(expected) => miette::ensure!(
-            expected.trim().eq_ignore_ascii_case(&digest),
-            help = "Copy the file again, or ask the exporting administrator for the right digest.",
-            "the bundle's SHA-256 is {digest}, not the {} given; it is not the file that was \
-            exported",
-            expected.trim()
-        ),
-        None => {
-            miette::ensure!(
-                prompt::interactive(),
-                help = "Give the digest the export printed with --digest.",
-                "the bundle's SHA-256 must be confirmed: it is {digest}"
-            );
-            let mut form = prompt::Form::new(true);
-            form.explain(&format!("The bundle's SHA-256 is {digest}"));
-            let same = form.yes_no("Is it the one the export printed?", None, false)?;
-            miette::ensure!(same, "not imported: the digest was not confirmed");
-        }
-    }
     let passphrase = passphrase(args.passphrase_file.as_deref(), false)?;
     // A wrong passphrase is refused here, before anything is sent.
-    let mut decryptor = Decryptor::open(std::io::BufReader::new(copy), &passphrase)?;
+    let mut decryptor = Decryptor::open(std::io::BufReader::new(file), &passphrase)?;
     let (_, connected) = connect_authenticated_cli_client().await?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
         .trellis_auth_v1();
@@ -593,7 +507,7 @@ pub(super) async fn import(format: OutputFormat, args: &SvcImportArgs) -> miette
     };
     sent.map_err(|(_, error)| error)?;
     if output::is_json(format) {
-        return output::print_json(&json!({ "digest": digest, "import": result }));
+        return output::print_json(&json!({ "import": result }));
     }
     let report = &result["report"];
     let deployment = output::field(report, "deploymentId");
