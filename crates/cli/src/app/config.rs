@@ -739,7 +739,9 @@ fn show(
     // A rollback undoes one layer: the deployment's settings, which every
     // instance shares, or one instance's overrides. Name the layer that held
     // the refused values in the revisions refused, and both when they came
-    // from both or the check refused the revision as a whole.
+    // from both or the check refused the revision as a whole. A refused value
+    // from beneath an override the refused revision removed is undone by
+    // restoring that override, which leaves the other instances alone.
     for instance in output::list(current, "instances") {
         let settings = &instance["settings"];
         if settings["state"] != json!("rejected") {
@@ -760,7 +762,19 @@ fn show(
             })
             .unwrap_or_default();
         let known = !sources.is_empty();
-        let rollback = if settings["instanceRevision"].is_null()
+        let rollback = if let Some(restore) = settings["overrideRevision"].as_u64() {
+            let restore = format!(
+                "restore the overrides it accepted with `trellis {prefix} {id} config --instance {} rollback {restore}`",
+                output::field(instance, "instanceId")
+            );
+            if sources.iter().all(|source| *source != "instance") {
+                format!(
+                    "{restore}, or roll back the deployment's settings, which changes every instance, with {deployment_rollback}"
+                )
+            } else {
+                restore
+            }
+        } else if settings["instanceRevision"].is_null()
             || (known && sources.iter().all(|source| *source != "instance"))
         {
             format!("roll back the deployment's settings with {deployment_rollback}")

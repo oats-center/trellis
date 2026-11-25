@@ -529,6 +529,17 @@ revision as a whole, it names both. Following it never rolls back values
 every instance shares while the override that was refused stays in place,
 or the reverse.
 
+Removing an override can expose a deployment value the instance refuses,
+while the other instances accept it. Auth keeps, with each report, the
+instance revision of the settings the instance applied last
+(`applied_instance_revision`), since a rejecting instance keeps running them.
+When every refused value from beneath the instance was its own override in
+that revision, the status's `overrideRevision` names it, and `show` advises
+`--instance ID rollback <overrideRevision>` first, which restores the
+overrides it accepted, and the deployment's rollback only as the alternative
+that changes every instance. An override that was itself refused before it
+was removed was never applied, so the advice stays the deployment's.
+
 A service ID or title that names a waiting claim targets the claim, so
 settings can be set before the service connects. `show` lists values the build
 doesn't use and marks values that don't fit it.

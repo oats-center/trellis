@@ -394,12 +394,20 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                         }
                         format!("{}…", &reason[..end])
                     });
+                    // A rejection leaves the instance on the settings it
+                    // applied last, so their instance revision is kept.
                     connection.execute(
                         "INSERT INTO auth_config_reports(instance_id,deployment_revision,\
-                        instance_revision,state,fields_json,reason,reported_at) \
-                        VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(instance_id) DO UPDATE SET \
+                        instance_revision,applied_instance_revision,state,fields_json,reason,\
+                        reported_at) \
+                        VALUES(?1,?2,?3,CASE WHEN ?4='applied' THEN ?3 END,?4,?5,?6,?7) \
+                        ON CONFLICT(instance_id) DO UPDATE SET \
                         deployment_revision=excluded.deployment_revision,\
-                        instance_revision=excluded.instance_revision,state=excluded.state,\
+                        instance_revision=excluded.instance_revision,\
+                        applied_instance_revision=CASE WHEN excluded.state='applied' \
+                        THEN excluded.instance_revision \
+                        ELSE auth_config_reports.applied_instance_revision END,\
+                        state=excluded.state,\
                         fields_json=excluded.fields_json,reason=excluded.reason,\
                         reported_at=excluded.reported_at",
                         params![
@@ -1349,7 +1357,8 @@ fn response(
         "SELECT i.instance_id,i.title,c.deployment_revision,c.instance_revision,c.connected_at,\
         d.participant_id,i.installed_revision,\
         (SELECT max(revision) FROM auth_config_revisions WHERE target_key='instance:'||i.instance_id),\
-        r.deployment_revision,r.instance_revision,r.state,r.fields_json,r.reason,r.reported_at \
+        r.deployment_revision,r.instance_revision,r.state,r.fields_json,r.reason,r.reported_at,\
+        r.applied_instance_revision \
         FROM auth_instances i JOIN auth_deployments d ON d.deployment_id=i.deployment_id \
         LEFT JOIN auth_config_connections c ON c.instance_id=i.instance_id \
         LEFT JOIN auth_config_reports r ON r.instance_id=i.instance_id \
@@ -1371,7 +1380,8 @@ fn response(
         Report,
     );
     /// The revisions an instance last reported on, what it did with them,
-    /// the fields and reason of a rejection, and when.
+    /// the fields and reason of a rejection, when, and the instance revision
+    /// of the settings it applied last.
     type Report = (
         Option<u32>,
         Option<u32>,
@@ -1379,6 +1389,7 @@ fn response(
         Option<String>,
         Option<String>,
         Option<i64>,
+        Option<u32>,
     );
     let rows = statement
         .query_map(params![target.deployment(), target.instance()], |row| {
@@ -1400,6 +1411,7 @@ fn response(
                     row.get(11)?,
                     row.get(12)?,
                     row.get(13)?,
+                    row.get(14)?,
                 ),
             ))
         })?
@@ -1428,7 +1440,7 @@ fn response(
     for (
         (instance, title, revision, instance_revision, connected, participant, build),
         instance_current,
-        (reported, reported_instance, state, fields, reason, reported_at),
+        (reported, reported_instance, state, fields, reason, reported_at, applied_instance),
     ) in rows
     {
         let declared = match builds.entry(build) {
@@ -1459,7 +1471,7 @@ fn response(
                 .unwrap_or_default();
             // Where each refused value came from in the revisions refused,
             // so the advice names the layer whose rollback undoes it.
-            let sources = if state.as_deref() == Some("rejected") {
+            let (sources, override_revision) = if state.as_deref() == Some("rejected") {
                 let refused = effective(
                     declared,
                     &self::layers(
@@ -1470,18 +1482,51 @@ fn response(
                         Some((reported_instance, reported)),
                     )?,
                 );
-                Some(
-                    fields
-                        .iter()
-                        .filter_map(|name| {
-                            refused
-                                .get(name)
-                                .map(|value| (name.clone(), json!(value.source)))
-                        })
-                        .collect::<Map<String, Value>>(),
+                let sources = fields
+                    .iter()
+                    .filter_map(|name| refused.get(name).map(|value| (name.clone(), value.source)))
+                    .collect::<BTreeMap<_, _>>();
+                // A refused value that came from beneath the instance may
+                // have been its own override in the settings it still runs,
+                // removed by the revision refused. Rolling the instance back
+                // to those settings restores the override it accepted.
+                let beneath = sources
+                    .iter()
+                    .filter(|(_, source)| **source != "instance")
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>();
+                let override_revision = match applied_instance {
+                    Some(applied) if !beneath.is_empty() && Some(applied) != reported_instance => {
+                        let kept = layer(
+                            connection,
+                            storage,
+                            declared,
+                            &own.key(),
+                            Some(applied),
+                            "instance",
+                        )?;
+                        beneath
+                            .iter()
+                            .all(|name| {
+                                kept.fields
+                                    .get(name.as_str())
+                                    .is_some_and(|(value, _)| value.is_some())
+                            })
+                            .then_some(applied)
+                    }
+                    _ => None,
+                };
+                (
+                    Some(
+                        sources
+                            .into_iter()
+                            .map(|(name, source)| (name, json!(source)))
+                            .collect::<Map<String, Value>>(),
+                    ),
+                    override_revision,
                 )
             } else {
-                None
+                (None, None)
             };
             Some(json!({
                 "revision": reported,
@@ -1489,6 +1534,7 @@ fn response(
                 "state": state,
                 "fields": fields,
                 "sources": sources,
+                "overrideRevision": override_revision,
                 "reason": reason,
                 "at": reported_at.map(timestamp).transpose()?,
             }))

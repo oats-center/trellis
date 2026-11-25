@@ -1753,6 +1753,12 @@ model AuthConfigApplyStatus {
   /// deployment's settings, or the build's default. Rolling back the layer
   /// that holds a refused value undoes it.
   sources?: map<AuthConfigSource>;
+  /// For `rejected`, when every refused value that came from beneath the
+  /// instance's overrides was its own override in the settings it applied
+  /// last and still runs: that instance revision. Rolling the instance back
+  /// to it restores those overrides without changing the deployment's
+  /// settings.
+  overrideRevision?: AuthConfigRevisionNumber;
   reason?: AuthConfigRejectReason;
   /// When the instance reported it, or for `pending`, when the newest
   /// revision was saved.

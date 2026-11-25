@@ -1263,11 +1263,14 @@ CREATE TABLE auth_config_connections (
 -- revisions, and whether it applied them or its own checks rejected them. An
 -- instance whose report names older revisions than the current ones, or that
 -- connected with a build other than the one installed now, has not read the
--- newest yet, which administrators see as pending.
+-- newest yet, which administrators see as pending. A rejecting instance keeps
+-- the settings it applied last; their instance revision tells whether rolling
+-- its overrides back restores one it accepted.
 CREATE TABLE auth_config_reports (
     instance_id TEXT PRIMARY KEY REFERENCES auth_instances(instance_id) ON DELETE CASCADE,
     deployment_revision INTEGER CHECK (deployment_revision BETWEEN 1 AND 4294967295),
     instance_revision INTEGER CHECK (instance_revision BETWEEN 1 AND 4294967295),
+    applied_instance_revision INTEGER CHECK (applied_instance_revision BETWEEN 1 AND 4294967295),
     state TEXT NOT NULL CHECK (state IN ('applied', 'rejected')),
     fields_json TEXT NOT NULL CHECK (json_valid(fields_json)),
     reason TEXT CHECK (length(reason) <= 1024),

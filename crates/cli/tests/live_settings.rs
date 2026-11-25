@@ -679,7 +679,8 @@ async fn a_rejected_instance_is_told_to_roll_back_the_layer_that_held_the_refuse
 
     // The deployment's endpoint goes plain too, which the override hides;
     // then the override is removed, so the refused endpoint is the
-    // deployment's, and rolling back the instance would change nothing.
+    // deployment's. The override removed was refused itself, so restoring
+    // it would bring back nothing the instance accepted.
     cli.run(&[
         "svc",
         &deployment,
@@ -697,10 +698,11 @@ async fn a_rejected_instance_is_told_to_roll_back_the_layer_that_held_the_refuse
         status["state"] == "rejected" && status["instanceRevision"] == 3
     })
     .await;
+    let any_instance_rollback = format!("--instance {instance} rollback");
     for view in [deployment_view(), on_instance(&[])] {
         let told = told(view).await;
         assert!(told.contains(&deployment_rollback), "{told}");
-        assert!(!told.contains(&instance_rollback), "{told}");
+        assert!(!told.contains(&any_instance_rollback), "{told}");
     }
 
     // Following it brings the instance back on the deployment's earlier
@@ -717,5 +719,174 @@ async fn a_rejected_instance_is_told_to_roll_back_the_layer_that_held_the_refuse
     drop(config);
     lifecycle.stop();
     running.await.unwrap().unwrap();
+    runtime.shutdown().await.unwrap();
+}
+
+// An instance overrides a value and accepts it. The deployment's value
+// changes to one only that instance refuses, which its override hides; then
+// the override is removed, and the instance refuses the deployment's value.
+// Rolling back the deployment would change every instance, so the advice is
+// the instance's rollback to the override it accepted, with the deployment's
+// rollback named as the alternative. Following it applies the override again
+// and leaves the deployment's settings, and the instance that accepts them,
+// as they were.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_instance_refusing_a_value_its_removed_override_hid_is_told_to_restore_the_override() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let strict = runtime
+        .register_service::<Participant>("restored")
+        .await
+        .unwrap();
+    let tolerant = runtime.add_service_instance(&strict).await.unwrap();
+    runtime
+        .set_config(
+            &strict,
+            json!({ "endpoint": "https://one.example" }),
+            json!({ "apiKey": "k1" }),
+        )
+        .await
+        .unwrap();
+    let deployment = strict.deployment_id().to_owned();
+    let instance = strict.instance_id().to_owned();
+    let cli = Cli::login(&mut runtime).await;
+    let mut strict_service = Participant::connect(strict.connect_options())
+        .await
+        .unwrap();
+    let strict_config = Provider::new(&mut strict_service).config();
+    strict_config.check(https_only).await.unwrap();
+    let strict_lifecycle = strict_service.lifecycle();
+    let strict_running = tokio::spawn(strict_service.run());
+    let mut tolerant_service = Participant::connect(tolerant.connect_options())
+        .await
+        .unwrap();
+    let tolerant_config = Provider::new(&mut tolerant_service).config();
+    let tolerant_lifecycle = tolerant_service.lifecycle();
+    let tolerant_running = tokio::spawn(tolerant_service.run());
+    assert!(strict_lifecycle.ready().await, "the strict instance serves");
+    assert!(
+        tolerant_lifecycle.ready().await,
+        "the tolerant instance serves"
+    );
+
+    // One instance's settings status in the deployment's view once `matches`.
+    let status = |id: String, matches: fn(&Value) -> bool| {
+        let cli = cli.clone();
+        let deployment = deployment.clone();
+        async move {
+            let mut last = Value::Null;
+            let found = tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    let view = cli.json(&["svc", &deployment, "config"]).await;
+                    last = view["instances"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|entry| entry["instanceId"] == id.as_str())
+                        .map(|entry| entry["settings"].clone())
+                        .unwrap_or_default();
+                    if matches(&last) {
+                        return last.clone();
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await;
+            found.unwrap_or_else(|_| panic!("{id} never matched; last {last}"))
+        }
+    };
+    let on_instance = |args: &[&str]| {
+        let mut all = vec!["svc", deployment.as_str(), "config", "--instance"];
+        all.push(instance.as_str());
+        all.extend_from_slice(args);
+        all.into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+    let run = |args: Vec<String>| {
+        let cli = cli.clone();
+        async move {
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            cli.run(&args).await
+        }
+    };
+
+    run(on_instance(&["set", "endpoint=https://own.example"])).await;
+    status(instance.clone(), |status| {
+        status["state"] == "applied" && status["instanceRevision"] == 1
+    })
+    .await;
+    cli.run(&[
+        "svc",
+        &deployment,
+        "config",
+        "set",
+        "endpoint=http://two.example",
+    ])
+    .await;
+    status(instance.clone(), |status| {
+        status["state"] == "applied" && status["revision"] == 2
+    })
+    .await;
+    status(tolerant.instance_id().to_owned(), |status| {
+        status["state"] == "applied" && status["revision"] == 2
+    })
+    .await;
+    run(on_instance(&["unset", "endpoint"])).await;
+    let refused = status(instance.clone(), |status| {
+        status["state"] == "rejected" && status["instanceRevision"] == 2
+    })
+    .await;
+    assert_eq!(refused["sources"], json!({ "endpoint": "deployment" }));
+
+    // What an operator is told to run is the contract here: restoring the
+    // override first, and the deployment's rollback only as the alternative
+    // that changes every instance, in both views.
+    let restore = format!("`trellis svc {deployment} config --instance {instance} rollback 1`");
+    let deployment_rollback = format!("`trellis svc {deployment} config rollback REVISION`");
+    for view in [
+        ["svc", deployment.as_str(), "config"]
+            .map(str::to_owned)
+            .to_vec(),
+        on_instance(&[]),
+    ] {
+        let told = String::from_utf8(run(view).await.stderr).unwrap();
+        let restore_at = told.find(&restore);
+        let alternative_at = told.find(&deployment_rollback);
+        assert!(
+            restore_at.is_some() && alternative_at.is_some() && restore_at < alternative_at,
+            "{told}"
+        );
+        assert!(told.contains("which changes every instance"), "{told}");
+    }
+
+    // Following it applies the override again; the deployment's settings
+    // and the instance that accepts them stay as they were.
+    run(on_instance(&["rollback", "1"])).await;
+    let applied = status(instance.clone(), |status| status["state"] == "applied").await;
+    assert_eq!(applied["instanceRevision"], 3);
+    assert_eq!(applied["revision"], 2);
+    assert_eq!(
+        strict_config.current().unwrap().endpoint,
+        "https://own.example"
+    );
+    let history = cli.json(&["svc", &deployment, "config", "history"]).await;
+    assert_eq!(history["revisions"].as_array().unwrap().len(), 2);
+    let view = cli.json(&["svc", &deployment, "config"]).await;
+    let endpoint = view["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["name"] == "endpoint")
+        .unwrap();
+    assert_eq!(endpoint["value"], "http://two.example");
+    assert_eq!(
+        tolerant_config.current().unwrap().endpoint,
+        "http://two.example"
+    );
+
+    drop(strict_config);
+    drop(tolerant_config);
+    strict_lifecycle.stop();
+    tolerant_lifecycle.stop();
+    strict_running.await.unwrap().unwrap();
+    tolerant_running.await.unwrap().unwrap();
     runtime.shutdown().await.unwrap();
 }
