@@ -103,8 +103,9 @@ and State the file has for them. The report lists them under `matched`.
   members;
 - an OIDC provider whose ID is used by another issuer, with the sign-ins
   through it; a person who signed in through it, or through a provider the
-  old installation deleted, still moves with their other sign-ins, such as
-  their password;
+  old installation deleted or disabled, still moves with their other
+  sign-ins, such as their password, and a role mapping through such a
+  provider is left out;
 - a registry or role mapping that exists with other settings;
 - State the same person has here in another form, or a value where another
   one is stored;

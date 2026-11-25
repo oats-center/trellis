@@ -380,3 +380,224 @@ async fn state_moves_only_from_and_into_a_bucket_that_keeps_it() {
         "{report}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// What an import decides, at the Auth transaction an import runs: the
+// records an export reads from one installation's database, applied to
+// another's.
+
+use super::super::installation_export::{apply, read_records, Outcome, Received};
+
+/// The Auth storage over `store`, sealing secrets with `key`.
+fn sealed(store: &Arc<SqliteAuthorizationStore>, key: u8) -> OAuthStorage {
+    OAuthStorage::open(Arc::clone(store), &[key; 32]).unwrap()
+}
+
+/// Another installation, set up with nothing but its own administrator and
+/// the fixture's API, whose `documents.read` capability tells people
+/// `read_grants`.
+fn destination(read_grants: &str) -> (tempfile::TempDir, OAuthStorage, String) {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(open(&directory, SigningKey::from_bytes(&[43; 32])));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator(
+            "admin",
+            Some("a strong bootstrap password"),
+            None,
+            None,
+            NOW,
+        )
+        .unwrap()
+        .principal_id;
+    accept(
+        &store,
+        &admin,
+        &SOURCE.replace("Sees contents.", read_grants),
+        false,
+        NOW,
+    );
+    (directory, sealed(&store, 8), admin)
+}
+
+/// What an export of `source` carries, as an import receives it.
+fn exported_records(source: &OAuthStorage) -> Received {
+    let records = source
+        .authority
+        .transaction(|connection| read_records(connection, source))
+        .unwrap();
+    Received {
+        meta: serde_json::json!({}),
+        records: records
+            .into_iter()
+            .map(|(kind, records)| (kind.to_owned(), records))
+            .collect(),
+        bundles: Vec::new(),
+    }
+}
+
+/// `received` imported into `destination`.
+fn imported(destination: &OAuthStorage, received: &Received) -> Outcome {
+    destination
+        .authority
+        .transaction(|connection| apply(connection, destination, received, &[], NOW))
+        .unwrap()
+}
+
+/// Whether `outcome` skipped a record of `kind` for `id`.
+fn skipped(outcome: &Outcome, kind: &str, id: &str) -> bool {
+    outcome
+        .skipped
+        .iter()
+        .any(|item| item["kind"] == kind && item["id"] == id)
+}
+
+/// A single value `sql` reads from `storage`'s database.
+fn read<T: rusqlite::types::FromSql>(
+    storage: &OAuthStorage,
+    sql: &str,
+    values: impl rusqlite::Params,
+) -> T {
+    storage
+        .authority
+        .reader()
+        .unwrap()
+        .query_row(sql, values, |row| row.get(0))
+        .unwrap()
+}
+
+/// Registers an OIDC provider for `issuer` on `store`, as `admin`.
+fn provider(store: &SqliteAuthorizationStore, admin: &str, issuer: &str) -> String {
+    let registration = super::super::lifecycle::OidcProviderRegistration {
+        provider_id: id(),
+        issuer: issuer.into(),
+        display_name: "Company identity".into(),
+        client_id: "trellis".into(),
+        sealed_client_secret: None,
+        issuer_certificate: None,
+        config: serde_json::json!({ "scopes": [] }),
+        claim_freshness_seconds: 300,
+        expected_revision: 0,
+    };
+    store
+        .transaction(|connection| {
+            store.register_oidc_provider_in_transaction(
+                connection,
+                &mutation(admin, &registration),
+                &registration,
+                NOW,
+            )
+        })
+        .unwrap();
+    registration.provider_id
+}
+
+/// People's OIDC sign-ins, and the role mappings that give roles from a
+/// provider's claims, move only through a provider that is active on the
+/// new installation. A disabled provider moves with its settings, but a
+/// person's sign-in through it is left out and reported, the person moving
+/// with the rest, and its role mapping is skipped with a warning; a mapping
+/// gives only roles the new installation has.
+#[test]
+fn sign_ins_and_role_mappings_move_only_through_active_providers() {
+    let f = fixture();
+    let active = provider(&f.store, &f.admin, "https://active.example.com/");
+    let switched_off = provider(&f.store, &f.admin, "https://disabled.example.com/");
+    let input: trellis_runtime_apis::__types::trellis::AuthUserCreateRequest =
+        serde_json::from_value(serde_json::json!({
+            "username": "linked",
+            "displayName": "Linked person",
+            "password": "a person's own password",
+            "identities": [
+                { "providerId": active, "subject": "active-subject" },
+                { "providerId": switched_off, "subject": "disabled-subject" }
+            ],
+            "idempotencyKey": id()
+        }))
+        .unwrap();
+    let person =
+        super::super::rpc_users::create_user(&f.store, &mutation(&f.admin, &input), &input, NOW)
+            .unwrap()
+            .user
+            .principal_id
+            .to_string();
+    let role = id();
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::RolePut {
+            role_id: role.clone(),
+            expected_revision: 0,
+            title: "Readers".into(),
+            description: "Read documents.".into(),
+            capabilities: vec![f.read.clone()],
+        },
+        NOW,
+    );
+    let mappings: Vec<String> = [&active, &switched_off]
+        .into_iter()
+        .map(|provider| {
+            let mapping = id();
+            policy(
+                &f.store,
+                &f.admin,
+                PolicyMutation::OidcMappingPut {
+                    mapping_id: mapping.clone(),
+                    provider_id: provider.clone(),
+                    claim_name: "/groups".into(),
+                    claim_value: "readers".into(),
+                    role_ids: vec![role.clone()],
+                    expected_revision: 0,
+                },
+                NOW,
+            );
+            mapping
+        })
+        .collect();
+    let disable = trellis_runtime_apis::__types::trellis::AuthOIDCProviderMutationRequest {
+        provider_id: switched_off.parse().unwrap(),
+        expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(1.into()),
+        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
+        extra: Default::default(),
+    };
+    super::super::rpc_users::disable_provider(
+        &f.store,
+        &mutation(&f.admin, &disable),
+        &disable,
+        NOW,
+    )
+    .unwrap();
+
+    let source = sealed(&f.store, 7);
+    let (_directory, target, _) = destination("Sees contents.");
+    let outcome = imported(&target, &exported_records(&source));
+
+    let sign_ins = |provider: &str| -> i64 {
+        read(
+            &target,
+            "SELECT count(*) FROM auth_provider_identities WHERE principal_id=?1 AND provider=?2",
+            [&person, provider],
+        )
+    };
+    assert_eq!(sign_ins(&active), 1);
+    assert_eq!(sign_ins(&switched_off), 0);
+    assert!(
+        skipped(&outcome, "userSignIn", &person),
+        "{:?}",
+        outcome.skipped
+    );
+    let mapped = |mapping: &str| -> i64 {
+        read(
+            &target,
+            "SELECT count(*) FROM auth_oidc_mapping_roles WHERE mapping_id=?1 AND role_id=?2",
+            [mapping, role.as_str()],
+        )
+    };
+    assert_eq!(mapped(&mappings[0]), 1);
+    assert_eq!(mapped(&mappings[1]), 0);
+    assert!(
+        skipped(&outcome, "oidcRoleMapping", &mappings[1]),
+        "{:?}",
+        outcome.skipped
+    );
+}

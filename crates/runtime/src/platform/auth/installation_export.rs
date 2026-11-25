@@ -291,7 +291,7 @@ fn write_records(
 }
 
 /// The records of each kind, read in one transaction.
-fn read_records(
+pub(super) fn read_records(
     connection: &Connection,
     storage: &OAuthStorage,
 ) -> Result<BTreeMap<&'static str, Vec<Value>>, AuthError> {
@@ -796,10 +796,10 @@ fn current_records(kind: &str, format: u64, records: Vec<Value>) -> Result<Vec<V
 
 /// What a read installation export holds: records by kind, and each
 /// deployment's bundle content in a file of its own.
-struct Received {
-    meta: Value,
-    records: BTreeMap<String, Vec<Value>>,
-    bundles: Vec<(String, Arc<service_bundles::Spool>)>,
+pub(super) struct Received {
+    pub(super) meta: Value,
+    pub(super) records: BTreeMap<String, Vec<Value>>,
+    pub(super) bundles: Vec<(String, Arc<service_bundles::Spool>)>,
 }
 
 /// Read the content `input` holds, refusing a record entry larger than
@@ -930,15 +930,15 @@ struct StateWrite {
 
 /// The outcome of one import transaction.
 #[derive(Default)]
-struct Outcome {
-    created: Vec<Value>,
+pub(super) struct Outcome {
+    pub(super) created: Vec<Value>,
     matched: Vec<Value>,
     changed: Vec<Value>,
-    skipped: Vec<Value>,
+    pub(super) skipped: Vec<Value>,
     /// Records that wait for something this run cannot finish, with what
     /// finishes them.
     pending: Vec<Value>,
-    access: Value,
+    pub(super) access: Value,
     administrator: Value,
     /// Deployments recorded by this import, whose data loads afterwards.
     deployments: Vec<String>,
@@ -1191,7 +1191,7 @@ fn app_settings(record: &Map<String, Value>) -> Result<Value, AuthError> {
 /// Settings take the export's values; an entity that something here is in
 /// the way of is skipped with its reason, and so is everything that would
 /// attach to it.
-fn apply(
+pub(super) fn apply(
     connection: &Connection,
     storage: &OAuthStorage,
     received: &Received,
@@ -1302,12 +1302,18 @@ fn apply(
                     "UPDATE auth_oidc_providers SET sealed_client_secret=?2 WHERE provider_id=?1",
                     params![provider_id, sealed],
                 )?;
-                providers.insert(provider_id.clone(), provider_id.clone());
+                if text(record, "state") == "active" {
+                    providers.insert(provider_id.clone(), provider_id.clone());
+                }
                 outcome.created("oidcProvider", &provider_id);
                 continue;
             }
         };
-        providers.insert(provider_id.clone(), here.clone());
+        // The provider takes the export's state. Only an active one signs
+        // people in, so only its sign-ins and role mappings are carried.
+        if text(record, "state") == "active" {
+            providers.insert(provider_id.clone(), here.clone());
+        }
         let current = rows(
             connection,
             "SELECT display_name,client_id,issuer_certificate,config_json,\
@@ -1486,9 +1492,9 @@ fn apply(
                         "userSignIn",
                         &user_id,
                         format!(
-                            "its sign-in {subject} is through an OIDC provider this import did \
-                            not bring, such as one deleted there; the account was created \
-                            without it"
+                            "its sign-in {subject} is through an OIDC provider that is not \
+                            active here: one deleted or disabled there, or one this import \
+                            skipped; the account was created without it"
                         ),
                     );
                 }
@@ -1602,18 +1608,28 @@ fn apply(
             outcome.skipped(
                 "oidcRoleMapping",
                 &mapping_id,
-                "its provider was not brought",
+                "its provider is not active here: it was not brought, or it is disabled",
             );
             continue;
         };
+        // A mapping gives only roles this installation has as the export
+        // defines them.
         let mut roles = BTreeSet::new();
         for role in mapping["roles"].as_array().into_iter().flatten() {
             let role = role.as_str().unwrap_or_default().to_owned();
-            if skipped_roles.contains(&role) {
+            let here: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_roles WHERE role_id=?1 AND state='active')",
+                [&role],
+                |row| row.get(0),
+            )?;
+            if skipped_roles.contains(&role) || !here {
                 outcome.skipped(
                     "oidcRoleMappingRole",
                     &mapping_id,
-                    format!("role {role} was skipped, so the mapping does not give it"),
+                    format!(
+                        "role {role} is not here as the export defines it, so the mapping does \
+                        not give it"
+                    ),
                 );
             } else {
                 roles.insert(role);
