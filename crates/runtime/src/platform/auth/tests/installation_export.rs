@@ -421,10 +421,10 @@ fn destination(read_grants: &str) -> (tempfile::TempDir, OAuthStorage, String) {
 }
 
 /// What an export of `source` carries, as an import receives it.
-fn exported_records(source: &OAuthStorage) -> Received {
+fn exported_records(source: &OAuthStorage, now: i64) -> Received {
     let records = source
         .authority
-        .transaction(|connection| read_records(connection, source))
+        .transaction(|connection| read_records(connection, source, now))
         .unwrap();
     Received {
         meta: serde_json::json!({}),
@@ -570,7 +570,7 @@ fn sign_ins_and_role_mappings_move_only_through_active_providers() {
 
     let source = sealed(&f.store, 7);
     let (_directory, target, _) = destination("Sees contents.");
-    let outcome = imported(&target, &exported_records(&source));
+    let outcome = imported(&target, &exported_records(&source, NOW));
 
     let sign_ins = |provider: &str| -> i64 {
         read(
@@ -600,4 +600,112 @@ fn sign_ins_and_role_mappings_move_only_through_active_providers() {
         "{:?}",
         outcome.skipped
     );
+}
+
+/// Only access the old installation still honours moves. A grant or a role
+/// assignment that had expired by the time of the export, and a grant or a
+/// role's capability that the old catalog no longer has, stay behind, even
+/// where the new installation's catalog has that capability: the import
+/// cannot bring back what the old installation no longer gives.
+#[test]
+fn only_access_the_source_still_honours_moves() {
+    let f = fixture();
+    let later = create_user(&f.store, &f.admin, NOW);
+    let member = create_user(&f.store, &f.admin, NOW);
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::CapabilityGrant {
+            principal_id: later.clone(),
+            capability_id: f.read.clone(),
+            expected_revision: 0,
+            expires_at: Some(NOW + 10),
+        },
+        NOW,
+    );
+    let role = id();
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::RolePut {
+            role_id: role.clone(),
+            expected_revision: 0,
+            title: "Editors".into(),
+            description: "Read and write documents.".into(),
+            capabilities: vec![f.read.clone(), f.write.clone()],
+        },
+        NOW,
+    );
+    for (principal, expires_at) in [(&f.principal, None), (&member, Some(NOW + 10))] {
+        policy(
+            &f.store,
+            &f.admin,
+            PolicyMutation::RoleAssign {
+                principal_id: principal.clone(),
+                role_id: role.clone(),
+                expected_revision: 0,
+                expires_at,
+            },
+            NOW,
+        );
+    }
+    // The old installation's next build of the API no longer has
+    // `documents.write`; grants and role capabilities that name it remain
+    // in its database, but nothing honours them.
+    let narrowed = SOURCE
+        .replace(
+            r#"  capability documents.write { title "Write"; description "Write documents."; grants "Changes contents."; allows { rpc Put; } }
+"#,
+            "",
+        )
+        .replace(" capability documents.write;", "");
+    assert_ne!(narrowed, SOURCE);
+    accept(&f.store, &f.admin, &narrowed, true, NOW + 1);
+
+    let source = sealed(&f.store, 7);
+    let (_directory, target, _) = destination("Sees contents.");
+    let outcome = imported(&target, &exported_records(&source, NOW + 20));
+    assert!(
+        outcome
+            .created
+            .iter()
+            .any(|item| item["kind"] == "user" && item["id"] == f.principal.as_str()),
+        "{:?}",
+        outcome.created
+    );
+    let granted = |principal: &str, capability: &str| -> bool {
+        read(
+            &target,
+            "SELECT EXISTS(SELECT 1 FROM auth_direct_capabilities \
+            WHERE principal_id=?1 AND capability_id=?2)",
+            [principal, capability],
+        )
+    };
+    assert!(granted(&f.principal, &f.read));
+    assert!(!granted(&f.principal, &f.write));
+    assert!(!granted(&later, &f.read));
+    let role_gives: Vec<String> = target
+        .authority
+        .reader()
+        .unwrap()
+        .prepare(
+            "SELECT rc.capability_id FROM auth_role_capabilities rc JOIN auth_roles r \
+            ON r.role_id=rc.role_id AND r.identity_generation=rc.role_generation \
+            WHERE r.role_id=?1 AND r.state='active' ORDER BY rc.capability_id",
+        )
+        .unwrap()
+        .query_map([&role], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(role_gives, vec![f.read.clone()]);
+    let holds_role = |principal: &str| -> bool {
+        read(
+            &target,
+            "SELECT EXISTS(SELECT 1 FROM auth_role_assignments WHERE principal_id=?1 AND role_id=?2)",
+            [principal, role.as_str()],
+        )
+    };
+    assert!(holds_role(&f.principal));
+    assert!(!holds_role(&member));
 }

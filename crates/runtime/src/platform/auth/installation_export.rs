@@ -294,6 +294,7 @@ fn write_records(
 pub(super) fn read_records(
     connection: &Connection,
     storage: &OAuthStorage,
+    now: i64,
 ) -> Result<BTreeMap<&'static str, Vec<Value>>, AuthError> {
     let mut records: BTreeMap<&'static str, Vec<Value>> = BTreeMap::new();
     let wrap = |rows: Vec<Map<String, Value>>| rows.into_iter().map(Value::Object).collect();
@@ -421,7 +422,7 @@ pub(super) fn read_records(
         }));
     }
     records.insert("users", users);
-    let access = access_records::read_access(connection, None)?;
+    let access = access_records::read_access(connection, None, now)?;
     records.insert(
         "roles",
         access
@@ -704,7 +705,7 @@ pub(crate) async fn export(
                     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                     .collect::<rusqlite::Result<_>>()?;
                 Ok((
-                    read_records(connection, &storage)?,
+                    read_records(connection, &storage, crate::clock::unix_now())?,
                     deployments,
                     administrator,
                     read_state(connection)?,

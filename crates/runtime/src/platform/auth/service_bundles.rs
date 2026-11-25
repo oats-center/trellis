@@ -1062,7 +1062,8 @@ fn read_export(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let provided: Vec<super::authorization_sessions::ProviderImplementation> = decode(&provided)?;
     let apis: Vec<String> = provided.into_iter().map(|api| api.api_id).collect();
-    let access = super::access_records::read_access(connection, Some(&apis))?;
+    let access =
+        super::access_records::read_access(connection, Some(&apis), crate::clock::unix_now())?;
     let operations: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM auth_resource_binding_evidence WHERE owner_kind='deployment' \
         AND owner_id=?1 AND resource_kind='framework_operation')",

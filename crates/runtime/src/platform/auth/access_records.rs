@@ -92,9 +92,16 @@ pub(super) struct AccessDocument {
 /// Read the access to the capabilities of `apis`, or with `None` every role
 /// and direct grant; app consent is read only for `apis`. Users that are
 /// deleted, and principals other than users, are left out.
+///
+/// Only access this installation's authorization honours at `now` is read,
+/// as [`super::policy::entitlements`] counts it: a grant or role
+/// assignment that has expired, and a grant or role capability whose
+/// capability is no longer in the catalog, stay behind, so an import
+/// cannot bring back what the source no longer gives.
 pub(super) fn read_access(
     connection: &Connection,
     apis: Option<&[String]>,
+    now: i64,
 ) -> Result<AccessDocument, AuthError> {
     let apis_json = apis.map(|apis| json(&apis)).transpose()?;
     let mut statement = connection.prepare(
@@ -121,8 +128,10 @@ pub(super) fn read_access(
     for (role_id, generation, title, description, new_users) in roles {
         let capabilities = connection
             .prepare(
-                "SELECT capability_id FROM auth_role_capabilities \
-                WHERE role_id=?1 AND role_generation=?2 ORDER BY capability_id",
+                "SELECT rc.capability_id FROM auth_role_capabilities rc \
+                JOIN auth_capability_identities ci ON ci.capability_id=rc.capability_id \
+                AND ci.identity_generation=rc.capability_generation AND ci.state='active' \
+                WHERE rc.role_id=?1 AND rc.role_generation=?2 ORDER BY rc.capability_id",
             )?
             .query_map(params![role_id, generation], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -131,9 +140,10 @@ pub(super) fn read_access(
                 "SELECT a.principal_id,a.expires_at FROM auth_role_assignments a \
                 JOIN auth_principals p ON p.principal_id=a.principal_id \
                 WHERE a.role_id=?1 AND a.role_generation=?2 \
+                AND (a.expires_at IS NULL OR a.expires_at>?3) \
                 AND p.kind='user' AND p.state!='revoked' ORDER BY a.principal_id",
             )?
-            .query_map(params![role_id, generation], |row| {
+            .query_map(params![role_id, generation, now], |row| {
                 Ok(Member {
                     user_id: row.get(0)?,
                     expires_at: row.get(1)?,
@@ -156,11 +166,12 @@ pub(super) fn read_access(
             JOIN auth_capability_identities ci ON ci.capability_id=d.capability_id \
             AND ci.identity_generation=d.capability_generation \
             JOIN auth_principals p ON p.principal_id=d.principal_id \
-            WHERE p.kind='user' AND p.state!='revoked' \
+            WHERE p.kind='user' AND p.state!='revoked' AND ci.state='active' \
+            AND (d.expires_at IS NULL OR d.expires_at>?2) \
             AND (?1 IS NULL OR ci.api_id IN (SELECT value FROM json_each(?1))) \
             ORDER BY d.principal_id,d.capability_id",
         )?
-        .query_map([&apis_json], |row| {
+        .query_map(params![apis_json, now], |row| {
             Ok(GrantRecord {
                 user_id: row.get(0)?,
                 capability: row.get(1)?,

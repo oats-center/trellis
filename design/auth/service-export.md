@@ -283,7 +283,11 @@ recreates those that give people the service's APIs.
   user; and every app whose implied consent names such a capability. Members
   and grant holders are users only, each named by their Trellis user ID and
   their sign-ins: `local` with the username, or an OIDC provider's ID and
-  issuer with the provider's subject.
+  issuer with the provider's subject. Only access the exporting
+  installation still honours is written, as its authorization counts it: a
+  grant or role assignment that has expired, and a grant or role capability
+  whose capability is no longer in its catalog, stay behind, so an import
+  never gives what the source no longer does.
 - **Users are found, never created.** The import looks for the same person.
   The user with the same user ID is the same person when its sign-ins agree:
   it has the same username or none, and no sign-in of the record belongs to

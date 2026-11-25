@@ -17,7 +17,9 @@ The file carries:
 
 - users, with their IDs, usernames and password hashes, OIDC sign-ins and
   profiles;
-- roles, their members, and capabilities granted directly to users;
+- roles, their members, and capabilities granted directly to users, as far
+  as the old installation still gives them: expired grants and role
+  assignments, and capabilities its catalog no longer has, stay behind;
 - the sign-in settings, the OIDC providers with their client secrets, and
   their role mappings;
 - apps, with their client IDs, and the consent people gave them;
