@@ -43,6 +43,7 @@ use trellis_rs::generated::{ParticipantDescriptor, SerializableErrorData, Trelli
 use trellis_rs::service::{FileTransferInfo, OperationControl, RequestContext, ServerError};
 use trellis_runtime_apis::apis::trellis_auth_v1::{errors, operations, rpc, Provider};
 
+use super::access_records::{AccessDocument, AccessOutcome};
 use super::config::BundledSettings;
 use super::rpc::{caller, rpc_error};
 use super::sqlite::{decode, digest, id, json, Connection};
@@ -56,7 +57,7 @@ use crate::backup::{restore_stream_from, snapshot_stream_into};
 const IMPORT_MARKER: &str = "trellis.import";
 
 /// The content format this build writes and reads.
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 /// The first bytes of the content, before the format number.
 const MAGIC: &[u8; 16] = b"TRELLIS-SERVICE\n";
 /// Bytes per spool chunk and per content chunk this build writes.
@@ -838,6 +839,7 @@ const INSTANCES: &str = "instances.json";
 const SETTINGS: &str = "settings.json";
 const RESOURCES: &str = "resources.json";
 const REPORT: &str = "report.json";
+const ACCESS: &str = "access.json";
 const JOBS: &str = "jobs.jsonl";
 const MANIFEST: &str = "manifest.json";
 
@@ -852,8 +854,7 @@ struct ExportPlan {
     settings: SettingsDocument,
     /// `(kind, name, resource ID, allocation ID, physical ID)` of each ready resource.
     resources: Vec<(String, String, String, String, String)>,
-    roles: Vec<Value>,
-    grants: Vec<Value>,
+    access: AccessDocument,
     operations: bool,
 }
 
@@ -1058,62 +1059,7 @@ fn read_export(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let provided: Vec<super::authorization_sessions::ProviderImplementation> = decode(&provided)?;
     let apis: Vec<String> = provided.into_iter().map(|api| api.api_id).collect();
-    let apis_json = json(&apis)?;
-    let mut statement = connection.prepare(
-        "SELECT r.role_id,r.title,ci.capability_id,\
-        (SELECT count(*) FROM auth_role_assignments a \
-        WHERE a.role_id=r.role_id AND a.role_generation=r.identity_generation) \
-        FROM auth_roles r \
-        JOIN auth_role_capabilities rc ON rc.role_id=r.role_id \
-        AND rc.role_generation=r.identity_generation \
-        JOIN auth_capability_identities ci ON ci.capability_id=rc.capability_id \
-        AND ci.identity_generation=rc.capability_generation \
-        WHERE r.state='active' AND ci.api_id IN (SELECT value FROM json_each(?1)) \
-        ORDER BY r.title,r.role_id,ci.capability_id",
-    )?;
-    let mut roles: BTreeMap<String, (String, Vec<String>, u64)> = BTreeMap::new();
-    for row in statement.query_map([&apis_json], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, u64>(3)?,
-        ))
-    })? {
-        let (role, title, capability, assignments) = row?;
-        roles
-            .entry(role)
-            .or_insert_with(|| (title, Vec::new(), assignments))
-            .1
-            .push(capability);
-    }
-    let roles = roles
-        .into_values()
-        .map(|(name, capabilities, assignments)| {
-            json!({
-                "name": name,
-                "capabilities": capabilities,
-                "assignments": assignments.to_string(),
-            })
-        })
-        .collect();
-    let mut statement = connection.prepare(
-        "SELECT ci.capability_id,count(DISTINCT d.principal_id) FROM auth_direct_capabilities d \
-        JOIN auth_capability_identities ci ON ci.capability_id=d.capability_id \
-        AND ci.identity_generation=d.capability_generation \
-        JOIN auth_principals p ON p.principal_id=d.principal_id \
-        WHERE p.kind='user' AND p.state!='revoked' \
-        AND ci.api_id IN (SELECT value FROM json_each(?1)) \
-        GROUP BY ci.capability_id ORDER BY ci.capability_id",
-    )?;
-    let grants = statement
-        .query_map([&apis_json], |row| {
-            Ok(json!({
-                "capability": row.get::<_, String>(0)?,
-                "principals": row.get::<_, u64>(1)?.to_string(),
-            }))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let access = super::access_records::read_access(connection, Some(&apis))?;
     let operations: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM auth_resource_binding_evidence WHERE owner_kind='deployment' \
         AND owner_id=?1 AND resource_kind='framework_operation')",
@@ -1137,8 +1083,7 @@ fn read_export(
         },
         settings,
         resources,
-        roles,
-        grants,
+        access,
         operations,
     })
 }
@@ -1217,7 +1162,8 @@ async fn export(
         "job history and finished jobs".to_owned(),
         "earlier settings revisions".to_owned(),
         "webhook request records".to_owned(),
-        "users, roles, role assignments, direct grants, and consent".to_owned(),
+        "users, and roles and grants that name none of the service's APIs".to_owned(),
+        "remembered consent".to_owned(),
         "audit records".to_owned(),
     ];
     // Each job queue's publish prefix, by its place in `resources`.
@@ -1323,6 +1269,7 @@ async fn export(
         }
     }
     content.document(RESOURCES, &resources)?;
+    content.document(ACCESS, &plan.access)?;
     let settings = store.settings.clone();
     let origin = settings.oauth_origin();
     let report = json!({
@@ -1347,8 +1294,22 @@ async fn export(
             "bytes": resource.bytes.to_string(),
         })).collect::<Vec<_>>(),
         "webhooks": webhook_urls(&plan.deployment, &origin),
-        "roles": plan.roles,
-        "grants": plan.grants,
+        "roles": plan.access.roles.iter().map(|role| json!({
+            "roleId": role.role_id,
+            "name": role.title,
+            "capabilities": role.capabilities,
+            "members": role.members.len().to_string(),
+        })).collect::<Vec<_>>(),
+        "grants": plan.access.grants.iter().fold(
+            BTreeMap::<&str, u64>::new(),
+            |mut counts, grant| {
+                *counts.entry(grant.capability.as_str()).or_default() += 1;
+                counts
+            },
+        ).into_iter().map(|(capability, users)| json!({
+            "capability": capability,
+            "users": users.to_string(),
+        })).collect::<Vec<_>>(),
         "leftBehind": left_behind,
     });
     content.document(REPORT, &report)?;
@@ -1627,7 +1588,7 @@ async fn receive(
                         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
             });
         let document = [
-            DEPLOYMENT, EVIDENCE, INSTANCES, SETTINGS, RESOURCES, REPORT, MANIFEST,
+            DEPLOYMENT, EVIDENCE, INSTANCES, SETTINGS, RESOURCES, ACCESS, REPORT, MANIFEST,
         ]
         .contains(&name.as_str());
         if !(document || snapshot || name == JOBS)
@@ -1730,6 +1691,7 @@ struct Bundle {
     instances: InstancesDocument,
     settings: SettingsDocument,
     resources: Vec<BundledResource>,
+    access: AccessDocument,
     report: Value,
 }
 
@@ -1754,6 +1716,7 @@ fn parse(received: Received) -> Result<Bundle, AuthError> {
         instances: document(&received, INSTANCES)?,
         settings: document(&received, SETTINGS)?,
         resources: document(&received, RESOURCES)?,
+        access: document(&received, ACCESS)?,
         report: document(&received, REPORT)?,
         deployment,
         received,
@@ -2148,7 +2111,7 @@ fn apply(
     import_id: &str,
     actor: &str,
     now: i64,
-) -> Result<(), AuthError> {
+) -> Result<AccessOutcome, AuthError> {
     let store = &storage.authority;
     require_operator(connection, actor)?;
     conflicts(connection, bundle)?;
@@ -2373,6 +2336,9 @@ fn apply(
             ],
         )?;
     }
+    // The roles and grants that gave people the service's APIs. One that
+    // cannot be recreated here is reported and the rest still applies.
+    let access = super::access_records::recreate(connection, &identity, &bundle.access, now)?;
     let restores: BTreeSet<&str> = bundle
         .resources
         .iter()
@@ -2387,7 +2353,11 @@ fn apply(
             deployment_id,
             bundle.received.digest,
             json(&restores)?,
-            bundle.report.to_string(),
+            {
+                let mut report = bundle.report.clone();
+                report["access"] = serde_json::to_value(&access)?;
+                report.to_string()
+            },
             actor,
             now,
             import_id
@@ -2414,7 +2384,7 @@ fn apply(
             now
         ],
     )?;
-    Ok(())
+    Ok(access)
 }
 
 async fn import(
@@ -2478,16 +2448,24 @@ async fn import(
         return Err(refused(&store, &actor, &deployment_id, error).await);
     }
     // An import of this same bundle that stopped while loading resumes.
-    let earlier: Option<(String, String, String, String)> = {
+    let earlier: Option<(String, String, String, String, String)> = {
         let deployment_id = deployment_id.clone();
         store
             .transaction_blocking(move |connection| {
                 Ok(connection
                     .query_row(
-                        "SELECT content_digest,state,import_id,loaded_json \
+                        "SELECT content_digest,state,import_id,loaded_json,report_json \
                         FROM auth_service_imports WHERE deployment_id=?1",
                         [deployment_id],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
                     )
                     .optional()?)
             })
@@ -2565,21 +2543,30 @@ async fn import(
             })
             .await
         };
-        if let Err(error) = attempt {
-            return Err(if input.check == Some(true) {
-                error
-            } else {
-                refused(&store, &actor, &deployment_id, error).await
-            });
+        match attempt {
+            Ok(access) => report["access"] = serde_json::to_value(&access)?,
+            Err(error) => {
+                return Err(if input.check == Some(true) {
+                    error
+                } else {
+                    refused(&store, &actor, &deployment_id, error).await
+                });
+            }
         }
         if input.check == Some(true) {
             return output(false, false, &report);
         }
-    } else if input.check == Some(true) {
-        return output(false, true, &report);
+    } else {
+        // What the first attempt recreated, as it recorded it.
+        if let Some((.., stored)) = &earlier {
+            report["access"] = decode::<Value>(stored)?["access"].clone();
+        }
+        if input.check == Some(true) {
+            return output(false, true, &report);
+        }
     }
     let mut loaded: BTreeSet<String> = match &earlier {
-        Some((_, _, _, loaded)) if resuming => decode(loaded)?,
+        Some((_, _, _, loaded, _)) if resuming => decode(loaded)?,
         _ => BTreeSet::new(),
     };
     // Each loaded resource is recorded before the next begins, so a later

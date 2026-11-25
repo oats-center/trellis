@@ -101,24 +101,25 @@ See the [migration procedure](#migration-procedure).
 
 ## What a bundle contains
 
-| Part                          | Moves? | How                                                                                |
-| ----------------------------- | ------ | ---------------------------------------------------------------------------------- |
-| Deployment record             | Yes    | ID, title, expiry, and its own instance retirement policy                          |
-| Installed build               | Yes    | The package evidence of the installed revision; the new installation compiles it   |
-| Instances                     | Yes    | Instance and principal IDs, title, state, and public identity key; never a seed    |
-| Enrollment secrets            | Yes    | Their IDs, hashes, limits, expiry, and revoked state                               |
-| Settings                      | Yes    | The current revision of the deployment's settings and of each instance's overrides |
-| Secrets                       | Yes    | Opened with the old storage key, carried in the bundle, sealed with the new one    |
-| KV and store data             | Yes    | A JetStream snapshot of each resource's stream                                     |
-| Waiting jobs                  | Yes    | The lifecycle messages of every job whose last run has not settled                 |
-| Webhook endpoints             | Yes    | Endpoint names, service names, URL IDs, and runtime settings                       |
-| Settings history              | No     | Only the current revision moves                                                    |
-| Job history, finished jobs    | No     | Stay in the old installation                                                       |
-| Events not yet consumed       | No     | Counted in the report                                                              |
-| Requests waiting for intake   | No     | Counted in the report                                                              |
-| Operations                    | No     | Named in the report                                                                |
-| Users, roles, grants, consent | No     | Roles and direct grants of the service's APIs are listed in the report             |
-| Audit records                 | No     | Stay in the old installation; both sides audit their step                          |
+| Part                        | Moves? | How                                                                                |
+| --------------------------- | ------ | ---------------------------------------------------------------------------------- |
+| Deployment record           | Yes    | ID, title, expiry, and its own instance retirement policy                          |
+| Installed build             | Yes    | The package evidence of the installed revision; the new installation compiles it   |
+| Instances                   | Yes    | Instance and principal IDs, title, state, and public identity key; never a seed    |
+| Enrollment secrets          | Yes    | Their IDs, hashes, limits, expiry, and revoked state                               |
+| Settings                    | Yes    | The current revision of the deployment's settings and of each instance's overrides |
+| Secrets                     | Yes    | Opened with the old storage key, carried in the bundle, sealed with the new one    |
+| KV and store data           | Yes    | A JetStream snapshot of each resource's stream                                     |
+| Waiting jobs                | Yes    | The lifecycle messages of every job whose last run has not settled                 |
+| Webhook endpoints           | Yes    | Endpoint names, service names, URL IDs, and runtime settings                       |
+| Settings history            | No     | Only the current revision moves                                                    |
+| Job history, finished jobs  | No     | Stay in the old installation                                                       |
+| Events not yet consumed     | No     | Counted in the report                                                              |
+| Requests waiting for intake | No     | Counted in the report                                                              |
+| Operations                  | No     | Named in the report                                                                |
+| Roles and grants            | Yes    | Those of the service's APIs, recreated for the users the new installation has      |
+| Users, remembered consent   | No     | Users are found in the new installation by user ID, then by sign-in                |
+| Audit records               | No     | Stay in the old installation; both sides audit their step                          |
 
 The report is part of the bundle and is printed by both commands. Its
 `leftBehind` list says, in plain words, what stayed in the old installation.
@@ -261,27 +262,57 @@ cutover may therefore have it accepted once in each installation.
 
 ### Access: roles, grants, and consent
 
-Access is held by principals, and the old installation's users are not in the
-new one.
+Roles and grants are part of an installation's configuration, so an import
+recreates those that give people the service's APIs.
 
 - **The deployment's own grants move**, because they come from the build: the
   new installation derives them from the imported evidence.
 - **The APIs the service provides are accepted** in the new installation's
   catalog from the build's evidence, as `Deployments.Create` does. So are APIs
   it uses that the catalog does not hold yet.
-- **Roles and grants are reported, not created.** The report lists every role
-  that holds a capability of an API the service provides, with those
-  capabilities and how many principals held the role, and every such
-  capability granted directly to users, with how many held it. An
-  administrator recreates what the new installation needs.
-- **Role assignments, OAuth grants, and remembered consent do not move.**
-  Users of the moved service sign in to the new installation and consent
-  there.
+- **Roles, members and direct grants move.** The bundle's `access.json` holds
+  every active role that gives a capability of an API the service provides,
+  with its ID, name, description, whether new users get it, all of its
+  capabilities and its members; every such capability granted directly to a
+  user; and every app whose implied consent names such a capability. Members
+  and grant holders are users only, each named by their Trellis user ID and
+  their sign-ins: `local` with the username, or an OIDC provider's ID and
+  issuer with the provider's subject.
+- **Users are found, never created.** The import looks for each user by user
+  ID first, which finds a person created with `trellis users create --id`.
+  Otherwise it looks for one of their sign-ins: the same username, or the
+  same subject at the provider with the same ID or, failing that, the live
+  provider with the same issuer. A user it does not find, or whose sign-ins
+  belong to several users, gets nothing, and the report says so.
+- **A role is recreated under its own ID.** A role that does not exist is
+  created with the capabilities the new catalog holds; a capability it lacks
+  is reported. A role with the same ID, name and description, whose
+  capabilities are all in the record, is the same role: it gets the
+  capabilities it is missing and its members are added. A role with the same
+  ID and another definition is a conflict: it is left as it is, and it and
+  its members are reported as skipped.
+- **Each item stands alone.** Every role, member, grant and app consent is
+  applied in a savepoint as the importing administrator, with the checks the
+  matching RPC makes (`roles.manage`, `clients.manage`, and `platform.manage`
+  for an administrative capability). One that is refused is rolled back and
+  reported with its reason, and the rest still apply. One already present is
+  left alone and reported in neither list.
+- **Remembered consent, OAuth grants and sessions do not move.** Users sign
+  in to the new installation and consent there. `trellis-server export`
+  carries consent with the rest of an installation; see
+  installation-export.md.
+
+The import report's `access` lists what was recreated and what was skipped,
+each with its kind (`role`, `roleCapability`, `assignment`, `grant` or
+`appConsent`), the role, capability, app and user it names, the user it was
+given to here with how they were found (`id` or `signIn`), and for a skipped
+one the reason. `--check` reports the same without changing anything.
 
 ## The bundle
 
 The bundle's **content** is a sequence of named entries. It starts with the
-16 bytes `TRELLIS-SERVICE\n` and a 4-byte format number, currently 1. Each
+16 bytes `TRELLIS-SERVICE\n` and a 4-byte format number, currently 2.
+Format 2 added `access.json`. Each
 entry is a 2-byte name length, the name, and the entry's bytes as chunks of a
 4-byte length and that many bytes, ended by a zero length. Chunks let a
 stream snapshot of unknown size be written as JetStream sends it.
@@ -294,7 +325,8 @@ settings.json           current settings and secrets of the deployment and insta
 resources/<id>.snapshot one JetStream snapshot per KV bucket or store
 jobs.jsonl              lifecycle messages of waiting jobs, one JSON object per line
 resources.json          each resource's kind, name, resource and allocation IDs, stream config and state
-report.json             what moved, what stayed behind, and the access to recreate
+access.json             roles, members, direct grants and app consent of the service's APIs, and their users
+report.json             what moved and what stayed behind
 manifest.json           format, Trellis version, source installation, and every entry's size and SHA-256
 ```
 
@@ -475,10 +507,12 @@ ID>_<allocation ID>`, and a stream configuration with exactly that name,
    build provides and the unaccepted APIs it uses, creates the deployment
    under its own ID, installs the build, registers the instances and their
    keys, writes the enrollment secrets, the instance policy, the settings
-   with their secrets sealed, and the webhook endpoints, records the
-   resources as `pending` under their own resource and allocation IDs, and
-   records the import with its content digest, the streams it will restore,
-   and a random import ID. The deployment starts enabled.
+   with their secrets sealed, and the webhook endpoints, recreates the
+   access the bundle carries (see [access](#access-roles-grants-and-consent)),
+   records the resources as `pending` under their own resource and
+   allocation IDs, and records the import with its content digest, the
+   streams it will restore, the access report, and a random import ID. The
+   deployment starts enabled.
 5. **Load the data.** Auth restores each KV and store snapshot with the
    stream configuration from the bundle, adding the import ID to the
    stream's metadata under `trellis.import`. The broker refuses to restore
@@ -544,8 +578,12 @@ of its data allows. Downtime runs from step 4 to step 6, and most of it is
 the time to copy the data.
 
 1. **Prepare the new installation.** Install it, create the administrator,
-   and create the user accounts the service's users need. Add registry
-   credentials if the service's dependencies come from a private registry.
+   and create the user accounts the service's users need, with
+   `trellis users create --id` to keep each person's user ID, or with the
+   same username or OIDC sign-in. Add registry credentials if the service's
+   dependencies come from a private registry. To move everything at once,
+   use `trellis-server export` and `import` instead
+   (installation-export.md).
 2. **Rehearse.** Export the running service and import the bundle into a
    spare installation, first with `--check`, then for real. Read the report.
    This shows how long the copy takes and what needs approval.
@@ -562,8 +600,9 @@ the time to copy the data.
 7. **Disable the old deployment**, so its instance keys and enrollment
    secrets stop working there: `trellis --profile old svc <id> disable`.
 8. **Update outside senders.** Give webhook senders their new URLs, unless
-   the hostname moved. Create the roles and grants the report lists. Users
-   sign in to the new installation and consent to the apps they use.
+   the hostname moved. Read the report's skipped access and settle each
+   item. Users sign in to the new installation and consent to the apps they
+   use.
 9. **Clean up the old installation** once the new one has run long enough to
    trust it. Remove the old deployment, then destroy its detached resources:
    `trellis --profile old svc <id> remove`, then
@@ -613,8 +652,10 @@ secrets and all of its data.
   move by activating again. Export refuses them.
 - **Trellis's own services.** `trellis.platform`, Jobs, Health, and Events
   belong to each installation and are never exported.
-- **Moving users.** Accounts, sign-in methods, and profiles are created in the
-  new installation by its administrators.
+- **Moving users.** A service import finds users and never creates them.
+  Accounts, sign-in methods, and profiles move with the whole installation
+  through `trellis-server export` and `import`, or are created by the new
+  installation's administrators.
 - **History.** Job, event, health, webhook request, and audit history stay in
   the old installation. `trellis-server backup` keeps them.
 - **Incremental copies.** A move copies all data during the downtime. Copying
@@ -642,8 +683,12 @@ The proposal's open questions were settled as follows.
    participant, already exists is refused, naming the existing deployment.
    Resource names, KV revisions, and instance identities carry over
    unchanged.
-5. **Access is reported, not created.** Import creates no roles, role
-   assignments, or grants.
+5. **Access is recreated.** Roles and grants are part of the configuration,
+   so import recreates the roles, members, direct grants and app consent of
+   the service's APIs for the users it finds, by user ID first, then by
+   sign-in. It skips and reports a user it cannot find and a role that
+   exists with another definition. (This replaced an earlier rule that only
+   reported them.)
 6. **Waiting jobs move, job history does not.**
 7. **Export and import run as Auth Operations** reached from the CLI, so
    capability checks and audit apply.

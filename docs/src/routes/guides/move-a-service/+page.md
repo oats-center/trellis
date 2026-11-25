@@ -19,11 +19,15 @@ A bundle holds:
 - the current settings, with every secret in them;
 - the webhook endpoints, with the same URL IDs;
 - the data of the service's KV buckets and stores, and jobs that no worker
-  has finished.
+  has finished;
+- the roles, role members and direct grants that give people the service's
+  API, and the apps allowed to use it without asking.
 
-Users, roles, job history, settings history, and webhook request records stay
-behind. The import prints the roles and grants that gave people access to the
-service, for you to recreate; it creates none itself.
+Users, remembered consent, job history, settings history, and webhook request
+records stay behind. The import recreates the roles and grants for the people
+the new installation has, and reports anyone it could not find. To move users
+too, move the whole installation with `trellis-server export` (see
+Moving an installation).
 
 Both commands need `users.manage` and `config.manageSecrets`, and
 `platform.manage` too for a service that holds an administrative capability.
@@ -32,7 +36,16 @@ Both are written to the security audit of their installation.
 ## Before you start
 
 Create the accounts the service's users need in the new installation, and add
-any package registry its build pulls from. Then try the whole move once
+any package registry its build pulls from. The import gives a role or grant to
+the account with the same Trellis user ID, or else to the one with the same
+username or OIDC sign-in, so create each account with the ID the person has
+in the old installation:
+
+```sh
+trellis --profile new users create --username ada --id 01JD8Z3XQ5V7H2N4K6M8P0R2T4
+```
+
+`trellis --profile old users show ada` prints the ID. Then try the whole move once
 against a spare installation: it tells you how long the copy takes and what
 the import reports, and nothing in either real installation changes.
 
@@ -105,8 +118,17 @@ to agree with them.
 It ends with a report:
 
 - the webhook URLs at the new origin, to give to senders;
-- the roles and direct grants to recreate;
+- the roles, role members, direct grants and app consent it recreated, and
+  for each member or grant the account it went to and whether that account
+  was found by user ID or by sign-in;
+- what it skipped and why: a person with no account here, or a role this
+  installation already has under the same ID with another name or other
+  capabilities, which it leaves as it is;
 - what stayed behind, such as events a consumer had not processed yet.
+
+A role or grant the import skips changes nothing, and the rest still applies.
+To recreate a skipped member later, create their account and give them the
+role with `trellis roles assign`.
 
 If the import stops while it loads the data, run the same command again; it
 picks up where it stopped. It deletes and loads again only a stream it
@@ -149,9 +171,9 @@ These steps act on the old installation, so each names the `old` profile.
    ```
 
 2. Give webhook senders their new URLs, unless the hostname moved.
-3. Create the roles and grants the report listed, in the new installation,
-   and give them to the users who need them. Users sign in to the new
-   installation and consent to the apps they use.
+3. Settle what the report skipped: create the missing accounts and give them
+   their roles, or decide what a conflicting role should be. Users sign in
+   to the new installation and consent to the apps they use.
 4. Once the new installation has run the service long enough to trust it,
    remove the old deployment, then destroy its resources:
 

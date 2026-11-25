@@ -491,7 +491,9 @@ one, so an upgrade test starts from
 newer than `version`) and restarts with the build under test;
 shutdown/cancellation reaps owned children before sandbox cleanup.
 
-Live user tests use `TrellisTestRuntime::create_user`, explicit
+Live user tests use `TrellisTestRuntime::create_user` (or
+`create_user_as(name, username, Some(user_id))` for an account with a chosen
+username and Trellis user ID, as a moved installation has), explicit
 `grant_user_capabilities(&user, Request::REQUIRED_CAPABILITIES)`, one
 `register_native_application::<Request>("app")`, then independent
 `login_native_application_as(&app, &user)` calls. `register_client_as` composes
