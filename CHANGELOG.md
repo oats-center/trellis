@@ -13,9 +13,11 @@ and this project adheres to
 - `trellis-server export` and `import` move a whole installation's
   configuration: users with their IDs and sign-ins, admin, roles and grants,
   sign-in providers and their secrets, apps and consents, themes, devices, and
-  every service with its settings and waiting jobs. Records are versioned, so
-  an export imports into a later release. Import into an installation in use
-  skips and reports whatever is in the way; `--check` previews it.
+  every service with its settings and waiting jobs, and users' and devices'
+  State. Records are versioned, so an export imports into a later release.
+  Imported installation settings replace the target's; a conflicting user,
+  app or role is reported and skipped, and the exported admin's privileges go
+  to the target's admin. `--check` previews it.
 - `trellis users create --id` creates a user with a given Trellis user ID.
 
 ### Changed
