@@ -27,7 +27,7 @@ Users, remembered consent, job history, settings history, and webhook request
 records stay behind. The import recreates the roles and grants for the people
 the new installation has, and reports anyone it could not find. To move users
 too, move the whole installation with `trellis-server export` (see
-Moving an installation).
+[Moving an installation](/guides/move-an-installation)).
 
 Both commands need `users.manage` and `config.manageSecrets`, and
 `platform.manage` too for a service that holds an administrative capability.

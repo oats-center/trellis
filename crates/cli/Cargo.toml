@@ -9,11 +9,10 @@ publish = false
 
 [features]
 default = ["runtime"]
-runtime = ["dep:argon2", "dep:reqwest", "dep:ring", "dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:trellis-self-update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
+runtime = ["dep:reqwest", "dep:trellis-bootstrap", "dep:trellis-rs", "dep:trellis-runtime-apis", "dep:qrcode", "dep:trellis-self-update", "dep:tracing-subscriber", "dep:tracing-opentelemetry"]
 
 [dependencies]
 anstream.workspace = true
-argon2 = { workspace = true, optional = true }
 clap.workspace = true
 clap_complete.workspace = true
 comfy-table.workspace = true
@@ -27,6 +26,7 @@ semver.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
 tokio.workspace = true
+trellis-bootstrap = { path = "../bootstrap", optional = true }
 trellis-rs = { path = "../trellis", version = "0.100.0-rc.55", optional = true, features = ["telemetry-otlp"] }
 trellis-runtime-apis = { path = "../runtime-apis", optional = true }
 trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.55" }
@@ -49,7 +49,6 @@ sha2.workspace = true
 url.workspace = true
 tar.workspace = true
 rand.workspace = true
-ring = { version = "0.17.14", optional = true }
 rustls.workspace = true
 shlex = "2.0.1"
 tempfile.workspace = true
@@ -65,6 +64,8 @@ trellis-idl = { path = "../idl", version = "0.100.0-rc.55" }
 trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.55" }
 
 [dev-dependencies]
+argon2.workspace = true
+ring = "0.17.14"
 reqwest.workspace = true
 rexpect = "0.7.1"
 async-nats.workspace = true

@@ -351,7 +351,7 @@ fn damaged(detail: impl std::fmt::Display) -> AuthError {
 // Spools: temporary files encrypted with a key that exists only in memory.
 
 /// A temporary file that is deleted when dropped.
-struct Spool {
+pub(super) struct Spool {
     path: PathBuf,
     key: [u8; 32],
 }
@@ -374,7 +374,7 @@ fn spool_nonce(counter: u64) -> Nonce {
 
 impl Spool {
     /// A new, empty spool in `directory`, and the writer that fills it.
-    fn create(directory: &Path) -> Result<(Arc<Self>, SpoolWriter), AuthError> {
+    pub(super) fn create(directory: &Path) -> Result<(Arc<Self>, SpoolWriter), AuthError> {
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
         #[cfg(unix)]
@@ -408,7 +408,7 @@ impl Spool {
         Ok((spool, writer))
     }
 
-    fn reader(&self) -> Result<SpoolReader, AuthError> {
+    pub(super) fn reader(&self) -> Result<SpoolReader, AuthError> {
         Ok(SpoolReader {
             file: std::io::BufReader::new(std::fs::File::open(&self.path).map_err(io)?),
             key: spool_key(&self.key),
@@ -421,7 +421,7 @@ impl Spool {
 }
 
 /// Encrypts what is written to a spool, chunk by chunk, and hashes it.
-struct SpoolWriter {
+pub(super) struct SpoolWriter {
     file: std::io::BufWriter<std::fs::File>,
     key: LessSafeKey,
     counter: u64,
@@ -449,7 +449,7 @@ impl SpoolWriter {
 
     /// Seal the last chunk. Returns the plaintext size and its SHA-256, in
     /// unpadded base64url.
-    fn finish(mut self) -> Result<(u64, String), AuthError> {
+    pub(super) fn finish(mut self) -> Result<(u64, String), AuthError> {
         let length = self.pending.len();
         self.seal(length, true).map_err(io)?;
         self.file.flush().map_err(io)?;
@@ -477,7 +477,7 @@ impl Write for SpoolWriter {
 }
 
 /// Decrypts a spool as it is read.
-struct SpoolReader {
+pub(super) struct SpoolReader {
     file: std::io::BufReader<std::fs::File>,
     key: LessSafeKey,
     counter: u64,
@@ -524,7 +524,7 @@ impl Read for SpoolReader {
 }
 
 /// An async reader of a spool's plaintext, decrypted on the blocking pool.
-fn spool_reader(spool: Arc<Spool>) -> tokio::io::DuplexStream {
+pub(super) fn spool_reader(spool: Arc<Spool>) -> tokio::io::DuplexStream {
     let (reader, mut writer) = tokio::io::duplex(CHUNK);
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
@@ -863,6 +863,7 @@ fn read_export(
     storage: &OAuthStorage,
     actor: &str,
     deployment_id: &str,
+    devices: bool,
 ) -> Result<ExportPlan, AuthError> {
     require_operator(connection, actor)?;
     let (title, participant, kind, state, expires_at): (
@@ -893,7 +894,7 @@ fn read_export(
             "deployment {deployment_id} was removed"
         )));
     }
-    if kind != "service" {
+    if kind != "service" && !(devices && kind == "device") {
         return Err(AuthError::Invalid(
             "only services are exported; a device moves by activating it again".into(),
         ));
@@ -1127,16 +1128,6 @@ async fn export(
     let storage = engine.server.store().clone();
     let store = Arc::clone(&storage.authority);
     let exported_at = crate::clock::unix_now();
-    let plan = {
-        let (storage, actor, deployment_id) =
-            (storage.clone(), actor.clone(), deployment_id.clone());
-        blocking(move || {
-            storage
-                .authority
-                .transaction(|connection| read_export(connection, &storage, &actor, &deployment_id))
-        })
-        .await?
-    };
     let progress = |step: &str, bytes: u64| {
         let step = step.to_owned();
         async move {
@@ -1149,8 +1140,106 @@ async fn export(
                 .map_err(|error| AuthError::Broker(error.to_string()))
         }
     };
+    let exported = export_content(
+        &storage,
+        nats,
+        &exports.directory,
+        &actor,
+        &deployment_id,
+        false,
+        &progress,
+    )
+    .await?;
+    let (spool, size, content_digest, report) = (
+        exported.spool,
+        exported.size,
+        exported.digest,
+        exported.report,
+    );
+    let export_id = id();
+    let audit = json!({
+        "exportId": export_id,
+        "contentDigest": content_digest,
+        "size": size,
+        "instances": exported.instances,
+        "secrets": exported.secrets,
+        "resources": report["resources"],
+    });
+    {
+        let (actor, deployment_id) = (actor.clone(), deployment_id.clone());
+        store
+            .transaction_blocking(move |connection| {
+                connection.execute(
+                    "INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,\
+                    target_id,data_json,created_at) VALUES(?1,?2,'deployment.exported',?3,?4,?5)",
+                    params![id(), actor, deployment_id, audit.to_string(), exported_at],
+                )?;
+                Ok(())
+            })
+            .await?;
+    }
+    let expires_at = crate::clock::unix_now() + EXPORT_LIFETIME;
+    exports.keep(
+        export_id.clone(),
+        FinishedExport {
+            actor,
+            spool,
+            size,
+            digest: content_digest,
+            expires_at,
+        },
+        exported_at,
+    );
+    Ok(serde_json::from_value(json!({
+        "exportId": export_id,
+        "size": size.to_string(),
+        "expiresAt": rfc3339(expires_at),
+        "report": report,
+    }))?)
+}
+
+/// The content of one deployment's bundle, written to a spool.
+pub(super) struct ExportedContent {
+    pub(super) spool: Arc<Spool>,
+    pub(super) size: u64,
+    pub(super) digest: String,
+    pub(super) report: Value,
+    instances: usize,
+    secrets: BTreeSet<String>,
+}
+
+/// Read deployment `deployment_id` into new bundle content in a spool in
+/// `directory`, as `actor`, telling `progress` how far it has come. With
+/// `devices`, a device deployment is read too, as an installation export
+/// does.
+pub(super) async fn export_content<F, Fut>(
+    storage: &OAuthStorage,
+    nats: &async_nats::Client,
+    directory: &Path,
+    actor: &str,
+    deployment_id: &str,
+    devices: bool,
+    progress: &F,
+) -> Result<ExportedContent, AuthError>
+where
+    F: Fn(&str, u64) -> Fut,
+    Fut: std::future::Future<Output = Result<(), AuthError>>,
+{
+    let store = Arc::clone(&storage.authority);
+    let exported_at = crate::clock::unix_now();
+    let deployment_id = deployment_id.to_owned();
+    let plan = {
+        let (storage, actor, deployment_id) =
+            (storage.clone(), actor.to_owned(), deployment_id.clone());
+        blocking(move || {
+            storage.authority.transaction(|connection| {
+                read_export(connection, &storage, &actor, &deployment_id, devices)
+            })
+        })
+        .await?
+    };
     progress("reading the service's data", 0).await?;
-    let (spool, writer) = Spool::create(&exports.directory)?;
+    let (spool, writer) = Spool::create(directory)?;
     let mut content = ContentWriter::new(writer)?;
     content.document(DEPLOYMENT, &plan.deployment)?;
     content.document(EVIDENCE, &plan.evidence)?;
@@ -1329,50 +1418,22 @@ async fn export(
     entry.done();
     content.spool.write_all(&0u32.to_be_bytes()).map_err(io)?;
     let (size, content_digest) = content.spool.finish()?;
-    let export_id = id();
     let mut report = report;
     report["contentDigest"] = Value::String(content_digest.clone());
-    let audit = json!({
-        "exportId": export_id,
-        "contentDigest": content_digest,
-        "size": size,
-        "instances": plan.instances.instances.len(),
-        "secrets": plan.settings.deployment.iter().chain(plan.settings.instances.values())
+    Ok(ExportedContent {
+        spool,
+        size,
+        digest: content_digest,
+        report,
+        instances: plan.instances.instances.len(),
+        secrets: plan
+            .settings
+            .deployment
+            .iter()
+            .chain(plan.settings.instances.values())
             .flat_map(|settings| settings.secrets.keys().cloned())
-            .collect::<BTreeSet<_>>(),
-        "resources": report["resources"],
-    });
-    {
-        let (actor, deployment_id) = (actor.clone(), deployment_id.clone());
-        store
-            .transaction_blocking(move |connection| {
-                connection.execute(
-                    "INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,\
-                    target_id,data_json,created_at) VALUES(?1,?2,'deployment.exported',?3,?4,?5)",
-                    params![id(), actor, deployment_id, audit.to_string(), exported_at],
-                )?;
-                Ok(())
-            })
-            .await?;
-    }
-    let expires_at = crate::clock::unix_now() + EXPORT_LIFETIME;
-    exports.keep(
-        export_id.clone(),
-        FinishedExport {
-            actor,
-            spool,
-            size,
-            digest: content_digest,
-            expires_at,
-        },
-        exported_at,
-    );
-    Ok(serde_json::from_value(json!({
-        "exportId": export_id,
-        "size": size.to_string(),
-        "expiresAt": rfc3339(expires_at),
-        "report": report,
-    }))?)
+            .collect(),
+    })
 }
 
 /// Reads the `JOBS` messages under `prefix` once, oldest first, passing each
@@ -1684,7 +1745,7 @@ async fn receive(
 }
 
 /// The documents an import reads, parsed.
-struct Bundle {
+pub(super) struct Bundle {
     received: Received,
     deployment: DeploymentDocument,
     evidence: trellis_idl::PackageEvidence,
@@ -1828,7 +1889,7 @@ fn token(text: &str) -> bool {
 /// headers or payload replay could not decode. It runs before `--check`
 /// reports and before a real import writes anything. Runs on the blocking
 /// pool: it compiles the build and reads the spooled jobs.
-fn validate(bundle: &Bundle) -> Result<(), AuthError> {
+fn validate(bundle: &Bundle, devices: bool) -> Result<(), AuthError> {
     let deployment = &bundle.deployment;
     let deployment_id = deployment.deployment_id.as_str();
     let participant_id = deployment.participant_id.as_str();
@@ -1849,7 +1910,9 @@ fn validate(bundle: &Bundle) -> Result<(), AuthError> {
         .values()
         .find(|participant| participant.identity().as_str() == participant_id)
         .ok_or_else(|| damaged(format!("its build has no participant {participant_id}")))?;
-    if participant.kind() != trellis_idl::ParticipantKind::Service {
+    if participant.kind() != trellis_idl::ParticipantKind::Service
+        && !(devices && participant.kind() == trellis_idl::ParticipantKind::Device)
+    {
         return Err(damaged("its build is not a service"));
     }
     let declared = |name: &str, kind: &str| {
@@ -2103,6 +2166,10 @@ fn conflicts(connection: &Connection, bundle: &Bundle) -> Result<(), AuthError> 
 
 /// Commit the deployment, everything Auth keeps for it, and its resources as
 /// pending, in the caller's transaction.
+/// With `installation`, the bundle is one part of an installation import: a
+/// device deployment is allowed, and the access it carries is left to the
+/// installation import, which recreates every role and grant at once.
+#[allow(clippy::too_many_arguments)] // One call site each; a struct would only rename them.
 fn apply(
     connection: &Connection,
     storage: &OAuthStorage,
@@ -2111,6 +2178,7 @@ fn apply(
     import_id: &str,
     actor: &str,
     now: i64,
+    installation: bool,
 ) -> Result<AccessOutcome, AuthError> {
     let store = &storage.authority;
     require_operator(connection, actor)?;
@@ -2146,9 +2214,11 @@ fn apply(
         .values()
         .find(|participant| participant.identity().as_str() == participant_id)
         .ok_or_else(|| damaged(format!("its build has no participant {participant_id}")))?;
-    if participant.kind() != trellis_idl::ParticipantKind::Service {
-        return Err(damaged("its build is not a service"));
-    }
+    let kind = match participant.kind() {
+        trellis_idl::ParticipantKind::Service => "service",
+        trellis_idl::ParticipantKind::Device if installation => "device",
+        _ => return Err(damaged("its build is not a service")),
+    };
     super::service_updates::require_sharing_acknowledged(
         super::service_updates::shared_apis_of(
             connection,
@@ -2163,12 +2233,13 @@ fn apply(
     )?;
     connection.execute(
         "INSERT INTO auth_deployments(deployment_id,participant_id,participant_kind,state,\
-        expires_at,title) VALUES(?1,?2,'service','active',?3,?4)",
+        expires_at,title) VALUES(?1,?2,?5,'active',?3,?4)",
         params![
             deployment_id,
             participant_id,
             deployment.expires_at,
-            deployment.title
+            deployment.title,
+            kind
         ],
     )?;
     SqliteAuthorizationStore::install_deployment_in_transaction(
@@ -2338,7 +2409,11 @@ fn apply(
     }
     // The roles and grants that gave people the service's APIs. One that
     // cannot be recreated here is reported and the rest still applies.
-    let access = super::access_records::recreate(connection, &identity, &bundle.access, now)?;
+    let access = if !installation {
+        super::access_records::recreate(connection, &identity, &bundle.access, now)?
+    } else {
+        AccessOutcome::default()
+    };
     let restores: BTreeSet<&str> = bundle
         .resources
         .iter()
@@ -2444,7 +2519,7 @@ async fn import(
     let bundle = Arc::new(bundle);
     // Before anything changes, and again for an attempt that resumes.
     let checked = Arc::clone(&bundle);
-    if let Err(error) = blocking(move || validate(&checked)).await {
+    if let Err(error) = blocking(move || validate(&checked, false)).await {
         return Err(refused(&store, &actor, &deployment_id, error).await);
     }
     // An import of this same bundle that stopped while loading resumes.
@@ -2532,7 +2607,7 @@ async fn import(
             blocking(move || {
                 let run = |connection: &Connection| {
                     apply(
-                        connection, &storage, &bundle, &input, &import_id, &actor, now,
+                        connection, &storage, &bundle, &input, &import_id, &actor, now, false,
                     )
                 };
                 if check {
@@ -2565,15 +2640,47 @@ async fn import(
             return output(false, true, &report);
         }
     }
-    let mut loaded: BTreeSet<String> = match &earlier {
+    let loaded: BTreeSet<String> = match &earlier {
         Some((_, _, _, loaded, _)) if resuming => decode(loaded)?,
         _ => BTreeSet::new(),
     };
+    load(
+        &store,
+        nats,
+        &bundle,
+        &import_id,
+        loaded,
+        &mut report,
+        &progress,
+    )
+    .await?;
+    output(true, resuming, &report)
+}
+
+/// Load the data of `bundle`, whose records an import committed as
+/// `import_id`: each stream not yet in `loaded`, then, once an instance can
+/// run, its resources and waiting jobs. `report` gains what stayed behind.
+async fn load<F, Fut>(
+    store: &Arc<SqliteAuthorizationStore>,
+    nats: &async_nats::Client,
+    bundle: &Bundle,
+    import_id: &str,
+    mut loaded: BTreeSet<String>,
+    report: &mut Value,
+    progress: &F,
+) -> Result<(), AuthError>
+where
+    F: Fn(&str, u64) -> Fut,
+    Fut: std::future::Future<Output = Result<(), AuthError>>,
+{
+    let deployment_id = bundle.deployment.deployment_id.clone();
+    let jetstream = async_nats::jetstream::new(nats.clone());
+    let import_id = import_id.to_owned();
     // Each loaded resource is recorded before the next begins, so a later
     // attempt skips it.
     let record = |names: Result<String, AuthError>| {
         let deployment_id = deployment_id.clone();
-        let store = Arc::clone(&store);
+        let store = Arc::clone(store);
         async move {
             let names = names?;
             store
@@ -2680,7 +2787,7 @@ async fn import(
     let mut left = Vec::new();
     if active {
         progress("preparing the service's resources", bundle.received.size).await?;
-        super::resources::materialize_native_kv(&store, nats, &deployment_id, now).await?;
+        super::resources::materialize_native_kv(store, nats, &deployment_id, now).await?;
         if !loaded.contains(JOBS) {
             if let Some(spool) = bundle.received.spools.get(JOBS) {
                 progress("queueing waiting jobs", bundle.received.size).await?;
@@ -2722,7 +2829,99 @@ async fn import(
             })
             .await?;
     }
-    output(true, resuming, &report)
+    Ok(())
+}
+
+/// Read and verify a bundle an installation import carries, as a service
+/// import does before it changes anything. Device deployments are allowed.
+pub(super) async fn prepare_import(
+    nats: &async_nats::Client,
+    directory: &Path,
+    mut reader: impl AsyncRead + Unpin,
+) -> Result<Bundle, AuthError> {
+    let bundle = Arc::new(parse(receive(&mut reader, directory).await?)?);
+    let checked = Arc::clone(&bundle);
+    blocking(move || validate(&checked, true)).await?;
+    let jetstream = async_nats::jetstream::new(nats.clone());
+    for resource in &bundle.resources {
+        if let Some(stream) = &resource.stream {
+            if jetstream.get_stream(stream).await.is_ok() {
+                return Err(AuthError::Conflict(format!(
+                    "stream {stream} of {} {} already exists in this installation's NATS",
+                    resource.kind, resource.name
+                )));
+            }
+        }
+    }
+    Arc::try_unwrap(bundle).map_err(|_| AuthError::Unavailable)
+}
+
+/// Record a prepared bundle's deployment in the caller's transaction, as
+/// actor, without the access it carries: an installation import recreates
+/// every role and grant itself.
+pub(super) fn apply_import(
+    connection: &Connection,
+    storage: &OAuthStorage,
+    bundle: &Bundle,
+    actor: &str,
+    now: i64,
+) -> Result<(), AuthError> {
+    // Moving a whole installation keeps what its administrators approved.
+    let input: operations::DeploymentsImportInput = serde_json::from_value(json!({
+        "acknowledgeSharedApis": true,
+        "acknowledgeUnauthenticatedWebhooks": true,
+    }))?;
+    apply(connection, storage, bundle, &input, &id(), actor, now, true).map(|_| ())
+}
+
+/// Load the data of the bundle `reader` sends when its records are
+/// committed and its data is not loaded yet, and return its report; `None`
+/// when there is nothing to load.
+pub(super) async fn finish_import(
+    storage: &OAuthStorage,
+    nats: &async_nats::Client,
+    directory: &Path,
+    mut reader: impl AsyncRead + Unpin,
+) -> Result<Option<Value>, AuthError> {
+    let bundle = parse(receive(&mut reader, directory).await?)?;
+    let store = Arc::clone(&storage.authority);
+    let (deployment_id, digest) = (
+        bundle.deployment.deployment_id.clone(),
+        bundle.received.digest.clone(),
+    );
+    let earlier: Option<(String, String, String)> = store
+        .transaction_blocking(move |connection| {
+            Ok(connection
+                .query_row(
+                    "SELECT import_id,loaded_json,report_json FROM auth_service_imports \
+                    WHERE deployment_id=?1 AND content_digest=?2 AND state='loading'",
+                    params![deployment_id, digest],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?)
+        })
+        .await?;
+    let Some((import_id, loaded, stored)) = earlier else {
+        return Ok(None);
+    };
+    let mut report: Value = decode(&stored)?;
+    report["contentDigest"] = Value::String(bundle.received.digest.clone());
+    report["webhooks"] = Value::Array(webhook_urls(
+        &bundle.deployment,
+        &store.settings.oauth_origin(),
+    ));
+    let quiet = |_: &str, _: u64| std::future::ready(Ok::<(), AuthError>(()));
+    load(
+        &store,
+        nats,
+        &bundle,
+        &import_id,
+        decode(&loaded)?,
+        &mut report,
+        &quiet,
+    )
+    .await?;
+    Ok(Some(report))
 }
 
 /// Record a refused import in the audit and return why.

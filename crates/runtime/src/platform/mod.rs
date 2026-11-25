@@ -753,6 +753,104 @@ fn initialize_admin_credentials_in(
     }
 }
 
+/// The Auth storage of the installation `config` names, opened as the
+/// server opens it, without running it. An import migrates the database
+/// first, as a start would; an export only reads it, so it reads one an
+/// earlier release made.
+fn open_installation(
+    config: &RuntimeConfig,
+    migrate: bool,
+) -> Result<auth::OAuthStorage, RuntimeError> {
+    let crate::StorageBackend::Sqlite(storage) = config
+        .platform_storage_backend()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let store = crate::storage::SqliteStore::new(SubsystemName::Platform, storage);
+    if !store.path().exists() {
+        return Err(RuntimeError::Platform(format!(
+            "{} has no platform database; start the installation once first",
+            store.path().display()
+        )));
+    }
+    if migrate {
+        store
+            .migrate()
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    }
+    let keys = callout_keys(config)?;
+    let auth = Arc::new(SqliteAuthorizationStore::open(
+        &store,
+        config,
+        keys.target_account(),
+    )?);
+    let custody = auth::oauth_storage_key(config)?;
+    auth::OAuthStorage::open(auth, &custody)
+        .map_err(|error| RuntimeError::Platform(error.to_string()))
+}
+
+/// Write the configuration of the installation `config` names into `out` as
+/// the content of an installation export: its users, roles, grants, sign-in
+/// policy and providers, apps and their consent, Portal themes, package
+/// registries, and every service and device deployment as a service bundle.
+/// Secrets are opened with this installation's storage key. The server may
+/// run; its NATS must. Returns the export's report.
+///
+/// # Errors
+/// Returns an error when the installation can't be opened, has no
+/// administrator yet, or its database or NATS fails.
+pub async fn export_installation(
+    config: &RuntimeConfig,
+    out: &mut dyn std::io::Write,
+) -> Result<serde_json::Value, RuntimeError> {
+    let storage = {
+        let config = config.clone();
+        auth::blocking(move || open_installation(&config, false)).await?
+    };
+    let nats = crate::backup::connect(config)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let directory = storage
+        .authority
+        .custody_directory
+        .with_extension("installation");
+    let report = auth::export_installation(&storage, &nats, &directory, out)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()));
+    let _ = std::fs::remove_dir_all(&directory);
+    report
+}
+
+/// Import the installation export content `input` into the installation
+/// `config` names, which must be stopped while its NATS runs. Records that
+/// existing data is in the way of are skipped and reported, and the rest is
+/// imported. With `check`, nothing changes and the report says what the
+/// import would do.
+///
+/// # Errors
+/// Returns an error when the content is damaged or of a format this build
+/// does not read, or the installation's database or NATS fails.
+pub async fn import_installation(
+    config: &RuntimeConfig,
+    input: &mut (dyn std::io::Read + Send),
+    check: bool,
+) -> Result<serde_json::Value, RuntimeError> {
+    let storage = {
+        let config = config.clone();
+        auth::blocking(move || open_installation(&config, true)).await?
+    };
+    let nats = crate::backup::connect(config)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let directory = storage
+        .authority
+        .custody_directory
+        .with_extension("installation");
+    let report = auth::import_installation(&storage, &nats, &directory, input, check)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()));
+    let _ = std::fs::remove_dir_all(&directory);
+    report
+}
+
 /// Bucket recording which installation, and which of its platform databases,
 /// a JetStream belongs to.
 const IDENTITY_BUCKET: &str = "TRELLIS_PLATFORM_IDENTITY";

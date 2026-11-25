@@ -1641,7 +1641,12 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     let foreign_created = foreign.cached_info().created;
     let refused = import(&new_cli, &moving_file, &passphrase).await;
     assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("did not create"),
+        // The report wraps where a stream name has a hyphen.
+        String::from_utf8_lossy(&refused.stderr)
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│')
+            .collect::<String>()
+            .contains("didnotcreate"),
         "{}",
         String::from_utf8_lossy(&refused.stderr)
     );
@@ -1664,7 +1669,12 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     jetstream.update_stream(config).await.unwrap();
     let refused = import(&new_cli, &moving_file, &passphrase).await;
     assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("did not create"),
+        // The report wraps where a stream name has a hyphen.
+        String::from_utf8_lossy(&refused.stderr)
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│')
+            .collect::<String>()
+            .contains("didnotcreate"),
         "{}",
         String::from_utf8_lossy(&refused.stderr)
     );

@@ -6133,11 +6133,14 @@ dependencies = [
 name = "trellis-bootstrap"
 version = "0.100.0-rc.55"
 dependencies = [
+ "argon2",
+ "base64 0.23.1",
  "indexmap 2.14.2",
  "miette",
  "nats-jwt-rs",
  "nkeys",
  "rcgen",
+ "ring",
  "rustls",
  "serde",
  "serde_json",
@@ -6200,6 +6203,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "trellis-bootstrap",
  "trellis-builtin-contracts",
  "trellis-codegen-rust",
  "trellis-codegen-ts",

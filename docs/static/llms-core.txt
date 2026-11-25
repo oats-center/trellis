@@ -295,11 +295,30 @@ files the config names, an online SQLite copy of each database,
 Trellis's account except the lease bucket, and a checksummed `manifest.json`;
 it fails, without a manifest, when the broker isn't bound to this installation
 and its platform database.
+`trellis-server export --out <file> [--passphrase-file <path|->]` writes a
+whole installation's configuration as plain records, each kind with its own
+format number, sealed with a passphrase (the service bundle envelope): users
+with their IDs, password hashes and OIDC sign-ins, the administrator, roles,
+members and direct grants, sign-in settings, OIDC providers and package
+registries with their secrets, apps with their client IDs and remembered
+consent, Portal themes, and every service and device deployment as a service
+bundle with its data and waiting jobs. Sessions, NATS keys, TLS, issuer keys
+and history are not carried. `trellis-server import <file> [--check]` adds it
+to an installation that has started once and is stopped, with its NATS
+running: each record existing data is in the way of (a used user ID,
+username or sign-in, client ID, role ID with another definition) is skipped
+and reported, and the rest is imported; in an empty installation the
+exported administrator replaces the setup one. Running it again finishes a
+deployment whose data did not load. It moves an installation between
+releases, release candidates included.
 `trellis-server restore <dir> [--config <dir>] [--force]` checks it and writes
 it into a stopped or fresh installation, refusing one with another ID (its
 `[auth] instance_id`, else `secrets.toml`'s) or an unreadable `config.toml`
 unless `--force`; the next platform start loads the streams into an empty
-JetStream store. An interrupted restore is run again (restore, then start),
+JetStream store. It restores a backup of its own release; from the first
+stable release also one of an earlier stable release, which it migrates
+forward. Before then it refuses another release's backup and points to
+`trellis-server export`. An interrupted restore is run again (restore, then start),
 which replaces the streams the interrupted one loaded. Leases only pick which
 server runs a role: a standby needs the same NATS and, for Auth, the same database, issuer keys and `secrets.toml`.
 

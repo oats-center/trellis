@@ -300,7 +300,7 @@ recreates those that give people the service's APIs.
 - **Remembered consent, OAuth grants and sessions do not move.** Users sign
   in to the new installation and consent there. `trellis-server export`
   carries consent with the rest of an installation; see
-  installation-export.md.
+  [installation-export.md](./installation-export.md).
 
 The import report's `access` lists what was recreated and what was skipped,
 each with its kind (`role`, `roleCapability`, `assignment`, `grant` or
@@ -583,7 +583,7 @@ the time to copy the data.
    same username or OIDC sign-in. Add registry credentials if the service's
    dependencies come from a private registry. To move everything at once,
    use `trellis-server export` and `import` instead
-   (installation-export.md).
+   ([installation-export.md](./installation-export.md)).
 2. **Rehearse.** Export the running service and import the bundle into a
    spare installation, first with `--check`, then for real. Read the report.
    This shows how long the copy takes and what needs approval.
@@ -648,8 +648,10 @@ secrets and all of its data.
 
 ## Out of scope
 
-- **Devices.** Device deployments are activated by their users and owners and
-  move by activating again. Export refuses them.
+- **Devices.** `trellis svc export` refuses a device deployment. An
+  installation export carries device deployments in the same bundle format,
+  so a device whose key was registered reconnects without activating again
+  (see [installation-export.md](./installation-export.md)).
 - **Trellis's own services.** `trellis.platform`, Jobs, Health, and Events
   belong to each installation and are never exported.
 - **Moving users.** A service import finds users and never creates them.

@@ -179,7 +179,7 @@ pub(crate) struct SqliteAuthorizationStore {
     /// for nor delay the writer. Without WAL, reads share the writer.
     reader: Option<Mutex<rusqlite::Connection>>,
     pub(super) signer: SigningKey,
-    pub(super) custody_directory: PathBuf,
+    pub(crate) custody_directory: PathBuf,
     current_key: Mutex<Option<(String, SigningKey)>>,
     /// Origins of every usable client's redirect URIs, answered from memory
     /// for CORS and rebuilt after any commit that changed a client row.

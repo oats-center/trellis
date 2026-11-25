@@ -779,6 +779,115 @@ impl TrellisTestRuntime {
         .await
     }
 
+    /// Writes the installation's configuration into `out` with
+    /// `trellis-server export`, sealed with `passphrase`, and returns the
+    /// export's JSON report. `server` names the `trellis-server` to run, as
+    /// when a newer build exports a database an earlier release made; `None`
+    /// runs this runtime's own. The runtime keeps running.
+    ///
+    /// # Errors
+    /// Returns an export failure; its log is in the work directory's
+    /// `logs/export.log`.
+    pub async fn export_installation(
+        &self,
+        server: Option<&Path>,
+        out: &Path,
+        passphrase: &str,
+    ) -> Result<serde_json::Value, TrellisTestError> {
+        self.ensure_running()?;
+        let log = self.workdir.join("logs/export.log");
+        crate::process::run(
+            Command::new(server.unwrap_or(&self.distribution.server))
+                .args([
+                    "export",
+                    "--format",
+                    "json",
+                    "--passphrase-file",
+                    "-",
+                    "--out",
+                ])
+                .arg(out)
+                .arg("--config")
+                .arg(&self.config),
+            &log,
+            Some(passphrase),
+            TrellisTestStage::Export,
+        )
+        .await?;
+        last_json(&log, TrellisTestStage::Export)
+    }
+
+    /// Adds the installation export `file` to this installation as an
+    /// operator does: stops the server, leaving its NATS running, runs
+    /// `trellis-server import` with `passphrase`, then starts the server again
+    /// and signs the administrator in once more. With `check` the import
+    /// changes nothing. Returns the import's JSON report.
+    ///
+    /// The administrator signs in with this runtime's username and password,
+    /// so an import whose administrator takes this installation's place keeps
+    /// the runtime usable when both were made with the same credentials.
+    /// With `from`, the runtime the export came from, its users and native
+    /// applications that the import created here are this runtime's too, so
+    /// [`Self::login_native_application_as`] signs them in here with the same
+    /// handles.
+    ///
+    /// # Errors
+    /// Returns an import, startup, or administrator sign-in failure; the
+    /// import's log is in the work directory's `logs/import.log`.
+    pub async fn import_installation(
+        &mut self,
+        file: &Path,
+        passphrase: &str,
+        check: bool,
+        from: Option<&TrellisTestRuntime>,
+    ) -> Result<serde_json::Value, TrellisTestError> {
+        self.stop_server().await?;
+        let log = self.workdir.join("logs/import.log");
+        let mut command = Command::new(&self.distribution.server);
+        command
+            .arg("import")
+            .arg(file)
+            .args(["--format", "json", "--passphrase-file", "-", "--config"])
+            .arg(&self.config);
+        if check {
+            command.arg("--check");
+        }
+        let imported = crate::process::run(
+            &mut command,
+            &log,
+            Some(passphrase),
+            TrellisTestStage::Import,
+        )
+        .await
+        .and_then(|()| last_json(&log, TrellisTestStage::Import));
+        // The server starts again whether or not the import worked.
+        self.restart_runtime(false, None).await?;
+        let imported = imported?;
+        if let (Some(from), false) = (from, check) {
+            let created = |kind: &str, id: &str| {
+                imported["import"]["created"]
+                    .as_array()
+                    .is_some_and(|items| {
+                        items
+                            .iter()
+                            .any(|item| item["kind"] == kind && item["id"] == id)
+                    })
+            };
+            for (principal, user) in &from.users {
+                if created("user", principal) {
+                    self.users.insert(principal.clone(), user.clone());
+                }
+            }
+            for (client_id, participant) in &from.native_applications {
+                if created("oauthClient", client_id) {
+                    self.native_applications
+                        .insert(client_id.clone(), participant.clone());
+                }
+            }
+        }
+        Ok(imported)
+    }
+
     /// Recovers the installation from `backup` as after losing its disk:
     /// stops the server and its NATS broker, deletes the installation (its
     /// config, keys, certificates and databases) and the broker's JetStream
@@ -1667,4 +1776,23 @@ fn generate_password() -> String {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).expect("operating-system randomness");
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// The last JSON document a command printed into `log`.
+fn last_json(log: &Path, stage: TrellisTestStage) -> Result<serde_json::Value, TrellisTestError> {
+    std::fs::read_to_string(log)?
+        .lines()
+        .rev()
+        .find_map(|line| {
+            line.starts_with('{')
+                .then(|| serde_json::from_str(line).ok())
+                .flatten()
+        })
+        .ok_or_else(|| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Bootstrap,
+                stage,
+                format!("{} has no JSON report", log.display()),
+            )
+        })
 }

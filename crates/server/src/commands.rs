@@ -483,6 +483,269 @@ pub(crate) struct RestoreArgs {
     pub(crate) format: OutputFormat,
 }
 
+#[derive(Debug, clap::Args)]
+/// Write the installation's configuration into a passphrase-sealed file.
+pub(crate) struct ExportArgs {
+    #[command(flatten)]
+    pub(crate) profile: crate::InstallationArgs,
+    /// The file to write. An existing file is never replaced.
+    #[arg(long, value_name = "FILE")]
+    pub(crate) out: PathBuf,
+    /// Read the passphrase from this file, or `-` for standard input.
+    /// Without it, piped standard input is read.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) passphrase_file: Option<PathBuf>,
+    /// Print the result as text or JSON.
+    #[arg(long, value_enum, default_value_t)]
+    pub(crate) format: OutputFormat,
+}
+
+#[derive(Debug, clap::Args)]
+/// Add an installation export to this installation.
+pub(crate) struct ImportArgs {
+    #[command(flatten)]
+    pub(crate) profile: crate::InstallationArgs,
+    /// A file `trellis-server export` wrote.
+    pub(crate) file: PathBuf,
+    /// Read the passphrase from this file, or `-` for standard input.
+    /// Without it, piped standard input is read.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) passphrase_file: Option<PathBuf>,
+    /// Report what the import would create and what is in the way,
+    /// changing nothing.
+    #[arg(long)]
+    pub(crate) check: bool,
+    /// Print the result as text or JSON.
+    #[arg(long, value_enum, default_value_t)]
+    pub(crate) format: OutputFormat,
+}
+
+/// The configuration of an installation that has started once, with the
+/// installation ID its first start kept in `secrets.toml`.
+fn installation_config(
+    profile: &crate::InstallationArgs,
+) -> miette::Result<trellis_runtime::RuntimeConfig> {
+    let paths = profile.paths(|name| std::env::var_os(name))?;
+    let (mut config, _) = trellis_runtime::RuntimeConfig::load_from_path_with_defaults(
+        &paths.config,
+        paths.defaults(),
+    )
+    .into_diagnostic()?;
+    if let (Some(auth), Some(instance)) = (config.auth.as_mut(), config.secrets.instance_id.clone())
+    {
+        auth.instance_id.get_or_insert(instance);
+    }
+    Ok(config)
+}
+
+/// The passphrase from `file` (`-` for standard input), else from piped
+/// standard input. A new file's passphrase has at least the envelope's
+/// minimum length.
+fn passphrase(file: Option<&Path>, new: bool) -> miette::Result<String> {
+    use std::io::IsTerminal as _;
+    let text = match file {
+        Some(path) if path != Path::new("-") => std::fs::read_to_string(path)
+            .map_err(|error| miette!("cannot read {}: {error}", path.display()))?,
+        None if std::io::stdin().is_terminal() => {
+            return Err(miette!(
+                "give the passphrase with --passphrase-file PATH, or `-` to read it from \
+                standard input"
+            ));
+        }
+        _ => std::io::read_to_string(std::io::stdin()).into_diagnostic()?,
+    };
+    let text = text.trim_end_matches(['\r', '\n']).to_owned();
+    if text.is_empty() {
+        return Err(miette!("the passphrase is empty"));
+    }
+    let minimum = trellis_bootstrap::envelope::MIN_PASSPHRASE;
+    if new && text.chars().count() < minimum {
+        return Err(miette!(
+            "an installation export's passphrase needs at least {minimum} characters"
+        ));
+    }
+    Ok(text)
+}
+
+/// Writes the installation's configuration into `--out`, sealed with a
+/// passphrase, through a temporary file beside it that becomes `--out` only
+/// once whole, and never in place of an existing file.
+pub(crate) async fn export(args: ExportArgs) -> miette::Result<()> {
+    use std::io::Write as _;
+    let passphrase = passphrase(args.passphrase_file.as_deref(), true)?;
+    let config = installation_config(&args.profile)?;
+    let out = std::path::absolute(&args.out).into_diagnostic()?;
+    if out.exists() {
+        return Err(miette!("{} exists; choose another file", out.display()));
+    }
+    let partial = out.with_file_name(format!(
+        ".{}.{}.partial",
+        out.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("export"),
+        std::process::id()
+    ));
+    let file = {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        options
+            .open(&partial)
+            .map_err(|error| miette!("cannot write {}: {error}", partial.display()))?
+    };
+    let result = async {
+        let mut sealed = trellis_bootstrap::envelope::Encryptor::new(
+            std::io::BufWriter::new(file),
+            trellis_bootstrap::envelope::INSTALLATION,
+            &passphrase,
+        )?;
+        let report = {
+            let mut writer = SealedWriter(&mut sealed);
+            trellis_runtime::platform::export_installation(&config, &mut writer)
+                .await
+                .into_diagnostic()?
+        };
+        sealed.finish()?.flush().into_diagnostic()?;
+        // A hard link refuses an existing name, so a file that appeared
+        // meanwhile stays as it was.
+        std::fs::hard_link(&partial, &out)
+            .map_err(|error| miette!("cannot create {}: {error}", out.display()))?;
+        Ok::<_, miette::Report>(report)
+    }
+    .await;
+    let _ = std::fs::remove_file(&partial);
+    let report = result?;
+    if args.format == OutputFormat::Json {
+        print_json(&json!({ "file": out.display().to_string(), "report": report }));
+        return Ok(());
+    }
+    println!(
+        "exported installation {} into {}",
+        report["sourceInstallationId"]
+            .as_str()
+            .unwrap_or("without an ID"),
+        out.display()
+    );
+    if let Some(records) = report["records"].as_object() {
+        for (kind, count) in records {
+            println!("  {kind}: {count}");
+        }
+    }
+    for deployment in report["deployments"].as_array().into_iter().flatten() {
+        println!(
+            "  deployment {} ({})",
+            deployment["title"].as_str().unwrap_or_default(),
+            deployment["deploymentId"].as_str().unwrap_or_default()
+        );
+    }
+    println!("Not carried:");
+    for item in report["notCarried"].as_array().into_iter().flatten() {
+        println!("  {}", item.as_str().unwrap_or_default());
+    }
+    Ok(())
+}
+
+/// `Write` for the content an export streams into the envelope.
+struct SealedWriter<'a, W: std::io::Write>(&'a mut trellis_bootstrap::envelope::Encryptor<W>);
+
+impl<W: std::io::Write> std::io::Write for SealedWriter<'_, W> {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .write(data)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Adds an installation export to a stopped installation, or with
+/// `--check` reports what it would do.
+pub(crate) async fn import(args: ImportArgs) -> miette::Result<()> {
+    let passphrase = passphrase(args.passphrase_file.as_deref(), false)?;
+    let config = installation_config(&args.profile)?;
+    let file = std::fs::File::open(&args.file)
+        .map_err(|error| miette!("cannot read {}: {error}", args.file.display()))?;
+    let mut opened = trellis_bootstrap::envelope::Decryptor::open(
+        std::io::BufReader::new(file),
+        trellis_bootstrap::envelope::INSTALLATION,
+        &passphrase,
+    )?;
+    let report = trellis_runtime::platform::import_installation(&config, &mut opened, args.check)
+        .await
+        .into_diagnostic()?;
+    if args.format == OutputFormat::Json {
+        print_json(&json!({ "import": report }));
+        return Ok(());
+    }
+    println!(
+        "{} installation {} from {}",
+        if args.check { "checked" } else { "imported" },
+        report["source"]["installationId"]
+            .as_str()
+            .unwrap_or_default(),
+        report["source"]["origin"].as_str().unwrap_or_default()
+    );
+    if let Some(existing) = report["target"]["existing"]
+        .as_object()
+        .filter(|found| !found.is_empty())
+    {
+        println!("This installation is not empty; it already has:");
+        for (kind, count) in existing {
+            println!("  {kind}: {count}");
+        }
+    }
+    let line = |item: &serde_json::Value| {
+        let mut line = format!(
+            "  {} {}",
+            item["kind"].as_str().unwrap_or_default(),
+            item["id"]
+                .as_str()
+                .or(item["roleId"].as_str())
+                .or(item["capability"].as_str())
+                .unwrap_or_default()
+        );
+        if let Some(reason) = item["reason"].as_str() {
+            line.push_str(&format!(": {reason}"));
+        }
+        line
+    };
+    println!("Created:");
+    for item in report["created"].as_array().into_iter().flatten() {
+        println!("{}", line(item));
+    }
+    for item in report["access"]["recreated"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        println!("{}", line(item));
+    }
+    println!("Skipped:");
+    for item in report["skipped"].as_array().into_iter().flatten() {
+        println!("{}", line(item));
+    }
+    for item in report["access"]["skipped"].as_array().into_iter().flatten() {
+        println!("{}", line(item));
+    }
+    for deployment in report["deployments"].as_array().into_iter().flatten() {
+        if let Some(error) = deployment["error"].as_str() {
+            println!(
+                "  deployment {}: {error}; run the same import again to finish it",
+                deployment["deploymentId"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    println!("Not carried:");
+    for item in report["notCarried"].as_array().into_iter().flatten() {
+        println!("  {}", item.as_str().unwrap_or_default());
+    }
+    Ok(())
+}
+
 /// Backs up an installation, running or stopped, while its NATS runs.
 pub(crate) async fn backup(args: BackupArgs) -> miette::Result<()> {
     let paths = args.profile.paths(|name| std::env::var_os(name))?;

@@ -40,7 +40,7 @@ use super::sqlite::{digest, timestamp, Connection};
 use super::{blocking, Administration, AuthError, Mutation, SqliteAuthorizationStore};
 
 /// The seal purpose that binds a secret to its registry's name.
-const SEAL: &str = "packageRegistry";
+pub(super) const SEAL: &str = "packageRegistry";
 
 /// One registry as Auth pulls from it.
 struct Registry {

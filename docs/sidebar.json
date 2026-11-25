@@ -286,6 +286,10 @@
         "to": "/guides/move-a-service"
       },
       {
+        "title": "Moving an installation",
+        "to": "/guides/move-an-installation"
+      },
+      {
         "title": "Administer Jobs",
         "to": "/guides/administering-jobs"
       }

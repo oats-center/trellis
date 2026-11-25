@@ -2,6 +2,7 @@
 //! system account, the accounts Trellis owns on a NATS operator's servers,
 //! NATS server configuration, and generated certificates.
 mod certificate;
+pub mod envelope;
 mod error;
 mod files;
 mod nats_config;

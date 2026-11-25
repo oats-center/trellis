@@ -63,6 +63,7 @@ These headings are intentionally named for fast human and AI lookup.
 | `auth/service-updates.md`               | You are changing how a running service updates its participant                   | Service-submitted IDL, auto-applied and approved updates, review links              |
 | `auth/instance-enrollment.md`           | You are changing self-registered service instances                               | Enrollment secrets, instances that register their own keys, offline retirement      |
 | `auth/service-export.md`                | You are changing how one service moves to another installation                   | Export bundles, passphrase format, what moves and what stays, migration procedure   |
+| `auth/installation-export.md`           | You are changing how a whole installation moves to another one or a new release  | Record kinds and formats, import order and conflicts, what is not carried, restore  |
 | `contracts/trellis-api-participants.md` | You are changing manifests, codegen inputs, or permission derivation             | Canonical contract format, `uses`, subject ownership, activation rules              |
 | `contracts/trellis-idl.md`              | You are changing declarative contract source or compilation                      | IDL source layouts, syntax, types, and protocol lowering boundary                   |
 | `contracts/workspaces.md`               | You are changing package identity, workspaces, registry ownership, or ID display | Workspaces in package and API IDs, ownership checks, generated names, migration     |

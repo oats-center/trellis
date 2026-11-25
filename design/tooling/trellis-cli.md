@@ -419,6 +419,8 @@ trellis-server nats new --out <dir> [--servers <n>] [--hosts <name,...>] [--list
 trellis-server nats <system|trellis|auth> [--config <path> | --user | --system] [--print] [<nats args>...]
 trellis-server backup <dir> [--config <path> | --user | --system]
 trellis-server restore <dir> [--config <path> | --user | --system] [--force]
+trellis-server export --out <file> [--passphrase-file <path|->] [--config <path> | --user | --system]
+trellis-server import <file> [--passphrase-file <path|->] [--check] [--config <path> | --user | --system]
 trellis-server upgrade [--check] [--prerelease]
 ```
 
@@ -534,6 +536,21 @@ record as a start does: it must name the configuration's instance ID and,
 when the platform database was copied, that database's JetStream identity. A
 broker with no record, or one bound to another installation or database,
 fails the backup before its manifest is written.
+
+`restore` restores a backup of its own release as it is. From the first
+stable release it also restores one an earlier stable release took and then
+migrates the restored databases forward as a start does, and refuses one a
+newer release took. Before then it refuses a backup of any other release and
+says to move the installation with `export` and `import` instead.
+
+`export` and `import` move a whole installation's configuration as plain,
+versioned records: users with their IDs and password hashes, roles and
+grants, sign-in settings and OIDC providers with their secrets, apps and
+consent, Portal themes, package registries, and every service and device
+deployment as a service bundle. Import runs against a stopped installation
+with its NATS running, skips and reports each record existing data is in the
+way of, and with `--check` changes nothing. See
+[installation-export.md](../auth/installation-export.md).
 
 `restore` verifies every checksum before writing. It refuses a target folder
 holding another installation, and an outside file that exists with other

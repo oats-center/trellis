@@ -352,7 +352,7 @@ fn files_in(folder: &Path) -> Result<Vec<String>, BackupError> {
 }
 
 /// Connects to the installation's NATS as Trellis's own user.
-async fn connect(config: &RuntimeConfig) -> Result<async_nats::Client, BackupError> {
+pub(crate) async fn connect(config: &RuntimeConfig) -> Result<async_nats::Client, BackupError> {
     let nats = config.resolve_nats_runtime()?;
     let options = crate::supervisor::nats_connect_options(&nats, &nats.trellis_creds)
         .map_err(|error| BackupError::Nats(error.to_string()))?

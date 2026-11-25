@@ -300,6 +300,12 @@ the time since the last one. Keep the backups off the machine they came from.
 
 ## Restore
 
+A backup restores onto the release that took it. Once Trellis has stable
+releases, one taken by an earlier stable release also restores onto a newer
+one, and `restore` migrates its databases forward. Before then, `restore`
+refuses a backup from another release; move the installation with
+[`trellis-server export` and `import`](/guides/move-an-installation) instead.
+
 Stop the server, then restore into a fresh folder, or over the same
 installation:
 

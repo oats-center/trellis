@@ -318,6 +318,16 @@ impl OAuthStorage {
         self.encode("upstreamSecret", &hash(provider), &secret)
     }
 
+    /// The secret `seal_upstream_client_secret` sealed for `provider`, as an
+    /// installation export carries it.
+    pub(crate) fn open_upstream_client_secret(
+        &self,
+        provider: &str,
+        sealed: &[u8],
+    ) -> Result<String, StorageError> {
+        self.decode("upstreamSecret", &hash(provider), sealed)
+    }
+
     pub(super) fn upstream_client_secret(
         &self,
         provider: &str,
