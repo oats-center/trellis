@@ -935,6 +935,9 @@ struct Outcome {
     matched: Vec<Value>,
     changed: Vec<Value>,
     skipped: Vec<Value>,
+    /// Records that wait for something this run cannot finish, with what
+    /// finishes them.
+    pending: Vec<Value>,
     access: Value,
     administrator: Value,
     /// Deployments recorded by this import, whose data loads afterwards.
@@ -2090,7 +2093,6 @@ pub(crate) async fn import(
                         .decode(value["value"]["base64"].as_str().unwrap_or_default())
                         .map_err(|_| damaged("a State value is not base64"))?;
                     placed.push(match (&physical, instance) {
-                        _ if check => Ok((None, bytes, item)),
                         (Some(physical), Some(instance_id)) => {
                             let (suffix, _) = SqliteAuthorizationStore::state_namespace(
                                 principal,
@@ -2101,7 +2103,7 @@ pub(crate) async fn import(
                                 },
                                 name,
                             )?;
-                            Ok((Some(format!("{physical}.{suffix}")), bytes, item))
+                            Ok((format!("{physical}.{suffix}"), bytes, item))
                         }
                         _ => Err(item),
                     });
@@ -2112,47 +2114,48 @@ pub(crate) async fn import(
         .await?;
     for placed in placed {
         match placed {
-            Ok((Some(key), value, item)) => writes.push(StateWrite { key, value, item }),
-            Ok((None, _, item)) => outcome.created.push(item),
-            Err(item) => outcome.skipped.push({
-                let mut item = item;
-                item["reason"] = json!(
-                    "its device or its deployment's State is not here yet; run the same import \
-                    again once the deployment's data has loaded"
-                );
-                item
-            }),
+            Ok((key, value, item)) => writes.push(StateWrite { key, value, item }),
+            // Neither written nor in the way: it waits for its deployment.
+            Err(mut item) => {
+                item["reason"] = json!(if check {
+                    "its device's deployment is created by this import, and its State is \
+                    written once the deployment's data has loaded"
+                } else {
+                    "its device or its deployment's State is not here yet; run the same \
+                    import again once the deployment's data has loaded"
+                });
+                outcome.pending.push(item);
+            }
         }
     }
     // State values, each written where none is yet. One that differs from
-    // the value here is left as it is.
-    if check {
-        outcome
-            .created
-            .extend(writes.into_iter().map(|write| write.item));
-    } else if let Some(store) = state_store.filter(|_| !writes.is_empty()) {
-        let broker = |error: &dyn std::fmt::Display| AuthError::Broker(error.to_string());
-        for write in writes {
-            let here = store
+    // the value here is left as it is. A preview reads what is stored, so it
+    // reports the same as the import would.
+    let broker = |error: &dyn std::fmt::Display| AuthError::Broker(error.to_string());
+    for write in writes {
+        let here = match &state_store {
+            Some(store) => store
                 .entry(&write.key)
                 .await
                 .map_err(|error| broker(&error))?
-                .filter(|entry| entry.operation == async_nats::jetstream::kv::Operation::Put);
-            match here {
-                Some(here) if here.value.as_ref() == write.value.as_slice() => {}
-                Some(_) => outcome.skipped.push({
-                    let mut item = write.item;
-                    item["reason"] = json!("another value is stored here; it was left as it is");
-                    item
-                }),
-                None => {
-                    store
-                        .put(&write.key, write.value.into())
-                        .await
-                        .map_err(|error| broker(&error))?;
-                    outcome.created.push(write.item);
-                }
+                .filter(|entry| entry.operation == async_nats::jetstream::kv::Operation::Put),
+            None => None,
+        };
+        match (here, &state_store) {
+            (Some(here), _) if here.value.as_ref() == write.value.as_slice() => {}
+            (Some(_), _) => outcome.skipped.push({
+                let mut item = write.item;
+                item["reason"] = json!("another value is stored here; it was left as it is");
+                item
+            }),
+            (None, Some(store)) if !check => {
+                store
+                    .put(&write.key, write.value.into())
+                    .await
+                    .map_err(|error| broker(&error))?;
+                outcome.created.push(write.item);
             }
+            (None, _) => outcome.created.push(write.item),
         }
     }
     Ok(json!({
@@ -2168,6 +2171,7 @@ pub(crate) async fn import(
         "matched": outcome.matched,
         "changed": outcome.changed,
         "skipped": outcome.skipped,
+        "pending": outcome.pending,
         "administrator": outcome.administrator,
         "access": outcome.access,
         "deployments": deployments,

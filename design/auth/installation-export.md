@@ -164,7 +164,11 @@ the same the second time and change nothing.
 the platform database into its working folder, migrates the copy as the
 import would migrate the database, runs the same transaction there and rolls
 it back, and loads nothing; it only reads the database, NATS and the State
-bucket.
+bucket. It reads the State value stored under each key the import would
+write, so a value stored here that differs is reported as skipped, as the
+import would skip it, and one the same as the export's is not reported. A
+device's State waits for its deployment's data, which a preview does not
+load, so it is reported as pending.
 
 ### What the import decides
 
@@ -253,6 +257,7 @@ created        { kind, id } for each record created, State value written include
 matched        { kind, id, userId, matchedBy } for each user or app found here as the same
 changed        { kind, id, old, new } for each setting replaced with the export's
 skipped        { kind, id, reason } for each record skipped
+pending        { kind, id, reason } for each record that waits for a later step, and that step
 administrator  the exported administrator's ID, this installation's, and what it received
 access         recreated and skipped roles, members and grants, as a service import reports them
 deployments    each deployment's service import report, or the error that stopped its data loading
