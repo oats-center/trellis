@@ -999,12 +999,15 @@ fn records<'a>(received: &'a Received, kind: &str) -> &'a [Value] {
 }
 
 /// Make `user` here as the export recorded it, or say what is in the way.
+/// A sign-in through a provider the import did not bring here cannot be
+/// used, so it is left out and the account is still made; returns each one
+/// left out, by its subject.
 fn create_user(
     connection: &Connection,
     user: &Value,
     providers: &BTreeMap<String, String>,
     now: i64,
-) -> Result<(), AuthError> {
+) -> Result<Vec<String>, AuthError> {
     let user_id = user["userId"].as_str().unwrap_or_default();
     if ulid::Ulid::from_string(user_id).is_err() {
         return Err(damaged("a user ID is not a ULID"));
@@ -1079,15 +1082,14 @@ fn create_user(
             )?;
         }
     }
+    let mut left_out = Vec::new();
     for identity in user["identities"].as_array().into_iter().flatten() {
         let subject = identity["provider_subject"].as_str().unwrap_or_default();
-        let provider = providers
-            .get(identity["provider"].as_str().unwrap_or_default())
-            .ok_or_else(|| {
-                AuthError::NotFound(format!(
-                    "its sign-in {subject} is through a provider this import did not bring"
-                ))
-            })?;
+        let Some(provider) = providers.get(identity["provider"].as_str().unwrap_or_default())
+        else {
+            left_out.push(subject.to_owned());
+            continue;
+        };
         let owner: Option<String> = connection
             .query_row(
                 "SELECT principal_id FROM auth_provider_identities \
@@ -1135,7 +1137,7 @@ fn create_user(
         }
         insert(connection, "auth_user_profiles", &profile)?;
     }
-    Ok(())
+    Ok(left_out)
 }
 
 /// What an OIDC provider record sets, as a report shows it. The client
@@ -1478,7 +1480,19 @@ fn apply(
         }
         let found = match access_records::find_user(connection, &user_ref)? {
             Match::Missing => match attempt(connection, || {
-                create_user(connection, user, &providers, now)
+                let left_out = create_user(connection, user, &providers, now)?;
+                for subject in left_out {
+                    outcome.skipped(
+                        "userSignIn",
+                        &user_id,
+                        format!(
+                            "its sign-in {subject} is through an OIDC provider this import did \
+                            not bring, such as one deleted there; the account was created \
+                            without it"
+                        ),
+                    );
+                }
+                Ok(())
             })? {
                 Ok(()) => {
                     outcome.created("user", &user_id);

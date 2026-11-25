@@ -4,6 +4,7 @@
 //! the step that finishes it.
 use std::time::Duration;
 
+use runtime_trellis::apps::runtime_trellis_account_caller::Request as AccountCaller;
 use runtime_trellis::apps::runtime_trellis_native_state_caller as state_caller;
 use runtime_trellis::participants::runtime_trellis_moving_service::{
     types::Value as Payload, Participant as Moving, Provider as MovingProvider,
@@ -303,6 +304,131 @@ async fn deployment_data_waiting_for_an_instance_is_reported_until_a_retry_finis
     assert_eq!(ran, job_id);
     lifecycle.stop();
     serving.await.unwrap().unwrap();
+
+    target.shutdown().await.unwrap();
+    source.shutdown().await.unwrap();
+}
+
+/// The principal a client of `auth` signed in as.
+async fn principal(auth: &trellis_auth_v1::Client) -> String {
+    auth.users_resolve(&wire(json!({})))
+        .await
+        .unwrap()
+        .user
+        .principal_id
+        .to_string()
+}
+
+/// Adds an OIDC provider for `issuer` to the installation behind `admin`,
+/// enabled, and returns it as the Auth API shows it.
+async fn add_provider(admin: &trellis_auth_v1::Client, issuer: &str) -> Value {
+    let provider = admin
+        .oidc_providers_put(&wire(json!({
+            "issuer": issuer,
+            "clientId": "trellis",
+            "clientSecret": "a provider secret",
+            "title": "Company",
+            "scopes": ["openid"],
+            "roleClaim": "",
+            "claimFreshnessSeconds": 3600,
+            "expectedRevision": "0",
+            "idempotencyKey": key()
+        })))
+        .await
+        .unwrap();
+    let mut provider = serde_json::to_value(provider).unwrap()["provider"].clone();
+    if provider["enabled"] != true {
+        let enabled = admin
+            .oidc_providers_enable(&wire(json!({
+                "providerId": provider["providerId"],
+                "expectedRevision": provider["revision"],
+                "idempotencyKey": key()
+            })))
+            .await
+            .unwrap();
+        provider["revision"] = serde_json::to_value(enabled).unwrap()["revision"].clone();
+    }
+    provider
+}
+
+/// Links an OIDC sign-in with `subject` at `provider` to `user` on the
+/// installation behind `admin`.
+async fn link(admin: &trellis_auth_v1::Client, user: &str, provider: &Value, subject: &str) {
+    let found = admin
+        .users_find(&wire(json!({ "userId": user })))
+        .await
+        .unwrap();
+    let revision = serde_json::to_value(found).unwrap()["found"]["user"]["account"]["principal"]
+        ["revision"]
+        .clone();
+    admin
+        .users_identities_link(&wire(json!({
+            "userId": user,
+            "identity": { "providerId": provider["providerId"], "subject": subject },
+            "expectedRevision": revision,
+            "idempotencyKey": key()
+        })))
+        .await
+        .unwrap();
+}
+
+/// A person who kept the sign-in of an OIDC provider the old installation
+/// deleted still moves: that sign-in, which nothing can use, is left out
+/// and reported, and the person signs in to the new installation with
+/// their password under their own user ID.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_account_with_a_deleted_providers_sign_in_moves_and_signs_in() {
+    let mut source = TrellisTestRuntime::builder().start().await.unwrap();
+    let mut target = TrellisTestRuntime::builder().start().await.unwrap();
+    let person = source.create_user("Linked person").await.unwrap();
+    let app = source
+        .register_native_application::<AccountCaller>("account")
+        .await
+        .unwrap();
+    let admin = administrator(&mut source).await;
+    let provider = add_provider(&admin, "https://identity.example.com/").await;
+    link(&admin, person.principal_id(), &provider, "old-subject").await;
+    let current = admin
+        .oidc_providers_get(&wire(json!({ "providerId": provider["providerId"] })))
+        .await
+        .unwrap();
+    admin
+        .oidc_providers_delete(&wire(json!({
+            "providerId": provider["providerId"],
+            "expectedRevision": serde_json::to_value(current).unwrap()["provider"]["revision"],
+            "idempotencyKey": key()
+        })))
+        .await
+        .unwrap();
+    drop(admin);
+    let file = source.workdir().join("installation.trellis-installation");
+    source
+        .export_installation(None, &file, PASSPHRASE)
+        .await
+        .unwrap();
+
+    let imported = target
+        .import_installation(&file, PASSPHRASE, false, Some(&source))
+        .await
+        .unwrap();
+    let report = &imported["import"];
+    assert!(
+        listed(report, "created", "user", person.principal_id()),
+        "{report}"
+    );
+    assert!(
+        listed(report, "skipped", "userSignIn", person.principal_id()),
+        "{report}"
+    );
+    let login = target
+        .login_native_application_as(&app, &person)
+        .await
+        .unwrap();
+    let auth = trellis_auth_v1::Client::from_generated(
+        Client::connect_user(login.connect_options()).await.unwrap(),
+    );
+    assert_eq!(principal(&auth).await, person.principal_id());
+    drop(auth);
 
     target.shutdown().await.unwrap();
     source.shutdown().await.unwrap();

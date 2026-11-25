@@ -209,7 +209,11 @@ ID, the one user with the same OIDC subject at a provider with the same
 issuer. Such a user is not created again and keeps its account as it is,
 but receives the export's roles, grants, consent and State (`matched` in the
 report, with how it was found). A user found nowhere is created with its ID,
-password hash, sign-ins and profile. An app with the same client ID and the
+password hash, sign-ins and profile. A sign-in through an OIDC provider the
+import did not bring here, such as one deleted on the old installation,
+whose links a deletion keeps, or one skipped as a conflict, cannot be used:
+it is left out and reported (`userSignIn` under `skipped`), and the account
+is still created with its other sign-ins. An app with the same client ID and the
 same settings, a registry with the same name and settings, an OIDC role
 mapping with the same ID and contents, and a role with the same ID, name and
 description whose capabilities are all in the record are the same record;

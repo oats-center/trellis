@@ -102,7 +102,9 @@ and State the file has for them. The report lists them under `matched`.
 - a role under the same ID with another name or other capabilities, with its
   members;
 - an OIDC provider whose ID is used by another issuer, with the sign-ins
-  through it;
+  through it; a person who signed in through it, or through a provider the
+  old installation deleted, still moves with their other sign-ins, such as
+  their password;
 - a registry or role mapping that exists with other settings;
 - State the same person has here in another form, or a value where another
   one is stored;
