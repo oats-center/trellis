@@ -946,6 +946,7 @@ pub fn restore(
     force: bool,
 ) -> Result<Manifest, BackupError> {
     let manifest = verify(source)?;
+    let migrate = restorable(&manifest.trellis_version, env!("CARGO_PKG_VERSION"))?;
     let config_dir = config_file.parent().unwrap_or(Path::new("/"));
     if !force {
         // The installation already there is the one a start of it would be:
@@ -1006,6 +1007,7 @@ pub fn restore(
 
     // The restored configuration says where its data goes.
     let (config, paths) = RuntimeConfig::load_from_path_with_defaults(config_file, defaults)?;
+    let restored_config = config.clone();
     let databases = databases(&config)?;
     for entry in &manifest.entries {
         let EntryKind::Database { subsystem } = &entry.kind else {
@@ -1111,7 +1113,57 @@ pub fn restore(
         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
     )
     .map_err(|error| file_error("write", &path)(std::io::Error::other(error.to_string())))?;
+    if migrate {
+        migrate_restored(&restored_config)?;
+    }
     Ok(manifest)
+}
+
+/// Whether a backup that release `taken` wrote restores into release
+/// `running`, and whether its databases then need this release's forward
+/// migrations. The same release restores as it is. Between stable releases
+/// an earlier one's backup restores and is migrated, as a start would
+/// migrate its databases. A release candidate's databases come from a
+/// baseline that later candidates edit in place, so a release candidate
+/// restores only its own backups; an installation export moves one to
+/// another release.
+///
+/// # Errors
+///
+/// Returns [`BackupError::Refused`] for any other pair of releases.
+fn restorable(taken: &str, running: &str) -> Result<bool, BackupError> {
+    let version = |text: &str| semver::Version::parse(text.split('+').next().unwrap_or(text));
+    if taken == running {
+        return Ok(false);
+    }
+    match (version(taken), version(running)) {
+        (Ok(taken), Ok(running))
+            if taken.pre.is_empty() && running.pre.is_empty() && taken < running =>
+        {
+            Ok(true)
+        }
+        (Ok(taken_version), Ok(running_version))
+            if taken_version.pre.is_empty() && running_version.pre.is_empty() =>
+        {
+            Err(BackupError::Refused(format!(
+                "this backup was taken by trellis-server {taken}, which is newer than this \
+                trellis-server {running}; restore it with {taken} or later"
+            )))
+        }
+        _ => Err(BackupError::Refused(format!(
+            "this backup was taken by trellis-server {taken}, and this is trellis-server \
+            {running}; a release candidate restores only its own backups. Restore it with \
+            trellis-server {taken}, then move the installation to {running} with \
+            `trellis-server export` there and `trellis-server import` here"
+        ))),
+    }
+}
+
+/// Bring restored databases up to this release's schema, as a start does.
+fn migrate_restored(config: &RuntimeConfig) -> Result<(), BackupError> {
+    crate::storage::RuntimeStores::from_config(config, crate::RuntimeMode::All)?
+        .migrate_all()
+        .map_err(|error| BackupError::Refused(format!("migrating the restored databases: {error}")))
 }
 
 /// Loads the streams a restore left in `data_dir` into the installation's
@@ -1285,7 +1337,7 @@ mod tests {
         }
         let manifest = Manifest {
             format: FORMAT,
-            trellis_version: "test".into(),
+            trellis_version: env!("CARGO_PKG_VERSION").into(),
             created_at: now(),
             completed_at: now(),
             instance_id: Some(instance.into()),
@@ -1341,6 +1393,36 @@ mod tests {
             .join(STAGED)
             .join(MANIFEST_FILE)
             .is_file());
+    }
+
+    /// Before the first stable release a backup restores only into the
+    /// release candidate that took it, and the refusal sends the operator to
+    /// an installation export, the way to move to another release. From then
+    /// on an earlier stable release's backup restores, and its databases are
+    /// migrated forward; a newer one's is refused. No baseline has later
+    /// migrations yet, so the migration itself runs only when that happens.
+    #[test]
+    fn a_backup_restores_into_its_own_release_or_a_later_stable_one() {
+        assert!(!restorable("0.100.0-rc.55", "0.100.0-rc.55").unwrap());
+        for (taken, running) in [
+            ("0.100.0-rc.55", "0.100.0-rc.56"),
+            ("0.100.0-rc.56", "0.100.0-rc.55"),
+            ("0.100.0-rc.56", "0.100.0"),
+        ] {
+            let Err(BackupError::Refused(reason)) = restorable(taken, running) else {
+                panic!("{taken} restored into {running}");
+            };
+            assert!(
+                reason.contains("`trellis-server export`")
+                    && reason.contains("`trellis-server import`"),
+                "{reason}"
+            );
+        }
+        assert!(restorable("1.0.0", "1.2.0").unwrap());
+        assert!(matches!(
+            restorable("1.2.0", "1.0.0"),
+            Err(BackupError::Refused(_))
+        ));
     }
 
     #[test]
