@@ -8,6 +8,23 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- An unexpected failure in a settings check or derive builder shows fixed text
+  ("the check failed" / "building the value failed") in status and health; the
+  service's own log carries the error with secret values redacted. Explicit
+  rejection reasons are kept, redacted.
+
+### Fixed
+
+- A settings status reads pending as soon as a different build is installed,
+  and TypeScript `stop()` waits for derived-value disposals already running.
+- Rollback advice names the layer each refused value came from, and advises
+  restoring an accepted instance override when its removal exposed a value the
+  instance refuses.
+- Lease diagnostics judge expiry only by the broker's own clock and report
+  recovery only after seeing the lease records expire again.
+
 ## [0.100.0-rc.55] - 2026-11-24
 
 ### Added
