@@ -39,7 +39,8 @@ const FORMAT: u32 = 1;
 /// The largest content chunk accepted, and the size this build writes.
 const MAX_CHUNK: usize = 1 << 20;
 const CHUNK: usize = 64 * 1024;
-/// The largest record entry an import holds in memory.
+/// The largest record entry an import holds in memory, and the largest an
+/// export writes.
 const MAX_RECORDS: usize = 256 << 20;
 /// Clients each installation registers for itself; only their sign-up
 /// settings move.
@@ -236,6 +237,58 @@ fn read_entry(input: &mut dyn Read, out: &mut dyn Write, limit: usize) -> Result
 
 // ---------------------------------------------------------------------------
 // Export.
+
+/// Write each kind's records as entries an import reads: one or more
+/// `records/<kind>.json` entries, each at most `limit` bytes, so a kind with
+/// more records than one entry holds is split across several. A single
+/// record larger than `limit` fails the export, which then writes no file.
+fn write_records(
+    out: &mut dyn Write,
+    records: &BTreeMap<&'static str, Vec<Value>>,
+    limit: usize,
+) -> Result<(), AuthError> {
+    for (kind, format) in KINDS {
+        let name = format!("records/{kind}.json");
+        let empty = serde_json::to_vec(&json!({ "kind": kind, "format": format, "records": [] }))?;
+        let mut batch: Vec<Vec<u8>> = Vec::new();
+        let mut size = empty.len();
+        let mut flush = |batch: &mut Vec<Vec<u8>>| -> Result<(), AuthError> {
+            // The empty entry ends in `[]}`: the records go between.
+            let mut entry = empty[..empty.len() - 2].to_vec();
+            for (index, record) in batch.iter().enumerate() {
+                if index > 0 {
+                    entry.push(b',');
+                }
+                entry.extend_from_slice(record);
+            }
+            entry.extend_from_slice(b"]}");
+            batch.clear();
+            write_entry(out, &name, &mut entry.as_slice())
+        };
+        let kind_records = records.get(kind).map(Vec::as_slice).unwrap_or_default();
+        for record in kind_records {
+            let record = serde_json::to_vec(record)?;
+            if empty.len() + record.len() > limit {
+                return Err(AuthError::Invalid(format!(
+                    "a {kind} record takes {} bytes, more than the {limit} an import reads in \
+                    one entry",
+                    record.len()
+                )));
+            }
+            let added = record.len() + usize::from(!batch.is_empty());
+            if size + added > limit {
+                flush(&mut batch)?;
+                size = empty.len();
+            }
+            size += record.len() + usize::from(!batch.is_empty());
+            batch.push(record);
+        }
+        if !batch.is_empty() || kind_records.is_empty() {
+            flush(&mut batch)?;
+        }
+    }
+    Ok(())
+}
 
 /// The records of each kind, read in one transaction.
 fn read_records(
@@ -666,16 +719,13 @@ pub(crate) async fn export(
     out.write_all(&FORMAT.to_be_bytes()).map_err(io)?;
     write_entry(out, "meta.json", &mut serde_json::to_vec(&meta)?.as_slice())?;
     let mut counts = Map::new();
-    for (kind, format) in KINDS {
-        let records = records.get(kind).cloned().unwrap_or_default();
-        counts.insert(kind.to_owned(), json!(records.len()));
-        let entry = json!({ "kind": kind, "format": format, "records": records });
-        write_entry(
-            out,
-            &format!("records/{kind}.json"),
-            &mut serde_json::to_vec(&entry)?.as_slice(),
-        )?;
+    for (kind, _) in KINDS {
+        counts.insert(
+            kind.to_owned(),
+            json!(records.get(kind).map_or(0, Vec::len)),
+        );
     }
+    write_records(out, &records, MAX_RECORDS)?;
     let mut exported = Vec::new();
     for (deployment_id, title) in deployments {
         let quiet = |_: &str, _: u64| std::future::ready(Ok::<(), AuthError>(()));
@@ -742,7 +792,9 @@ struct Received {
     bundles: Vec<(String, Arc<service_bundles::Spool>)>,
 }
 
-fn receive(input: &mut dyn Read, directory: &Path) -> Result<Received, AuthError> {
+/// Read the content `input` holds, refusing a record entry larger than
+/// `limit` bytes, and spool each bundle into `directory`.
+fn receive(input: &mut dyn Read, directory: &Path, limit: usize) -> Result<Received, AuthError> {
     let mut header = [0; 20];
     input.read_exact(&mut header).map_err(io)?;
     if &header[..16] != MAGIC {
@@ -776,7 +828,7 @@ fn receive(input: &mut dyn Read, directory: &Path) -> Result<Received, AuthError
             continue;
         }
         let mut bytes = Vec::new();
-        read_entry(input, &mut bytes, MAX_RECORDS)?;
+        read_entry(input, &mut bytes, limit)?;
         let document: Value =
             serde_json::from_slice(&bytes).map_err(|error| damaged(format!("{name}: {error}")))?;
         if name == "meta.json" {
@@ -792,9 +844,12 @@ fn receive(input: &mut dyn Read, directory: &Path) -> Result<Received, AuthError
             let format = document["format"]
                 .as_u64()
                 .ok_or_else(|| damaged(format!("{name} has no format")))?;
+            // A kind's records may come in several entries.
             received
                 .records
-                .insert(kind.to_owned(), current_records(kind, format, records)?);
+                .entry(kind.to_owned())
+                .or_default()
+                .extend(current_records(kind, format, records)?);
         } else {
             return Err(damaged(format!("entry {name:?}")));
         }
@@ -1909,7 +1964,7 @@ pub(crate) async fn import(
     input: &mut (dyn Read + Send),
     check: bool,
 ) -> Result<Value, AuthError> {
-    let received = receive(input, directory)?;
+    let received = receive(input, directory, MAX_RECORDS)?;
     // Each deployment's bundle, read and verified as a service import does
     // before anything changes.
     let mut bundles = Vec::new();
@@ -2091,4 +2146,49 @@ pub(crate) async fn import(
         "deployments": deployments,
         "notCarried": NOT_CARRIED,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The content of an export holding `records`, with entries of at most
+    /// `limit` bytes, as an export writes it.
+    fn content(
+        records: &BTreeMap<&'static str, Vec<Value>>,
+        limit: usize,
+    ) -> Result<Vec<u8>, AuthError> {
+        let mut out = MAGIC.to_vec();
+        out.extend_from_slice(&FORMAT.to_be_bytes());
+        write_entry(&mut out, "meta.json", &mut b"{}".as_slice())?;
+        write_records(&mut out, records, limit)?;
+        Ok(out)
+    }
+
+    /// A kind with more records than one entry an import reads is split
+    /// across entries that each stay within it, and an import with the
+    /// same bound reads every record back in order. A record that alone is
+    /// larger fails the export instead of writing a file no import reads.
+    #[test]
+    fn an_export_writes_only_record_entries_its_import_reads() {
+        let limit = 1024;
+        let users: Vec<Value> = (0..40)
+            .map(|index| json!({ "userId": index, "username": "x".repeat(100) }))
+            .collect();
+        let grants = vec![json!({ "userId": 1, "capability": "c" })];
+        let records = BTreeMap::from([("users", users.clone()), ("grants", grants.clone())]);
+        let written = content(&records, limit).unwrap();
+        assert!(written.len() > 4 * limit);
+        let directory = tempfile::tempdir().unwrap();
+        let received = receive(&mut written.as_slice(), directory.path(), limit).unwrap();
+        assert_eq!(received.records["users"], users);
+        assert_eq!(received.records["grants"], grants);
+        assert_eq!(received.records["roles"], Vec::<Value>::new());
+
+        let oversized = BTreeMap::from([("users", vec![json!({ "username": "x".repeat(limit) })])]);
+        assert!(matches!(
+            content(&oversized, limit),
+            Err(AuthError::Invalid(_))
+        ));
+    }
 }

@@ -62,13 +62,19 @@ installation export or the other way round. Inside is the content:
 ```text
 TRELLIS-INSTALL\n, then a 4-byte container format (1)
 meta.json                   container format, Trellis version, source installation and origin, each kind's format
-records/<kind>.json         { "kind", "format", "records": [...] } for each record kind
+records/<kind>.json         { "kind", "format", "records": [...] }, one or more per record kind
 deployments/<id>.bundle     the content of one service bundle per service or device deployment
 ```
 
 Each entry is a 2-byte name length, the name, and chunks of a 4-byte length
 and that many bytes, ended by a zero length. The passphrase proves the file
 whole: a changed or cut file fails a chunk's tag.
+
+An import holds a record entry in memory and reads at most 256 MiB of one.
+An export writes no larger entry: a kind with more records than that is
+split across several `records/<kind>.json` entries, which the import joins
+in order, and a single record larger than that fails the export before the
+file is placed.
 
 **Versioning.** Each record kind carries its own format number. An import
 reads a kind's records through a conversion from that format to the one it
