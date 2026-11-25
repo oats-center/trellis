@@ -742,11 +742,14 @@ mod tests {
         let cache = std::env::var_os("TRELLIS_CACHE_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| directory.path().join("cache"));
-        let binary = trellis_local_nats::NatsServerBinary::resolve(
-            &trellis_local_nats::NatsBinarySource::DownloadPinned,
-            Some(&cache),
-        )
-        .unwrap();
+        // CI stages the pinned binary; only local runs without it download.
+        let source = match std::env::var_os("TRELLIS_TEST_NATS_BIN") {
+            Some(path) if !path.is_empty() => {
+                trellis_local_nats::NatsBinarySource::Path(path.into())
+            }
+            _ => trellis_local_nats::NatsBinarySource::DownloadPinned,
+        };
+        let binary = trellis_local_nats::NatsServerBinary::resolve(&source, Some(&cache)).unwrap();
         let _server = Server(
             Command::new(binary)
                 .args(["-a", "127.0.0.1", "-p", &port.to_string(), "-js"])

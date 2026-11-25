@@ -309,7 +309,7 @@ users and devices keep. It is sealed
 with the passphrase and written readable only by its owner. Both commands run
 with the installation's own files, so whoever runs them is the operator,
 whom Trellis trusts (see
-[engineering-patterns.md](../core/engineering-patterns.md#the-operator-is-trusted)).
+[engineering-patterns.md](../core/engineering-patterns.md#the-operator-is-trusted-defend-against-everyone-else)).
 Import acts in the database as the default administrator, which is how the
 service import's capability checks pass.
 

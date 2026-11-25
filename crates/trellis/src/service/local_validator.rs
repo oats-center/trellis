@@ -139,13 +139,9 @@ impl LocalAuthVerifier {
             let Some(route) = context.required_permission.as_ref() else {
                 return Ok(RequestValidation::denied());
             };
-            let provider = match self.owner.own_authority() {
-                Ok(provider) => provider,
-                Err(_) => return Ok(RequestValidation::denied()),
-            };
             let certificate = match self
                 .owner
-                .authorize_provider(transport, &provider, &route.api, &route.catalog_action())
+                .authorize_own_provider(transport, &route.api, &route.catalog_action())
                 .await
             {
                 Ok(certificate) => certificate,
@@ -360,13 +356,9 @@ impl RequestValidator for LocalAuthVerifier {
                 .transport
                 .lease()
                 .map_or(&self.transport, |lease| lease.nats());
-            let provider = match self.owner.own_authority() {
-                Ok(provider) => provider,
-                Err(_) => return Ok(false),
-            };
             if self
                 .owner
-                .authorize_provider(transport, &provider, &verified.request().api_id, action)
+                .authorize_own_provider(transport, &verified.request().api_id, action)
                 .await
                 .is_err()
             {

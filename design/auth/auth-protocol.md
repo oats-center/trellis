@@ -121,6 +121,12 @@ gets no answer is therefore unavailability, not refusal: the participant renews
 again after one second and keeps its connection. Only a verified answer that
 retires or reduces the session ends it.
 
+Renewal promotes the replacement at any moment, including while a request,
+event publish, subscription delivery or provider check is being authorized
+under the authority it replaces. That work starts its check again under the
+replacement instead of failing, so a routine renewal, such as the one an issuer
+notice prompts, never makes a participant's own request fail.
+
 Each physical NATS connection is one admitted generation, and no SDK reconnects
 one in place. When a connection is lost, its generation closes; a healthy
 survivor takes over, or the participant opens a fresh generation admitted with

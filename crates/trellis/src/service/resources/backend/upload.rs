@@ -195,7 +195,13 @@ mod tests {
         .unwrap();
         let state = tempfile::tempdir().unwrap();
         let mut nats = trellis_local_nats::LocalNats::builder()
-            .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
+            // CI stages the pinned binary; only local runs without it download.
+            .binary(match std::env::var_os("TRELLIS_TEST_NATS_BIN") {
+                Some(path) if !path.is_empty() => {
+                    trellis_local_nats::NatsBinarySource::Path(path.into())
+                }
+                _ => trellis_local_nats::NatsBinarySource::DownloadPinned,
+            })
             .cache_dir(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join("../../target/transfer-testkit-cache"),
