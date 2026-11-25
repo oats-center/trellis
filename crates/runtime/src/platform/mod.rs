@@ -808,15 +808,10 @@ pub async fn export_installation(
     let nats = crate::backup::connect(config)
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let directory = storage
-        .authority
-        .custody_directory
-        .with_extension("installation");
-    let report = auth::export_installation(&storage, &nats, &directory, out)
+    let scratch = scratch_directory(&storage)?;
+    auth::export_installation(&storage, &nats, scratch.path(), out)
         .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()));
-    let _ = std::fs::remove_dir_all(&directory);
-    report
+        .map_err(|error| RuntimeError::Platform(error.to_string()))
 }
 
 /// Import the installation export content `input` into the installation
@@ -840,15 +835,31 @@ pub async fn import_installation(
     let nats = crate::backup::connect(config)
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let directory = storage
+    let scratch = scratch_directory(&storage)?;
+    auth::import_installation(&storage, &nats, scratch.path(), input, check)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))
+}
+
+/// A directory of this run's own beside the platform database, for the
+/// encrypted spools of the bundles it reads and writes. Each export or
+/// import makes a new one, so runs that overlap never share or remove each
+/// other's files, and it goes when the run ends.
+fn scratch_directory(storage: &auth::OAuthStorage) -> Result<tempfile::TempDir, RuntimeError> {
+    let parent = storage
         .authority
         .custody_directory
-        .with_extension("installation");
-    let report = auth::import_installation(&storage, &nats, &directory, input, check)
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()));
-    let _ = std::fs::remove_dir_all(&directory);
-    report
+        .parent()
+        .ok_or_else(|| RuntimeError::Platform("the platform database has no folder".into()))?;
+    tempfile::Builder::new()
+        .prefix(".installation-")
+        .tempdir_in(parent)
+        .map_err(|error| {
+            RuntimeError::Platform(format!(
+                "cannot make a working folder in {}: {error}",
+                parent.display()
+            ))
+        })
 }
 
 /// Bucket recording which installation, and which of its platform databases,

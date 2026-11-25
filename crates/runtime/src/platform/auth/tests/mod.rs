@@ -24,6 +24,7 @@ mod credentials;
 mod enforcement;
 mod groups;
 mod initialization;
+mod installation_export;
 mod issuance;
 mod issuer_metadata;
 mod issuer_rotation;

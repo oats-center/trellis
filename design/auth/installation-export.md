@@ -121,7 +121,10 @@ registration.
 
 Import reads the whole file first, spooling each bundle to an encrypted
 temporary file, and verifies each bundle as a service import does before it
-changes anything. It then applies every record in one Auth transaction, as
+changes anything. Each export and import keeps its temporary files in a
+folder of its own beside the platform database, made for that run and
+removed when it ends, so runs that overlap never touch each other's files.
+It then applies every record in one Auth transaction, as
 the installation's administrator, in this order: sign-in settings, OIDC
 providers, registries, users, deployments (through the service import,
 without their own access records), roles and grants, OIDC role mappings,
