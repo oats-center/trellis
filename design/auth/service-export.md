@@ -118,7 +118,7 @@ See the [migration procedure](#migration-procedure).
 | Requests waiting for intake | No     | Counted in the report                                                              |
 | Operations                  | No     | Named in the report                                                                |
 | Roles and grants            | Yes    | Those of the service's APIs, recreated for the users the new installation has      |
-| Users, remembered consent   | No     | Users are found in the new installation by user ID, then by sign-in                |
+| Users, remembered consent   | No     | Users are found in the new installation by user ID, or by OIDC issuer and subject  |
 | Audit records               | No     | Stay in the old installation; both sides audit their step                          |
 
 The report is part of the bundle and is printed by both commands. Its
@@ -278,12 +278,18 @@ recreates those that give people the service's APIs.
   and grant holders are users only, each named by their Trellis user ID and
   their sign-ins: `local` with the username, or an OIDC provider's ID and
   issuer with the provider's subject.
-- **Users are found, never created.** The import looks for each user by user
-  ID first, which finds a person created with `trellis users create --id`.
-  Otherwise it looks for one of their sign-ins: the same username, or the
-  same subject at the provider with the same ID or, failing that, the live
-  provider with the same issuer. A user it does not find, or whose sign-ins
-  belong to several users, gets nothing, and the report says so.
+- **Users are found, never created.** The import looks for the same person.
+  The user with the same user ID is the same person when its sign-ins agree:
+  it has the same username or none, and no sign-in of the record belongs to
+  another user. This finds a person created with `trellis users create --id`.
+  With no user under that ID, the one user with the same OIDC subject at a
+  provider with the same issuer, whatever the provider's ID, is the same
+  person. A username alone names an account, not a person: another user with
+  the same username, the same user ID with another username, a user ID that
+  names a service, a device or a deleted user, or sign-ins that belong to
+  several users, are a conflict. A user it does not find, or one in conflict,
+  gets nothing: no role, grant or consent goes to the account that is in the
+  way, and the report says why.
 - **A role is recreated under its own ID.** A role that does not exist is
   created with the capabilities the new catalog holds; a capability it lacks
   is reported. A role with the same ID, name and description, whose
@@ -305,8 +311,8 @@ recreates those that give people the service's APIs.
 The import report's `access` lists what was recreated and what was skipped,
 each with its kind (`role`, `roleCapability`, `assignment`, `grant` or
 `appConsent`), the role, capability, app and user it names, the user it was
-given to here with how they were found (`id` or `signIn`), and for a skipped
-one the reason. `--check` reports the same without changing anything.
+given to here with how they were found (`id`, `signIn`, or, in an
+installation import, `administrator`), and for a skipped one the reason. `--check` reports the same without changing anything.
 
 ## The bundle
 
@@ -579,8 +585,8 @@ the time to copy the data.
 
 1. **Prepare the new installation.** Install it, create the administrator,
    and create the user accounts the service's users need, with
-   `trellis users create --id` to keep each person's user ID, or with the
-   same username or OIDC sign-in. Add registry credentials if the service's
+   `trellis users create --id` to keep each person's user ID, or have them
+   sign in with the same OIDC account. Add registry credentials if the service's
    dependencies come from a private registry. To move everything at once,
    use `trellis-server export` and `import` instead
    ([installation-export.md](./installation-export.md)).
@@ -687,10 +693,12 @@ The proposal's open questions were settled as follows.
    unchanged.
 5. **Access is recreated.** Roles and grants are part of the configuration,
    so import recreates the roles, members, direct grants and app consent of
-   the service's APIs for the users it finds, by user ID first, then by
-   sign-in. It skips and reports a user it cannot find and a role that
-   exists with another definition. (This replaced an earlier rule that only
-   reported them.)
+   the service's APIs for the users it finds as the same person, by user ID
+   or by OIDC issuer and subject. It skips and reports a user it cannot
+   find, an account in the way (only the same username is someone else),
+   and a role that exists with another definition, and gives the account in
+   the way nothing. (This replaced an earlier rule that only reported them,
+   and a later one that took the same username for the same person.)
 6. **Waiting jobs move, job history does not.**
 7. **Export and import run as Auth Operations** reached from the CLI, so
    capability checks and audit apply.

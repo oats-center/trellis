@@ -37,9 +37,11 @@ Both are written to the security audit of their installation.
 
 Create the accounts the service's users need in the new installation, and add
 any package registry its build pulls from. The import gives a role or grant to
-the account with the same Trellis user ID, or else to the one with the same
-username or OIDC sign-in, so create each account with the ID the person has
-in the old installation:
+the account with the same Trellis user ID, or else to the one that signs in
+with the same OIDC account (the same subject at a provider with the same
+issuer). An account that only has the same username is someone else's and
+gets nothing, so create each account with the ID the person has in the old
+installation:
 
 ```sh
 trellis --profile new users create --username ada --id 01JD8Z3XQ5V7H2N4K6M8P0R2T4
@@ -121,7 +123,9 @@ It ends with a report:
 - the roles, role members, direct grants and app consent it recreated, and
   for each member or grant the account it went to and whether that account
   was found by user ID or by sign-in;
-- what it skipped and why: a person with no account here, or a role this
+- what it skipped and why: a person with no account here; an account that
+  is in the way, such as another person's account with the same username or
+  the same ID under another username, which gets nothing; or a role this
   installation already has under the same ID with another name or other
   capabilities, which it leaves as it is;
 - what stayed behind, such as events a consumer had not processed yet.

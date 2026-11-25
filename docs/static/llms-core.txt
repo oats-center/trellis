@@ -298,18 +298,28 @@ and its platform database.
 `trellis-server export --out <file> [--passphrase-file <path|->]` writes a
 whole installation's configuration as plain records, each kind with its own
 format number, sealed with a passphrase (the service bundle envelope): users
-with their IDs, password hashes and OIDC sign-ins, the administrator, roles,
-members and direct grants, sign-in settings, OIDC providers and package
-registries with their secrets, apps with their client IDs and remembered
-consent, Portal themes, and every service and device deployment as a service
-bundle with its data and waiting jobs. Sessions, NATS keys, TLS, issuer keys
-and history are not carried. `trellis-server import <file> [--check]` adds it
-to an installation that has started once and is stopped, with its NATS
-running: each record existing data is in the way of (a used user ID,
-username or sign-in, client ID, role ID with another definition) is skipped
-and reported, and the rest is imported; in an empty installation the
-exported administrator replaces the setup one. Running it again finishes a
-deployment whose data did not load. It moves an installation between
+with their IDs, password hashes and OIDC sign-ins, roles, members and direct
+grants, sign-in settings, OIDC providers and package registries with their
+secrets, apps with their client IDs and remembered consent, Portal themes,
+the State values of users and devices, and every service and device
+deployment as a service bundle with its data and waiting jobs. Sessions, NATS
+keys, TLS, issuer keys and history are not carried. `trellis-server import
+<file> [--check]` adds it to an installation that has started once and is
+stopped, with its NATS running. Installation-wide settings (sign-in settings,
+OIDC provider settings, Portal themes, who may sign up through the Console
+and CLI) take the export's values, and the report lists each one's old and
+new value (`changed`). A user with the same user ID and agreeing sign-ins,
+or with the same OIDC issuer and subject, is the same person (`matched`) and
+gets the roles, grants, consent and State the export gives them. A user that
+someone else here is in the way of (only the same username, or the same ID
+with another username) is skipped with a warning, and nothing goes to the
+existing account; so is an app with the same client ID and other settings,
+with the consent, State and theme that name it, and any other record that
+exists with other contents. The exported administrator is not imported: the
+roles and grants it held go to this installation's administrator
+(`administrator` in the report). State keeps its values and creation and
+update times; its revision tokens are new. Running the import again finishes
+a deployment whose data did not load. It moves an installation between
 releases, release candidates included.
 `trellis-server restore <dir> [--config <dir>] [--force]` checks it and writes
 it into a stopped or fresh installation, refusing one with another ID (its
@@ -346,11 +356,13 @@ active instance, finishes when run again. It refuses a bundle naming any
 stream, bucket, job subject or entry outside the deployment it creates. It
 recreates the roles (same role ID), role members, direct grants and app
 implied consent that give the service's API capabilities, for users it
-finds by Trellis user ID first, then by sign-in (same username, or same
-OIDC subject at the provider with the same ID or issuer); it never creates
-users. A user it cannot find, or a role that exists under the same ID with
-another name or other capabilities, is skipped and reported with its reason,
-and the rest applies. Create the users first, keeping their IDs with
+finds as the same person: the same Trellis user ID with agreeing sign-ins,
+or the same OIDC subject at a provider with the same issuer; it never
+creates users. A user it cannot find, a user someone else here is in the way
+of (an account with only the same username is someone else), or a role that
+exists under the same ID with another name or other capabilities, is skipped
+and reported with its reason, nothing goes to the existing account, and the
+rest applies. Create the users first, keeping their IDs with
 `trellis users create --id`. The report lists the access recreated and
 skipped (`access.recreated`, `access.skipped`), the webhook URLs at the new
 origin, and what stayed behind (job and settings history, unconsumed

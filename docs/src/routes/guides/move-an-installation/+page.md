@@ -16,11 +16,12 @@ candidate to the next, which a backup cannot do.
 The file carries:
 
 - users, with their IDs, usernames and password hashes, OIDC sign-ins and
-  profiles, and the administrator account;
+  profiles;
 - roles, their members, and capabilities granted directly to users;
 - the sign-in settings, the OIDC providers with their client secrets, and
   their role mappings;
 - apps, with their client IDs, and the consent people gave them;
+- the State apps and devices keep for people and devices;
 - Portal themes and package registries;
 - every service and device deployment, with its build, keys, settings and
   secrets, and each service's data and waiting jobs, the way
@@ -29,7 +30,8 @@ The file carries:
 It leaves out sessions, so everyone signs in again; the NATS operator and
 credentials, the TLS certificates and the issuer signing keys, which the new
 installation makes for itself; history such as the audit and finished jobs;
-unused password setup links; and the values of device State.
+unused password setup links; and the old administrator's account, whose roles
+and grants go to the new installation's administrator.
 
 ## Export
 
@@ -62,27 +64,49 @@ Then start the server. Point each service and device at the new URL and
 restart it with the seed it has; set `TRELLIS_CERTIFICATE_FINGERPRINT` if the
 new certificate is self-signed.
 
-In a fresh installation, the old administrator takes the place of the one
-created when you set up the new installation, and signs in with the same
-username and password.
+The old administrator account is not imported. The administrator you created
+when you set up the new installation stays, and receives the roles and grants
+the old one held; the report's `administrator` entry lists them. People's
+State comes along, so apps and devices find what they stored; each value gets
+a new revision token.
 
 ## Importing into an installation in use
 
 You can import into an installation that already has users, apps or
-services. The import lists what is there before it starts, then adds
-everything it can and skips what is in the way:
+services. The import lists what is there before it starts, then works through
+the file with three rules.
 
-- a user whose ID, username or OIDC sign-in another user has here;
-- an app whose client ID is in use;
-- a role under the same ID with another name or other capabilities;
-- an OIDC provider whose ID is used by another issuer;
-- a deployment whose ID or keys are in use;
-- the sign-in settings and the theme, when this installation set its own.
+**Settings take the file's values.** The sign-in settings, the OIDC providers'
+settings and client secrets, the Portal themes, and who may sign up through
+the Console and CLI become the old installation's, even where this one changed
+them. The report's `changed` list shows each old and new value (never a
+secret).
 
-The installation keeps its own administrator, and the old administrator
-becomes an ordinary user. The report lists each skipped item with the reason,
-and roles and grants go to the people found here by user ID, or else by the
-same username or OIDC sign-in.
+**The same person gets what the file gives them.** A user with the same
+Trellis user ID and the same username, or who signs in with the same OIDC
+account (the same subject at a provider with the same issuer), is the same
+person. Their account stays as it is, and they get the roles, grants, consent
+and State the file has for them. The report lists them under `matched`.
+
+**Anything else in the way is skipped with a warning, and nothing changes:**
+
+- a user whose username another account here has, or whose ID belongs to an
+  account with another username; that account gets nothing;
+- an app whose client ID is in use with other settings, with the consent,
+  State and theme that belong to it;
+- a role under the same ID with another name or other capabilities, with its
+  members;
+- an OIDC provider whose ID is used by another issuer, with the sign-ins
+  through it;
+- a registry or role mapping that exists with other settings;
+- State the same person has here in another form, or a value where another
+  one is stored;
+- a deployment whose ID or keys are in use.
+
+The report lists each skipped item with the reason. A username alone never
+makes two accounts the same person: to have the import treat an existing
+account as someone from the old installation, give it the same user ID with
+`trellis users create --id`.
 
 If loading a service's data stops partway, run the same import again. Records
 already imported are skipped, and the data loads where it stopped.

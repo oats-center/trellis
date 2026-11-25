@@ -823,10 +823,9 @@ impl TrellisTestRuntime {
     /// and signs the administrator in once more. With `check` the import
     /// changes nothing. Returns the import's JSON report.
     ///
-    /// The administrator signs in with this runtime's username and password,
-    /// so an import whose administrator takes this installation's place keeps
-    /// the runtime usable when both were made with the same credentials.
-    /// With `from`, the runtime the export came from, its users and native
+    /// The administrator signs in with this runtime's username and password;
+    /// an import keeps this installation's administrator. With `from`, the
+    /// runtime the export came from, its users and native
     /// applications that the import created here are this runtime's too, so
     /// [`Self::login_native_application_as`] signs them in here with the same
     /// handles.

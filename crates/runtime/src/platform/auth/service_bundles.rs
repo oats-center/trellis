@@ -2410,7 +2410,13 @@ fn apply(
     // The roles and grants that gave people the service's APIs. One that
     // cannot be recreated here is reported and the rest still applies.
     let access = if !installation {
-        super::access_records::recreate(connection, &identity, &bundle.access, now)?
+        super::access_records::recreate(
+            connection,
+            &identity,
+            &bundle.access,
+            &BTreeMap::new(),
+            now,
+        )?
     } else {
         AccessOutcome::default()
     };

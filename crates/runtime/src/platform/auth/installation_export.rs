@@ -25,11 +25,12 @@ use rusqlite::types::ValueRef;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Map, Value};
 
-use super::access_records::{self, AccessDocument, GrantRecord, RoleRecord, SignIn, UserRef};
-use super::policy::{apply_policy_in_transaction, PolicyMutation};
+use super::access_records::{
+    self, AccessDocument, GrantRecord, Match, RoleRecord, SignIn, UserRef,
+};
 use super::service_bundles;
-use super::sqlite::{decode, id, json, Connection};
-use super::{AuthError, Mutation, OAuthStorage};
+use super::sqlite::{decode, digest, id, json, Connection};
+use super::{AuthError, Mutation, OAuthStorage, SqliteAuthorizationStore};
 
 /// The first bytes of the content, before the container's format number.
 const MAGIC: &[u8; 16] = b"TRELLIS-INSTALL\n";
@@ -46,7 +47,7 @@ const BUILTIN_CLIENTS: [&str; 2] = ["trellis.console", "trellis.cli"];
 
 /// Every record kind with the format this build writes. An import converts
 /// an older format of a kind to this one before it reads the records.
-const KINDS: [(&str, u32); 10] = [
+const KINDS: [(&str, u32); 11] = [
     ("signInSettings", 1),
     ("oidcProviders", 1),
     ("packageRegistries", 1),
@@ -57,10 +58,11 @@ const KINDS: [(&str, u32); 10] = [
     ("oauthClients", 1),
     ("consents", 1),
     ("portalThemes", 1),
+    ("state", 1),
 ];
 
 /// What an installation export leaves out, in plain words.
-const NOT_CARRIED: [&str; 9] = [
+const NOT_CARRIED: [&str; 10] = [
     "sign-in sessions and app sessions: everyone signs in again",
     "the NATS operator, accounts and credentials",
     "the installation's TLS certificates",
@@ -68,8 +70,10 @@ const NOT_CARRIED: [&str; 9] = [
     "the security audit, and job, event, health and webhook request history",
     "earlier settings revisions",
     "password reset and setup links that were not used",
-    "device activation reviews, and the values of State resources",
+    "device activation reviews",
     "deleted users, and APIs no deployment provides",
+    "the exported administrator's account: its roles and grants go to this \
+    installation's administrator",
 ];
 
 fn damaged(detail: impl std::fmt::Display) -> AuthError {
@@ -436,6 +440,173 @@ fn read_records(
     Ok(records)
 }
 
+/// A State resource of a user or device, read in the export's transaction,
+/// whose values are read from NATS afterwards.
+enum StateResource {
+    /// A user's value, at `key`.
+    User { record: Value, key: String },
+    /// A device deployment's values, one per device: the key prefix, and
+    /// each device's principal by the key suffix its values have.
+    Device {
+        record: Value,
+        prefix: String,
+        devices: BTreeMap<String, String>,
+    },
+}
+
+/// The ready State resources of live users and of carried device
+/// deployments.
+fn read_state(connection: &Connection) -> Result<Vec<StateResource>, AuthError> {
+    let mut found = Vec::new();
+    for row in rows(
+        connection,
+        "SELECT r.resource_id,r.owner_id,r.namespace_json,r.local_name,r.commitment_json,\
+        r.physical_id,r.revision,r.created_at,r.updated_at FROM auth_resources r \
+        JOIN auth_principals p ON p.principal_id=r.owner_id \
+        WHERE r.owner_kind='user' AND r.kind='state' AND r.state='ready' \
+        AND p.kind='user' AND p.state!='revoked' ORDER BY r.owner_id,r.resource_id",
+        [],
+    )? {
+        let history = rows(
+            connection,
+            "SELECT revision,commitment_json,state,changed_at FROM auth_resource_history \
+            WHERE resource_id=?1 ORDER BY revision",
+            [text(&row, "resource_id")],
+        )?;
+        found.push(StateResource::User {
+            key: text(&row, "physical_id"),
+            record: json!({
+                "owner": "user",
+                "userId": row["owner_id"],
+                "namespace": decode::<Value>(&text(&row, "namespace_json"))?,
+                "name": row["local_name"],
+                "declaration": decode::<Value>(&text(&row, "commitment_json"))?,
+                "revision": row["revision"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+                "history": history,
+            }),
+        });
+    }
+    for row in rows(
+        connection,
+        "SELECT r.owner_id,r.participant_id,r.local_name,r.physical_id FROM auth_resources r \
+        JOIN auth_deployments d ON d.deployment_id=r.owner_id \
+        WHERE r.owner_kind='deployment' AND r.kind='state' AND r.state='ready' \
+        AND d.state!='revoked' AND d.participant_kind='device' \
+        AND d.participant_id NOT LIKE 'trellis.%' ORDER BY r.owner_id,r.local_name",
+        [],
+    )? {
+        let (deployment_id, participant_id, name) = (
+            text(&row, "owner_id"),
+            text(&row, "participant_id"),
+            text(&row, "local_name"),
+        );
+        // The devices a deployment's bundle carries: each value is keyed by
+        // its device's principal, which keeps its ID.
+        let mut devices = BTreeMap::new();
+        for device in rows(
+            connection,
+            "SELECT i.principal_id,i.instance_id FROM auth_instances i \
+            JOIN auth_provisioned_identities p ON p.instance_id=i.instance_id \
+            AND p.state='active' WHERE i.deployment_id=?1 AND i.state IN ('active','disabled')",
+            [&deployment_id],
+        )? {
+            let principal = text(&device, "principal_id");
+            let (suffix, _) = SqliteAuthorizationStore::state_namespace(
+                &principal,
+                &trellis_protocol::SessionBinding::Device {
+                    deployment_id: deployment_id.clone(),
+                    instance_id: text(&device, "instance_id"),
+                    participant_id: participant_id.clone(),
+                },
+                &name,
+            )?;
+            devices.insert(suffix, principal);
+        }
+        found.push(StateResource::Device {
+            prefix: format!("{}.", text(&row, "physical_id")),
+            devices,
+            record: json!({
+                "owner": "device",
+                "deploymentId": deployment_id,
+                "participantId": participant_id,
+                "name": name,
+            }),
+        });
+    }
+    Ok(found)
+}
+
+/// The `state` records of `resources`, with their values read from the
+/// State bucket. A value no carried device owns stays behind.
+async fn state_records(
+    nats: &async_nats::Client,
+    resources: Vec<StateResource>,
+) -> Result<Vec<Value>, AuthError> {
+    if resources.is_empty() {
+        return Ok(Vec::new());
+    }
+    let store = crate::platform::state::open_store(&async_nats::jetstream::new(nats.clone()))
+        .await
+        .map_err(|error| AuthError::Broker(error.to_string()))?;
+    let value = |entry: Option<async_nats::jetstream::kv::Entry>| {
+        entry
+            .filter(|entry| entry.operation == async_nats::jetstream::kv::Operation::Put)
+            .map(|entry| json!({ "base64": STANDARD.encode(&entry.value) }))
+    };
+    let mut keys = None;
+    let mut records = Vec::new();
+    for resource in resources {
+        match resource {
+            StateResource::User { mut record, key } => {
+                let entry = store
+                    .entry(&key)
+                    .await
+                    .map_err(|error| AuthError::Broker(error.to_string()))?;
+                record["value"] = value(entry).unwrap_or(Value::Null);
+                records.push(record);
+            }
+            StateResource::Device {
+                mut record,
+                prefix,
+                devices,
+            } => {
+                if keys.is_none() {
+                    let mut listed = Vec::new();
+                    let mut stream = store
+                        .keys()
+                        .await
+                        .map_err(|error| AuthError::Broker(error.to_string()))?;
+                    while let Some(key) = futures_util::StreamExt::next(&mut stream).await {
+                        listed.push(key.map_err(|error| AuthError::Broker(error.to_string()))?);
+                    }
+                    keys = Some(listed);
+                }
+                let mut values = Vec::new();
+                for key in keys.iter().flatten() {
+                    let Some(principal) = key
+                        .strip_prefix(&prefix)
+                        .and_then(|suffix| devices.get(suffix))
+                    else {
+                        continue;
+                    };
+                    let entry = store
+                        .entry(key)
+                        .await
+                        .map_err(|error| AuthError::Broker(error.to_string()))?;
+                    if let Some(value) = value(entry) {
+                        values.push(json!({ "principalId": principal, "value": value }));
+                    }
+                }
+                record["values"] = Value::Array(values);
+                records.push(record);
+            }
+        }
+    }
+    Ok(records)
+}
+
 /// Write the installation behind `storage` and `nats` into `out` as content
 /// of an installation export, and return its report.
 pub(crate) async fn export(
@@ -444,7 +615,7 @@ pub(crate) async fn export(
     directory: &Path,
     out: &mut dyn Write,
 ) -> Result<Value, AuthError> {
-    let (records, deployments, administrator) = {
+    let (mut records, deployments, administrator, state) = {
         let storage = storage.clone();
         super::blocking(move || {
             storage.authority.transaction(|connection| {
@@ -473,11 +644,13 @@ pub(crate) async fn export(
                     read_records(connection, &storage)?,
                     deployments,
                     administrator,
+                    read_state(connection)?,
                 ))
             })
         })
         .await?
     };
+    records.insert("state", state_records(nats, state).await?);
     let settings = storage.authority.settings.clone();
     let exported_at = crate::clock::unix_now();
     let kinds: BTreeMap<&str, u32> = KINDS.into_iter().collect();
@@ -682,14 +855,30 @@ fn existing(connection: &Connection) -> Result<Map<String, Value>, AuthError> {
     Ok(found)
 }
 
+/// A State value to write once the import's transaction commits.
+struct StateWrite {
+    key: String,
+    value: Vec<u8>,
+    /// The report entry naming it.
+    item: Value,
+}
+
 /// The outcome of one import transaction.
 #[derive(Default)]
 struct Outcome {
     created: Vec<Value>,
+    matched: Vec<Value>,
+    changed: Vec<Value>,
     skipped: Vec<Value>,
     access: Value,
+    administrator: Value,
     /// Deployments recorded by this import, whose data loads afterwards.
     deployments: Vec<String>,
+    /// User State values, written after the transaction commits.
+    state: Vec<StateWrite>,
+    /// Who each carried user of the export is here: the user this import
+    /// created or found as the same person, by the exported user ID.
+    people: BTreeMap<String, String>,
     target: Value,
 }
 
@@ -701,6 +890,12 @@ impl Outcome {
     fn skipped(&mut self, kind: &str, id: &str, reason: impl Into<String>) {
         self.skipped
             .push(json!({ "kind": kind, "id": id, "reason": reason.into() }));
+    }
+
+    /// An installation-wide setting the export replaced, with what it was.
+    fn changed(&mut self, kind: &str, id: &str, old: Value, new: Value) {
+        self.changed
+            .push(json!({ "kind": kind, "id": id, "old": old, "new": new }));
     }
 }
 
@@ -875,81 +1070,57 @@ fn create_user(
     Ok(())
 }
 
-/// Delete `principal`'s account as deleting a user does, once `successor`
-/// has taken its place as the default administrator.
-fn retire_administrator(
-    connection: &Connection,
-    principal: &str,
-    successor: &str,
-    now: i64,
-) -> Result<(), AuthError> {
-    let version: u64 = connection.query_row(
-        "SELECT version FROM auth_principals WHERE principal_id=?1",
-        [principal],
-        |row| row.get(0),
-    )?;
-    let identity = Mutation {
-        actor: successor.to_owned(),
-        request_id: id(),
-        request_digest: id(),
-        session: None,
-    };
-    // The role setup made for it alone goes with it; the export brings its
-    // own administrator's roles.
-    let own: Vec<(String, u64)> = connection
-        .prepare(
-            "SELECT r.role_id,r.revision FROM auth_roles r WHERE r.state='active' \
-            AND EXISTS(SELECT 1 FROM auth_role_assignments a WHERE a.role_id=r.role_id \
-            AND a.role_generation=r.identity_generation AND a.principal_id=?1) \
-            AND NOT EXISTS(SELECT 1 FROM auth_role_assignments a WHERE a.role_id=r.role_id \
-            AND a.role_generation=r.identity_generation AND a.principal_id!=?1)",
-        )?
-        .query_map([principal], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (role_id, revision) in own {
-        apply_policy_in_transaction(
-            connection,
-            &identity,
-            &PolicyMutation::RoleDelete {
-                role_id,
-                expected_revision: revision,
-            },
-            now,
-        )?;
-    }
-    apply_policy_in_transaction(
-        connection,
-        &identity,
-        &PolicyMutation::PrincipalState {
-            principal_id: principal.to_owned(),
-            expected_revision: version,
-            state: "revoked".into(),
-        },
-        now,
-    )?;
-    for table in [
-        "auth_local_credentials",
-        "auth_provider_identities",
-        "auth_user_profiles",
-        "auth_avatar_cache",
-        "auth_role_assignments",
-        "auth_direct_capabilities",
-        "auth_remembered_consent",
-    ] {
-        connection.execute(
-            &format!("DELETE FROM {table} WHERE principal_id=?1"),
-            [principal],
-        )?;
-    }
-    connection.execute(
-        "UPDATE auth_account_flows SET state='revoked',version=version+1 \
-        WHERE target_principal_id=?1 AND state='pending'",
-        [principal],
-    )?;
-    Ok(())
+/// What an OIDC provider record sets, as a report shows it. The client
+/// secret is never shown.
+fn provider_settings(record: &Map<String, Value>) -> Value {
+    json!({
+        "displayName": record.get("display_name"),
+        "clientId": record.get("client_id"),
+        "config": record
+            .get("config_json")
+            .and_then(Value::as_str)
+            .and_then(|config| serde_json::from_str::<Value>(config).ok()),
+        "claimFreshnessSeconds": record.get("claim_freshness_seconds"),
+        "state": record.get("state"),
+        "pinnedCertificate": record.get("issuer_certificate").is_some_and(|value| !value.is_null()),
+    })
+}
+
+/// What a Portal theme record sets, as a report shows it.
+fn theme_settings(record: &Map<String, Value>) -> Value {
+    json!({
+        "theme": record
+            .get("theme_json")
+            .and_then(Value::as_str)
+            .and_then(|theme| serde_json::from_str::<Value>(theme).ok()),
+        "logo": record.get("logo").is_some_and(|value| !value.is_null()),
+        "stylesheet": record.get("stylesheet").is_some_and(|value| !value.is_null()),
+    })
+}
+
+/// An app record in a form two installations can compare.
+fn app_settings(record: &Map<String, Value>) -> Result<Value, AuthError> {
+    let field = |name: &str| decode::<Value>(&text(record, name));
+    let mut implied = field("implied_capabilities_json")?
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    implied.sort_by_key(Value::to_string);
+    Ok(json!({
+        "kind": record.get("kind"),
+        "displayName": record.get("display_name"),
+        "redirectUris": field("redirect_uris_json")?,
+        "development": record.get("development"),
+        "impliedConsent": implied,
+        "metadata": field("metadata_json")?,
+        "state": record.get("state"),
+    }))
 }
 
 /// Everything an import writes to the Auth database, in one transaction.
+/// Settings take the export's values; an entity that something here is in
+/// the way of is skipped with its reason, and so is everything that would
+/// attach to it.
 fn apply(
     connection: &Connection,
     storage: &OAuthStorage,
@@ -959,42 +1130,59 @@ fn apply(
 ) -> Result<Outcome, AuthError> {
     let mut outcome = Outcome::default();
     let found = existing(connection)?;
-    let empty = found.is_empty();
-    outcome.target = json!({ "empty": empty, "existing": found });
+    outcome.target = json!({ "empty": found.is_empty(), "existing": found });
+    let administrator: String = connection
+        .query_row(
+            "SELECT principal_id FROM auth_bootstrap_administrator",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            AuthError::Invalid(
+                "this installation has no administrator yet; finish its setup first".into(),
+            )
+        })?;
+    let identity = Mutation {
+        actor: administrator.clone(),
+        request_id: id(),
+        request_digest: id(),
+        session: None,
+    };
 
-    // Sign-in settings: the export's, unless this installation set its own.
+    // Sign-in settings: the export's, whatever this installation set.
     if let Some(settings) = records(received, "signInSettings").first() {
-        let (local_users, local_sign_up, minimum, revision): (bool, bool, i64, u64) = connection
-            .query_row(
-                "SELECT local_users,local_sign_up,password_min_length,revision \
-                FROM auth_sign_in_settings",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )?;
+        let current: (bool, bool, i64) = connection.query_row(
+            "SELECT local_users,local_sign_up,password_min_length FROM auth_sign_in_settings",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
         let wanted = (
             settings["local_users"].as_i64() == Some(1),
             settings["local_sign_up"].as_i64() == Some(1),
-            settings["password_min_length"].as_i64().unwrap_or(minimum),
+            settings["password_min_length"]
+                .as_i64()
+                .unwrap_or(current.2),
         );
-        if wanted != (local_users, local_sign_up, minimum) {
-            if empty || revision == 1 {
-                connection.execute(
-                    "UPDATE auth_sign_in_settings SET local_users=?1,local_sign_up=?2,\
-                    password_min_length=?3,revision=revision+1,updated_at=?4",
-                    params![wanted.0, wanted.1, wanted.2, now],
-                )?;
-                outcome.created("signInSettings", "");
-            } else {
-                outcome.skipped(
-                    "signInSettings",
-                    "",
-                    "this installation has sign-in settings of its own; they were left as they are",
-                );
-            }
+        if wanted != current {
+            connection.execute(
+                "UPDATE auth_sign_in_settings SET local_users=?1,local_sign_up=?2,\
+                password_min_length=?3,revision=revision+1,updated_at=?4",
+                params![wanted.0, wanted.1, wanted.2, now],
+            )?;
+            let shown = |(local_users, local_sign_up, minimum): (bool, bool, i64)| {
+                json!({
+                    "localUsers": local_users,
+                    "localSignUp": local_sign_up,
+                    "passwordMinLength": minimum,
+                })
+            };
+            outcome.changed("signInSettings", "", shown(current), shown(wanted));
         }
     }
 
-    // OIDC providers, and which provider here each exported one is.
+    // OIDC providers, and which provider here each exported one is. The
+    // same issuer is the same provider, and takes the export's settings.
     let mut providers = BTreeMap::new();
     for provider in records(received, "oidcProviders") {
         let Some(record) = provider.as_object() else {
@@ -1002,11 +1190,11 @@ fn apply(
         };
         let provider_id = text(record, "provider_id");
         let issuer = text(record, "issuer");
-        let same_id: Option<String> = connection
+        let same_id: Option<(String, String)> = connection
             .query_row(
-                "SELECT issuer FROM auth_oidc_providers WHERE provider_id=?1",
+                "SELECT issuer,state FROM auth_oidc_providers WHERE provider_id=?1",
                 [&provider_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
         let same_issuer: Option<String> = connection
@@ -1016,24 +1204,18 @@ fn apply(
                 |row| row.get(0),
             )
             .optional()?;
-        match (same_id, same_issuer) {
-            (Some(here), _) if here == issuer => {
-                providers.insert(provider_id.clone(), provider_id.clone());
-            }
-            (Some(_), _) => outcome.skipped(
-                "oidcProvider",
-                &provider_id,
-                "a provider with this ID and another issuer exists here; its sign-ins were not \
-                brought",
-            ),
-            (None, Some(here)) => {
+        let here = match (same_id, same_issuer) {
+            (Some((here, state)), _) if here == issuer && state != "deleted" => provider_id.clone(),
+            (Some(_), _) => {
                 outcome.skipped(
                     "oidcProvider",
                     &provider_id,
-                    format!("provider {here} here has the same issuer; its sign-ins use that one"),
+                    "a provider with this ID and another issuer, or a deleted one, exists here; \
+                    it was left as it is, and sign-ins through it were not brought",
                 );
-                providers.insert(provider_id.clone(), here);
+                continue;
             }
+            (None, Some(here)) => here,
             (None, None) => {
                 let mut row = record.clone();
                 let secret = row.remove("client_secret");
@@ -1052,23 +1234,108 @@ fn apply(
                 )?;
                 providers.insert(provider_id.clone(), provider_id.clone());
                 outcome.created("oidcProvider", &provider_id);
+                continue;
             }
+        };
+        providers.insert(provider_id.clone(), here.clone());
+        let current = rows(
+            connection,
+            "SELECT display_name,client_id,issuer_certificate,config_json,\
+            claim_freshness_seconds,state FROM auth_oidc_providers WHERE provider_id=?1",
+            [&here],
+        )?
+        .into_iter()
+        .next()
+        .ok_or(AuthError::Unavailable)?;
+        let sealed: Option<Vec<u8>> = connection.query_row(
+            "SELECT sealed_client_secret FROM auth_oidc_providers WHERE provider_id=?1",
+            [&here],
+            |row| row.get(0),
+        )?;
+        let secret_here = sealed
+            .map(|sealed| {
+                storage
+                    .open_upstream_client_secret(&here, &sealed)
+                    .map_err(|_| AuthError::Unavailable)
+            })
+            .transpose()?;
+        let secret = record.get("client_secret").and_then(Value::as_str);
+        let fields = [
+            "display_name",
+            "client_id",
+            "issuer_certificate",
+            "config_json",
+            "claim_freshness_seconds",
+            "state",
+        ];
+        let secret_changed = secret_here.as_deref() != secret;
+        if !secret_changed
+            && fields
+                .iter()
+                .all(|field| current.get(*field) == record.get(*field))
+        {
+            continue;
         }
+        let sealed = secret
+            .map(|secret| {
+                storage
+                    .seal_upstream_client_secret(&here, secret)
+                    .map_err(|_| AuthError::Unavailable)
+            })
+            .transpose()?;
+        let value = |field: &str| sql_value(record.get(field).unwrap_or(&Value::Null));
+        connection.execute(
+            "UPDATE auth_oidc_providers SET display_name=?2,client_id=?3,issuer_certificate=?4,\
+            config_json=?5,claim_freshness_seconds=?6,state=?7,sealed_client_secret=?8,\
+            revision=revision+1,updated_at=?9 WHERE provider_id=?1",
+            params![
+                here,
+                value("display_name")?,
+                value("client_id")?,
+                value("issuer_certificate")?,
+                value("config_json")?,
+                value("claim_freshness_seconds")?,
+                value("state")?,
+                sealed,
+                now
+            ],
+        )?;
+        let mut new = provider_settings(record);
+        new["clientSecretChanged"] = json!(secret_changed);
+        outcome.changed("oidcProvider", &here, provider_settings(&current), new);
     }
 
     for registry in records(received, "packageRegistries") {
         let name = registry["name"].as_str().unwrap_or_default().to_owned();
-        let result = attempt(connection, || {
-            let taken: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM auth_package_registries WHERE name=?1)",
+        let here: Option<(String, Option<String>, Option<Vec<u8>>)> = connection
+            .query_row(
+                "SELECT prefix,username,sealed_secret FROM auth_package_registries WHERE name=?1",
                 [&name],
-                |row| row.get(0),
-            )?;
-            if taken {
-                return Err(AuthError::InUse(format!(
-                    "a package registry named {name} exists here"
-                )));
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        if let Some((prefix, username, sealed)) = here {
+            let secret = sealed
+                .map(|sealed| {
+                    storage
+                        .decode::<String>(super::registries::SEAL, &name, &sealed)
+                        .map_err(|_| AuthError::Unavailable)
+                })
+                .transpose()?;
+            if registry["prefix"].as_str() != Some(prefix.as_str())
+                || registry["username"].as_str() != username.as_deref()
+                || registry["secret"].as_str() != secret.as_deref()
+            {
+                outcome.skipped(
+                    "packageRegistry",
+                    &name,
+                    "a package registry with this name and other settings exists here; it was \
+                    left as it is",
+                );
             }
+            continue;
+        }
+        let result = attempt(connection, || {
             let sealed = registry["secret"]
                 .as_str()
                 .map(|secret| {
@@ -1096,16 +1363,13 @@ fn apply(
         }
     }
 
-    // Users, and who is the default administrator.
-    let administrator: Option<String> = connection
-        .query_row(
-            "SELECT principal_id FROM auth_bootstrap_administrator",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let mut acting = administrator.clone();
+    // Users. The exported administrator is not one of them: what it held
+    // goes to this installation's administrator. Every other user is
+    // created, or found here as the same person, or skipped because someone
+    // else is in the way, and then nothing names them.
+    let mut known = BTreeMap::new();
     let mut user_refs = Vec::new();
+    let mut exported_administrator = None;
     for user in records(received, "users") {
         let user_id = user["userId"].as_str().unwrap_or_default().to_owned();
         let mut identities: Vec<SignIn> = user["identities"]
@@ -1128,88 +1392,76 @@ fn apply(
                 subject: username.to_owned(),
             });
         }
-        user_refs.push(UserRef {
+        let user_ref = UserRef {
             user_id: user_id.clone(),
             identities,
-        });
-        let leading = user["defaultAdministrator"].as_bool() == Some(true);
-        // An installation with nothing in it yet takes the exported
-        // administrator in place of its own; one in use keeps its own.
-        let replaces = leading
-            && empty
-            && administrator
-                .as_deref()
-                .is_some_and(|current| current != user_id);
-        let result = attempt(connection, || {
-            // Its sign-ins go first, so the exported administrator may have
-            // the same username.
-            if let (true, Some(current)) = (replaces, &administrator) {
-                for table in ["auth_local_credentials", "auth_provider_identities"] {
-                    connection.execute(
-                        &format!("DELETE FROM {table} WHERE principal_id=?1"),
-                        [current],
-                    )?;
-                }
-            }
-            create_user(connection, user, &providers, now)?;
-            if leading && (replaces || administrator.is_none()) {
-                connection.execute(
-                    "INSERT INTO auth_bootstrap_administrator(singleton,principal_id,created_at) \
-                    VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET \
-                    principal_id=excluded.principal_id",
-                    params![user_id, now],
-                )?;
-            }
-            if let (true, Some(current)) = (replaces, &administrator) {
-                retire_administrator(connection, current, &user_id, now)?;
-            }
-            Ok(())
-        })?;
-        match result {
-            Ok(()) => {
-                outcome.created("user", &user_id);
-                if leading && (replaces || administrator.is_none()) {
-                    if let Some(previous) = &administrator {
-                        outcome.created("defaultAdministrator", &user_id);
-                        outcome.skipped(
-                            "user",
-                            previous,
-                            "this installation's own administrator was removed: the exported \
-                            administrator took its place",
-                        );
-                    } else {
-                        outcome.created("defaultAdministrator", &user_id);
-                    }
-                    acting = Some(user_id.clone());
-                } else if leading {
-                    outcome.skipped(
-                        "defaultAdministrator",
-                        &user_id,
-                        "this installation is in use and keeps its own administrator; the \
-                        exported one is an ordinary user here",
-                    );
-                }
-            }
-            Err(reason) => outcome.skipped("user", &user_id, reason),
+        };
+        user_refs.push(user_ref.clone());
+        if user["defaultAdministrator"].as_bool() == Some(true) {
+            known.insert(
+                user_id.clone(),
+                Match::Found {
+                    principal: administrator.clone(),
+                    by: "administrator",
+                },
+            );
+            exported_administrator = Some(user_id);
+            continue;
         }
+        let found = match access_records::find_user(connection, &user_ref)? {
+            Match::Missing => match attempt(connection, || {
+                create_user(connection, user, &providers, now)
+            })? {
+                Ok(()) => {
+                    outcome.created("user", &user_id);
+                    Match::Found {
+                        principal: user_id.clone(),
+                        by: "id",
+                    }
+                }
+                Err(reason) => {
+                    outcome.skipped("user", &user_id, reason.clone());
+                    Match::Conflict(reason)
+                }
+            },
+            Match::Found { principal, by } => {
+                outcome.matched.push(json!({
+                    "kind": "user",
+                    "id": user_id,
+                    "userId": principal,
+                    "matchedBy": by,
+                }));
+                Match::Found { principal, by }
+            }
+            Match::Conflict(reason) => {
+                outcome.skipped(
+                    "user",
+                    &user_id,
+                    format!("{reason}; nothing was given to that user"),
+                );
+                Match::Conflict(reason)
+            }
+        };
+        if let Match::Found { principal, .. } = &found {
+            outcome.people.insert(user_id.clone(), principal.clone());
+        }
+        known.insert(user_id, found);
     }
-    let actor = acting.ok_or_else(|| {
-        AuthError::Invalid(
-            "neither the export nor this installation has a default administrator".into(),
-        )
-    })?;
-    let identity = Mutation {
-        actor: actor.clone(),
-        request_id: id(),
-        request_digest: id(),
-        session: None,
+    // Why a record naming the exported user `user_id` is skipped.
+    let unplaced = |user_id: &str| match known.get(user_id) {
+        Some(Match::Found {
+            by: "administrator",
+            ..
+        }) => "it names the exported administrator, which is not imported as a user".to_owned(),
+        Some(Match::Conflict(reason)) => format!("its user was skipped: {reason}"),
+        _ => format!("its user {user_id} is not in the export"),
     };
 
     // Deployments, through the service import, without their access: the
     // roles and grants below cover every API at once.
     for (deployment_id, bundle) in bundles {
         let result = attempt(connection, || {
-            service_bundles::apply_import(connection, storage, bundle, &actor, now)
+            service_bundles::apply_import(connection, storage, bundle, &administrator, now)
         })?;
         match result {
             Ok(()) => {
@@ -1235,39 +1487,118 @@ fn apply(
             .map_err(|error| damaged(format!("a grant: {error}")))?,
         apps: Vec::new(),
     };
-    outcome.access = serde_json::to_value(access_records::recreate(
-        connection, &identity, &access, now,
-    )?)?;
+    let recreated = access_records::recreate(connection, &identity, &access, &known, now)?;
+    // Roles left as they are here, which nothing of the export joins.
+    let skipped_roles: BTreeSet<String> = recreated
+        .skipped
+        .iter()
+        .filter(|item| item["kind"] == "role")
+        .filter_map(|item| item["roleId"].as_str().map(str::to_owned))
+        .collect();
+    if let Some(exported) = exported_administrator {
+        outcome.administrator = json!({
+            "exportedUserId": exported,
+            "userId": administrator,
+            "detail": "the exported administrator is not imported as a user; this \
+                installation's administrator received the roles and grants it held",
+            "received": recreated
+                .recreated
+                .iter()
+                .filter(|item| item["matchedBy"] == "administrator")
+                .collect::<Vec<_>>(),
+        });
+    }
+    outcome.access = serde_json::to_value(recreated)?;
 
     for mapping in records(received, "oidcRoleMappings") {
         let mapping_id = mapping["mapping_id"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
+        let Some(provider) = providers.get(mapping["provider_id"].as_str().unwrap_or_default())
+        else {
+            outcome.skipped(
+                "oidcRoleMapping",
+                &mapping_id,
+                "its provider was not brought",
+            );
+            continue;
+        };
+        let mut roles = BTreeSet::new();
+        for role in mapping["roles"].as_array().into_iter().flatten() {
+            let role = role.as_str().unwrap_or_default().to_owned();
+            if skipped_roles.contains(&role) {
+                outcome.skipped(
+                    "oidcRoleMappingRole",
+                    &mapping_id,
+                    format!("role {role} was skipped, so the mapping does not give it"),
+                );
+            } else {
+                roles.insert(role);
+            }
+        }
+        let claim = (
+            mapping["claim_name"].as_str().unwrap_or_default(),
+            mapping["claim_value"].as_str().unwrap_or_default(),
+        );
+        let here: Option<(String, String, String)> = connection
+            .query_row(
+                "SELECT provider_id,claim_name,claim_value FROM auth_oidc_role_mappings \
+                WHERE mapping_id=?1",
+                [&mapping_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        if let Some((provider_here, name, value)) = here {
+            let held: BTreeSet<String> = connection
+                .prepare(
+                    "SELECT m.role_id FROM auth_oidc_mapping_roles m JOIN auth_roles r \
+                    ON r.role_id=m.role_id AND r.identity_generation=m.role_generation \
+                    WHERE m.mapping_id=?1 AND r.state='active'",
+                )?
+                .query_map([&mapping_id], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            // The roles of the record this installation has.
+            let mut wanted = BTreeSet::new();
+            for role in &roles {
+                if connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM auth_roles WHERE role_id=?1 AND state='active')",
+                    [role],
+                    |row| row.get::<_, bool>(0),
+                )? {
+                    wanted.insert(role.clone());
+                }
+            }
+            if provider_here != *provider
+                || (name.as_str(), value.as_str()) != claim
+                || wanted != held
+            {
+                outcome.skipped(
+                    "oidcRoleMapping",
+                    &mapping_id,
+                    "a mapping with this ID and other settings exists here; it was left as it is",
+                );
+            }
+            continue;
+        }
         let result = attempt(connection, || {
-            let provider = providers
-                .get(mapping["provider_id"].as_str().unwrap_or_default())
-                .ok_or_else(|| AuthError::NotFound("its provider was not brought".into()))?;
             connection
                 .execute(
                     "INSERT INTO auth_oidc_role_mappings(mapping_id,provider_id,claim_name,\
                     claim_value,revision) VALUES(?1,?2,?3,?4,1)",
-                    params![
-                        mapping_id,
-                        provider,
-                        mapping["claim_name"].as_str(),
-                        mapping["claim_value"].as_str()
-                    ],
+                    params![mapping_id, provider, claim.0, claim.1],
                 )
                 .map_err(|_| {
-                    AuthError::InUse("a mapping with this ID or claim exists here".into())
+                    AuthError::InUse(
+                        "a mapping of the same claim exists here; it was left as it is".into(),
+                    )
                 })?;
-            for role in mapping["roles"].as_array().into_iter().flatten() {
+            for role in &roles {
                 connection.execute(
                     "INSERT INTO auth_oidc_mapping_roles(mapping_id,role_id,role_generation) \
                     SELECT ?1,role_id,identity_generation FROM auth_roles \
                     WHERE role_id=?2 AND state='active'",
-                    params![mapping_id, role.as_str()],
+                    params![mapping_id, role],
                 )?;
             }
             Ok(())
@@ -1278,81 +1609,99 @@ fn apply(
         }
     }
 
+    // Apps. One with the same client ID and other settings is someone
+    // else's app, which nothing of the export attaches to.
+    let mut skipped_apps = BTreeSet::new();
     for client in records(received, "oauthClients") {
         let Some(record) = client.as_object() else {
             return Err(damaged("an OAuth client is not a record"));
         };
         let client_id = text(record, "client_id");
-        let here: Option<String> = connection
-            .query_row(
-                "SELECT metadata_json FROM auth_oauth_clients WHERE client_id=?1",
-                [&client_id],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let here = rows(
+            connection,
+            "SELECT * FROM auth_oauth_clients WHERE client_id=?1",
+            [&client_id],
+        )?
+        .into_iter()
+        .next();
         if BUILTIN_CLIENTS.contains(&client_id.as_str()) {
             // Each installation registers its own Console and CLI, for its
             // own origin. Who may sign up through them moves.
             let wanted = decode::<Value>(&text(record, "metadata_json"))?
                 .get("sign_up")
                 .cloned();
-            let Some(mut metadata) = here.map(|here| decode::<Value>(&here)).transpose()? else {
+            let Some(mut metadata) = here
+                .map(|here| decode::<Value>(&text(&here, "metadata_json")))
+                .transpose()?
+            else {
                 continue;
             };
-            if metadata.get("sign_up") == wanted.as_ref() {
+            let old = metadata.get("sign_up").cloned();
+            if old == wanted {
                 continue;
             }
-            if empty || metadata.get("sign_up").is_none() {
-                match &wanted {
-                    Some(wanted) => metadata["sign_up"] = wanted.clone(),
-                    None => {
-                        if let Some(fields) = metadata.as_object_mut() {
-                            fields.remove("sign_up");
-                        }
+            match &wanted {
+                Some(wanted) => metadata["sign_up"] = wanted.clone(),
+                None => {
+                    if let Some(fields) = metadata.as_object_mut() {
+                        fields.remove("sign_up");
                     }
                 }
-                connection.execute(
-                    "UPDATE auth_oauth_clients SET metadata_json=?2,revision=revision+1,\
-                    updated_at=?3 WHERE client_id=?1",
-                    params![client_id, json(&metadata)?, now],
-                )?;
-                outcome.created("clientSignUp", &client_id);
-            } else {
-                outcome.skipped(
-                    "clientSignUp",
-                    &client_id,
-                    "this installation set who may sign up through it; that was left as it is",
-                );
             }
+            connection.execute(
+                "UPDATE auth_oauth_clients SET metadata_json=?2,revision=revision+1,\
+                updated_at=?3 WHERE client_id=?1",
+                params![client_id, json(&metadata)?, now],
+            )?;
+            outcome.changed(
+                "clientSignUp",
+                &client_id,
+                old.unwrap_or(Value::Null),
+                wanted.unwrap_or(Value::Null),
+            );
             continue;
         }
-        if here.is_some() {
-            outcome.skipped(
-                "oauthClient",
-                &client_id,
-                "an app with this client ID exists here; it was left as it is",
-            );
+        if let Some(here) = here {
+            if text(&here, "state") != "deleted" && app_settings(&here)? == app_settings(record)? {
+                outcome
+                    .matched
+                    .push(json!({ "kind": "oauthClient", "id": client_id }));
+            } else {
+                outcome.skipped(
+                    "oauthClient",
+                    &client_id,
+                    "an app with this client ID and other settings exists here; it was left \
+                    as it is, and nothing of the export attaches to it",
+                );
+                skipped_apps.insert(client_id);
+            }
             continue;
         }
         match attempt(connection, || {
             insert(connection, "auth_oauth_clients", record)
         })? {
             Ok(()) => outcome.created("oauthClient", &client_id),
-            Err(reason) => outcome.skipped("oauthClient", &client_id, reason),
+            Err(reason) => {
+                outcome.skipped("oauthClient", &client_id, reason);
+                skipped_apps.insert(client_id);
+            }
         }
     }
 
-    // Consent, for the users this import made, to apps and capabilities here.
-    let made: BTreeSet<String> = outcome
-        .created
-        .iter()
-        .filter(|item| item["kind"] == "user")
-        .filter_map(|item| item["id"].as_str().map(str::to_owned))
-        .collect();
+    // Consent, for every user carried, to apps and capabilities here.
     let mut consents = 0;
+    let mut left = BTreeMap::new();
     for consent in records(received, "consents") {
         let principal = consent["principal_id"].as_str().unwrap_or_default();
-        if !made.contains(principal) {
+        let client_id = consent["client_id"].as_str().unwrap_or_default();
+        let Some(here) = outcome.people.get(principal) else {
+            left.entry(("user", principal.to_owned()))
+                .or_insert_with(|| unplaced(principal));
+            continue;
+        };
+        if skipped_apps.contains(client_id) {
+            left.entry(("app", client_id.to_owned()))
+                .or_insert_with(|| "its app was skipped".to_owned());
             continue;
         }
         consents += connection.execute(
@@ -1365,8 +1714,8 @@ fn apply(
             AND EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?2 AND state!='deleted') \
             ON CONFLICT DO NOTHING",
             params![
-                principal,
-                consent["client_id"].as_str(),
+                here,
+                client_id,
                 consent["binding_kind"].as_str(),
                 consent["binding_value"].as_str(),
                 consent["capability_id"].as_str(),
@@ -1379,7 +1728,20 @@ fn apply(
     if consents > 0 {
         outcome.created("consents", &consents.to_string());
     }
+    for ((kind, id), reason) in left {
+        outcome.skipped(
+            if kind == "user" {
+                "consentsOfUser"
+            } else {
+                "consentsToApp"
+            },
+            &id,
+            reason,
+        );
+    }
 
+    // Themes: the installation's, and each carried app's, as the export
+    // has them.
     for theme in records(received, "portalThemes") {
         let Some(record) = theme.as_object() else {
             return Err(damaged("a Portal theme is not a record"));
@@ -1390,30 +1752,148 @@ fn apply(
         } else {
             client_id.as_str()
         };
+        if !client_id.is_empty() {
+            let here: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_oauth_clients \
+                WHERE client_id=?1 AND state!='deleted')",
+                [&client_id],
+                |row| row.get(0),
+            )?;
+            if skipped_apps.contains(&client_id) || !here {
+                outcome.skipped("portalTheme", label, "its app was skipped or is not here");
+                continue;
+            }
+        }
         let here = rows(
             connection,
             "SELECT client_id,theme_json,logo_format,logo,stylesheet FROM auth_portal_themes \
             WHERE client_id=?1",
             [&client_id],
         )?;
+        if here.first() == Some(record) {
+            continue;
+        }
+        connection.execute(
+            "DELETE FROM auth_portal_themes WHERE client_id=?1",
+            [&client_id],
+        )?;
+        let mut row = record.clone();
+        row.insert("revision".into(), json!(1));
+        row.insert("updated_at".into(), json!(now));
+        insert(connection, "auth_portal_themes", &row)?;
         match here.first() {
-            Some(here) if here == record => {}
-            Some(_) if !empty => outcome.skipped(
-                "portalTheme",
-                label,
-                "this installation has a theme of its own; it was left as it is",
-            ),
-            _ => {
-                connection.execute(
-                    "DELETE FROM auth_portal_themes WHERE client_id=?1",
-                    [&client_id],
-                )?;
-                let mut row = record.clone();
-                row.insert("revision".into(), json!(1));
-                row.insert("updated_at".into(), json!(now));
-                insert(connection, "auth_portal_themes", &row)?;
-                outcome.created("portalTheme", label);
+            Some(here) => {
+                outcome.changed(
+                    "portalTheme",
+                    label,
+                    theme_settings(here),
+                    theme_settings(record),
+                );
             }
+            None => outcome.created("portalTheme", label),
+        }
+    }
+
+    // Users' State, under each carried user and app here. Values are written
+    // once the transaction commits.
+    for record in records(received, "state") {
+        if record["owner"] != "user" {
+            continue;
+        }
+        let user_id = record["userId"].as_str().unwrap_or_default();
+        let name = record["name"].as_str().unwrap_or_default();
+        let label = format!("{user_id}/{name}");
+        let Some(principal) = outcome.people.get(user_id).cloned() else {
+            outcome.skipped("state", &label, unplaced(user_id));
+            continue;
+        };
+        let namespace = record["namespace"].clone();
+        if let Some(client) = namespace["clientId"]
+            .as_str()
+            .filter(|client| skipped_apps.contains(*client))
+        {
+            outcome.skipped("state", &label, format!("its app {client} was skipped"));
+            continue;
+        }
+        let resource_id = digest(&("trellis.state", &principal, &namespace, name))?;
+        // The declaration names its resource, which the user it is under
+        // here decides.
+        let named = |declaration: &Value| {
+            let mut declaration = declaration.clone();
+            declaration["resource_id"] = Value::String(resource_id.clone());
+            declaration
+        };
+        let declaration = named(&record["declaration"]);
+        let here: Option<(String, String)> = connection
+            .query_row(
+                "SELECT commitment_json,physical_id FROM auth_resources WHERE resource_id=?1",
+                [&resource_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let key = match here {
+            Some((commitment, physical)) => {
+                if decode::<Value>(&commitment)? != declaration {
+                    outcome.skipped(
+                        "state",
+                        &label,
+                        "the user has this State here with another representation; it was \
+                        left as it is",
+                    );
+                    continue;
+                }
+                physical
+            }
+            None => {
+                let allocation = id();
+                let physical = format!("{resource_id}.{allocation}");
+                let created = record["createdAt"].as_i64().unwrap_or(now);
+                connection.execute(
+                    "INSERT INTO auth_resources(resource_id,allocation_id,owner_kind,owner_id,\
+                    namespace_json,kind,local_name,commitment_json,physical_id,state,\
+                    binding_revision,revision,created_at,updated_at) \
+                    VALUES(?1,?2,'user',?3,?4,'state',?5,?6,?7,'ready',1,?8,?9,?10)",
+                    params![
+                        resource_id,
+                        allocation,
+                        principal,
+                        json(&namespace)?,
+                        name,
+                        json(&declaration)?,
+                        physical,
+                        record["revision"].as_i64().unwrap_or(1),
+                        created,
+                        record["updatedAt"].as_i64().unwrap_or(now).max(created)
+                    ],
+                )?;
+                for revision in record["history"].as_array().into_iter().flatten() {
+                    connection.execute(
+                        "INSERT INTO auth_resource_history(resource_id,revision,\
+                        commitment_json,state,changed_at) VALUES(?1,?2,?3,?4,?5)",
+                        params![
+                            resource_id,
+                            revision["revision"].as_i64(),
+                            json(&named(&decode::<Value>(
+                                revision["commitment_json"].as_str().unwrap_or("{}")
+                            )?))?,
+                            revision["state"].as_str(),
+                            revision["changed_at"].as_i64()
+                        ],
+                    )?;
+                }
+                physical
+            }
+        };
+        let item = json!({ "kind": "state", "id": label, "userId": principal });
+        match record["value"]["base64"].as_str() {
+            Some(value) => outcome.state.push(StateWrite {
+                key,
+                value: STANDARD
+                    .decode(value)
+                    .map_err(|_| damaged("a State value is not base64"))?,
+                item,
+            }),
+            None => outcome.created.push(item),
         }
     }
     Ok(outcome)
@@ -1481,6 +1961,118 @@ pub(crate) async fn import(
             }
         }
     }
+    // Devices' State goes where each device deployment's State resource is
+    // here, which exists once its data has loaded.
+    let mut writes = std::mem::take(&mut outcome.state);
+    let devices: Vec<Value> = records(&received, "state")
+        .iter()
+        .filter(|record| record["owner"] == "device")
+        .cloned()
+        .collect();
+    let placed = storage
+        .authority
+        .transaction_blocking(move |connection| {
+            let mut placed = Vec::new();
+            for record in &devices {
+                let deployment_id = record["deploymentId"].as_str().unwrap_or_default();
+                let participant_id = record["participantId"].as_str().unwrap_or_default();
+                let name = record["name"].as_str().unwrap_or_default();
+                let physical: Option<String> = connection
+                    .query_row(
+                        "SELECT physical_id FROM auth_resources WHERE owner_kind='deployment' \
+                        AND owner_id=?1 AND participant_id=?2 AND kind='state' \
+                        AND local_name=?3 AND state='ready'",
+                        params![deployment_id, participant_id, name],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                for value in record["values"].as_array().into_iter().flatten() {
+                    let principal = value["principalId"].as_str().unwrap_or_default();
+                    let item = json!({
+                        "kind": "deviceState",
+                        "id": format!("{deployment_id}/{name}"),
+                        "deviceId": principal,
+                    });
+                    let instance: Option<String> = connection
+                        .query_row(
+                            "SELECT instance_id FROM auth_instances \
+                            WHERE deployment_id=?1 AND principal_id=?2",
+                            params![deployment_id, principal],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    let bytes = STANDARD
+                        .decode(value["value"]["base64"].as_str().unwrap_or_default())
+                        .map_err(|_| damaged("a State value is not base64"))?;
+                    placed.push(match (&physical, instance) {
+                        _ if check => Ok((None, bytes, item)),
+                        (Some(physical), Some(instance_id)) => {
+                            let (suffix, _) = SqliteAuthorizationStore::state_namespace(
+                                principal,
+                                &trellis_protocol::SessionBinding::Device {
+                                    deployment_id: deployment_id.to_owned(),
+                                    instance_id,
+                                    participant_id: participant_id.to_owned(),
+                                },
+                                name,
+                            )?;
+                            Ok((Some(format!("{physical}.{suffix}")), bytes, item))
+                        }
+                        _ => Err(item),
+                    });
+                }
+            }
+            Ok(placed)
+        })
+        .await?;
+    for placed in placed {
+        match placed {
+            Ok((Some(key), value, item)) => writes.push(StateWrite { key, value, item }),
+            Ok((None, _, item)) => outcome.created.push(item),
+            Err(item) => outcome.skipped.push({
+                let mut item = item;
+                item["reason"] = json!(
+                    "its device or its deployment's State is not here yet; run the same import \
+                    again once the deployment's data has loaded"
+                );
+                item
+            }),
+        }
+    }
+    // State values, each written where none is yet. One that differs from
+    // the value here is left as it is.
+    if check {
+        outcome
+            .created
+            .extend(writes.into_iter().map(|write| write.item));
+    } else if !writes.is_empty() {
+        let broker = |error: &dyn std::fmt::Display| AuthError::Broker(error.to_string());
+        let store = crate::platform::state::open_store(&async_nats::jetstream::new(nats.clone()))
+            .await
+            .map_err(|error| broker(&error))?;
+        for write in writes {
+            let here = store
+                .entry(&write.key)
+                .await
+                .map_err(|error| broker(&error))?
+                .filter(|entry| entry.operation == async_nats::jetstream::kv::Operation::Put);
+            match here {
+                Some(here) if here.value.as_ref() == write.value.as_slice() => {}
+                Some(_) => outcome.skipped.push({
+                    let mut item = write.item;
+                    item["reason"] = json!("another value is stored here; it was left as it is");
+                    item
+                }),
+                None => {
+                    store
+                        .put(&write.key, write.value.into())
+                        .await
+                        .map_err(|error| broker(&error))?;
+                    outcome.created.push(write.item);
+                }
+            }
+        }
+    }
     Ok(json!({
         "applied": !check,
         "source": {
@@ -1491,7 +2083,10 @@ pub(crate) async fn import(
         },
         "target": outcome.target,
         "created": outcome.created,
+        "matched": outcome.matched,
+        "changed": outcome.changed,
         "skipped": outcome.skipped,
+        "administrator": outcome.administrator,
         "access": outcome.access,
         "deployments": deployments,
         "notCarried": NOT_CARRIED,

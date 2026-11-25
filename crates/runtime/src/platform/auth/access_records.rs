@@ -4,9 +4,10 @@
 //! A service bundle carries those that name a capability of an API its
 //! deployment provides; an installation export carries every role and grant.
 //! Users are named by their Trellis user ID and their sign-ins. An import
-//! finds each user by ID first, then by a sign-in, and recreates what it can:
-//! a user it cannot find, or a role that exists with another definition, is
-//! skipped and reported, and the rest still applies. See
+//! finds each user by ID, or by the same OIDC issuer and subject, and
+//! recreates what it can: a user it cannot find, a user someone else here is
+//! in the way of, or a role that exists with another definition, is skipped
+//! and reported, and the rest still applies. See
 //! `design/auth/service-export.md` and `design/auth/installation-export.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -231,19 +232,56 @@ pub(super) fn sign_ins(connection: &Connection, principal: &str) -> Result<Vec<S
 /// Who a user named by access records is in this installation.
 #[derive(Clone, Debug)]
 pub(super) enum Match {
-    /// The user with that ID, or the one user with one of its sign-ins.
+    /// The same person: the user with that ID whose sign-ins agree, or the
+    /// one user with one of its OIDC sign-ins. `by` says which.
     Found {
         principal: String,
         by: &'static str,
     },
     Missing,
-    /// The sign-ins belong to more than one user here.
-    Ambiguous(Vec<String>),
+    /// Someone else here is in the way: why the user, and everything that
+    /// names them, is skipped.
+    Conflict(String),
 }
 
-/// Find `user` here: by its user ID, else by any of its sign-ins. A sign-in
-/// through an OIDC provider matches the provider with the same ID, or the
-/// live provider with the same issuer.
+/// The live user that signs in with `sign_in` here. An OIDC sign-in is the
+/// same subject at a provider with the same issuer, whatever its ID here.
+fn owner(connection: &Connection, sign_in: &SignIn) -> Result<Option<String>, AuthError> {
+    if sign_in.provider == "local" {
+        return Ok(connection
+            .query_row(
+                "SELECT principal_id FROM auth_principals WHERE kind='user' \
+                AND state!='revoked' AND principal_id IN (\
+                SELECT principal_id FROM auth_provider_identities \
+                WHERE provider='local' AND provider_subject=?1 \
+                UNION SELECT principal_id FROM auth_local_credentials \
+                WHERE normalized_username=?1) LIMIT 1",
+                [&sign_in.subject],
+                |row| row.get(0),
+            )
+            .optional()?);
+    }
+    let Some(issuer) = &sign_in.issuer else {
+        return Ok(None);
+    };
+    Ok(connection
+        .query_row(
+            "SELECT i.principal_id FROM auth_provider_identities i \
+            JOIN auth_oidc_providers o ON o.provider_id=i.provider \
+            JOIN auth_principals p ON p.principal_id=i.principal_id \
+            WHERE i.provider_subject=?1 AND o.issuer=?2 \
+            AND p.kind='user' AND p.state!='revoked' LIMIT 1",
+            params![sign_in.subject, issuer],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// Find `user` here. The user with the same ID is the same person when its
+/// sign-ins agree: it has the same username or none, and no sign-in of the
+/// record belongs to anyone else. With no user under that ID, the one user
+/// with the same OIDC issuer and subject is the same person. Anyone else in
+/// the way, such as another user with the same username, is a conflict.
 pub(super) fn find_user(connection: &Connection, user: &UserRef) -> Result<Match, AuthError> {
     let by_id: Option<(String, String)> = connection
         .query_row(
@@ -252,7 +290,45 @@ pub(super) fn find_user(connection: &Connection, user: &UserRef) -> Result<Match
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    if by_id.is_some_and(|(kind, state)| kind == "user" && state != "revoked") {
+    if let Some((kind, state)) = by_id {
+        if kind != "user" || state == "revoked" {
+            return Ok(Match::Conflict(format!(
+                "user ID {} belongs to a {} here",
+                user.user_id,
+                if kind == "user" {
+                    "deleted user"
+                } else {
+                    &kind
+                }
+            )));
+        }
+        let username: Option<String> = connection
+            .query_row(
+                "SELECT provider_subject FROM auth_provider_identities \
+                WHERE principal_id=?1 AND provider='local' \
+                UNION ALL SELECT normalized_username FROM auth_local_credentials \
+                WHERE principal_id=?1 LIMIT 1",
+                [&user.user_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        for sign_in in &user.identities {
+            if let Some(here) = username.as_ref().filter(|_| sign_in.provider == "local") {
+                if *here != sign_in.subject {
+                    return Ok(Match::Conflict(format!(
+                        "user {} here has the username {here}, not {}",
+                        user.user_id, sign_in.subject
+                    )));
+                }
+            }
+            if let Some(other) = owner(connection, sign_in)?.filter(|other| *other != user.user_id)
+            {
+                return Ok(Match::Conflict(format!(
+                    "its sign-in {} belongs to user {other} here",
+                    sign_in.subject
+                )));
+            }
+        }
         return Ok(Match::Found {
             principal: user.user_id.clone(),
             by: "id",
@@ -260,32 +336,18 @@ pub(super) fn find_user(connection: &Connection, user: &UserRef) -> Result<Match
     }
     let mut owners = BTreeSet::new();
     for sign_in in &user.identities {
-        let owner: Option<String> = if sign_in.provider == "local" {
-            connection
-                .query_row(
-                    "SELECT i.principal_id FROM auth_provider_identities i \
-                    JOIN auth_principals p ON p.principal_id=i.principal_id \
-                    WHERE i.provider='local' AND i.provider_subject=?1 \
-                    AND p.kind='user' AND p.state!='revoked'",
-                    [&sign_in.subject],
-                    |row| row.get(0),
-                )
-                .optional()?
-        } else {
-            connection
-                .query_row(
-                    "SELECT i.principal_id FROM auth_provider_identities i \
-                    JOIN auth_oidc_providers o ON o.provider_id=i.provider \
-                    JOIN auth_principals p ON p.principal_id=i.principal_id \
-                    WHERE i.provider_subject=?2 AND p.kind='user' AND p.state!='revoked' \
-                    AND (o.provider_id=?1 OR (o.issuer=?3 AND o.state!='deleted')) \
-                    ORDER BY o.provider_id=?1 DESC LIMIT 1",
-                    params![sign_in.provider, sign_in.subject, sign_in.issuer],
-                    |row| row.get(0),
-                )
-                .optional()?
+        let Some(found) = owner(connection, sign_in)? else {
+            continue;
         };
-        owners.extend(owner);
+        // A username names an account, not a person: another user with it
+        // is someone else.
+        if sign_in.provider == "local" {
+            return Ok(Match::Conflict(format!(
+                "username {} belongs to user {found} here, under another user ID",
+                sign_in.subject
+            )));
+        }
+        owners.insert(found);
     }
     Ok(match owners.len() {
         0 => Match::Missing,
@@ -293,7 +355,11 @@ pub(super) fn find_user(connection: &Connection, user: &UserRef) -> Result<Match
             principal: owners.into_iter().next().unwrap_or_default(),
             by: "signIn",
         },
-        _ => Match::Ambiguous(owners.into_iter().collect()),
+        _ => Match::Conflict(format!(
+            "its sign-ins belong to {} users here: {}",
+            owners.len(),
+            owners.into_iter().collect::<Vec<_>>().join(", ")
+        )),
     })
 }
 
@@ -345,26 +411,27 @@ fn capability_exists(connection: &Connection, capability: &str) -> Result<bool, 
 
 /// Recreate `access` here, as `identity`'s actor. Each role, member, grant
 /// and app consent is recreated, found already present, or skipped with its
-/// reason; a skipped one changes nothing.
+/// reason; a skipped one changes nothing. `known` says who some of the
+/// record's users are here, as the caller decided; [`find_user`] finds the
+/// others.
 pub(super) fn recreate(
     connection: &Connection,
     identity: &Mutation,
     access: &AccessDocument,
+    known: &BTreeMap<String, Match>,
     now: i64,
 ) -> Result<AccessOutcome, AuthError> {
     let mut outcome = AccessOutcome::default();
-    let mut matches = BTreeMap::new();
+    let mut matches = known.clone();
     for user in &access.users {
-        matches.insert(user.user_id.clone(), find_user(connection, user)?);
+        if !matches.contains_key(&user.user_id) {
+            matches.insert(user.user_id.clone(), find_user(connection, user)?);
+        }
     }
     // Who a record's user is here, or why the record is skipped.
     let target = |user_id: &str| match matches.get(user_id) {
         Some(Match::Found { principal, by }) => Ok((principal.clone(), *by)),
-        Some(Match::Ambiguous(owners)) => Err(format!(
-            "its sign-ins belong to {} users here: {}",
-            owners.len(),
-            owners.join(", ")
-        )),
+        Some(Match::Conflict(reason)) => Err(format!("its user was skipped: {reason}")),
         _ => Err(format!(
             "no user here has ID {user_id} or any of its sign-ins"
         )),

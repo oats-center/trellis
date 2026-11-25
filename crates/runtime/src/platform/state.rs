@@ -49,37 +49,40 @@ struct PhysicalEntry {
     envelope: StoredEnvelope,
 }
 
+/// Open the bucket every State value is kept in, creating it the first time.
+pub(crate) async fn open_store(jetstream: &jetstream::Context) -> Result<kv::Store, RuntimeError> {
+    let config = kv::Config {
+        bucket: BUCKET.to_owned(),
+        description: OWNERSHIP_MARKER.to_owned(),
+        history: 1,
+        max_age: Duration::ZERO,
+        storage: jetstream::stream::StorageType::File,
+        ..Default::default()
+    };
+    match jetstream.get_key_value(BUCKET).await {
+        Ok(store) => Ok(store),
+        Err(open_error) => match jetstream.create_key_value(config).await {
+            Ok(store) => Ok(store),
+            Err(create_error) => jetstream
+                .get_key_value(BUCKET)
+                .await
+                .map_err(|retry_error| {
+                    RuntimeError::Platform(format!(
+                        "failed to open {BUCKET} ({open_error}), create it ({create_error}), or \
+                    reopen it after a possible concurrent create ({retry_error})"
+                    ))
+                }),
+        },
+    }
+}
+
 impl StateRuntime {
     pub(crate) async fn start(
         nats: async_nats::Client,
         repository: Arc<SqliteAuthorizationStore>,
     ) -> Result<Self, RuntimeError> {
         let jetstream = jetstream::new(nats);
-        let config = kv::Config {
-            bucket: BUCKET.to_owned(),
-            description: OWNERSHIP_MARKER.to_owned(),
-            history: 1,
-            max_age: Duration::ZERO,
-            storage: jetstream::stream::StorageType::File,
-            ..Default::default()
-        };
-        let store = match jetstream.get_key_value(BUCKET).await {
-            Ok(store) => store,
-            Err(open_error) => match jetstream.create_key_value(config).await {
-                Ok(store) => store,
-                Err(create_error) => {
-                    jetstream
-                        .get_key_value(BUCKET)
-                        .await
-                        .map_err(|retry_error| {
-                            RuntimeError::Platform(format!(
-                        "failed to open {BUCKET} ({open_error}), create it ({create_error}), or \
-                        reopen it after a possible concurrent create ({retry_error})"
-                    ))
-                        })?
-                }
-            },
-        };
+        let store = open_store(&jetstream).await?;
         let status = store.status().await.map_err(|error| {
             RuntimeError::Platform(format!("failed to inspect {BUCKET}: {error}"))
         })?;

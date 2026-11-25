@@ -565,7 +565,13 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     let kept = old.create_user("Kept ID").await.unwrap();
     let named = old.create_user("Same username").await.unwrap();
     let stranger = old.create_user("Stranger").await.unwrap();
-    for (role, user) in [(&pingers, &kept), (&pingers, &stranger), (&auditors, &kept)] {
+    let renamed = old.create_user("Renamed").await.unwrap();
+    for (role, user) in [
+        (&pingers, &kept),
+        (&pingers, &stranger),
+        (&pingers, &renamed),
+        (&auditors, &kept),
+    ] {
         old_cli
             .json(&["roles", "assign", role, "--user", user.principal_id()])
             .await;
@@ -651,18 +657,27 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
         "{refused}"
     );
     // The new installation has an account for one member under the same
-    // user ID, one for the grant's holder under the same username, none for
-    // the other member, and a role of its own under the auditors' role ID.
+    // user ID and username, someone else's account with the grant holder's
+    // username, an account under another member's ID with another username,
+    // none for the last member, and a role of its own under the auditors'
+    // role ID.
     let kept_here = new
-        .create_user_as(
-            "Kept ID",
-            &format!("kept-{}", ulid::Ulid::generate().to_string().to_lowercase()),
-            Some(kept.principal_id()),
-        )
+        .create_user_as("Kept ID", kept.username(), Some(kept.principal_id()))
         .await
         .unwrap();
     let named_here = new
         .create_user_as("Same username", named.username(), None)
+        .await
+        .unwrap();
+    let renamed_here = new
+        .create_user_as(
+            "Renamed",
+            &format!(
+                "renamed-{}",
+                ulid::Ulid::generate().to_string().to_lowercase()
+            ),
+            Some(renamed.principal_id()),
+        )
         .await
         .unwrap();
     assert_eq!(kept_here.principal_id(), kept.principal_id());
@@ -707,9 +722,10 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
         .contains("notfound"));
 
     // The import keeps the deployment ID and recreates the access to the
-    // service's API for the people it finds: by user ID, then by a sign-in.
-    // A member with no account here, and a role this installation has in
-    // another form, are reported and left alone.
+    // service's API for the people it finds by user ID. A member with no
+    // account here, an account with only the same username, which is someone
+    // else, and a role this installation has in another form, are reported
+    // and left alone.
     let imported = new_cli
         .json(&[
             "svc",
@@ -725,7 +741,7 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     assert_eq!(
         report["roles"],
         json!([
-            { "roleId": pingers, "name": "Moving pingers", "capabilities": [capability], "members": "2" },
+            { "roleId": pingers, "name": "Moving pingers", "capabilities": [capability], "members": "3" },
             { "roleId": auditors, "name": "Moving auditors", "capabilities": [capability], "members": "1" },
         ])
     );
@@ -754,16 +770,28 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
                 "userId": kept.principal_id(), "matchedUserId": kept.principal_id(),
                 "matchedBy": "id",
             }),
-            json!({
-                "kind": "grant", "capability": capability, "userId": named.principal_id(),
-                "matchedUserId": named_here.principal_id(), "matchedBy": "signIn",
-            }),
         ]
+    );
+    let refusal = report["access"]["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "grant")
+        .unwrap()["reason"]
+        .clone();
+    assert!(
+        refusal
+            .as_str()
+            .unwrap()
+            .contains(&format!("belongs to user {}", named_here.principal_id())),
+        "{refusal}"
     );
     let mut skipped = items("skipped");
     skipped.sort_by_key(Value::to_string);
     let mut expected = vec![
+        json!({ "kind": "grant", "capability": capability, "userId": named.principal_id() }),
         json!({ "kind": "assignment", "roleId": pingers, "role": "Moving pingers", "userId": stranger.principal_id() }),
+        json!({ "kind": "assignment", "roleId": pingers, "role": "Moving pingers", "userId": renamed.principal_id() }),
         json!({ "kind": "role", "roleId": auditors, "role": "Moving auditors" }),
         json!({ "kind": "assignment", "roleId": auditors, "role": "Moving auditors", "userId": kept.principal_id() }),
     ];
@@ -774,6 +802,12 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
         .await
         .to_string()
         .contains(stranger.principal_id()));
+    // The account with the same username is someone else's, and gains
+    // nothing.
+    let namesake = new_cli
+        .json(&["users", "show", named_here.principal_id()])
+        .await;
+    assert!(!namesake.to_string().contains(capability), "{namesake}");
     assert_eq!(
         new_cli.json(&["roles", "show", &auditors]).await["role"]["title"],
         "Auditors here"
@@ -874,27 +908,27 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     let running = tokio::spawn(service.run());
     assert!(lifecycle.ready().await, "the moved service serves");
 
-    // The people the import found call the moved service's API through an
-    // app that needs its capability, as the role or the grant gives it.
-    // Someone given neither cannot sign in to that app.
+    // The person the import found calls the moved service's API through an
+    // app that needs its capability, as the role gives it. The accounts that
+    // were in the way, and someone given nothing, cannot sign in to that app.
     let app = new
         .register_native_application::<MovingCaller>("moving caller")
         .await
         .unwrap();
-    for user in [&kept_here, &named_here] {
-        let login = new.login_native_application_as(&app, user).await.unwrap();
-        let moving = runtime_trellis::apis::runtime_trellis_moving_v1::Client::from_generated(
-            trellis_rs::generated::Client::connect_user(login.connect_options())
-                .await
-                .unwrap(),
-        );
-        assert_eq!(moving.ping(&payload("ping")).await.unwrap().value, "ping");
-    }
-    let outsider = new.create_user("Outsider").await.unwrap();
-    assert!(new
-        .login_native_application_as(&app, &outsider)
+    let login = new
+        .login_native_application_as(&app, &kept_here)
         .await
-        .is_err());
+        .unwrap();
+    let moving = runtime_trellis::apis::runtime_trellis_moving_v1::Client::from_generated(
+        trellis_rs::generated::Client::connect_user(login.connect_options())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(moving.ping(&payload("ping")).await.unwrap().value, "ping");
+    let outsider = new.create_user("Outsider").await.unwrap();
+    for user in [&named_here, &renamed_here, &outsider] {
+        assert!(new.login_native_application_as(&app, user).await.is_err());
+    }
     let (ran_id, ran_value) = tokio::time::timeout(Duration::from_secs(30), runs.recv())
         .await
         .expect("the waiting job runs in the new installation")

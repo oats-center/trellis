@@ -546,10 +546,14 @@ says to move the installation with `export` and `import` instead.
 `export` and `import` move a whole installation's configuration as plain,
 versioned records: users with their IDs and password hashes, roles and
 grants, sign-in settings and OIDC providers with their secrets, apps and
-consent, Portal themes, package registries, and every service and device
-deployment as a service bundle. Import runs against a stopped installation
-with its NATS running, skips and reports each record existing data is in the
-way of, and with `--check` changes nothing. See
+consent, Portal themes, package registries, users' and devices' State, and
+every service and device deployment as a service bundle. Import runs against
+a stopped installation with its NATS running. Settings take the export's
+values and the report shows the old ones; a user found here as the same
+person gets what the export gives them; any other record in the way is
+skipped with a warning and changes nothing; and the exported administrator's
+roles and grants go to this installation's administrator. With `--check` it
+changes nothing. See
 [installation-export.md](../auth/installation-export.md).
 
 `restore` verifies every checksum before writing. It refuses a target folder

@@ -724,6 +724,22 @@ pub(crate) async fn import(args: ImportArgs) -> miette::Result<()> {
     {
         println!("{}", line(item));
     }
+    println!("Found here as the same:");
+    for item in report["matched"].as_array().into_iter().flatten() {
+        println!("{}", line(item));
+    }
+    println!("Settings replaced with the export's:");
+    for item in report["changed"].as_array().into_iter().flatten() {
+        println!(
+            "{}\n    was {}\n    now {}",
+            line(item),
+            item["old"],
+            item["new"]
+        );
+    }
+    if let Some(detail) = report["administrator"]["detail"].as_str() {
+        println!("Administrator: {detail}");
+    }
     println!("Skipped:");
     for item in report["skipped"].as_array().into_iter().flatten() {
         println!("{}", line(item));
