@@ -1542,12 +1542,16 @@ impl TrellisClient {
         >(1);
         connected.oauth_admission_refresh_requests = Some(renew_tx);
         connected.oauth_admission_refresh_task = Some(tokio::spawn(async move {
+            // Seconds a timed renewal waits at least, longer after the issuer
+            // limited this address so the retries leave it budget to recover.
+            let mut least = 1;
             loop {
                 let remaining = session
                     .admission
                     .credential
                     .expires_at
                     .saturating_sub(now_iat_seconds() as i64);
+                let wait = Duration::from_secs((remaining / 2).max(least) as u64);
                 let request = tokio::select! {
                     biased;
                     _ = generations.wait_terminal() => return,
@@ -1555,14 +1559,23 @@ impl TrellisClient {
                         Some(request) => Some(request),
                         None => return,
                     },
-                    _ = tokio::time::sleep(Duration::from_secs((remaining / 2).max(1) as u64)) =>
-                        None,
+                    _ = tokio::time::sleep(wait) => None,
                 };
                 // Manual and timed renewals share this one custody owner;
                 // never retry a potentially spent refresh token elsewhere.
+                let mut busy = false;
                 let result: Result<(), TrellisClientError> = async {
                     let trust = authorization_contexts.owner.current_trust()?;
-                    session.refresh(trust).await.map_err(|_| {
+                    session.refresh(trust).await.map_err(|error| {
+                        // Auth's per-address request budget, which every
+                        // participant behind this address shares, refused
+                        // the rotation before reading it. The refresh token is
+                        // unspent and the admission still valid, so the
+                        // session renews again later rather than ending.
+                        if matches!(error, crate::auth::NativeOAuthError::Busy) {
+                            busy = true;
+                            return TrellisClientError::AuthorizationUnavailable(error.to_string());
+                        }
                         TrellisClientError::AuthorizationUnavailable(
                             "native OAuth recovery required".into(),
                         )
@@ -1580,7 +1593,8 @@ impl TrellisClient {
                     Ok(())
                 }
                 .await;
-                let failed = result.is_err();
+                let failed = result.is_err() && !busy;
+                least = if busy { 10 } else { 1 };
                 if let Some(request) = request {
                     let _ = request.send(result);
                 }

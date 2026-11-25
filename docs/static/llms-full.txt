@@ -2697,7 +2697,9 @@ device, such as its hostname; the Portal shows it on the confirmation step as
 custody. The SDK retains credential custody and renews admission with the same
 runtime identity and key, using its owner's authenticated issuer pin. Recovery
 failure closes application transport without deleting the durable credential
-record.
+record. A renewal refused by the issuer's per-address request limit spends
+nothing: `refresh_authorization_context()` returns the error, and the session
+keeps working and renews again later.
 
 Native OAuth custody binds each credential handle to the selected issuer,
 installation, NATS account, and client identity. Owner-only files retain the

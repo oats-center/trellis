@@ -1,4 +1,5 @@
-//! Issuer key rotations and revocations in quick succession, over the
+//! Issuer key rotations and revocations in quick succession, and native
+//! session renewal under Auth's per-address request limit, over the
 //! production runtime.
 use std::path::PathBuf;
 use std::time::Duration;
@@ -499,6 +500,48 @@ async fn a_rotation_announces_its_key_before_auth_signs_with_it() {
     assert_eq!(renewed.context.unsigned.issuer_key_id, next);
     stop.store(true, std::sync::atomic::Ordering::Release);
     assert!(traffic.await.unwrap() > 0);
+    drop(client);
+    runtime.shutdown().await.unwrap();
+}
+
+/// Auth limits OAuth requests per address, and every participant behind one
+/// address draws on that budget: other people's sign-ins can spend it. A
+/// native session whose renewal meets the limit is refused before Auth reads
+/// the refresh token, so the session keeps working and its grant stays
+/// usable instead of ending as though the token were spent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_renewal_auth_limits_leaves_the_native_session_working() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let (admin, session) = Admin::sign_in(&mut runtime, "budget-admin").await;
+    let (_, client) = admin.connect(Some(session)).await;
+
+    // Others behind this address spend the budget.
+    let limited = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots()).await {
+                Ok(_) => {}
+                Err(trellis_rs::auth::NativeOAuthError::Busy) => return,
+                Err(error) => panic!("discovery failed otherwise: {error:?}"),
+            }
+        }
+    })
+    .await;
+    assert!(limited.is_ok(), "Auth never limited the address");
+
+    let refused = client.refresh_authorization_context().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("limiting"),
+        "the renewal names the limit: {refused}"
+    );
+    call(
+        &client,
+        "AuthorizationSessions.List",
+        AuthorizationSessionsList::API_ID,
+        AuthorizationSessionsList::SUBJECT,
+        json!({"state": "active", "page": {"limit": 1}}),
+    )
+    .await
+    .expect("the session still works after a limited renewal");
     drop(client);
     runtime.shutdown().await.unwrap();
 }
