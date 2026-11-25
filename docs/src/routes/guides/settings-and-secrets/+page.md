@@ -419,7 +419,9 @@ exposes a deployment value it refuses, `config` names the instance rollback
 that restores the override (`config --instance ID rollback REVISION`, with the
 revision filled in from the status's `overrideRevision`) and gives the
 deployment's rollback only as the alternative, since it changes every
-instance. If the override removed had been refused itself, it names the
+instance. If what the removal exposed is a declared default or no value at
+all, no deployment revision can restore the override, so it names only the
+instance rollback. If the override removed had been refused itself, it names the
 deployment's rollback. When the refused values came from both layers, or a check refused
 the revision as a whole, it names both commands. While the newest revision is rejected, the
 instance's `settings` health check is degraded with the reason, which makes the
