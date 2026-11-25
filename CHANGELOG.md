@@ -39,6 +39,15 @@ and this project adheres to
 
 ### Fixed
 
+- Installation export and import refuse a broker that isn't the installation's,
+  keep each run's working files apart, preview without touching the target's
+  database, split large record kinds so the importer accepts them, fail on
+  missing State instead of exporting it empty, and list deployment data that
+  still needs another run. Disabled deployments stay disabled, and only
+  current grants, active sign-in providers and consent whose wording matches
+  carry over.
+- A Rust client no longer refuses its own request when a session renewal lands
+  mid-check, and a rate-limited renewal leaves a native session running.
 - A settings status reads pending as soon as a different build is installed,
   and TypeScript `stop()` waits for derived-value disposals already running.
 - Rollback advice names the layer each refused value came from, and advises
