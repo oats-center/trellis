@@ -33,14 +33,15 @@ export type TestDex = {
 
 /**
  * Starts the producer-built Dex (`TRELLIS_TEST_DEX_BIN`) with a static client
- * that redirects to `redirectUri` and a password user per email, each signing
- * in with the password "password". Dex serves a leaf certificate followed by
+ * that redirects to `redirectUri` (one address, or several when more than one
+ * Trellis signs in through the same client) and a password user per email,
+ * each signing in with the password "password". Dex serves a leaf certificate followed by
  * its generated CA. The test process and test browsers trust that CA, so they
  * can reach Dex; Trellis does not, unless a provider pins it.
  */
 export async function startDex(options: {
   directory: string;
-  redirectUri: string;
+  redirectUri: string | readonly string[];
   emails: readonly string[];
 }): Promise<TestDex> {
   const binary = process.env.TRELLIS_TEST_DEX_BIN;
@@ -141,7 +142,7 @@ staticClients:
 - id: ${clientId}
   name: Trellis
   secret: ${clientSecret}
-  redirectURIs: [${options.redirectUri}]
+  redirectURIs: [${[options.redirectUri].flat().join(", ")}]
 enablePasswordDB: true
 staticPasswords:
 ${users}`,
