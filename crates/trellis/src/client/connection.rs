@@ -678,53 +678,56 @@ async fn publish_prepared_event(
     let jetstream = jetstream::new(nats.clone());
     let identity = trellis_protocol::decode_event_descriptor_identity(event.descriptor_identity())?;
     trellis_protocol::validate_event_descriptor_subject(&identity, event.subject())?;
-    let authority = owner.own_authority()?;
-    owner
-        .authorize_action(
-            nats,
-            &authority,
-            identity.api_id(),
-            &trellis_protocol::CatalogActionIdentity {
-                kind: trellis_protocol::ApiSurfaceKind::Event,
-                name: identity.event_name().to_owned(),
-                direction: trellis_protocol::PermissionAction::Publish,
-            },
-        )
-        .await?;
-    let api = authority
-        .authority()
-        .apis
-        .iter()
-        .find(|api| api.api_id == identity.api_id())
-        .ok_or_else(|| {
-            TrellisClientError::AuthorizationUnavailable("event API unavailable".into())
-        })?;
-    let publication = trellis_protocol::SessionEvent {
-        authority_digest: authority.digest().to_owned(),
-        api_id: identity.api_id().to_owned(),
-        api_generation: api.generation,
-        accepted_revision: api.accepted_revision,
-        action: identity.event_name().to_owned(),
-        subject: event.subject().to_owned(),
-        event_id: event.event_id().to_owned(),
-        event_time: event.event_time().to_owned(),
-        // Signed now, under the authority current now, however long ago the
-        // event was prepared.
-        issued_at: now_iat_seconds() as i64,
+    let action = trellis_protocol::CatalogActionIdentity {
+        kind: trellis_protocol::ApiSurfaceKind::Event,
+        name: identity.event_name().to_owned(),
+        direction: trellis_protocol::PermissionAction::Publish,
     };
-    let mut headers = event.publish_headers();
-    headers.insert("authorization-context", authority.digest());
-    headers.insert("session-key", auth.session_key.as_str());
-    headers.insert(
-        "Trellis-Session-Event",
-        serde_json::to_string(&publication)?,
-    );
-    headers.insert(
-        "proof",
-        auth.create_event_proof(&publication, event.payload())?
-            .as_str(),
-    );
-    owner.assert_current(&authority)?;
+    // A renewal that replaces the authority while the event is signed signs
+    // it again under the replacement rather than failing the publish.
+    let headers = loop {
+        let (authority, _) = owner
+            .authorize_own_action(nats, identity.api_id(), &action)
+            .await?;
+        let api = authority
+            .authority()
+            .apis
+            .iter()
+            .find(|api| api.api_id == identity.api_id())
+            .ok_or_else(|| {
+                TrellisClientError::AuthorizationUnavailable("event API unavailable".into())
+            })?;
+        let publication = trellis_protocol::SessionEvent {
+            authority_digest: authority.digest().to_owned(),
+            api_id: identity.api_id().to_owned(),
+            api_generation: api.generation,
+            accepted_revision: api.accepted_revision,
+            action: identity.event_name().to_owned(),
+            subject: event.subject().to_owned(),
+            event_id: event.event_id().to_owned(),
+            event_time: event.event_time().to_owned(),
+            // Signed now, under the authority current now, however long ago the
+            // event was prepared.
+            issued_at: now_iat_seconds() as i64,
+        };
+        let mut headers = event.publish_headers();
+        headers.insert("authorization-context", authority.digest());
+        headers.insert("session-key", auth.session_key.as_str());
+        headers.insert(
+            "Trellis-Session-Event",
+            serde_json::to_string(&publication)?,
+        );
+        headers.insert(
+            "proof",
+            auth.create_event_proof(&publication, event.payload())?
+                .as_str(),
+        );
+        match owner.assert_current(&authority) {
+            Ok(()) => break headers,
+            Err(_) if owner.replaced(&authority) => {}
+            Err(error) => return Err(error),
+        }
+    };
     let publish_remaining = deadline.saturating_duration_since(Instant::now());
     if publish_remaining.is_zero() {
         return Err(TrellisClientError::Timeout);
@@ -2052,9 +2055,8 @@ impl TrellisClient {
                             );
                             continue;
                         }
-                        let own = owner.own_authority()?;
                         owner
-                            .authorize_action(lease.nats(), &own, D::API_ID, &subscribe_action)
+                            .authorize_own_action(lease.nats(), D::API_ID, &subscribe_action)
                             .await?;
                         let value: Value = serde_json::from_slice(&message.payload)?;
                         let event = D::Event::decode(value)
@@ -2432,9 +2434,9 @@ impl TrellisClient {
                     deadline,
                 )
                 .await?;
-            let own = self.authorization_owner().own_authority()?;
-            self.authorization_owner()
-                .authorize_action(lease.nats(), &own, api_id, &action)
+            let (own, _) = self
+                .authorization_owner()
+                .authorize_own_action(lease.nats(), api_id, &action)
                 .await?;
             let api = own
                 .authority()

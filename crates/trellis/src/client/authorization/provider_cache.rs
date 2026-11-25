@@ -1015,9 +1015,72 @@ impl AuthorizationOwner {
     /// The revocation mirror never gates this: the broker and Auth enforce
     /// revocation of this runtime's own session.
     pub fn own_authority(&self) -> Result<Arc<VerifiedSessionAuthority>, TrellisClientError> {
-        let authority = self.staged_own_authority()?;
-        self.assert_current(&authority)?;
+        // One read for both checks: a renewal promoting a replacement between
+        // two reads would leave the authority taken superseded, and the
+        // second check would refuse it.
+        let state = self.state.read().map_err(|_| {
+            TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
+        })?;
+        let authority = self.staged_own_in(&state)?;
+        self.assert_current_in(&state, &authority)?;
         Ok(authority)
+    }
+
+    /// Own authority that `action` is authorized under, with the catalog that
+    /// grants it.
+    ///
+    /// Renewal replaces own authority at any moment, and the check refuses
+    /// authority a replacement superseded. A replacement that lands while the
+    /// check runs restarts it under the replacement, so a request made across
+    /// a renewal is sent instead of failing. Each restart follows a promotion,
+    /// which only a completed renewal makes.
+    pub(crate) async fn authorize_own_action(
+        &self,
+        transport: &async_nats::Client,
+        api_id: &str,
+        action: &CatalogActionIdentity,
+    ) -> Result<(Arc<VerifiedSessionAuthority>, Arc<AuthenticatedCatalog>), TrellisClientError>
+    {
+        loop {
+            let own = self.own_authority()?;
+            match self.authorize_action(transport, &own, api_id, action).await {
+                Ok(catalog) => return Ok((own, catalog)),
+                Err(_) if self.replaced(&own) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Own authority that implements `action`, with its provider certificate.
+    /// A renewal that lands while the check runs restarts it under the
+    /// replacement, as [`Self::authorize_own_action`] does.
+    pub(crate) async fn authorize_own_provider(
+        &self,
+        transport: &async_nats::Client,
+        api_id: &str,
+        action: &CatalogActionIdentity,
+    ) -> Result<Arc<AuthenticatedProviderCertificate>, TrellisClientError> {
+        loop {
+            let own = self.own_authority()?;
+            match self
+                .authorize_provider(transport, &own, api_id, action)
+                .await
+            {
+                Ok(certificate) => return Ok(certificate),
+                Err(_) if self.replaced(&own) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Whether a renewal has since replaced `authority` as this runtime's own.
+    pub(crate) fn replaced(&self, authority: &VerifiedSessionAuthority) -> bool {
+        self.state.read().is_ok_and(|state| {
+            state
+                .own
+                .as_ref()
+                .is_some_and(|own| own.digest() != authority.digest())
+        })
     }
 
     /// Return only retained transport identity, never application authority.
@@ -1052,6 +1115,13 @@ impl AuthorizationOwner {
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
+        self.staged_own_in(&state)
+    }
+
+    fn staged_own_in(
+        &self,
+        state: &OwnerState,
+    ) -> Result<Arc<VerifiedSessionAuthority>, TrellisClientError> {
         if state.closed {
             return Err(TrellisClientError::AuthorizationUnavailable(
                 "authority owner closed".into(),
@@ -1144,6 +1214,14 @@ impl AuthorizationOwner {
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
+        self.assert_current_in(&state, authority)
+    }
+
+    fn assert_current_in(
+        &self,
+        state: &OwnerState,
+        authority: &VerifiedSessionAuthority,
+    ) -> Result<(), TrellisClientError> {
         let policy = self.policy();
         if state.closed
             || authority.authority().trellis_instance_id != self.trust.instance_id
