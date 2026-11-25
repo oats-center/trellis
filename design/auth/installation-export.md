@@ -88,20 +88,20 @@ such as revisions are set again on import.
 
 ## Record kinds
 
-| Kind                | What it carries                                                                                                                 |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `signInSettings`    | Local users on or off, local sign-up, password minimum length                                                                   |
-| `oidcProviders`     | Each live provider with its ID, issuer, client ID, client secret (opened), pinned certificate and settings                      |
-| `packageRegistries` | Each registry with its prefix, username and secret (opened)                                                                     |
-| `users`             | ID, state, username and password hash, OIDC sign-ins with their provider's issuer, profile, and whether it is the administrator |
-| `roles`             | Each active role with its ID, name, description, new-user flag, capabilities and members                                        |
-| `grants`            | Each capability granted directly to a user                                                                                      |
-| `oidcRoleMappings`  | Each mapping from a provider claim to roles                                                                                     |
-| `oauthClients`      | Each app with its client ID, kind, redirect URIs, implied consent and sign-up settings                                          |
-| `consents`          | Remembered consent of users to apps, for capabilities whose wording has not changed since                                       |
-| `portalThemes`      | The installation's theme and each app's                                                                                         |
-| `state`             | Each live user's State resources with their representation, registration revision and history, and value; each device's values  |
-| deployments         | Every service and device deployment that is not removed and not Trellis's own, as a service bundle                              |
+| Kind                | What it carries                                                                                                                  |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `signInSettings`    | Local users on or off, local sign-up, password minimum length                                                                    |
+| `oidcProviders`     | Each live provider with its ID, issuer, client ID, client secret (opened), pinned certificate and settings                       |
+| `packageRegistries` | Each registry with its prefix, username and secret (opened)                                                                      |
+| `users`             | ID, state, username and password hash, OIDC sign-ins with their provider's issuer, profile, and whether it is the administrator  |
+| `roles`             | Each active role with its ID, name, description, new-user flag, capabilities and members                                         |
+| `grants`            | Each capability granted directly to a user                                                                                       |
+| `oidcRoleMappings`  | Each mapping from a provider claim to roles                                                                                      |
+| `oauthClients`      | Each app with its client ID, kind, redirect URIs, implied consent and sign-up settings                                           |
+| `consents`          | Remembered consent of users to apps, for capabilities whose wording has not changed since                                        |
+| `portalThemes`      | The installation's theme and each app's                                                                                          |
+| `state`             | Each live user's State resources with their representation, registration revision and history, and value; each device's values   |
+| deployments         | Every service and device deployment that is not removed and not Trellis's own, enabled or disabled as it is, as a service bundle |
 
 Trellis's apps are public clients (PKCE and DPoP), so an app has no secret to
 carry; its client ID is its identity, and it keeps it. The Console and CLI

@@ -143,8 +143,10 @@ is loaded, the service's processes cannot connect.
 
 A bundle whose instances were all retired or disabled imports without one
 that can run, so the import stops before it prepares the resources and
-queues the waiting jobs. Provision or enable an instance in the new
-installation, then run the same import again to finish it:
+queues the waiting jobs. So does a deployment that was disabled when it was
+exported: it stays disabled in the new installation. Enable it, provision or
+enable an instance in the new installation, then run the same import again
+to finish it:
 
 ```sh
 trellis --profile new svc orders provision

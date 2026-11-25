@@ -24,7 +24,7 @@ The file carries:
 - the State apps and devices keep for people and devices;
 - Portal themes and package registries;
 - every service and device deployment, with its build, keys, settings and
-  secrets, and each service's data and waiting jobs, the way
+  secrets, disabled if it was disabled, and each service's data and waiting jobs, the way
   [`trellis svc export`](/guides/move-a-service) carries one.
 
 It leaves out sessions, so everyone signs in again; the NATS operator and

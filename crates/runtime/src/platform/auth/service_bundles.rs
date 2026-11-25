@@ -723,6 +723,8 @@ struct DeploymentDocument {
     deployment_id: String,
     title: String,
     participant_id: String,
+    /// `active` or `disabled`: an import keeps a disabled deployment off.
+    state: String,
     expires_at: Option<i64>,
     instance_policy: Option<InstancePolicy>,
     webhooks: Vec<WebhookEndpoint>,
@@ -1072,6 +1074,7 @@ fn read_export(
             deployment_id: deployment_id.to_owned(),
             title,
             participant_id: participant,
+            state,
             expires_at,
             instance_policy,
             webhooks,
@@ -1896,6 +1899,12 @@ fn validate(bundle: &Bundle, devices: bool) -> Result<(), AuthError> {
     if !ulid(deployment_id) {
         return Err(damaged("its deployment ID is not a deployment ID"));
     }
+    if !matches!(deployment.state.as_str(), "active" | "disabled") {
+        return Err(damaged(format!(
+            "its deployment has an unknown state {}",
+            deployment.state
+        )));
+    }
     if participant_id.starts_with("trellis.") {
         return Err(AuthError::Invalid(
             "Trellis's own services belong to their installation and are not imported".into(),
@@ -2404,6 +2413,14 @@ fn apply(
                 now,
                 bucket(resource)
             ],
+        )?;
+    }
+    // A deployment its administrators turned off stays off here, once its
+    // instances, which only an active deployment takes, are recorded.
+    if deployment.state == "disabled" {
+        connection.execute(
+            "UPDATE auth_deployments SET state='disabled' WHERE deployment_id=?1",
+            [deployment_id],
         )?;
     }
     // The roles and grants that gave people the service's APIs. One that

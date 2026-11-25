@@ -191,6 +191,12 @@ While the old deployment is enabled, the same secret works in both
 installations. Disabling or removing the old deployment ends that, since a
 disabled deployment refuses enrollment.
 
+A deployment that was disabled when it was exported is imported disabled,
+with its instances as they were, and nothing of it connects until an
+administrator enables it in the new installation. Its resources are
+prepared, and its waiting jobs move, when the bundle is imported again
+after that.
+
 ### Settings and secrets
 
 The bundle holds the current settings revision of the deployment and of each
@@ -324,7 +330,7 @@ entry is a 2-byte name length, the name, and the entry's bytes as chunks of a
 stream snapshot of unknown size be written as JetStream sends it.
 
 ```text
-deployment.json         the deployment, its instance policy, webhook endpoints and settings
+deployment.json         the deployment, whether it is enabled, its instance policy, webhook endpoints and settings
 evidence.json           package evidence of the installed build
 instances.json          instances and their public keys, enrollment secrets
 settings.json           current settings and secrets of the deployment and instance overrides

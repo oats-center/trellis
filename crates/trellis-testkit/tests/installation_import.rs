@@ -433,3 +433,66 @@ async fn an_account_with_a_deleted_providers_sign_in_moves_and_signs_in() {
     target.shutdown().await.unwrap();
     source.shutdown().await.unwrap();
 }
+
+/// The state of `deployment` on the installation behind `admin`.
+async fn deployment_state(admin: &trellis_auth_v1::Client, deployment: &str) -> Value {
+    let found = admin
+        .deployments_get(&wire(json!({ "deploymentId": deployment })))
+        .await
+        .unwrap();
+    serde_json::to_value(found).unwrap()["deployment"]["state"].clone()
+}
+
+/// A deployment its administrators turned off stays off when the
+/// installation moves: the new installation has it disabled, and its data
+/// waits, as the import reports, until someone enables it there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_disabled_deployment_stays_disabled_when_it_moves() {
+    let mut source = TrellisTestRuntime::builder().start().await.unwrap();
+    let mut target = TrellisTestRuntime::builder().start().await.unwrap();
+    let service = source
+        .register_service::<Moving>("switched-off")
+        .await
+        .unwrap();
+    let deployment = service.deployment_id().to_owned();
+    let admin = administrator(&mut source).await;
+    let current = admin
+        .deployments_get(&wire(json!({ "deploymentId": deployment })))
+        .await
+        .unwrap();
+    admin
+        .deployments_disable(&wire(json!({
+            "deploymentId": deployment,
+            "expectedRevision": serde_json::to_value(current).unwrap()["deployment"]["revision"],
+            "idempotencyKey": key()
+        })))
+        .await
+        .unwrap();
+    assert_eq!(deployment_state(&admin, &deployment).await, "disabled");
+    drop(admin);
+    let file = source.workdir().join("installation.trellis-installation");
+    source
+        .export_installation(None, &file, PASSPHRASE)
+        .await
+        .unwrap();
+
+    let imported = target
+        .import_installation(&file, PASSPHRASE, false, Some(&source))
+        .await
+        .unwrap();
+    let report = &imported["import"];
+    assert!(
+        listed(report, "created", "deployment", &deployment),
+        "{report}"
+    );
+    assert!(
+        listed(report, "pending", "deploymentData", &deployment),
+        "{report}"
+    );
+    let admin = administrator(&mut target).await;
+    assert_eq!(deployment_state(&admin, &deployment).await, "disabled");
+    drop(admin);
+
+    target.shutdown().await.unwrap();
+    source.shutdown().await.unwrap();
+}
