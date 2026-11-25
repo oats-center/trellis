@@ -49,8 +49,61 @@ struct PhysicalEntry {
     envelope: StoredEnvelope,
 }
 
+/// The bucket every State value is kept in, when the broker has it, opened
+/// without creating or changing anything.
+///
+/// # Errors
+///
+/// Fails when the broker can't be read, or when the bucket expires values:
+/// State keeps every value until it is deleted, so a bucket that drops
+/// values cannot hold it.
+pub(crate) async fn existing_store(
+    jetstream: &jetstream::Context,
+) -> Result<Option<kv::Store>, RuntimeError> {
+    use async_nats::jetstream::{context::GetStreamErrorKind, ErrorCode};
+    match jetstream.get_stream(STREAM).await {
+        Ok(_) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                GetStreamErrorKind::JetStream(error)
+                    if error.error_code() == ErrorCode::STREAM_NOT_FOUND
+            ) =>
+        {
+            return Ok(None)
+        }
+        Err(error) => {
+            return Err(RuntimeError::Platform(format!(
+                "failed to read {BUCKET}: {error}"
+            )))
+        }
+    }
+    let store = jetstream
+        .get_key_value(BUCKET)
+        .await
+        .map_err(|error| RuntimeError::Platform(format!("failed to open {BUCKET}: {error}")))?;
+    let status = store
+        .status()
+        .await
+        .map_err(|error| RuntimeError::Platform(format!("failed to inspect {BUCKET}: {error}")))?;
+    // State reads the latest revision; retaining older revisions is harmless.
+    if status.max_age() != Duration::ZERO {
+        return Err(RuntimeError::Platform(format!(
+            "{BUCKET} must not expire State values"
+        )));
+    }
+    Ok(Some(store))
+}
+
 /// Open the bucket every State value is kept in, creating it the first time.
+///
+/// # Errors
+///
+/// Fails as [`existing_store`] does, or when the bucket can't be created.
 pub(crate) async fn open_store(jetstream: &jetstream::Context) -> Result<kv::Store, RuntimeError> {
+    if let Some(store) = existing_store(jetstream).await? {
+        return Ok(store);
+    }
     let config = kv::Config {
         bucket: BUCKET.to_owned(),
         description: OWNERSHIP_MARKER.to_owned(),
@@ -59,20 +112,12 @@ pub(crate) async fn open_store(jetstream: &jetstream::Context) -> Result<kv::Sto
         storage: jetstream::stream::StorageType::File,
         ..Default::default()
     };
-    match jetstream.get_key_value(BUCKET).await {
+    match jetstream.create_key_value(config).await {
         Ok(store) => Ok(store),
-        Err(open_error) => match jetstream.create_key_value(config).await {
-            Ok(store) => Ok(store),
-            Err(create_error) => jetstream
-                .get_key_value(BUCKET)
-                .await
-                .map_err(|retry_error| {
-                    RuntimeError::Platform(format!(
-                        "failed to open {BUCKET} ({open_error}), create it ({create_error}), or \
-                    reopen it after a possible concurrent create ({retry_error})"
-                    ))
-                }),
-        },
+        // Another runtime may have created it meanwhile.
+        Err(create_error) => existing_store(jetstream).await?.ok_or_else(|| {
+            RuntimeError::Platform(format!("failed to create {BUCKET}: {create_error}"))
+        }),
     }
 }
 
@@ -83,16 +128,6 @@ impl StateRuntime {
     ) -> Result<Self, RuntimeError> {
         let jetstream = jetstream::new(nats);
         let store = open_store(&jetstream).await?;
-        let status = store.status().await.map_err(|error| {
-            RuntimeError::Platform(format!("failed to inspect {BUCKET}: {error}"))
-        })?;
-        // State reads the latest revision; retaining older revisions is harmless.
-        // Expiration would violate State's promise to retain values until deletion.
-        if status.max_age() != Duration::ZERO {
-            return Err(RuntimeError::Platform(format!(
-                "{BUCKET} must not expire State values"
-            )));
-        }
         Ok(Self {
             repository,
             store,

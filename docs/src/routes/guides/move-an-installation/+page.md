@@ -70,6 +70,11 @@ the old one held; the report's `administrator` entry lists them. People's
 State comes along, so apps and devices find what they stored; each value gets
 a new revision token.
 
+The export reads State from the old installation's NATS without changing
+it. If people or devices registered State and that NATS has lost the State
+bucket, for example after its JetStream was reset, the export stops instead
+of leaving their values out: restore the JetStream from a backup first.
+
 ## Importing into an installation in use
 
 You can import into an installation that already has users, apps or

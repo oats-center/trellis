@@ -318,7 +318,9 @@ with the consent, State and theme that name it, and any other record that
 exists with other contents. The exported administrator is not imported: the
 roles and grants it held go to this installation's administrator
 (`administrator` in the report). State keeps its values and creation and
-update times; its revision tokens are new. Running the import again finishes
+update times; its revision tokens are new. An export with registered State
+fails when the broker has no State bucket, and neither command uses a bucket
+that expires values. Running the import again finishes
 a deployment whose data did not load. It moves an installation between
 releases, release candidates included. Export and import refuse, before
 reading or changing anything, a broker that is not bound to this

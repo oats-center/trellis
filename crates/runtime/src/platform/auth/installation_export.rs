@@ -600,9 +600,19 @@ async fn state_records(
     if resources.is_empty() {
         return Ok(Vec::new());
     }
-    let store = crate::platform::state::open_store(&async_nats::jetstream::new(nats.clone()))
+    // An export only reads: a missing bucket is State this installation
+    // lost, which an export must not hide or paper over by making one.
+    let store = crate::platform::state::existing_store(&async_nats::jetstream::new(nats.clone()))
         .await
-        .map_err(|error| AuthError::Broker(error.to_string()))?;
+        .map_err(|error| AuthError::Broker(error.to_string()))?
+        .ok_or_else(|| {
+            AuthError::Broker(format!(
+                "{} State resources are registered, and this installation's NATS has no \
+                State bucket to read their values from; restore its JetStream, for example \
+                from a backup, before exporting",
+                resources.len()
+            ))
+        })?;
     let value = |entry: Option<async_nats::jetstream::kv::Entry>| {
         entry
             .filter(|entry| entry.operation == async_nats::jetstream::kv::Operation::Put)
@@ -1965,6 +1975,26 @@ pub(crate) async fn import(
     check: bool,
 ) -> Result<Value, AuthError> {
     let received = receive(input, directory, MAX_RECORDS)?;
+    // State is kept until it is deleted, so its values go only into a bucket
+    // that keeps them, which is checked before anything changes. A preview
+    // opens the bucket without making one.
+    let carries_state = records(&received, "state").iter().any(|record| {
+        !record["value"].is_null()
+            || record["values"]
+                .as_array()
+                .is_some_and(|values| !values.is_empty())
+    });
+    let state_store = {
+        let jetstream = async_nats::jetstream::new(nats.clone());
+        match (carries_state, check) {
+            (false, _) => Ok(None),
+            (true, true) => crate::platform::state::existing_store(&jetstream).await,
+            (true, false) => crate::platform::state::open_store(&jetstream)
+                .await
+                .map(Some),
+        }
+        .map_err(|error| AuthError::Broker(error.to_string()))?
+    };
     // Each deployment's bundle, read and verified as a service import does
     // before anything changes.
     let mut bundles = Vec::new();
@@ -2100,11 +2130,8 @@ pub(crate) async fn import(
         outcome
             .created
             .extend(writes.into_iter().map(|write| write.item));
-    } else if !writes.is_empty() {
+    } else if let Some(store) = state_store.filter(|_| !writes.is_empty()) {
         let broker = |error: &dyn std::fmt::Display| AuthError::Broker(error.to_string());
-        let store = crate::platform::state::open_store(&async_nats::jetstream::new(nats.clone()))
-            .await
-            .map_err(|error| broker(&error))?;
         for write in writes {
             let here = store
                 .entry(&write.key)

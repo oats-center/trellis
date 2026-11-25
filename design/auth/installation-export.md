@@ -128,6 +128,13 @@ the usual conflict with the current value. The registration revision moves,
 so an app that registers with the revision it knows finds the same
 registration.
 
+An export reads the State bucket without creating it. When State resources
+are registered and the broker has no State bucket, their values are lost or
+out of reach, so the export fails and says so rather than carrying the
+values as empty. State keeps a value until it is deleted, so neither side
+uses a bucket that expires values: an export from one fails, and an import
+that carries State values refuses one before it changes anything.
+
 ## Import
 
 Import reads the whole file first, spooling each bundle to an encrypted

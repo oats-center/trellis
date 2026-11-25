@@ -241,3 +241,142 @@ async fn an_import_preview_writes_nothing_to_the_database() {
     );
     assert!(!has_user(&target, &person).await);
 }
+
+/// JetStream of the installation `config`'s broker, as Trellis's own user.
+async fn jetstream_of(config: &crate::RuntimeConfig) -> async_nats::jetstream::Context {
+    async_nats::jetstream::new(crate::backup::connect(config).await.unwrap())
+}
+
+/// Whether the broker behind `jetstream` has the State bucket's stream.
+async fn has_state_bucket(jetstream: &async_nats::jetstream::Context) -> bool {
+    jetstream.get_stream("KV_trellis_state").await.is_ok()
+}
+
+/// A person on the stopped installation `config` with a State resource
+/// registered through an app and a value kept in it, as the State API keeps
+/// one. Returns the person and the value.
+async fn person_with_state(config: &crate::RuntimeConfig) -> (String, Vec<u8>) {
+    let (person, key) = with_store(config, |store| {
+        let now = crate::clock::unix_now();
+        let person = create_user(store, &administrator_of(store), now);
+        let binding = trellis_protocol::SessionBinding::Native {
+            client_id: "moving-app".into(),
+            durable_dpop_jkt: "moving-key".into(),
+        };
+        let input = trellis_runtime_apis::types::StateRegisterRequest {
+            resource_name: "settings".to_owned().into(),
+            representation: trellis_runtime_apis::types::StateRepresentation {
+                version: 1.into(),
+                schema: trellis_runtime_apis::types::Bytes(br#"{"type":"object"}"#.to_vec()),
+                extra: Default::default(),
+            },
+            accepts: vec![],
+            expected_revision: "0".to_owned().into(),
+            idempotency_key: id().parse().unwrap(),
+            extra: Default::default(),
+        };
+        store
+            .register_state(&person, &binding, &input, now)
+            .unwrap()
+            .unwrap();
+        let (resource, _) =
+            SqliteAuthorizationStore::state_namespace(&person, &binding, "settings").unwrap();
+        let key: String = store
+            .reader()
+            .unwrap()
+            .query_row(
+                "SELECT physical_id FROM auth_resources WHERE resource_id=?1",
+                [&resource],
+                |row| row.get(0),
+            )
+            .unwrap();
+        (person, key)
+    })
+    .await;
+    let value = br#"{"value":"kept","representationVersion":1}"#.to_vec();
+    crate::platform::state::open_store(&jetstream_of(config).await)
+        .await
+        .unwrap()
+        .put(&key, value.clone().into())
+        .await
+        .unwrap();
+    (person, value)
+}
+
+/// State moves only from and into a bucket that keeps it. With State
+/// registered and its bucket gone from the broker, an export fails instead
+/// of writing the values as missing, and makes no bucket. An import into
+/// a bucket that expires values refuses before it changes anything, and
+/// into one that keeps them writes the value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn state_moves_only_from_and_into_a_bucket_that_keeps_it() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let ports = reserve(2);
+    let (source, _source_broker) =
+        started_installation(&directory.path().join("source"), &ports[..4]).await;
+    let (target, _target_broker) =
+        started_installation(&directory.path().join("target"), &ports[4..]).await;
+    let (person, value) = person_with_state(&source).await;
+    let content = exported(&source).await;
+
+    let source_jetstream = jetstream_of(&source).await;
+    source_jetstream
+        .delete_stream("KV_trellis_state")
+        .await
+        .unwrap();
+    let mut written = Vec::new();
+    let refused = crate::platform::export_installation(&source, &mut written).await;
+    assert!(
+        matches!(refused, Err(crate::RuntimeError::Platform(_))),
+        "{refused:?}"
+    );
+    assert!(!has_state_bucket(&source_jetstream).await);
+
+    let target_jetstream = jetstream_of(&target).await;
+    target_jetstream
+        .delete_stream("KV_trellis_state")
+        .await
+        .unwrap();
+    let expiring = target_jetstream
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: "trellis_state".into(),
+            max_age: Duration::from_secs(3600),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let refused =
+        crate::platform::import_installation(&target, &mut std::io::Cursor::new(&content), false)
+            .await;
+    assert!(
+        matches!(refused, Err(crate::RuntimeError::Platform(_))),
+        "{refused:?}"
+    );
+    assert!(!has_user(&target, &person).await);
+    assert_eq!(expiring.status().await.unwrap().values(), 0);
+
+    target_jetstream
+        .delete_stream("KV_trellis_state")
+        .await
+        .unwrap();
+    let report =
+        crate::platform::import_installation(&target, &mut std::io::Cursor::new(&content), false)
+            .await
+            .unwrap();
+    assert!(has_user(&target, &person).await);
+    let kept = crate::platform::state::existing_store(&target_jetstream)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut keys = kept.keys().await.unwrap();
+    let key = futures_util::StreamExt::next(&mut keys)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        kept.get(&key).await.unwrap().as_deref(),
+        Some(value.as_slice()),
+        "{report}"
+    );
+}
