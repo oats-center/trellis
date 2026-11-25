@@ -276,26 +276,25 @@ checked, changed or not. The service has not reached `wait()` or `run()`, so
 it is not serving and its readiness stays at starting.
 
 A reason reaches more readers than the secrets do: the stored status that
-`Config.Get`, the CLI and the Console show, the `settings` health check, the
-participant's log, and what it prints while startup waits. A reason should
-never include a secret value, and the SDKs keep it out before the reason goes
-anywhere:
+`Config.Get`, the CLI and the Console show, and the `settings` health check,
+which other users read. The participant's own log, and what it prints while
+startup waits, are the operator's, who is trusted (see "The operator is
+trusted" in `engineering-patterns.md`). The SDKs keep the two apart:
 
-- Every occurrence of a value of a field the build declares secret, taken from
-  the candidate and from the values in effect, is replaced with `[redacted]`,
-  longest first. Values shorter than four characters are skipped, since
-  replacing them would blank out ordinary words. This covers explicit reasons
-  (`reject`, `Rejection::new`) as well as error messages.
+- An explicit reason (`reject`, `Rejection::new`, `Rejection::changed`) is
+  the deliberate path and keeps its text. Every occurrence of a value of a
+  field the build declares secret, taken from the candidate and from the
+  values in effect, is replaced with `[redacted]`, longest first. Values
+  shorter than four characters are skipped, since replacing them would blank
+  out ordinary words.
 - An unexpected error (a TypeScript throw, a Rust error converted through
-  `?`) can carry a secret in a form redaction can't find. Checks and builders
-  receive the whole settings object, so the fields a revision changes or a
-  builder names can't tell whether a message quotes a secret. When the build
-  declares any secret field, every unexpected error's message is replaced by
-  a generic reason with the error's type name (in Rust without its module
-  path): `the check failed (TypeError)` for a check, `building the value
-failed (Error)` for a builder. The message is not logged either. Explicit
-  reasons keep their redacted text, and a build that declares no secret keeps
-  unexpected messages.
+  `?`) always gets fixed text in the status and health, whatever the build
+  declares: `the check failed` for a check, `building the value failed` for a
+  builder, with no type name or message. Its name and message are text the
+  callback's code made, and it can carry a credential from anywhere the code
+  read (an environment variable, a file) in a form redaction can't find. The
+  participant's local log and startup output show the error with its
+  message, known secret values replaced, so its developer can debug it.
 
 Settings work live only when read at each use: `config.current`, a derived
 `current`, or Rust's `current()`. A copy kept in a module-level constant, or a

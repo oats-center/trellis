@@ -4,8 +4,9 @@
 //! The check fails with an error quoting the key, and its base64, when the
 //! key starts with `check-throws-`; refuses `region` with a reason quoting the
 //! candidate key and the key in effect when the region is `explicit`;
-//! fails with an error quoting the unchanged key, and its base64, when the
-//! region is `plain`; and refuses `region` with a reason longer than Auth
+//! fails with an error quoting the unchanged key, its base64, and the
+//! credential in `CONFIGURED_SECRETS_CREDENTIAL`, which the build doesn't
+//! declare, when the region is `plain`; and refuses `region` with a reason longer than Auth
 //! keeps when it is `long`. The client's builder fails with an error quoting
 //! the key, and its base64, when the key starts with `build-throws-`. Prints
 //! `READY` to stderr once its check and client are registered, then serves.
@@ -29,6 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?;
     let config = Provider::new(&mut service).config();
     let encoded = |key: &str| base64::engine::general_purpose::STANDARD.encode(key);
+    let credential = std::env::var("CONFIGURED_SECRETS_CREDENTIAL").unwrap_or_default();
     let in_effect = config.clone();
     config
         .check(move |candidate: &Config| {
@@ -53,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Nullable::Value(region) if region == "plain" => {
                     Err(std::io::Error::other(format!(
-                        "region plain is not served for {} ({})",
+                        "region plain is not served for {} ({}) with {credential}",
                         candidate.api_key,
                         encoded(&candidate.api_key)
                     )))?

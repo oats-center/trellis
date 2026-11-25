@@ -237,8 +237,8 @@ test("a derived value is rebuilt only for its own fields and disposed after its 
           status.state === "rejected" && status.revision === bad.revision,
       );
       assert.deepEqual(rejected.fields, ["apiKey"]);
-      // A builder of a secret is reported without its message.
-      assert.equal(rejected.reason, "building the value failed (Error)");
+      // A builder that throws is reported by fixed text.
+      assert.equal(rejected.reason, "building the value failed");
       assert.equal(client.current.key, "k1");
       assert.equal(service.config.current.apiKey, "k1");
       assert.deepEqual(disposed, []);

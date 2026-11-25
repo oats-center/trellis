@@ -58,20 +58,23 @@ const REDACT_MIN_LENGTH: usize = 4;
 
 /// Why a check or derive builder refused candidate settings.
 ///
-/// Any [`std::error::Error`] converts into one that refuses every field the
-/// candidate changes, so `?` works inside checks and builders. Checks and
-/// builders read every value, so when the build declares any secret field, a
-/// converted error is reported by a generic reason and the error's type,
-/// never its message; one made with [`Rejection::new`] or
-/// [`Rejection::changed`] keeps its reason. A reason reaches the status administrators see,
-/// so it should never include a secret value; every secret value in it is
-/// replaced with `[redacted]`.
+/// One made with [`Rejection::new`] or [`Rejection::changed`] keeps its
+/// reason, which reaches the status and health other users see, so it should
+/// never include a secret value; every secret value in it is replaced with
+/// `[redacted]`.
+///
+/// Any [`std::error::Error`] also converts into one that refuses every field
+/// the candidate changes, so `?` works inside checks and builders. Its
+/// message may carry a credential from anywhere the code read, so status and
+/// health get the fixed reason `the check failed` or `building the value
+/// failed`. Only the participant's own log and startup output show the
+/// error's message, with secret values replaced.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Rejection {
     fields: Option<Vec<String>>,
     reason: String,
-    /// The type of the error this was converted from, if it was.
-    converted: Option<&'static str>,
+    /// Whether this was converted from an error, whose message `reason` is.
+    converted: bool,
 }
 
 impl Rejection {
@@ -86,7 +89,7 @@ impl Rejection {
         Self {
             fields: Some(fields.into_iter().map(Into::into).collect()),
             reason: reason.into(),
-            converted: None,
+            converted: false,
         }
     }
 
@@ -96,7 +99,7 @@ impl Rejection {
         Self {
             fields: None,
             reason: reason.into(),
-            converted: None,
+            converted: false,
         }
     }
 
@@ -129,9 +132,17 @@ impl<E: std::error::Error> From<E> for Rejection {
         Self {
             fields: None,
             reason: error.to_string(),
-            converted: Some(std::any::type_name::<E>()),
+            converted: true,
         }
     }
+}
+
+/// One refusal of candidate settings: the declared fields, the reason status
+/// and health show, and an unexpected error's message for the local log.
+struct Refusal {
+    fields: Vec<String>,
+    reason: String,
+    error: Option<String>,
 }
 
 /// What became of the revision read last.
@@ -372,10 +383,10 @@ impl Live {
         changed: &[&'static str],
         checks: &[Check],
         derives: &[Arc<dyn Slot>],
-    ) -> Result<Vec<(Arc<dyn Slot>, Built)>, Vec<(Vec<String>, String)>> {
-        // A reason reaches status, health, the log, and the startup wait,
-        // whose readers may not see secrets, so every secret value in effect
-        // or in the candidate is replaced, longest first.
+    ) -> Result<Vec<(Arc<dyn Slot>, Built)>, Vec<Refusal>> {
+        // An explicit reason reaches status and health, whose readers may not
+        // see secrets, so every secret value in effect or in the candidate is
+        // replaced, longest first, there and in the local log.
         let current = Arc::clone(&self.accepted.borrow().values);
         let mut secrets = Vec::new();
         for field in self.fields.iter().filter(|field| field.secret) {
@@ -388,11 +399,16 @@ impl Live {
         secrets.retain(|text| text.chars().count() >= REDACT_MIN_LENGTH);
         secrets.sort_by(|left, right| right.len().cmp(&left.len()).then(left.cmp(right)));
         secrets.dedup();
-        // An error converted into a rejection may carry a secret in any form,
-        // and every check and builder reads every value, secrets included,
-        // whatever fields it names. So once the build declares a secret, a
-        // converted error is reported by a generic reason and its type.
-        let generic = self.fields.iter().any(|field| field.secret);
+        let redact = |text: String| {
+            secrets.iter().fold(text, |text, secret| {
+                text.replace(secret.as_str(), "[redacted]")
+            })
+        };
+        // A converted error's message is whatever the code that failed made
+        // it, and may carry a credential from anywhere it read, such as the
+        // environment or a file. So status and health get fixed text, and
+        // only the participant's own log, which its operator reads, gets the
+        // message, with known secret values replaced.
         let named = |rejection: Rejection, otherwise: &[&'static str], failed: &str| {
             let fields = match rejection.fields {
                 Some(fields) => fields
@@ -402,27 +418,19 @@ impl Live {
                     .collect(),
                 None => otherwise.iter().map(|name| (*name).to_owned()).collect(),
             };
-            let reason = match rejection.converted {
-                Some(kind) if generic => {
-                    // The type without module paths, which differ between
-                    // toolchains: `Error`, or `Box<dyn Error>`.
-                    let mut short = String::new();
-                    for (index, part) in kind.split("::").enumerate() {
-                        if index > 0 {
-                            let module = short
-                                .trim_end_matches(|c: char| c.is_alphanumeric() || c == '_')
-                                .len();
-                            short.truncate(module);
-                        }
-                        short.push_str(part);
-                    }
-                    format!("{failed} ({short})")
+            if rejection.converted {
+                Refusal {
+                    fields,
+                    reason: failed.to_owned(),
+                    error: Some(redact(rejection.reason)),
                 }
-                _ => secrets.iter().fold(rejection.reason, |reason, secret| {
-                    reason.replace(secret.as_str(), "[redacted]")
-                }),
-            };
-            (fields, reason)
+            } else {
+                Refusal {
+                    fields,
+                    reason: redact(rejection.reason),
+                    error: None,
+                }
+            }
         };
         let refused = checks
             .iter()
@@ -477,7 +485,8 @@ impl Live {
         let (checks, derives) = (registry.checks.clone(), registry.derives.clone());
         match self.run(&candidate, &changed, &checks, &derives).await {
             Err(refused) => {
-                self.settle(&mut registry, rejected(revision, refused));
+                let (outcome, errors) = rejected(revision, refused);
+                self.settle_with(&mut registry, outcome, &errors);
             }
             Ok(built) => {
                 registry.blocked = false;
@@ -505,16 +514,13 @@ impl Live {
 
     /// A new registration refused the values in effect: record it and return
     /// the acceptance count to wait past.
-    fn refuse_in_effect(
-        &self,
-        registry: &mut Registry,
-        refused: Vec<(Vec<String>, String)>,
-    ) -> u64 {
+    fn refuse_in_effect(&self, registry: &mut Registry, refused: Vec<Refusal>) -> u64 {
         registry.blocked = true;
         let revision = self.accepted.borrow().revision;
         // A newer revision already refused stays the one reported.
         if registry.latest == revision {
-            self.settle(registry, rejected(revision, refused));
+            let (outcome, errors) = rejected(revision, refused);
+            self.settle_with(registry, outcome, &errors);
         }
         *self.acceptances.borrow()
     }
@@ -535,6 +541,12 @@ impl Live {
     /// Record what became of a reading for the reporting task to tell Auth,
     /// and say why on a refusal.
     fn settle(&self, registry: &mut Registry, outcome: Outcome) {
+        self.settle_with(registry, outcome, &[]);
+    }
+
+    /// [`Self::settle`] for a refusal with the unexpected errors behind it,
+    /// which only the local log and output show.
+    fn settle_with(&self, registry: &mut Registry, outcome: Outcome, errors: &[String]) {
         if !outcome.rejected {
             self.acceptances.send_modify(|count| *count += 1);
         }
@@ -556,12 +568,17 @@ impl Live {
                 participant = self.participant,
                 fields = outcome.fields.join(", "),
                 reason = outcome.reason,
+                errors = (!errors.is_empty()).then(|| errors.join("; ")),
                 config_url = registry.config_url,
                 "Settings rejected"
             );
+            let thrown = errors
+                .iter()
+                .map(|error| format!("\n  {error}"))
+                .collect::<String>();
             print_with_link(
                 &format!(
-                    "{} rejected its settings: {detail}\n{next}",
+                    "{} rejected its settings: {detail}{thrown}\n{next}",
                     self.participant
                 ),
                 "Fix them",
@@ -693,7 +710,7 @@ impl<T: DeserializeOwned + Send + 'static> ConfigHandle<T> {
     /// check step of a revision that changes one of `fields`; a revision that
     /// changes only other fields keeps it. A builder that fails rejects that
     /// revision for `fields` and keeps the old value; an error converted into
-    /// a [`Rejection`] gives a generic reason when the build declares a secret.
+    /// a [`Rejection`] gives the fixed reason `building the value failed`.
     /// A replaced value is dropped once its replacement takes effect, when no
     /// caller holds it. Returns once a value is built, waiting as
     /// [`Self::check`] does while it can't be.
@@ -794,10 +811,17 @@ fn decode<T: DeserializeOwned>(values: &Map<String, Value>) -> Result<T, ServerE
 }
 
 /// An outcome refusing `revision` for every field `refused` names.
-fn rejected(revision: ConfigRevision, refused: Vec<(Vec<String>, String)>) -> Outcome {
+fn rejected(revision: ConfigRevision, refused: Vec<Refusal>) -> (Outcome, Vec<String>) {
     let mut fields = Vec::new();
     let mut reasons: Vec<String> = Vec::new();
-    for (names, reason) in refused {
+    let mut errors = Vec::new();
+    for Refusal {
+        fields: names,
+        reason,
+        error,
+    } in refused
+    {
+        errors.extend(error);
         for name in names {
             if !fields.contains(&name) {
                 fields.push(name);
@@ -807,12 +831,15 @@ fn rejected(revision: ConfigRevision, refused: Vec<(Vec<String>, String)>) -> Ou
             reasons.push(reason);
         }
     }
-    Outcome {
-        rejected: true,
-        revision,
-        fields,
-        reason: Some(reasons.join("; ").chars().take(REASON_LIMIT).collect()),
-    }
+    (
+        Outcome {
+            rejected: true,
+            revision,
+            fields,
+            reason: Some(reasons.join("; ").chars().take(REASON_LIMIT).collect()),
+        },
+        errors,
+    )
 }
 
 /// The live values and the task following their changes. Dropping it stops
@@ -1308,10 +1335,12 @@ mod tests {
         assert_eq!(derived, "debug", "woken before its derived value was built");
     }
 
-    /// A build that declares no secret has nothing a message could leak, so
-    /// an error a check converts with `?` is reported with its message.
+    /// A converted error's message is the failing code's text, which may
+    /// carry a credential the build doesn't declare, such as one read from
+    /// the environment. So even a build with no secret reports fixed text,
+    /// while an explicit rejection keeps its reason.
     #[tokio::test]
-    async fn a_build_without_secrets_reports_a_failing_checks_message() {
+    async fn a_converted_error_reports_fixed_text_and_an_explicit_reason_its_own() {
         let live = Live::new(
             FIELDS,
             "plain".to_owned(),
@@ -1327,20 +1356,28 @@ mod tests {
         config
             .check(|settings: &Settings| {
                 if settings.level == "debug" {
-                    Err(std::io::Error::other("level debug is not served"))?;
+                    Err(std::io::Error::other("token ghp_0123456789abcdef refused"))?;
+                }
+                if settings.level == "trace" {
+                    return Err(Rejection::new(["level"], "trace is not served"));
                 }
                 Ok(())
             })
             .await
             .unwrap();
-        live.take(&serde_json::json!({
-            "values": {"level": "debug", "port": 80},
-            "deploymentRevision": 2,
-        }))
-        .await;
-        let outcome = live.outcome.borrow().clone();
-        assert!(outcome.rejected);
-        assert_eq!(outcome.fields, ["level"]);
-        assert_eq!(outcome.reason.as_deref(), Some("level debug is not served"));
+        for (revision, level, reason) in [
+            (2, "debug", "the check failed"),
+            (3, "trace", "trace is not served"),
+        ] {
+            live.take(&serde_json::json!({
+                "values": {"level": level, "port": 80},
+                "deploymentRevision": revision,
+            }))
+            .await;
+            let outcome = live.outcome.borrow().clone();
+            assert!(outcome.rejected);
+            assert_eq!(outcome.fields, ["level"]);
+            assert_eq!(outcome.reason.as_deref(), Some(reason));
+        }
     }
 }

@@ -407,12 +407,13 @@ in a module-level constant keeps the values it was copied from.
 `await config.check((candidate, { reject, changed }) => ...)` checks every
 later revision before it takes effect: `reject(["awsKeyId", "awsSecret"],
 "set both or neither")` refuses named fields, a throw refuses every changed
-field with its message (a generic reason when the build declares a secret), and
+field with the fixed reason `the check failed` (the error goes only to the
+participant's own log), and
 the check may be async. `const stripe = await
 config.derive(["stripeSecretKey"], (c) => new Stripe(c.stripeSecretKey), {
 dispose: (old) => ... })` builds a value now and rebuilds it only when one of
 its fields changes; a builder that throws rejects those fields and keeps the
-old value (with a generic reason when the build declares a secret), and `dispose` gets the
+old value (with the fixed reason `building the value failed`), and `dispose` gets the
 replaced value after its replacement took
 effect, and the value in effect when the participant stops (before
 `service.stop()` returns, after any earlier disposal still running) or its

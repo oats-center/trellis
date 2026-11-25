@@ -52,11 +52,12 @@ export type ConfigCheckContext<TValues> = {
 
 /**
  * Validates candidate settings before they take effect. Call `reject` to
- * refuse fields; a throw refuses every changed field with the error's message,
- * or, when the build declares any secret field, with a generic reason and the
- * error's name, since a check reads every value. A reason reaches
- * the status administrators see, so it should never include a secret value;
- * every secret value in it is replaced with `[redacted]`.
+ * refuse fields with a reason: it reaches the status and health that other
+ * users see, so it should never include a secret value, and every secret
+ * value in it is replaced with `[redacted]`. A throw refuses every changed
+ * field with the fixed reason `the check failed`, since an error's name and
+ * message may carry a credential from anywhere; the participant's own log
+ * and startup output show the error, with secret values replaced.
  */
 export type ConfigCheck<TValues> = (
   candidate: TValues,
@@ -116,9 +117,9 @@ export interface ParticipantConfig<TValues> {
    * Build a value from settings, such as a client that holds a key. It is
    * built now from the values in effect, and rebuilt during the check step
    * of a revision that changes one of `fields`. A builder that throws
-   * rejects that revision for `fields` and keeps the old value; the error's
-   * message is the reason, or a generic one when the build declares any
-   * secret field.
+   * rejects that revision for `fields` with the fixed reason `building the
+   * value failed` and keeps the old value; only the participant's own log
+   * and output show the error, with secret values replaced.
    * `dispose` receives a replaced value after its replacement takes effect,
    * and the value in effect when the participant stops. Resolves once a value is
    * built, waiting as {@link check} does while it can't be; it rejects once
@@ -245,8 +246,12 @@ type DeriveSlot = {
   value: unknown;
 };
 
-/** One refusal of a candidate revision. */
-type Rejection = { fields: string[]; reason: string };
+/**
+ * One refusal of a candidate revision. `detail` is an unexpected failure's
+ * own error, with secret values replaced, for the participant's local log
+ * only.
+ */
+type Rejection = { fields: string[]; reason: string; detail?: string };
 
 /** Longest rejection reason the participant prints, logs, and reports. */
 const REASON_LIMIT = 1024;
@@ -464,9 +469,9 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
     const rejections: Rejection[] = [];
     const built = new Map<DeriveSlot, unknown>();
     const view = candidate as TValues;
-    // A reason reaches status, health, the log, and the startup wait, whose
-    // readers may not see secrets, so every secret value in effect or in the
-    // candidate is replaced, longest first.
+    // An explicit reason reaches status and health, whose readers may not see
+    // secrets, so every secret value in effect or in the candidate is
+    // replaced, longest first, there and in the local log.
     const secrets = [
       ...new Set(
         Object.entries(this.#fields)
@@ -483,11 +488,17 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
         (text, secret) => text.replaceAll(secret, "[redacted]"),
         reason,
       );
-    // An unexpected error's message may carry a secret in any form, and
-    // every check and builder reads every value, secrets included, whatever
-    // fields it names. So once the build declares a secret, a thrown error
-    // is reported by a generic reason and the error's name.
-    const generic = Object.values(this.#fields).some((field) => field.secret);
+    // A thrown error's name and message are whatever the callback's code
+    // made them, and may carry a credential from anywhere it reads, such as
+    // the environment or a file. So status and health get fixed text, and
+    // only the participant's own log, which its operator reads, gets the
+    // error, with known secret values replaced.
+    const unexpected = (error: unknown) =>
+      redact(
+        error instanceof Error
+          ? `${error.name}: ${error.message}`
+          : String(error),
+      );
     for (const check of checks) {
       const found: Rejection[] = [];
       try {
@@ -499,9 +510,8 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       } catch (error) {
         found.push({
           fields: [...changed],
-          reason: generic
-            ? `the check failed (${nameOf(error)})`
-            : redact(messageOf(error)),
+          reason: "the check failed",
+          detail: unexpected(error),
         });
       }
       rejections.push(...found);
@@ -515,9 +525,8 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       } catch (error) {
         rejections.push({
           fields: [...slot.fields],
-          reason: generic
-            ? `building the value failed (${nameOf(error)})`
-            : redact(messageOf(error)),
+          reason: "building the value failed",
+          detail: unexpected(error),
         });
       }
     }
@@ -539,7 +548,7 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
     this.#blocked = true;
     // A newer revision already refused stays the one reported.
     if (this.#latest === this.#revision)
-      this.#settle(rejected(this.#fields, this.#revision, rejections));
+      this.#settle(...rejected(this.#fields, this.#revision, rejections));
     return { accepted: this.#accepted.promise };
   }
 
@@ -580,7 +589,7 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
       return;
     }
     if (rejections.length > 0) {
-      this.#settle(rejected(this.#fields, next.revision, rejections));
+      this.#settle(...rejected(this.#fields, next.revision, rejections));
       return;
     }
     this.#current = candidate;
@@ -635,8 +644,12 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
     return disposing;
   }
 
-  /** Record what became of a reading, tell Auth, and say why on a refusal. */
-  #settle(outcome: ConfigOutcome): void {
+  /**
+   * Record what became of a reading, tell Auth, and say why on a refusal.
+   * `errors` are the unexpected failures behind it, which only the local log
+   * and output show.
+   */
+  #settle(outcome: ConfigOutcome, errors: readonly string[] = []): void {
     this.#outcome = outcome;
     for (const listener of this.#outcomeListeners) listener();
     const key = JSON.stringify(outcome);
@@ -653,14 +666,16 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
           revision: outcome.revision,
           fields: outcome.fields,
           reason: outcome.reason,
+          ...(errors.length > 0 ? { errors: [...errors] } : {}),
           configUrl: this.#configUrl,
         },
         "Settings rejected",
       );
+      const thrown = errors.map((error) => `\n  ${error}`).join("");
       console.error(
         this.#configUrl === undefined
-          ? `\n${this.#participantId} rejected its settings: ${detail}\n${next}`
-          : `\n${this.#participantId} rejected its settings: ${detail}\n${next}\nFix them at ${this.#configUrl}\nor scan:\n${renderUnicodeCompact(this.#configUrl)}`,
+          ? `\n${this.#participantId} rejected its settings: ${detail}${thrown}\n${next}`
+          : `\n${this.#participantId} rejected its settings: ${detail}${thrown}\n${next}\nFix them at ${this.#configUrl}\nor scan:\n${renderUnicodeCompact(this.#configUrl)}`,
       );
     }
     this.#send(outcome);
@@ -884,12 +899,15 @@ export class ConfigHandle<TValues> implements ParticipantConfig<TValues> {
   }
 }
 
-/** An outcome refusing `revision` for every field `rejections` name. */
+/**
+ * An outcome refusing `revision` for every field `rejections` name, and the
+ * unexpected failures behind it for the local log.
+ */
 function rejected(
   fields: ConfigFields,
   revision: ConfigRevision,
   rejections: readonly Rejection[],
-): ConfigOutcome {
+): [ConfigOutcome, string[]] {
   const names = [
     ...new Set(
       rejections.flatMap((rejection) =>
@@ -900,13 +918,16 @@ function rejected(
   const reason = [...new Set(rejections.map(({ reason }) => reason))].join(
     "; ",
   );
-  return {
-    state: "rejected",
-    revision,
-    fields: names,
-    reason:
-      reason.length > REASON_LIMIT ? reason.slice(0, REASON_LIMIT) : reason,
-  };
+  return [
+    {
+      state: "rejected",
+      revision,
+      fields: names,
+      reason:
+        reason.length > REASON_LIMIT ? reason.slice(0, REASON_LIMIT) : reason,
+    },
+    rejections.flatMap(({ detail }) => (detail === undefined ? [] : [detail])),
+  ];
 }
 
 /** `awsKeyId, awsSecret: set both or neither`. */
@@ -915,15 +936,6 @@ function describe(outcome: ConfigOutcome): string {
   return outcome.fields.length === 0
     ? reason
     : `${outcome.fields.join(", ")}: ${reason}`;
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** What was thrown, without its message: `TypeError`, or `string`. */
-function nameOf(error: unknown): string {
-  return error instanceof Error ? error.name : typeof error;
 }
 
 /** Every string and number in a decoded value, as text. */

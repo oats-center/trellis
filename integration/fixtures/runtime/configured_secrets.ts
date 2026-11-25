@@ -4,9 +4,10 @@
 // The check throws an error quoting the key, and its base64, when the key
 // starts with `check-throws-`; refuses `region` with a reason quoting the
 // candidate key and the key in effect when the region is `explicit`; throws
-// an error quoting the unchanged key, and its base64, when the region is
-// `plain`; and refuses `region` with a reason longer than Auth keeps when the
-// region is `long`.
+// an error quoting the unchanged key, its base64, and the credential in
+// `CONFIGURED_SECRETS_CREDENTIAL`, which the build doesn't declare, with the
+// credential in the error's name too, when the region is `plain`; and refuses
+// `region` with a reason longer than Auth keeps when the region is `long`.
 // The client's builder throws an error quoting the key, and its base64, when
 // the key starts with `build-throws-`. Prints `READY` to stderr once its check
 // and client are registered, then serves.
@@ -24,6 +25,7 @@ const service = await TrellisService.connect({
   participant: participants.ConfiguredService.participant,
 }).orThrow();
 const encoded = (key: string) => Buffer.from(key).toString("base64");
+const credential = process.env.CONFIGURED_SECRETS_CREDENTIAL ?? "";
 await service.config.check((candidate, { reject }) => {
   if (candidate.apiKey.startsWith("check-throws-"))
     throw new Error(
@@ -34,10 +36,13 @@ await service.config.check((candidate, { reject }) => {
       ["region"],
       `region conflicts with key ${candidate.apiKey}, was ${service.config.current.apiKey}`,
     );
-  if (candidate.region === "plain")
-    throw new Error(
-      `region plain is not served for ${candidate.apiKey} (${encoded(candidate.apiKey)})`,
+  if (candidate.region === "plain") {
+    const error = new Error(
+      `region plain is not served for ${candidate.apiKey} (${encoded(candidate.apiKey)}) with ${credential}`,
     );
+    error.name = `UpstreamError ${credential}`;
+    throw error;
+  }
   if (candidate.region === "long") reject(["region"], "é".repeat(1000));
 });
 await service.config.derive(["apiKey"], (candidate) => {

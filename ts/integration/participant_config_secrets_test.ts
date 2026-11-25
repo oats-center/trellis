@@ -1,14 +1,15 @@
 /**
- * Live acceptance that a secret setting's value never leaves a TypeScript or
- * Rust service through the reasons its checks and derive builders give.
- * Checks and builders read every value, so in a build that declares a secret,
- * any check or builder that fails unexpectedly is reported by a generic reason
- * and the error's type, since its message may carry a secret in any form
- * (here, base64), even when the secret didn't change. An explicit rejection
- * keeps its text with every secret value in it replaced, and a build that
- * declares no secret keeps an unexpected failure's message. None of the
- * secret values appears in `Config.Get`, the instance's health, or anything
- * the service printed or logged, the startup wait included.
+ * Live acceptance that what a TypeScript or Rust service's checks and derive
+ * builders give as a reason reaches other users only as the service meant it.
+ * A check or builder that fails unexpectedly (a throw, or an error converted
+ * with `?`) is reported to `Config.Get` and the instance's health by fixed
+ * text, whatever the build declares: the error's name and message are the
+ * failing code's own text and may carry any credential it read, here a
+ * secret setting's value, its base64, and a token from the environment the
+ * build doesn't declare. Only the service's own log and output, which its
+ * operator reads, show the error, with each secret setting's value replaced.
+ * An explicit rejection keeps its text, with every secret value in it
+ * replaced. No secret setting's value appears anywhere.
  */
 
 import { codecs } from "@oatscenter/trellis/generated";
@@ -30,12 +31,12 @@ const participant = participants.ConfiguredService.participant;
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
 
 /**
- * Run the fixture `start` launches through every way it fails, and check
- * what each surface shows.
+ * Run the fixture `start` launches, with `credential` in its environment,
+ * through every way it fails, and check what each surface shows.
  */
 async function exercise(
   runtime: Runtime,
-  start: (seed: string) => TrackedProcess,
+  start: (seed: string, credential: string) => TrackedProcess,
 ): Promise<void> {
   const keys = {
     starting: `check-throws-${ulid()}`,
@@ -45,12 +46,18 @@ async function exercise(
     built: `build-throws-${ulid()}`,
     fixed: `fixed-${ulid()}`,
   };
-  const secrets = Object.values(keys).flatMap((key) => [
-    key,
-    Buffer.from(key).toString("base64"),
-  ]);
-  const leaked = (text: string) =>
-    secrets.filter((secret) => text.includes(secret));
+  // A credential-looking token the build doesn't declare, so nothing knows
+  // to replace it.
+  const credential = `ghp_${ulid()}`;
+  const secrets = Object.values(keys);
+  const errorTexts = [
+    credential,
+    ...secrets.map((key) => Buffer.from(key).toString("base64")),
+  ];
+  const found = (text: string, candidates: readonly string[]) =>
+    candidates.filter((candidate) => text.includes(candidate));
+  // What other users read never shows a secret or any text of an error.
+  const shared = [...secrets, ...errorTexts];
   const text = (value: unknown) =>
     JSON.stringify(value, (_key, item: unknown) =>
       typeof item === "bigint" ? item.toString() : item,
@@ -86,7 +93,7 @@ async function exercise(
   const status = (state: string, revision: number | undefined) =>
     runtime.waitFor(async () => {
       const shown = await read();
-      assert.deepEqual(leaked(text(shown)), []);
+      assert.deepEqual(found(text(shown), shared), []);
       const settings = shown.instances.find(
         (instance) => instance.instanceId === key.instanceId,
       )?.settings;
@@ -106,7 +113,7 @@ async function exercise(
       const sample = instances.find(
         (entry) => entry.instanceId === key.instanceId,
       )?.latestSample;
-      assert.deepEqual(leaked(text(sample ?? {})), []);
+      assert.deepEqual(found(text(sample ?? {}), shared), []);
       const check = sample?.checks.find((entry) => entry.name === "settings");
       return check && check.summary === summary ? check : undefined;
     });
@@ -127,29 +134,37 @@ async function exercise(
     return rejected;
   };
 
-  const child = start(key.seed);
+  const child = start(key.seed, credential);
   let output = "";
   child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
   child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
   try {
     // The check refuses the starting key at registration and the service
-    // waits, saying why.
+    // waits, saying why, and printing the error for its operator.
     const starting = await status("rejected", (await read()).revision);
     assert.deepEqual(starting.fields, []);
-    assert.equal(starting.reason, `the check failed (Error)`);
+    assert.equal(starting.reason, "the check failed");
     await runtime.waitFor(() =>
-      output.includes(`rejected its settings: the check failed (Error)`),
+      output.includes("rejected its settings: the check failed"),
     );
+    await runtime.waitFor(() => output.includes("the endpoint refused"));
     const good = await set({ secrets: { apiKey: keys.good } });
     await runtime.waitFor(() => output.includes("READY"));
     await status("applied", good.revision);
     await health(undefined);
 
     // A check that fails on a plain field's change, quoting the key it
-    // reads but nobody changed, gives the generic reason too.
+    // reads but nobody changed and a credential from its environment, in
+    // the error's message and, in TypeScript, its name: status and health
+    // show the fixed reason, and the service's own output the error, with
+    // the key replaced.
     const plain = await refused({ values: { region: "plain" } });
     assert.deepEqual(plain.fields, ["region"]);
-    assert.equal(plain.reason, `the check failed (Error)`);
+    assert.equal(plain.reason, "the check failed");
+    await runtime.waitFor(() =>
+      output.includes(`region plain is not served for [redacted]`),
+    );
+    assert.ok(output.includes(credential), output);
 
     // An explicit reason keeps its text, with the candidate key and the
     // key in effect replaced.
@@ -173,23 +188,25 @@ async function exercise(
     assert.equal(cut.reason, `${"é".repeat(510)}…`);
 
     // A check that fails while the key changes, and a builder of the key
-    // that fails, give a generic reason.
+    // that fails, give fixed reasons too.
     const checked = await refused({
       values: { region: "east" },
       secrets: { apiKey: keys.checked },
     });
     assert.deepEqual(checked.fields, ["apiKey", "region"]);
-    assert.equal(checked.reason, `the check failed (Error)`);
+    assert.equal(checked.reason, "the check failed");
     const built = await refused({ secrets: { apiKey: keys.built } });
     assert.deepEqual(built.fields, ["apiKey"]);
-    assert.equal(built.reason, `building the value failed (Error)`);
+    assert.equal(built.reason, "building the value failed");
+    await runtime.waitFor(() =>
+      output.includes("cannot sign in with [redacted]"),
+    );
 
     const fixed = await set({ secrets: { apiKey: keys.fixed } });
     await status("applied", fixed.revision);
     await health(undefined);
-    // Each rejection was logged and printed, with no secret in any of it.
-    assert.ok(output.includes("[redacted]"), output);
-    assert.deepEqual(leaked(output), []);
+    // No secret setting's value was logged or printed.
+    assert.deepEqual(found(output, secrets), []);
   } catch (error) {
     throw new Error(`service output:\n${output.slice(-4000)}`, {
       cause: error,
@@ -200,7 +217,7 @@ async function exercise(
   }
 }
 
-test("a service whose build declares no secret reports a failing check's message", async () => {
+test("a service whose build declares no secret reports a throw by fixed text", async () => {
   await withTrellisRuntime(async (runtime) => {
     const contract = participants.ConfiguredGrowthService.participant;
     const key = await runtime.registerService({
@@ -215,8 +232,11 @@ test("a service whose build declares no secret reports a failing check's message
     }).orThrow();
     try {
       await service.config.check((candidate) => {
-        if (candidate.level === "debug")
-          throw new Error("level debug is not served");
+        if (candidate.level === "debug") {
+          const error = new Error("level debug is not served");
+          error.name = "LevelError";
+          throw error;
+        }
       });
       const { revision } = await runtime.callAdminRpc("authConfigSet", {
         target,
@@ -233,16 +253,16 @@ test("a service whose build declares no secret reports a failing check's message
           : undefined;
       });
       assert.deepEqual(rejected.fields, ["level"]);
-      assert.equal(rejected.reason, "level debug is not served");
+      assert.equal(rejected.reason, "the check failed");
     } finally {
       await service.stop();
     }
   });
 });
 
-test("a TypeScript service's rejection reasons never show a secret value", async () => {
+test("a TypeScript service's rejection reasons show only what it meant", async () => {
   await withTrellisRuntime(async (runtime) => {
-    await exercise(runtime, (seed) =>
+    await exercise(runtime, (seed, credential) =>
       spawnTracked(
         execPath,
         [
@@ -259,6 +279,7 @@ test("a TypeScript service's rejection reasons never show a secret value", async
           env: {
             ...process.env,
             NODE_EXTRA_CA_CERTS: runtime.caCertificatePath,
+            CONFIGURED_SECRETS_CREDENTIAL: credential,
           },
         },
       ),
@@ -266,10 +287,10 @@ test("a TypeScript service's rejection reasons never show a secret value", async
   });
 });
 
-test("a Rust service's rejection reasons never show a secret value", async () => {
+test("a Rust service's rejection reasons show only what it meant", async () => {
   await withTrellisRuntime(async (runtime) => {
     const argv = rustFixtureArgv("configured_secrets");
-    await exercise(runtime, (seed) =>
+    await exercise(runtime, (seed, credential) =>
       spawnTracked(argv[0]!, argv.slice(1), {
         env: {
           ...process.env,
@@ -277,6 +298,7 @@ test("a Rust service's rejection reasons never show a secret value", async () =>
           TRELLIS_URL: runtime.trellisUrl,
           TRELLIS_CA_CERTIFICATE: runtime.caCertificatePath,
           TRELLIS_IDENTITY_SEED: seed,
+          CONFIGURED_SECRETS_CREDENTIAL: credential,
         },
       }),
     );

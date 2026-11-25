@@ -1523,15 +1523,15 @@ shows it per instance as `settings` (`applied`, `rejected` with `fields`,
 `overrideRevision`, the instance revision it still runs when rolling the
 instance back to it restores refused values it had overridden, or `pending`
 while it hasn't read the newest revision with the build installed now, such
-as when it is stopped or an upgrade was installed since). That reason also reaches the CLI, the Console, the `settings`
-health check, the participant's log and its startup output, so it must never
-include a secret value: the SDKs replace every secret field's value (four
-characters or longer, candidate or in effect) with `[redacted]`, and an
+as when it is stopped or an upgrade was installed since). That reason also reaches the CLI, the Console and the `settings`
+health check, which other users read. An explicit rejection keeps its reason
+with every secret field's value (four characters or longer, candidate or in
+effect) replaced by `[redacted]`, so it must never include a secret value. An
 unexpected error (a throw, or a Rust error converted through `?`) from any
-check or builder of a build that declares a secret field is reported as `the
-check failed (<error type>)` or `building the value failed (<error type>)`
-without its message, which is not logged either, since checks and builders
-read every value; explicit rejections keep their redacted reason. Auth keeps a reason's first KiB,
+check or builder is reported as `the check failed` or `building the value
+failed`, with no type or message, whatever the build declares, since its text
+can carry any credential the code read; only the participant's own log and
+startup output show the error, with secret values replaced. Auth keeps a reason's first KiB,
 marking a cut with `…`. The revision an instance starts with is reported as `applied`
 only once startup ends, when a service first serves (after `wait()` or
 `run()` begins) or a device first reads its settings, so a starting value a

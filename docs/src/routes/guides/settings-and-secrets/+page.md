@@ -283,7 +283,8 @@ await stripe.current.charges.create(charge);
 
 A check calls `reject(fields, reason)` for each problem it finds and may be
 async. A check that throws rejects every field the candidate changes, with
-the error's message unless the build declares a secret (see below).
+the fixed reason `the check failed`; the error itself goes only to the
+service's own log (see below).
 `derive(fields, build, { dispose })` builds its first value from the settings
 in effect. After that it rebuilds only during the check step of a revision
 that changes one of `fields`; a revision that changes other fields keeps the
@@ -318,8 +319,8 @@ stripe.current().charge(&order).await?; // Arc<Stripe>, read at each use
 
 `Rejection::new(fields, reason)` names fields as the generated struct does
 (`webhook_url`) or as declared (`webhookUrl`). Any other error, through `?`,
-rejects every changed field with its message, unless the build declares a
-secret.
+rejects every changed field with the fixed reason `the check failed`, and
+its message goes only to the service's own log.
 `derive_async` takes a builder that awaits, such as one that opens a
 connection. A replaced derived value is dropped once its replacement took
 effect and no caller holds it.
@@ -330,24 +331,24 @@ effect and no caller holds it.
 A rejection's reason is shown to more people than the secrets are. It is
 stored in the instance's settings status, which `Config.Get`,
 `trellis svc <ID> config`, `trellis svc <ID> instances` and the Console show,
-and it appears in the `settings` health check, the service's log and the
-message it prints while it waits at startup. A reason should never include a
-secret value. The SDKs enforce that in two ways:
+and it appears in the `settings` health check, which other users read. The
+service's own log and the message it prints while it waits at startup are
+the operator's. The SDKs keep the two apart:
 
-- Every occurrence of a secret field's value, in the candidate or in effect,
-  is replaced with `[redacted]` in every reason, including the ones you pass to
-  `reject` or `Rejection::new`. Values shorter than four characters are left
-  alone, since replacing them would blank out ordinary words.
+- A reason you write (`reject` in TypeScript, `Rejection::new` or
+  `Rejection::changed` in Rust) is kept, with every occurrence of a secret
+  field's value, in the candidate or in effect, replaced with `[redacted]`.
+  Values shorter than four characters are left alone, since replacing them
+  would blank out ordinary words. It should never include a secret value.
 - An error you didn't write as a rejection (a throw in TypeScript, an error
-  converted through `?` in Rust) may quote a secret in a form redaction can't
-  spot, such as base64. A check or builder receives every value, secrets
-  included, whatever fields it names or the revision changes, so which fields
-  it involves can't tell whether its message quotes one. When the build
-  declares any secret field, every such error's message is dropped: a check
-  reports `the check failed` and a builder `building the value failed`, each
-  followed by the error's type, such as `the check failed (TypeError)`. The
-  message isn't logged either. To give a specific reason, reject explicitly.
-  A build that declares no secret keeps the error's message.
+  converted through `?` in Rust) gets fixed text in the status and health
+  check, whatever the build declares: `the check failed` for a check and
+  `building the value failed` for a builder, with no error type or message.
+  The error's name and message are your code's own text and can carry a
+  credential from anywhere it read, such as an environment variable or a
+  file, in a form redaction can't spot. Only the service's own log and
+  startup output show the error, with secret field values replaced, so you
+  can debug it. To give other users a specific reason, reject explicitly.
 
 Auth keeps the first KiB of a reason and marks a cut with `…`.
 

@@ -346,7 +346,7 @@ async fn refused_settings_show_in_the_cli_and_one_set_carries_several_secrets() 
     assert_eq!(builds.load(Ordering::SeqCst), 2);
 
     // A builder that fails rejects its fields and keeps the old client. Its
-    // error quotes the key, so the CLI shows a generic reason instead.
+    // error quotes the key, so the CLI shows fixed text instead.
     let bad = format!("bad-{}", ulid::Ulid::generate());
     cli.run(&[
         "svc",
@@ -361,14 +361,14 @@ async fn refused_settings_show_in_the_cli_and_one_set_carries_several_secrets() 
         .await;
     assert_eq!(refused["revision"], 6);
     assert_eq!(refused["fields"], json!(["apiKey", "signingKey"]));
-    assert_eq!(refused["reason"], "building the value failed (Error)");
+    assert_eq!(refused["reason"], "building the value failed");
     for args in [
         ["svc", &deployment, "config"],
         ["svc", &deployment, "instances"],
     ] {
         let shown = cli.text(&args).await;
         assert!(
-            shown.contains("rejected r6: apiKey, signingKey: building the value failed (Error)"),
+            shown.contains("rejected r6: apiKey, signingKey: building the value failed"),
             "{shown}"
         );
         assert!(!shown.contains(&bad), "{shown}");
