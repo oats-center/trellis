@@ -22,6 +22,11 @@ export async function read() {
   return (await client.state.savedResource.get()).orThrow() ?? null;
 }
 
+/** Keep `value` as the app's State, which has none yet. */
+export async function write(value: string) {
+  (await client.state.savedResource.create({ value })).orThrow();
+}
+
 /** Revoke the app's sign-in and end the Portal login, returning here. */
 export async function logout() {
   await client.logout({

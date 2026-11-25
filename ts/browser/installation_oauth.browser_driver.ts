@@ -117,8 +117,17 @@ try {
     shown = page;
     page.setDefaultTimeout(30_000);
     page.on("pageerror", (error) => console.error(error));
+    page.on("framenavigated", (frame) => {
+      if (
+        frame === page.mainFrame() &&
+        new URL(frame.url()).pathname === "/consent"
+      )
+        consentPages.set(page, (consentPages.get(page) ?? 0) + 1);
+    });
     return { context, page, grants, revocations };
   }
+  /** How many times each page was shown the Portal's consent page. */
+  const consentPages = new WeakMap<Page, number>();
 
   /** Signs `who` in on the Portal page in front of it, through Dex or with a password. */
   async function portalSignIn(page: Page, who: Person) {
@@ -157,10 +166,12 @@ try {
 
   /**
    * Signs `who` in to the browser app on `trellis` with the authorization
-   * code flow, from a page that is on the app and not signed in, and reads
-   * the State only the role lets it read.
+   * code flow, from a page that is on the app and not signed in. Returns the
+   * State only the role lets it read, and whether the Portal asked for
+   * consent.
    */
   async function appSignIn(page: Page, trellis: string, who: Person) {
+    const before = consentPages.get(page) ?? 0;
     if (new URL(page.url()).origin !== APP) await page.goto(APP);
     await call(page, "connect", trellis, setup.browserClient).catch(navigated);
     await portalSignIn(page, who);
@@ -169,14 +180,30 @@ try {
       (url) => url.origin === APP && url.pathname === "/callback",
     );
     await call(page, "connect", trellis, setup.browserClient);
-    assert.equal(await call(page, "read"), null);
+    return {
+      state: await call(page, "read"),
+      asked: (consentPages.get(page) ?? 0) > before,
+    };
   }
+  type Kept = { value: { value: string }; createdAt: string };
+  /** The State each Dex person kept through the app on the source. */
+  const kept = new Map<string, Kept>();
+  /** Whether `state` is what `email` kept, with the time it was made. */
+  const keeps = (state: unknown, email: string) => {
+    const { value, createdAt } = state as Kept;
+    assert.deepEqual({ value, createdAt }, kept.get(email));
+  };
 
   // The source: both Dex people sign in through the app, with the provider
-  // and roles the Rust test set up.
+  // and roles the Rust test set up, consent, and keep State.
   for (const email of [MOVER, TWIN]) {
     const { context, page } = await profile();
-    await appSignIn(page, SOURCE, { dex: email });
+    const signedIn = await appSignIn(page, SOURCE, { dex: email });
+    assert.deepEqual(signedIn, { state: null, asked: true });
+    await call(page, "write", `kept by ${email}`);
+    const { value, createdAt } = (await call(page, "read")) as Kept;
+    assert.deepEqual(value, { value: `kept by ${email}` });
+    kept.set(email, { value, createdAt });
     await context.close();
   }
   // The target has its own copy of the provider before the move, and the
@@ -195,9 +222,13 @@ try {
   await ask("target-twin-signed-in");
 
   // The target, after the move. The moved person signs in to the moved app
-  // through the moved provider: authorization code with PKCE.
+  // through the moved provider: authorization code with PKCE. The consent
+  // they gave moved, so the Portal does not ask again, and the app finds the
+  // State they kept.
   const mover = await profile();
-  await appSignIn(mover.page, TARGET, { dex: MOVER });
+  const moved = await appSignIn(mover.page, TARGET, { dex: MOVER });
+  assert.equal(moved.asked, false);
+  keeps(moved.state, MOVER);
   assert.deepEqual(mover.grants, ["authorization_code"]);
   await ask("target-app-signed-in", { who: "mover" });
 
@@ -205,16 +236,17 @@ try {
   await mover.page.reload();
   await call(mover.page, "connect", TARGET, setup.browserClient);
   assert.deepEqual(mover.grants, ["authorization_code", "refresh_token"]);
-  assert.equal(await call(mover.page, "read"), null);
+  keeps(await call(mover.page, "read"), MOVER);
 
   // Signing out revokes the refresh family and ends the Portal login, so
-  // connecting again needs a new sign-in; the moved local person signs in.
+  // connecting again needs a new sign-in; the moved local person signs in,
+  // and has no State of their own.
   await call(mover.page, "logout").catch(navigated);
   await mover.page.waitForURL(
     (url) => url.origin === APP && url.pathname === "/",
   );
   assert.deepEqual(mover.revocations, [200]);
-  await appSignIn(mover.page, TARGET, setup.local);
+  assert.equal((await appSignIn(mover.page, TARGET, setup.local)).state, null);
   assert.deepEqual(mover.grants, [
     "authorization_code",
     "refresh_token",
@@ -223,10 +255,13 @@ try {
   await ask("target-app-signed-in", { who: "local" });
   await mover.context.close();
 
-  // The twin, whom the target already had, signs in to the moved app with
-  // the role the source gave them.
+  // The twin, whom the target already had under another ID, signs in to
+  // the moved app with the role, the consent and the State the source gave
+  // them.
   const twin = await profile();
-  await appSignIn(twin.page, TARGET, { dex: TWIN });
+  const matched = await appSignIn(twin.page, TARGET, { dex: TWIN });
+  assert.equal(matched.asked, false);
+  keeps(matched.state, TWIN);
   await ask("target-app-signed-in", { who: "twin" });
   await twin.context.close();
 

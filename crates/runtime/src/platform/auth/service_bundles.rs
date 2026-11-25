@@ -1328,7 +1328,6 @@ where
                     }
                 }
             }
-            "state" => left_behind.push(format!("the values of state {name}")),
             _ => {}
         }
     }

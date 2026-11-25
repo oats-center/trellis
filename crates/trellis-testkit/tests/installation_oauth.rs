@@ -7,7 +7,8 @@
 //! moved native app signs people in with the device code flow, through Dex
 //! and with a password, and renews with the refresh token. A person the
 //! target already had under another ID, by the same OIDC sign-in, gets the
-//! source's role.
+//! source's role. The moved people and that person find the browser app's
+//! State they kept on the source, and are not asked to consent again.
 //!
 //! The browser half lives in `ts/browser/installation_oauth.browser_driver.ts`,
 //! which runs Dex and Chromium; this test owns both installations and moves
