@@ -685,6 +685,7 @@ fn roles_marked_for_new_users_are_given_to_users_created_afterwards() {
     put_role(&f.store, &mutation(&f.admin, &other), &other, NOW).unwrap();
     let create = |username: &str, now| {
         let input = AuthUserCreateRequest {
+            user_id: None,
             given_name: None,
             family_name: None,
             email: None,

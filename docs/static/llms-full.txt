@@ -1224,9 +1224,13 @@ RPCs acts on the caller's own account.
   as in `trellis roles assign <role> --user <user>`. Input shaped like an
   ID is looked up only as an ID; an unknown ID is refused, never matched as
   a name. The same holds for `trellis svc|dev <deployment>`: a deployment
-  ID never matches another deployment's title. To
-  migrate users keyed by ID from another system, create each with its
-  provider `sub` in `identities` and re-key to the returned `principalId`.
+  ID never matches another deployment's title. `Users.Create` also takes an
+  optional `userId` (CLI `--id <user id>`): the account gets that Trellis
+  user ID, so users moved from another Trellis installation keep the IDs
+  services stored. An ID any user, service or device has or had fails with
+  `already_in_use`. To migrate users keyed by ID from another system, create
+  each with its provider `sub` in `identities` and re-key to the returned
+  `principalId`.
 
 A handler sees its own caller's profile without any directory capability: a
 verified user caller carries `user` with `displayName`, optional `givenName`,

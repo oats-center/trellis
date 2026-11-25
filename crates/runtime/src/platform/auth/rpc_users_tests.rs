@@ -85,6 +85,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         .map(|initialized| initialized.principal_id)
         .unwrap();
     let input = AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,
@@ -388,6 +389,7 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
         .map(|initialized| initialized.principal_id)
         .unwrap();
     let input = AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,
@@ -403,6 +405,7 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
     assert_eq!(account.username, "reserved");
     assert!(!account.has_local_password);
     let duplicate = AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,
@@ -749,6 +752,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
     .provider_id
     .to_string();
     let account = AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,
@@ -873,6 +877,7 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
     let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[21; 32]).unwrap();
     let session = reset_session(&store, &admin, &admin, "admin", "administrator password");
     let account = AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,
@@ -1012,6 +1017,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     let mut principals = vec![];
     for username in ["operator", "alice"] {
         let input = AuthUserCreateRequest {
+            user_id: None,
             given_name: None,
             family_name: None,
             email: None,
@@ -1167,6 +1173,7 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
         Arc::new(crate::platform::auth::OAuthStorage::new(store.clone(), &[23; 32]).unwrap());
     let session = reset_session(&store, &admin, &admin, "admin", "administrator password");
     let account = AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,
@@ -1260,6 +1267,7 @@ fn the_sign_in_settings_minimum_governs_created_changed_and_signed_up_passwords(
     // 19 and 20 bytes, either side of the minimum set below.
     let (short, exact) = ("nineteen characters", "twenty characters ok");
     let account = |username: &str, password: &str| AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,
@@ -1362,6 +1370,7 @@ fn the_password_minimum_counts_characters_not_bytes() {
     let enough = "é".repeat(8);
     let short = "🔑".repeat(7);
     let account = |username: &str, password: &str| AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,
@@ -1520,6 +1529,7 @@ fn account_managers_find_reset_disable_and_delete_any_account_but_the_default_ad
     let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[23; 32]).unwrap();
     let create = |actor: &str, username: &str| {
         let input = AuthUserCreateRequest {
+            user_id: None,
             given_name: None,
             family_name: None,
             email: None,
@@ -1795,6 +1805,7 @@ fn linking_and_unlinking_another_persons_sign_ins_needs_accounts_manage() {
     let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[29; 32]).unwrap();
     let create = |username: &str| {
         let input = AuthUserCreateRequest {
+            user_id: None,
             given_name: None,
             family_name: None,
             email: None,
@@ -1902,6 +1913,7 @@ fn a_creation_recorded_before_linked_sign_ins_replays_its_result() {
         .map(|initialized| initialized.principal_id)
         .unwrap();
     let input = AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,
@@ -1954,6 +1966,7 @@ fn a_creation_recorded_before_linked_sign_ins_replays_its_result() {
         original
     );
     let linked = AuthUserCreateRequest {
+        user_id: None,
         identities: Some(vec![AuthUserFindIdentity {
             provider_id: id().parse().unwrap(),
             subject: "auth0|earlier".into(),

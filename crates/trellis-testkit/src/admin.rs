@@ -374,6 +374,7 @@ impl AdminSession {
         let response = self
             .auth
             .users_create(&AuthUserCreateRequest {
+                user_id: None,
                 given_name: None,
                 family_name: None,
                 email: None,

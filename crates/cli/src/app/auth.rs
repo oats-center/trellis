@@ -2091,6 +2091,18 @@ async fn users_identity_command(
 }
 
 async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> miette::Result<()> {
+    let user_id = args
+        .id
+        .as_deref()
+        .map(|id| {
+            trellis_protocol::model::Ulid::parse(id.trim()).map_err(|_| {
+                miette::miette!(
+                    "--id {id:?} is not a Trellis user ID: user IDs are 26-character \
+                    ULIDs in capital letters, as `trellis users show` prints them"
+                )
+            })
+        })
+        .transpose()?;
     // An OIDC sign-in is optional, but naming either half asks for the other.
     let linking = args.identity.provider.is_some() || args.identity.subject.is_some();
     let mut form = crate::prompt::Form::new(
@@ -2133,6 +2145,9 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
     }
     let name = trimmed_optional(&Some(name)).unwrap_or_else(|| username.clone());
     let mut summary = vec![("Name", name.clone())];
+    if let Some(user_id) = &user_id {
+        summary.push(("User ID", user_id.to_string()));
+    }
     if let Some((provider, subject)) = &identity {
         summary.push(("Provider", provider.clone()));
         summary.push(("Subject", subject.clone()));
@@ -2146,6 +2161,7 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
         .trellis_auth_v1();
     let user = auth
         .users_create(&auth_types::AuthUserCreateRequest {
+            user_id: user_id.map(wire).transpose()?,
             given_name: None,
             family_name: None,
             email: trimmed_optional(&args.email).map(wire).transpose()?,

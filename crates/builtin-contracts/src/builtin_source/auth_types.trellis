@@ -775,6 +775,11 @@ model AuthUserFindMatch { user: AuthUser; identities: list<AuthUserIdentity>; }
 model AuthUserGetResponse { user: AuthUser; }
 type AuthUsersListResponse = CursorPage<AuthUser>;
 model AuthUserCreateRequest {
+  /// The new user's Trellis user ID. Leave it out for a new one. Give one to
+  /// keep the ID a user has in another installation, so that services that
+  /// stored it need no change. An ID that any user, service or device has or
+  /// had here fails the creation with `already_in_use`.
+  userId?: ulid;
   username: AuthName;
   displayName: AuthName;
   password?: AuthPassword;

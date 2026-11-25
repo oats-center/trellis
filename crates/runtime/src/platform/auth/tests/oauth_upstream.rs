@@ -363,6 +363,7 @@ staticPasswords:
     .await
     .unwrap();
     let account = trellis_runtime_apis::__types::trellis::AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,
@@ -385,6 +386,7 @@ staticPasswords:
     .to_string();
     // An existing profile with the OP's email must never become the login target.
     let shadow = trellis_runtime_apis::__types::trellis::AuthUserCreateRequest {
+        user_id: None,
         username: "email-shadow".to_string().into(),
         display_name: "Different existing person".to_string().into(),
         email: Some("admin@example.com".into()),

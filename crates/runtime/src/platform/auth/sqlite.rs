@@ -78,6 +78,10 @@ pub(crate) enum AuthError {
     /// An administrator linked an OIDC sign-in that another account has.
     #[error("identity linked to another user")]
     IdentityTaken,
+    /// A caller-chosen ID that something else has or had. The detail names
+    /// the ID and what holds it.
+    #[error("already in use: {0}")]
+    InUse(String),
     #[error("not authorized")]
     Denied,
     /// Denied, with what the caller would need, such as a capability.

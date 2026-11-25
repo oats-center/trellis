@@ -329,7 +329,7 @@ the original error. `storage` prints `Health.Storage`.
 
 ```text
 trellis users list|show|find|create|edit|delete ...
-trellis users create [--username <name>] [--name <name>] [--email <address>] [--provider <id> --subject <sub>]
+trellis users create [--username <name>] [--name <name>] [--email <address>] [--id <user id>] [--provider <id> --subject <sub>]
 trellis users show|edit|delete <user>
 trellis users link|unlink <user> --provider <id> --subject <sub>
 trellis roles list|create ...
@@ -353,7 +353,10 @@ A service command then tries a waiting claim with that claim ID, never a
 claim's title. A deployment name moves on to waiting claims only when the
 deployment list answered without it. The CLI resolves names with `Auth.Users.List` and `Auth.Roles.List` and sends
 IDs to Auth. User commands use generated Auth account operations. `users create
---provider --subject` links that OIDC sign-in in the creating call and prints
+--id` gives the new user that Trellis user ID instead of a new one, such as
+the ID the person has in another installation; the CLI refuses a value that is
+not a ULID, and Auth refuses an ID any user, service or device has or had with
+`already_in_use`. `users create --provider --subject` links that OIDC sign-in in the creating call and prints
 no password setup link. Otherwise it prints the one-time setup link,
 `/account/reset?token=...` on the Trellis origin, and says when password
 sign-in is off, since the password chosen there signs in only while it is on;
