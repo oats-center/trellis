@@ -741,7 +741,9 @@ fn show(
     // the refused values in the revisions refused, and both when they came
     // from both or the check refused the revision as a whole. A refused value
     // from beneath an override the refused revision removed is undone by
-    // restoring that override, which leaves the other instances alone.
+    // restoring that override, which leaves the other instances alone; the
+    // deployment's rollback is the alternative only for values the deployment
+    // set.
     for instance in output::list(current, "instances") {
         let settings = &instance["settings"];
         if settings["state"] != json!("rejected") {
@@ -767,7 +769,10 @@ fn show(
                 "restore the overrides it accepted with `trellis {prefix} {id} config --instance {} rollback {restore}`",
                 output::field(instance, "instanceId")
             );
-            if sources.iter().all(|source| *source != "instance") {
+            // A value refused from a deployment revision can also be undone
+            // there; a declared default or an unset value cannot, since no
+            // deployment revision restores the override.
+            if sources.contains(&"deployment") {
                 format!(
                     "{restore}, or roll back the deployment's settings, which changes every instance, with {deployment_rollback}"
                 )

@@ -890,3 +890,101 @@ async fn an_instance_refusing_a_value_its_removed_override_hid_is_told_to_restor
     tolerant_running.await.unwrap().unwrap();
     runtime.shutdown().await.unwrap();
 }
+
+fn debug_only(settings: &Config) -> Result<(), Rejection> {
+    if serde_json::to_value(&settings.level).unwrap() == json!("debug") {
+        Ok(())
+    } else {
+        Err(Rejection::new(["level"], "must be debug"))
+    }
+}
+
+// An instance overrides a value the deployment never sets and accepts it;
+// the override is removed, so the declared default applies, and the instance
+// refuses it. No deployment revision held that default, so rolling the
+// deployment back cannot restore the override: the advice names only the
+// instance's rollback, and following it applies the override again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_instance_refusing_the_default_its_removed_override_hid_is_told_only_to_restore_it() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("defaulted")
+        .await
+        .unwrap();
+    runtime
+        .set_config(
+            &identity,
+            json!({ "endpoint": "https://one.example" }),
+            json!({ "apiKey": "k1" }),
+        )
+        .await
+        .unwrap();
+    let deployment = identity.deployment_id().to_owned();
+    let instance = identity.instance_id().to_owned();
+    let cli = Cli::login(&mut runtime).await;
+    let on_instance = |args: &[&'static str]| {
+        let mut all = vec!["svc", deployment.as_str(), "config", "--instance"];
+        all.push(instance.as_str());
+        all.extend_from_slice(args);
+        all.into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+    let run = |args: Vec<String>| {
+        let cli = cli.clone();
+        async move {
+            let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+            cli.run(&args).await
+        }
+    };
+
+    // The override is in place before the instance starts, since its check
+    // refuses the default it would otherwise start with.
+    run(on_instance(&["set", "level=debug"])).await;
+    let mut service = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let config = Provider::new(&mut service).config();
+    config.check(debug_only).await.unwrap();
+    let lifecycle = service.lifecycle();
+    let running = tokio::spawn(service.run());
+    assert!(lifecycle.ready().await, "the service serves");
+    cli.settings(&deployment, |status| {
+        status["state"] == "applied" && status["instanceRevision"] == 1
+    })
+    .await;
+
+    run(on_instance(&["unset", "level"])).await;
+    let refused = cli
+        .settings(&deployment, |status| {
+            status["state"] == "rejected" && status["instanceRevision"] == 2
+        })
+        .await;
+    assert_eq!(refused["sources"], json!({ "level": "default" }));
+
+    let restore = format!("`trellis svc {deployment} config --instance {instance} rollback 1`");
+    let deployment_rollback = format!("`trellis svc {deployment} config rollback");
+    for view in [
+        ["svc", deployment.as_str(), "config"]
+            .map(str::to_owned)
+            .to_vec(),
+        on_instance(&[]),
+    ] {
+        let told = String::from_utf8(run(view).await.stderr).unwrap();
+        assert!(told.contains(&restore), "{told}");
+        assert!(!told.contains(&deployment_rollback), "{told}");
+    }
+
+    run(on_instance(&["rollback", "1"])).await;
+    let applied = cli
+        .settings(&deployment, |status| status["state"] == "applied")
+        .await;
+    assert_eq!(applied["instanceRevision"], 3);
+    assert_eq!(
+        serde_json::to_value(&config.current().unwrap().level).unwrap(),
+        json!("debug")
+    );
+
+    drop(config);
+    lifecycle.stop();
+    running.await.unwrap().unwrap();
+    runtime.shutdown().await.unwrap();
+}

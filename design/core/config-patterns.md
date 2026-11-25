@@ -536,7 +536,9 @@ When every refused value from beneath the instance was its own override in
 that revision, the status's `overrideRevision` names it, and `show` advises
 `--instance ID rollback <overrideRevision>` first, which restores the
 overrides it accepted, and the deployment's rollback only as the alternative
-that changes every instance. An override that was itself refused before it
+that changes every instance, and only when a refused value came from a
+deployment revision: a declared default or an unset value exposed by the
+removal is not undone by any deployment rollback. An override that was itself refused before it
 was removed was never applied, so the advice stays the deployment's.
 
 A service ID or title that names a waiting claim targets the claim, so
