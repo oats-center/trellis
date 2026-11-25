@@ -108,6 +108,11 @@ makes two accounts the same person: to have the import treat an existing
 account as someone from the old installation, give it the same user ID with
 `trellis users create --id`.
 
+Both commands check first that the NATS they reach belongs to the
+installation and to its database, as `trellis-server backup` does. If
+`[nats] servers` names another installation's broker, or one that was reset,
+they stop before reading or changing anything.
+
 If loading a service's data stops partway, run the same import again. Records
 already imported are skipped, and the data loads where it stopped.
 

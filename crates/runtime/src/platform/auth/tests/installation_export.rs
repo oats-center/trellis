@@ -43,6 +43,19 @@ fn store_of(config: &crate::RuntimeConfig) -> SqliteAuthorizationStore {
     SqliteAuthorizationStore::open(&store, config, keys.target_account()).unwrap()
 }
 
+/// The installation's administrator.
+fn administrator_of(store: &SqliteAuthorizationStore) -> String {
+    store
+        .reader()
+        .unwrap()
+        .query_row(
+            "SELECT principal_id FROM auth_bootstrap_administrator",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
 /// Run `work` on the stopped installation `config`'s Auth store, off the
 /// async workers as the server runs store work.
 async fn with_store<T: Send + 'static>(
@@ -55,6 +68,41 @@ async fn with_store<T: Send + 'static>(
         .unwrap()
 }
 
+/// Whether a live user `principal` exists in the installation `config`.
+async fn has_user(config: &crate::RuntimeConfig, principal: &str) -> bool {
+    let principal = principal.to_owned();
+    with_store(config, move |store| {
+        store
+            .reader()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1 \
+                AND kind='user' AND state!='revoked')",
+                [&principal],
+                |row| row.get(0),
+            )
+            .unwrap()
+    })
+    .await
+}
+
+/// `config` pointed at the broker of `other` with `other`'s Trellis NATS
+/// user, as an operator who copied the wrong `[nats] servers` would have it.
+fn misdirected(
+    config: &crate::RuntimeConfig,
+    other: &crate::RuntimeConfig,
+) -> crate::RuntimeConfig {
+    let mut misdirected = config.clone();
+    misdirected.nats.as_mut().unwrap().servers = other.nats.as_ref().unwrap().servers.clone();
+    misdirected
+        .secrets
+        .nats
+        .users
+        .trellis
+        .clone_from(&other.secrets.nats.users.trellis);
+    misdirected
+}
+
 /// The content of an export of the installation `config`.
 async fn exported(config: &crate::RuntimeConfig) -> Vec<u8> {
     let mut content = Vec::new();
@@ -62,6 +110,53 @@ async fn exported(config: &crate::RuntimeConfig) -> Vec<u8> {
         .await
         .unwrap();
     content
+}
+
+/// An export or import pointed at another installation's broker refuses it
+/// before it reads or changes anything: the export writes nothing, and the
+/// import adds nothing to the database it would have paired with that
+/// broker. Pointed at its own broker, the same import adds the export's
+/// user.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn export_and_import_refuse_another_installations_broker() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let ports = reserve(2);
+    let (source, _source_broker) =
+        started_installation(&directory.path().join("source"), &ports[..4]).await;
+    let (target, _target_broker) =
+        started_installation(&directory.path().join("target"), &ports[4..]).await;
+    let person = with_store(&source, |store| {
+        create_user(store, &administrator_of(store), crate::clock::unix_now())
+    })
+    .await;
+
+    let mut written = Vec::new();
+    let refused =
+        crate::platform::export_installation(&misdirected(&source, &target), &mut written).await;
+    assert!(
+        matches!(refused, Err(crate::RuntimeError::BrokerIdentity(_))),
+        "{refused:?}"
+    );
+    assert!(written.is_empty());
+
+    let content = exported(&source).await;
+    let refused = crate::platform::import_installation(
+        &misdirected(&target, &source),
+        &mut std::io::Cursor::new(&content),
+        false,
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(crate::RuntimeError::BrokerIdentity(_))),
+        "{refused:?}"
+    );
+    assert!(!has_user(&target, &person).await);
+
+    crate::platform::import_installation(&target, &mut std::io::Cursor::new(&content), false)
+        .await
+        .unwrap();
+    assert!(has_user(&target, &person).await);
 }
 
 /// Each export and import works in a folder of its own and removes only

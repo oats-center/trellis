@@ -326,7 +326,9 @@ roles and grants it held go to this installation's administrator
 (`administrator` in the report). State keeps its values and creation and
 update times; its revision tokens are new. Running the import again finishes
 a deployment whose data did not load. It moves an installation between
-releases, release candidates included.
+releases, release candidates included. Export and import refuse, before
+reading or changing anything, a broker that is not bound to this
+installation and its platform database, as backup does.
 `trellis-server restore <dir> [--config <dir>] [--force]` checks it and writes
 it into a stopped or fresh installation, refusing one with another ID (its
 `[auth] instance_id`, else `secrets.toml`'s) or an unreadable `config.toml`

@@ -614,6 +614,69 @@ fn copy_database(from: &Path, to: &Path, busy_timeout: Duration) -> Result<(), B
     Ok(())
 }
 
+/// Confirms that `jetstream` is this installation's, and its platform
+/// database's when `identity` (the database's JetStream identity) is given,
+/// as a start confirms it, before a command reads or writes data there.
+/// `otherwise` says what going on with another broker would do.
+///
+/// # Errors
+///
+/// Returns [`BackupError::Refused`] when the broker has no record of its
+/// installation, belongs to another one, or holds another platform
+/// database's JetStream.
+pub(crate) async fn confirm_broker(
+    config: &RuntimeConfig,
+    jetstream: &async_nats::jetstream::Context,
+    identity: Option<&str>,
+    otherwise: &str,
+) -> Result<(), BackupError> {
+    let installation = instance_id(config);
+    let servers = config.resolve_nats_runtime()?.servers;
+    let (_, bound, store) = crate::platform::read_broker_identity(jetstream)
+        .await
+        .map_err(|error| {
+            BackupError::Refused(format!(
+                "cannot confirm that NATS at {servers} holds this installation's JetStream: \
+                {error}"
+            ))
+        })?;
+    let unconfirmed = |reason: String| {
+        BackupError::Refused(format!(
+            "NATS at {servers} {reason}, so {otherwise}; check [nats] servers and the \
+            Trellis NATS user"
+        ))
+    };
+    match (&bound, &installation) {
+        (None, _) => {
+            return Err(unconfirmed(
+                "has no record of the installation it belongs to; a broker gets one on \
+                the platform's first start"
+                    .into(),
+            ))
+        }
+        (Some(bound), None) => {
+            return Err(unconfirmed(format!(
+                "belongs to installation {bound}, and this configuration names no \
+                installation ID"
+            )))
+        }
+        (Some(bound), Some(installation)) if bound != installation => {
+            return Err(unconfirmed(format!(
+                "belongs to installation {bound}, not this installation {installation}"
+            )))
+        }
+        _ => {}
+    }
+    if let Some(identity) = identity {
+        if store.as_deref() != Some(identity) {
+            return Err(unconfirmed(
+                "holds a JetStream bound to a different platform database than this one".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Saves a recovery point of the installation that `config` was loaded from
 /// at `config_file`, with its data in `data_dir`, into the new or empty folder
 /// `destination`. The server may be running. NATS must be reachable.
@@ -791,50 +854,13 @@ pub async fn backup(
     let nats_server = Some(client.server_info().version);
     let leases = format!("KV_{}", config.resolve_leases()?.bucket);
     let jetstream = async_nats::jetstream::new(client.clone());
-    let installation = instance_id(config);
-    let servers = config.resolve_nats_runtime()?.servers;
-    let (_, bound, store) = crate::platform::read_broker_identity(&jetstream)
-        .await
-        .map_err(|error| {
-            BackupError::Refused(format!(
-                "cannot confirm that NATS at {servers} holds this installation's JetStream: \
-                {error}"
-            ))
-        })?;
-    let unconfirmed = |reason: String| {
-        BackupError::Refused(format!(
-            "NATS at {servers} {reason}, so the backup would pair data of different \
-            installations; check [nats] servers and the Trellis NATS user"
-        ))
-    };
-    match (&bound, &installation) {
-        (None, _) => {
-            return Err(unconfirmed(
-                "has no record of the installation it belongs to; a broker gets one on \
-                the platform's first start"
-                    .into(),
-            ))
-        }
-        (Some(bound), None) => {
-            return Err(unconfirmed(format!(
-                "belongs to installation {bound}, and this configuration names no \
-                installation ID"
-            )))
-        }
-        (Some(bound), Some(installation)) if bound != installation => {
-            return Err(unconfirmed(format!(
-                "belongs to installation {bound}, not this installation {installation}"
-            )))
-        }
-        _ => {}
-    }
-    if let Some(identity) = &jetstream_identity {
-        if store.as_ref() != Some(identity) {
-            return Err(unconfirmed(
-                "holds a JetStream bound to a different platform database than this one".into(),
-            ));
-        }
-    }
+    confirm_broker(
+        config,
+        &jetstream,
+        jetstream_identity.as_deref(),
+        "the backup would pair data of different installations",
+    )
+    .await?;
     let mut names = Vec::new();
     let mut listing = jetstream.stream_names();
     while let Some(name) = listing.next().await {

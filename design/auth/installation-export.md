@@ -39,7 +39,12 @@ reads the platform database and never migrates it, so the build under test
 can export a database an earlier release made and still runs. Import runs
 against an installation that has started once (so its `secrets.toml` and
 database exist) and is stopped, with its NATS running; it migrates the
-database first, as a start would.
+database first, as a start would. Before either reads data from NATS or
+changes anything, it confirms, as `backup` and a start do, that the broker
+records this installation and the JetStream identity of its platform
+database; a broker that has no record, belongs to another installation, or
+was bound to another platform database is refused, and nothing is read or
+written.
 
 The passphrase comes from `--passphrase-file` (`-` for standard input) or
 piped standard input. A new export's passphrase has at least 12 characters.
