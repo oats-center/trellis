@@ -581,31 +581,59 @@ fn print_report(report: &Value) {
     let roles = output::list(report, "roles");
     let grants = output::list(report, "grants");
     if !roles.is_empty() || !grants.is_empty() {
+        details = details.section("Access the bundle carries").items(
+            roles
+                .iter()
+                .map(|role| {
+                    format!(
+                        "role {} ({} members): {}",
+                        output::field(role, "name"),
+                        output::field(role, "members"),
+                        output::list(role, "capabilities")
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
+                .chain(grants.iter().map(|grant| {
+                    format!(
+                        "{} granted directly to {} users",
+                        output::field(grant, "capability"),
+                        output::field(grant, "users")
+                    )
+                })),
+        );
+    }
+    // What an import recreated and skipped, one line each.
+    let change = |item: &Value| {
+        let mut line = output::field(item, "kind");
+        for (label, key) in [
+            ("role", "role"),
+            ("capability", "capability"),
+            ("user", "userId"),
+            ("as", "matchedUserId"),
+            ("app", "clientId"),
+        ] {
+            if item.get(key).is_some_and(|value| !value.is_null()) {
+                line.push_str(&format!(" {label} {}", output::field(item, key)));
+            }
+        }
+        if item.get("reason").is_some_and(|value| !value.is_null()) {
+            line.push_str(&format!(": {}", output::field(item, "reason")));
+        }
+        line
+    };
+    if let Some(access) = report.get("access").filter(|access| !access.is_null()) {
         details = details
-            .section("Access to recreate (import creates no roles or grants)")
-            .items(
-                roles
-                    .iter()
-                    .map(|role| {
-                        format!(
-                            "role {} ({} assigned): {}",
-                            output::field(role, "name"),
-                            output::field(role, "assignments"),
-                            output::list(role, "capabilities")
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    })
-                    .chain(grants.iter().map(|grant| {
-                        format!(
-                            "{} granted directly to {} users",
-                            output::field(grant, "capability"),
-                            output::field(grant, "principals")
-                        )
-                    })),
-            );
+            .section("Access recreated")
+            .items(output::list(access, "recreated").iter().map(change));
+        let skipped = output::list(access, "skipped");
+        if !skipped.is_empty() {
+            details = details
+                .section("Access skipped")
+                .items(skipped.iter().map(change));
+        }
     }
     details = details.section("Stayed behind").items(
         output::list(report, "leftBehind")

@@ -1131,20 +1131,46 @@ model AuthServiceBundleWebhook {
   /// The full URL in this installation.
   url: string;
 }
-/// A role in the exporting installation that holds a capability of an API the service provides.
+/// A role a bundle carries: one that gives a capability of an API the service provides.
 model AuthServiceBundleRole {
+  roleId: ulid;
   name: string;
+  /// Every capability the role gives, those of other APIs included.
   capabilities: list<AuthCapabilityId>;
-  /// How many users and apps hold the role there.
-  assignments: uint64;
+  /// How many users had the role in the exporting installation.
+  members: uint64;
 }
-/// A capability of the service's APIs granted directly to principals in the exporting installation.
+/// A capability of the service's APIs that a bundle carries as granted directly to users.
 model AuthServiceBundleGrant {
   capability: AuthCapabilityId;
-  /// How many principals hold it directly there.
-  principals: uint64;
+  /// How many users held it directly in the exporting installation.
+  users: uint64;
 }
-/// What a service bundle holds, what stayed behind, and what an administrator recreates by hand.
+enum AuthAccessChangeKind { role; roleCapability; assignment; grant; appConsent; }
+/// How an import found a user: by their user ID, or by one of their sign-ins.
+enum AuthAccessMatch { id; signIn; }
+/// One role, role capability, role member, direct grant or app consent an import recreated or skipped.
+model AuthAccessChange {
+  kind: AuthAccessChangeKind;
+  roleId?: ulid;
+  /// The role's name.
+  role?: string;
+  /// The user's ID in the exporting installation.
+  userId?: string;
+  /// The user here who was given it.
+  matchedUserId?: string;
+  matchedBy?: AuthAccessMatch;
+  capability?: AuthCapabilityId;
+  clientId?: string;
+  /// Why it was skipped, in plain words.
+  reason?: string;
+}
+/// The access an import recreated, and what it skipped and why. A record found already present is in neither list.
+model AuthAccessReport {
+  recreated: list<AuthAccessChange>;
+  skipped: list<AuthAccessChange>;
+}
+/// What a service bundle holds, what stayed behind, and what an import recreated.
 model AuthServiceBundleReport {
   deploymentId: ulid;
   title: string;
@@ -1160,10 +1186,12 @@ model AuthServiceBundleReport {
   enrollmentSecrets: uint64;
   resources: list<AuthServiceBundleResource>;
   webhooks: list<AuthServiceBundleWebhook>;
-  /// Roles to recreate: import creates none.
+  /// Roles the bundle carries, which an import recreates.
   roles: list<AuthServiceBundleRole>;
-  /// Direct grants to recreate: import creates none.
+  /// Direct grants the bundle carries, which an import recreates.
   grants: list<AuthServiceBundleGrant>;
+  /// What the import recreated and skipped; absent from an export's report.
+  access?: AuthAccessReport;
   /// What stayed in the exporting installation, in plain words.
   leftBehind: list<string>;
 }

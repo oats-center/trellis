@@ -4,6 +4,7 @@
 //! Broker effects are durable outbox work; no distributed policy ancestry is
 //! required to verify the resulting authority.
 
+mod access_records;
 mod administration;
 pub(crate) use administration::Administration;
 mod authorization_sessions;

@@ -370,11 +370,12 @@ impl AdminSession {
         username: &str,
         name: &str,
         password: &str,
+        user_id: Option<&str>,
     ) -> Result<crate::identity::TestUserIdentity, TrellisTestError> {
         let response = self
             .auth
             .users_create(&AuthUserCreateRequest {
-                user_id: None,
+                user_id: user_id.map(wire).transpose()?,
                 given_name: None,
                 family_name: None,
                 email: None,

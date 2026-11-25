@@ -278,7 +278,9 @@ and `remove` warns, since the installation it moved from has a deployment
 with the same ID. Import checks the passphrase against the bundle's header
 before it connects, then streams the file's decrypted content as the `Auth.Deployments.Import`
 Operation's byte stream and prints the report: webhook URLs at the new
-origin, roles and direct grants to recreate, and what stayed behind. The
+origin, the roles and direct grants the bundle carries, the access the
+import recreated and what it skipped with each reason, and what stayed
+behind. The
 passphrase comes from `--passphrase-file` (`-` for standard input), a
 terminal question (asked twice for export), or piped standard input, and is
 never sent to Auth. With `--format json`, export prints `{ file, size,

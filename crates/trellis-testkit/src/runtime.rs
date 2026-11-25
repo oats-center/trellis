@@ -1425,15 +1425,32 @@ impl TrellisTestRuntime {
     /// # Errors
     /// Returns an error when the runtime is stopped or authenticated creation fails.
     pub async fn create_user(&mut self, name: &str) -> Result<TestUserIdentity, TrellisTestError> {
-        self.ensure_running()?;
         let username = format!(
             "user-{}",
             ulid::Ulid::generate().to_string().to_ascii_lowercase()
         );
+        self.create_user_as(name, &username, None).await
+    }
+
+    /// Create an ordinary account with `username` and, when given, the Trellis
+    /// user ID `user_id`, as an administrator recreating a person from another
+    /// installation does. Its random password is kept privately, as for
+    /// [`Self::create_user`].
+    ///
+    /// # Errors
+    /// Returns an error when the runtime is stopped or Auth refuses the
+    /// account, for example because the username or user ID is taken.
+    pub async fn create_user_as(
+        &mut self,
+        name: &str,
+        username: &str,
+        user_id: Option<&str>,
+    ) -> Result<TestUserIdentity, TrellisTestError> {
+        self.ensure_running()?;
         let password = generate_password();
         let user = self
             .admin()?
-            .create_user(&username, name, &password)
+            .create_user(username, name, &password, user_id)
             .await?;
         self.users
             .insert(user.principal_id.clone(), (user.clone(), password));

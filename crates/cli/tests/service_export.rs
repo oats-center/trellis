@@ -14,13 +14,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::StreamExt as _;
+use runtime_trellis::apps::runtime_trellis_moving_caller::Request as MovingCaller;
 use runtime_trellis::participants::runtime_trellis_moving_service::{
     types::{ResourceValue, Value as Payload},
     Participant, Provider,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
-use trellis_rs::auth::discover_native_oauth;
+use trellis_rs::auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient};
+use trellis_rs::client::UserConnectOptions;
 use trellis_rs::jobs::JobProcessError;
 use trellis_rs::service::ServiceConnectOptions;
 use trellis_testkit::{TestNatsUser, TrellisTestRuntime};
@@ -143,6 +145,51 @@ impl Cli {
             .to_string()
             .contains(id)
     }
+}
+
+/// A client of `runtime`'s administrator, signed in through the CLI's device
+/// flow with `capabilities`.
+async fn administrator(
+    runtime: &mut TrellisTestRuntime,
+    capabilities: &[&str],
+) -> trellis_rs::generated::Client {
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
+        .await
+        .unwrap();
+    let native = NativeOAuthClient::open(
+        runtime
+            .workdir()
+            .join(format!("admin-{}", ulid::Ulid::generate())),
+        NativeCredentialScope {
+            issuer: server.issuer.clone(),
+            instance_id: server.trust.instance_id.clone(),
+            account: server.trust.account.clone(),
+            client_id: "trellis.cli".into(),
+            credential_handle: ulid::Ulid::generate(),
+        },
+        server.trust.clone(),
+    )
+    .await
+    .unwrap();
+    let device = native
+        .start_device(&json!([{
+            "type": "trellis_capabilities",
+            "required": capabilities,
+            "optional": []
+        }]))
+        .await
+        .unwrap();
+    runtime
+        .approve_device_login("trellis.cli", device.user_code())
+        .await
+        .unwrap();
+    trellis_rs::generated::Client::connect_user(UserConnectOptions::new(
+        server.nats_servers,
+        5_000,
+        device.complete().await.unwrap(),
+    ))
+    .await
+    .unwrap()
 }
 
 fn path(path: &Path) -> &str {
@@ -354,7 +401,7 @@ mod bundle {
             serde_json::to_vec(&manifest).unwrap(),
         ));
         let mut content = b"TRELLIS-SERVICE\n".to_vec();
-        content.extend_from_slice(&1u32.to_be_bytes());
+        content.extend_from_slice(&2u32.to_be_bytes());
         for (name, bytes) in entries {
             content.extend_from_slice(&u16::try_from(name.len()).unwrap().to_be_bytes());
             content.extend_from_slice(name.as_bytes());
@@ -484,22 +531,46 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
         .json(&["svc", &deployment, "enrollment", "issue", "--title", "pods"])
         .await;
     let enrollment = issued["text"].as_str().unwrap().to_owned();
+    // People reach its API through a role with two members, a direct grant,
+    // and a second role.
     let capability =
         runtime_trellis::apis::runtime_trellis_moving_v1::rpc::Ping::CALLER_CAPABILITIES[0];
-    old_cli
-        .json(&[
-            "roles",
-            "create",
-            "--title",
-            "Moving pingers",
-            "--description",
-            "Reach the moving service",
-            "--capability",
-            capability,
-        ])
-        .await;
-    let user = old.create_user("Pinger").await.unwrap();
-    old.grant_user_capabilities(&user, &[capability])
+    let role_id = |created: Value| created["role"]["roleId"].as_str().unwrap().to_owned();
+    let pingers = role_id(
+        old_cli
+            .json(&[
+                "roles",
+                "create",
+                "--title",
+                "Moving pingers",
+                "--description",
+                "Reach the moving service",
+                "--capability",
+                capability,
+            ])
+            .await,
+    );
+    let auditors = role_id(
+        old_cli
+            .json(&[
+                "roles",
+                "create",
+                "--title",
+                "Moving auditors",
+                "--capability",
+                capability,
+            ])
+            .await,
+    );
+    let kept = old.create_user("Kept ID").await.unwrap();
+    let named = old.create_user("Same username").await.unwrap();
+    let stranger = old.create_user("Stranger").await.unwrap();
+    for (role, user) in [(&pingers, &kept), (&pingers, &stranger), (&auditors, &kept)] {
+        old_cli
+            .json(&["roles", "assign", role, "--user", user.principal_id()])
+            .await;
+    }
+    old.grant_user_capabilities(&named, &[capability])
         .await
         .unwrap();
     let old_url = old.webhook_urls(&identity).await.unwrap()["token"].clone();
@@ -579,6 +650,41 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
         refused.contains("thebundleisdamaged:achunkdoesnotdecrypt"),
         "{refused}"
     );
+    // The new installation has an account for one member under the same
+    // user ID, one for the grant's holder under the same username, none for
+    // the other member, and a role of its own under the auditors' role ID.
+    let kept_here = new
+        .create_user_as(
+            "Kept ID",
+            &format!("kept-{}", ulid::Ulid::generate().to_string().to_lowercase()),
+            Some(kept.principal_id()),
+        )
+        .await
+        .unwrap();
+    let named_here = new
+        .create_user_as("Same username", named.username(), None)
+        .await
+        .unwrap();
+    assert_eq!(kept_here.principal_id(), kept.principal_id());
+    assert_ne!(named_here.principal_id(), named.principal_id());
+    trellis_runtime_apis::apis::trellis_auth_v1::Client::from_generated(
+        administrator(&mut new, &["trellis.auth.v1:roles.manage"]).await,
+    )
+    .roles_put(
+        &serde_json::from_value(json!({
+            "roleId": auditors,
+            "expectedRevision": "0",
+            "idempotencyKey": ulid::Ulid::generate().to_string(),
+            "title": "Auditors here",
+            "description": "",
+            "capabilityIds": ["trellis.auth.v1:users.read"],
+            "assignToNewUsers": false,
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
     // A check reports what the import would do and leaves nothing behind.
     let checked = new_cli
         .json(&[
@@ -600,8 +706,10 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
         .await
         .contains("notfound"));
 
-    // The import keeps the deployment ID and reports the access to
-    // recreate, which it does not create.
+    // The import keeps the deployment ID and recreates the access to the
+    // service's API for the people it finds: by user ID, then by a sign-in.
+    // A member with no account here, and a role this installation has in
+    // another form, are reported and left alone.
     let imported = new_cli
         .json(&[
             "svc",
@@ -616,14 +724,60 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     assert_eq!(report["deploymentId"], deployment.as_str());
     assert_eq!(
         report["roles"],
-        json!([{ "name": "Moving pingers", "capabilities": [capability], "assignments": "0" }])
+        json!([
+            { "roleId": pingers, "name": "Moving pingers", "capabilities": [capability], "members": "2" },
+            { "roleId": auditors, "name": "Moving auditors", "capabilities": [capability], "members": "1" },
+        ])
     );
     assert_eq!(
         report["grants"],
-        json!([{ "capability": capability, "principals": "1" }])
+        json!([{ "capability": capability, "users": "1" }])
     );
-    let roles = new_cli.json(&["roles", "list"]).await.to_string();
-    assert!(!roles.contains("Moving pingers"), "{roles}");
+    let items = |list: &str| {
+        report["access"][list]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                let mut item = item.clone();
+                item.as_object_mut().unwrap().remove("reason");
+                item
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        items("recreated"),
+        vec![
+            json!({ "kind": "role", "roleId": pingers, "role": "Moving pingers" }),
+            json!({
+                "kind": "assignment", "roleId": pingers, "role": "Moving pingers",
+                "userId": kept.principal_id(), "matchedUserId": kept.principal_id(),
+                "matchedBy": "id",
+            }),
+            json!({
+                "kind": "grant", "capability": capability, "userId": named.principal_id(),
+                "matchedUserId": named_here.principal_id(), "matchedBy": "signIn",
+            }),
+        ]
+    );
+    let mut skipped = items("skipped");
+    skipped.sort_by_key(Value::to_string);
+    let mut expected = vec![
+        json!({ "kind": "assignment", "roleId": pingers, "role": "Moving pingers", "userId": stranger.principal_id() }),
+        json!({ "kind": "role", "roleId": auditors, "role": "Moving auditors" }),
+        json!({ "kind": "assignment", "roleId": auditors, "role": "Moving auditors", "userId": kept.principal_id() }),
+    ];
+    expected.sort_by_key(Value::to_string);
+    assert_eq!(skipped, expected);
+    assert!(!new_cli
+        .json(&["users", "list"])
+        .await
+        .to_string()
+        .contains(stranger.principal_id()));
+    assert_eq!(
+        new_cli.json(&["roles", "show", &auditors]).await["role"]["title"],
+        "Auditors here"
+    );
     let new_url = new.webhook_urls(&identity).await.unwrap()["token"].clone();
     let url_path = |url: &str| url::Url::parse(url).unwrap().path().to_owned();
     assert_eq!(url_path(&new_url), url_path(&old_url));
@@ -719,6 +873,28 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     let lifecycle = service.lifecycle();
     let running = tokio::spawn(service.run());
     assert!(lifecycle.ready().await, "the moved service serves");
+
+    // The people the import found call the moved service's API through an
+    // app that needs its capability, as the role or the grant gives it.
+    // Someone given neither cannot sign in to that app.
+    let app = new
+        .register_native_application::<MovingCaller>("moving caller")
+        .await
+        .unwrap();
+    for user in [&kept_here, &named_here] {
+        let login = new.login_native_application_as(&app, user).await.unwrap();
+        let moving = runtime_trellis::apis::runtime_trellis_moving_v1::Client::from_generated(
+            trellis_rs::generated::Client::connect_user(login.connect_options())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(moving.ping(&payload("ping")).await.unwrap().value, "ping");
+    }
+    let outsider = new.create_user("Outsider").await.unwrap();
+    assert!(new
+        .login_native_application_as(&app, &outsider)
+        .await
+        .is_err());
     let (ran_id, ran_value) = tokio::time::timeout(Duration::from_secs(30), runs.recv())
         .await
         .expect("the waiting job runs in the new installation")

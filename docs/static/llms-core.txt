@@ -325,10 +325,17 @@ instance and resource IDs, so KV revisions, job subjects and webhook paths
 are unchanged, and a run that stopped while loading data, or for want of an
 active instance, finishes when run again. It refuses a bundle naming any
 stream, bucket, job subject or entry outside the deployment it creates. It
-creates no roles or grants: its report lists the roles and direct grants
-of the service's APIs to recreate, the webhook URLs at the new origin,
-and what stayed behind (job and settings history, unconsumed events,
-Operations). Both need `users.manage` and `config.manageSecrets`
+recreates the roles (same role ID), role members, direct grants and app
+implied consent that give the service's API capabilities, for users it
+finds by Trellis user ID first, then by sign-in (same username, or same
+OIDC subject at the provider with the same ID or issuer); it never creates
+users. A user it cannot find, or a role that exists under the same ID with
+another name or other capabilities, is skipped and reported with its reason,
+and the rest applies. Create the users first, keeping their IDs with
+`trellis users create --id`. The report lists the access recreated and
+skipped (`access.recreated`, `access.skipped`), the webhook URLs at the new
+origin, and what stayed behind (job and settings history, unconsumed
+events, Operations, remembered consent). Both need `users.manage` and `config.manageSecrets`
 (`platform.manage` for an administrative service) and are audited. Processes
 reconnect with their existing seed once their Trellis URL points at the new
 installation; restart each one.
