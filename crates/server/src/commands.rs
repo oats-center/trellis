@@ -747,19 +747,45 @@ pub(crate) async fn import(args: ImportArgs) -> miette::Result<()> {
     for item in report["access"]["skipped"].as_array().into_iter().flatten() {
         println!("{}", line(item));
     }
-    for deployment in report["deployments"].as_array().into_iter().flatten() {
-        if let Some(error) = deployment["error"].as_str() {
-            println!(
-                "  deployment {}: {error}; run the same import again to finish it",
-                deployment["deploymentId"].as_str().unwrap_or_default()
-            );
-        }
-    }
+    print!("{}", pending_text(&report));
     println!("Not carried:");
     for item in report["notCarried"].as_array().into_iter().flatten() {
         println!("  {}", item.as_str().unwrap_or_default());
     }
     Ok(())
+}
+
+/// What an import report says is not finished yet, as text: each item with
+/// what finishes it, and how to go on. Empty when the import finished.
+fn pending_text(report: &serde_json::Value) -> String {
+    let pending = report["pending"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if pending.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from("Not finished yet:\n");
+    for item in pending {
+        let what = match item["kind"].as_str().unwrap_or_default() {
+            "deploymentData" => "data of deployment",
+            "deviceState" => "device State of",
+            kind => kind,
+        };
+        text.push_str(&format!(
+            "  {what} {}: {}\n",
+            item["id"].as_str().unwrap_or_default(),
+            item["reason"].as_str().unwrap_or_default()
+        ));
+    }
+    let applied = report["applied"] == true;
+    text.push_str(if applied {
+        "Run the same import again once the steps above are done; what is already here is \
+        kept and the rest is finished.\n"
+    } else {
+        "The import brings these once the steps above are done and it is run again.\n"
+    });
+    text
 }
 
 /// Backs up an installation, running or stopped, while its NATS runs.
@@ -915,4 +941,37 @@ pub(crate) fn rfc3339(value: time::OffsetDateTime) -> String {
     value
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| value.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// The text an operator reads after an import names each deployment
+    /// whose data has not moved yet, why, and that running the same import
+    /// again finishes it; an import that finished prints nothing of that.
+    #[test]
+    fn import_text_names_what_is_not_finished_and_how_to_finish_it() {
+        let reason = "the deployment has no instance that can run here yet";
+        let report = json!({
+            "applied": true,
+            "pending": [{
+                "kind": "deploymentData",
+                "id": "01J0000000000000000000000A",
+                "reason": reason
+            }]
+        });
+        let text = super::pending_text(&report);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "Not finished yet:");
+        assert_eq!(
+            lines[1],
+            format!("  data of deployment 01J0000000000000000000000A: {reason}")
+        );
+        assert!(lines[2].starts_with("Run the same import again"));
+        assert_eq!(
+            super::pending_text(&json!({ "applied": true, "pending": [] })),
+            ""
+        );
+    }
 }

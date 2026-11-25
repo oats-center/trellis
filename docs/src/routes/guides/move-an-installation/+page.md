@@ -118,8 +118,17 @@ installation and to its database, as `trellis-server backup` does. If
 `[nats] servers` names another installation's broker, or one that was reset,
 they stop before reading or changing anything.
 
-If loading a service's data stops partway, run the same import again. Records
-already imported are skipped, and the data loads where it stopped.
+Some data cannot move in one run. The import lists it under "Not finished
+yet", with what finishes it:
+
+- a service whose deployment or instances are all disabled, or that has no
+  instance, gets its records, but its resources and waiting jobs move only
+  once it has an instance that can run: enable the deployment and an
+  instance, or provision one, then run the same import again;
+- a service whose data stopped loading partway finishes when you run the
+  same import again.
+
+Records already imported are skipped, and the data loads where it stopped.
 
 ## Backups and releases
 

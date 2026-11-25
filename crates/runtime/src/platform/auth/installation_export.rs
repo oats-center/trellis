@@ -2038,14 +2038,34 @@ pub(crate) async fn import(
             let reader = service_bundles::spool_reader(Arc::clone(spool));
             match service_bundles::finish_import(storage, nats, directory, reader).await {
                 Ok(Some(report)) => {
+                    if report["complete"] == false {
+                        outcome.pending.push(json!({
+                            "kind": "deploymentData",
+                            "id": deployment_id,
+                            "reason": "the deployment has no instance that can run here yet, so \
+                                its resources are not prepared and its waiting jobs have not \
+                                moved; enable the deployment and an instance, or provision one, \
+                                then run the same import again",
+                        }));
+                    }
                     deployments.push(json!({ "deploymentId": deployment_id, "report": report }));
                 }
                 Ok(None) => {}
-                Err(error) => deployments.push(json!({
-                    "deploymentId": deployment_id,
-                    "error": error.to_string(),
-                    "retry": "run the same import again to finish loading its data",
-                })),
+                Err(error) => {
+                    outcome.pending.push(json!({
+                        "kind": "deploymentData",
+                        "id": deployment_id,
+                        "reason": format!(
+                            "loading its data stopped: {error}; run the same import again to \
+                            finish it"
+                        ),
+                    }));
+                    deployments.push(json!({
+                        "deploymentId": deployment_id,
+                        "error": error.to_string(),
+                        "retry": "run the same import again to finish loading its data",
+                    }));
+                }
             }
         }
     }

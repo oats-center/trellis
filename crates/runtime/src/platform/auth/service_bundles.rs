@@ -2821,6 +2821,9 @@ where
     if let Some(left_behind) = report["leftBehind"].as_array_mut() {
         left_behind.extend(left.into_iter().map(Value::String));
     }
+    // Whether everything the bundle carries is here now; until then running
+    // the same import again goes on with it.
+    report["complete"] = Value::Bool(active);
     if active {
         let (deployment_id, report_json) = (deployment_id.clone(), report.to_string());
         store

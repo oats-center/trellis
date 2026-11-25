@@ -156,9 +156,14 @@ service import: its KV and store snapshots, then, once an instance can run,
 its resources and waiting jobs. State values are written last, each where no
 value is stored yet: a user's under the State resource the transaction
 recorded, a device's under its deployment's State resource once that is
-ready. A deployment whose data did not finish loading is reported, and
-running the same import again finishes it; records already there are found
-the same the second time and change nothing.
+ready. A deployment whose data did not finish loading is reported under
+`pending` with what finishes it: one with no instance that can run here
+(the deployment or every instance is disabled, or it has none) has its
+resources prepared and its waiting jobs moved once the deployment and an
+instance are enabled, or one is provisioned, and the import runs again; one
+whose loading failed finishes when the import runs again. Records already
+there are found the same the second time and change nothing. The text
+output lists the pending items under "Not finished yet" with that step.
 
 `--check` changes nothing here, the database's schema included. It copies
 the platform database into its working folder, migrates the copy as the
