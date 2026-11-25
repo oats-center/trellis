@@ -98,7 +98,7 @@ such as revisions are set again on import.
 | `grants`            | Each capability granted directly to a user that has not expired and is still in the catalog                                                     |
 | `oidcRoleMappings`  | Each mapping from a provider claim to roles                                                                                                     |
 | `oauthClients`      | Each app with its client ID, kind, redirect URIs, implied consent and sign-up settings                                                          |
-| `consents`          | Remembered consent of users to apps, for capabilities whose wording has not changed since                                                       |
+| `consents`          | Remembered consent of users to apps, for capabilities whose wording has not changed since, with that wording                                    |
 | `portalThemes`      | The installation's theme and each app's                                                                                                         |
 | `state`             | Each live user's State resources with their representation, registration revision and history, and value; each device's values                  |
 | deployments         | Every service and device deployment that is not removed and not Trellis's own, enabled or disabled as it is, as a service bundle                |
@@ -253,7 +253,12 @@ the report.
 
 **Consent** is carried for every user created or found as the same person,
 to apps this installation has and that were not skipped, for capabilities
-whose wording has not changed.
+whose wording has not changed. Consent follows what a capability grants: each
+record carries the capability's `grants` text the person answered, and the
+answer is carried only where this installation's active capability has the
+same text, so it would ask the same. Elsewhere the record is skipped
+(`consent`) and the person is asked again when an app next requests the
+capability.
 
 **State** is recorded under the user it belongs to here. Its resource is
 named by that user's ID, the app's namespace and the resource name, as

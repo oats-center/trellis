@@ -22,7 +22,9 @@ The file carries:
   assignments, and capabilities its catalog no longer has, stay behind;
 - the sign-in settings, the OIDC providers with their client secrets, and
   their role mappings;
-- apps, with their client IDs, and the consent people gave them;
+- apps, with their client IDs, and the consent people gave them; where the
+  new installation describes what a capability grants differently, people
+  are asked again;
 - the State apps and devices keep for people and devices;
 - Portal themes and package registries;
 - every service and device deployment, with its build, keys, settings and

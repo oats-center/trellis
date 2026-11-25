@@ -709,3 +709,36 @@ fn only_access_the_source_still_honours_moves() {
     assert!(holds_role(&f.principal));
     assert!(!holds_role(&member));
 }
+
+/// Consent follows what a capability grants. A person's remembered answer
+/// to an app moves for a capability the new installation describes as the
+/// old one did; where the new installation's wording of what it grants
+/// differs, the answer stays behind, reported, and the person is asked
+/// again there.
+#[test]
+fn consent_moves_only_where_the_new_installation_asks_the_same() {
+    let f = fixture();
+    let source = sealed(&f.store, 7);
+    let (_directory, target, _) = destination("Sees and copies contents.");
+    let outcome = imported(&target, &exported_records(&source, NOW));
+
+    let remembered = |capability: &str| -> bool {
+        read(
+            &target,
+            "SELECT EXISTS(SELECT 1 FROM auth_remembered_consent \
+            WHERE principal_id=?1 AND client_id='native-client' AND capability_id=?2)",
+            [f.principal.as_str(), capability],
+        )
+    };
+    assert!(remembered(&f.write));
+    assert!(!remembered(&f.read));
+    assert!(
+        skipped(
+            &outcome,
+            "consent",
+            &format!("{}/native-client/{}", f.principal, f.read)
+        ),
+        "{:?}",
+        outcome.skipped
+    );
+}

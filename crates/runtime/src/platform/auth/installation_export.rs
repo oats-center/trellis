@@ -466,13 +466,14 @@ pub(super) fn read_records(
             [],
         )?),
     );
-    // Only consent given to the capability's current wording still applies.
+    // Only consent given to the capability's current wording still applies,
+    // and the wording goes with it, for the import to compare.
     records.insert(
         "consents",
         wrap(rows(
             connection,
             "SELECT c.principal_id,c.client_id,c.binding_kind,c.binding_value,c.capability_id,\
-            c.decision,c.expires_at FROM auth_remembered_consent c \
+            c.decision,c.expires_at,ci.grants FROM auth_remembered_consent c \
             JOIN auth_capability_identities ci ON ci.capability_id=c.capability_id \
             AND ci.identity_generation=c.capability_generation AND ci.state='active' \
             AND ci.consent_revision=c.consent_revision \
@@ -1801,6 +1802,27 @@ pub(super) fn apply(
         if skipped_apps.contains(client_id) {
             left.entry(("app", client_id.to_owned()))
                 .or_insert_with(|| "its app was skipped".to_owned());
+            continue;
+        }
+        // Consent follows what a capability grants: a person agreed to the
+        // wording the old installation showed, so their answer stands here
+        // only where this installation would ask the same.
+        let capability = consent["capability_id"].as_str().unwrap_or_default();
+        let wording: Option<String> = connection
+            .query_row(
+                "SELECT grants FROM auth_capability_identities \
+                WHERE capability_id=?1 AND state='active'",
+                [capability],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if wording.is_some() && wording.as_deref() != consent["grants"].as_str() {
+            outcome.skipped(
+                "consent",
+                &format!("{principal}/{client_id}/{capability}"),
+                "this installation describes what the capability grants differently from \
+                what the person answered; they are asked again",
+            );
             continue;
         }
         consents += connection.execute(
