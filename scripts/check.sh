@@ -237,7 +237,8 @@ job_demos() {
       cargo check --locked --config "$root/.cargo/publication.toml"
       # The generated crate builds from a copy outside this repository, with no
       # Trellis CLI or API cache, as a consumer would.
-      consumer="$(mktemp -d)"
+      mkdir -p "$temp"
+      consumer="$(mktemp -d "$temp/demo-consumer.XXXXXX")"
       trap 'rm -rf "$consumer"' EXIT
       cp -R Cargo.toml src trellis "$consumer/"
       export PATH="$(dirname "$(rustup which cargo)"):/usr/bin:/bin"
