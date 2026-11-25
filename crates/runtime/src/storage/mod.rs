@@ -209,49 +209,15 @@ impl SqliteStore {
 
     /// Verify migration compatibility on a temporary copy without changing the database.
     pub fn check_migrations(&self) -> Result<(), StoreError> {
-        if !self.config.path.exists() {
-            return Err(StoreError::MissingSqlite {
-                path: self.config.path.clone(),
-            });
-        }
-        let runner = self.schema.runner();
         let directory = tempfile::tempdir().map_err(|error| StoreError::CopySqliteSnapshot {
             from: self.config.path.clone(),
             to: std::env::temp_dir(),
             error,
         })?;
-        let temporary_path = directory.path().join("store.sqlite");
-        let source = self.open_read_only()?;
-        let mut connection =
-            Connection::open(&temporary_path).map_err(|source| StoreError::OpenSqlite {
-                path: temporary_path.clone(),
-                source,
-            })?;
-        {
-            let snapshot_error = |error| StoreError::CopySqliteSnapshot {
-                from: self.config.path.clone(),
-                to: temporary_path.clone(),
-                error: std::io::Error::other(error),
-            };
-            let backup =
-                rusqlite::backup::Backup::new(&source, &mut connection).map_err(snapshot_error)?;
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            loop {
-                match backup.step(128).map_err(snapshot_error)? {
-                    rusqlite::backup::StepResult::Done => break,
-                    _ if std::time::Instant::now() >= deadline => {
-                        return Err(StoreError::SqliteSnapshotChanged {
-                            path: self.config.path.clone(),
-                        });
-                    }
-                    rusqlite::backup::StepResult::Busy | rusqlite::backup::StepResult::Locked => {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        runner
+        let copy = self.snapshot_into(&directory.path().join("store.sqlite"))?;
+        let mut connection = copy.open()?;
+        self.schema
+            .runner()
             .set_abort_missing(false)
             .run(&mut connection)
             .map_err(|source| StoreError::MigrateSqlite {
@@ -260,6 +226,49 @@ impl SqliteStore {
                 source,
             })?;
         Ok(())
+    }
+
+    /// A copy of this database's committed contents at `path`, read without
+    /// writing to this database, with this store's schema and settings.
+    pub(crate) fn snapshot_into(&self, path: &Path) -> Result<Self, StoreError> {
+        if !self.config.path.exists() {
+            return Err(StoreError::MissingSqlite {
+                path: self.config.path.clone(),
+            });
+        }
+        let source = self.open_read_only()?;
+        let mut connection = Connection::open(path).map_err(|source| StoreError::OpenSqlite {
+            path: path.to_owned(),
+            source,
+        })?;
+        let snapshot_error = |error| StoreError::CopySqliteSnapshot {
+            from: self.config.path.clone(),
+            to: path.to_owned(),
+            error: std::io::Error::other(error),
+        };
+        let backup =
+            rusqlite::backup::Backup::new(&source, &mut connection).map_err(snapshot_error)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match backup.step(128).map_err(snapshot_error)? {
+                rusqlite::backup::StepResult::Done => break,
+                _ if std::time::Instant::now() >= deadline => {
+                    return Err(StoreError::SqliteSnapshotChanged {
+                        path: self.config.path.clone(),
+                    });
+                }
+                rusqlite::backup::StepResult::Busy | rusqlite::backup::StepResult::Locked => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => {}
+            }
+        }
+        let mut config = self.config.clone();
+        config.path = path.to_owned();
+        Ok(Self {
+            schema: self.schema,
+            config,
+        })
     }
 
     /// The first migration applied to this existing database that differs

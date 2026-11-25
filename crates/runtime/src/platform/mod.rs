@@ -783,25 +783,27 @@ fn platform_store(
 }
 
 /// The Auth storage of the installation `config` names in `store`, opened
-/// as the server opens it, without running it. An import migrates the
-/// database first, as a start would; an export only reads it, so it reads
-/// one an earlier release made.
+/// as the server opens it, without running it, or in `copy`, a snapshot of
+/// `store`. An import migrates the database it works on first, as a start
+/// would; an export only reads it, so it reads one an earlier release made.
 fn open_installation(
     config: &RuntimeConfig,
     store: &crate::storage::SqliteStore,
+    copy: Option<&crate::storage::SqliteStore>,
     migrate: bool,
 ) -> Result<auth::OAuthStorage, RuntimeError> {
     if migrate {
-        store
+        copy.unwrap_or(store)
             .migrate()
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     }
     let keys = callout_keys(config)?;
-    let auth = Arc::new(SqliteAuthorizationStore::open(
-        store,
-        config,
-        keys.target_account(),
-    )?);
+    let auth = Arc::new(match copy {
+        Some(copy) => {
+            SqliteAuthorizationStore::open_copy(copy, store, config, keys.target_account())?
+        }
+        None => SqliteAuthorizationStore::open(store, config, keys.target_account())?,
+    });
     let custody = auth::oauth_storage_key(config)?;
     auth::OAuthStorage::open(auth, &custody)
         .map_err(|error| RuntimeError::Platform(error.to_string()))
@@ -848,7 +850,7 @@ pub async fn export_installation(
         let config = config.clone();
         auth::blocking(move || {
             let (store, identity) = platform_store(&config)?;
-            Ok::<_, RuntimeError>((open_installation(&config, &store, false)?, identity))
+            Ok::<_, RuntimeError>((open_installation(&config, &store, None, false)?, identity))
         })
         .await?
     };
@@ -858,7 +860,7 @@ pub async fn export_installation(
         "the export would carry another installation's data",
     )
     .await?;
-    let scratch = scratch_directory(&storage)?;
+    let scratch = scratch_directory(&storage.authority.custody_directory)?;
     auth::export_installation(&storage, &nats, scratch.path(), out)
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))
@@ -890,24 +892,32 @@ pub async fn import_installation(
         "the import would load data into another installation's broker",
     )
     .await?;
+    let scratch = scratch_directory(store.path())?;
+    // A preview works on a copy of the database, migrated as the import
+    // would migrate it, so it changes nothing here, schema included.
     let storage = {
-        let config = config.clone();
-        auth::blocking(move || open_installation(&config, &store, true)).await?
+        let (config, folder) = (config.clone(), scratch.path().to_owned());
+        auth::blocking(move || {
+            let copy = check
+                .then(|| store.snapshot_into(&folder.join("platform.sqlite")))
+                .transpose()
+                .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+            open_installation(&config, &store, copy.as_ref(), true)
+        })
+        .await?
     };
-    let scratch = scratch_directory(&storage)?;
     auth::import_installation(&storage, &nats, scratch.path(), input, check)
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))
 }
 
-/// A directory of this run's own beside the platform database, for the
-/// encrypted spools of the bundles it reads and writes. Each export or
+/// A directory of this run's own beside `beside`, the platform database or
+/// what it keeps next to it, for the encrypted spools of the bundles a run
+/// reads and writes and a preview's copy of the database. Each export or
 /// import makes a new one, so runs that overlap never share or remove each
 /// other's files, and it goes when the run ends.
-fn scratch_directory(storage: &auth::OAuthStorage) -> Result<tempfile::TempDir, RuntimeError> {
-    let parent = storage
-        .authority
-        .custody_directory
+fn scratch_directory(beside: &std::path::Path) -> Result<tempfile::TempDir, RuntimeError> {
+    let parent = beside
         .parent()
         .ok_or_else(|| RuntimeError::Platform("the platform database has no folder".into()))?;
     tempfile::Builder::new()

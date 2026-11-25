@@ -481,7 +481,7 @@ impl SqliteAuthorizationStore {
         config: &crate::RuntimeConfig,
         account: &str,
     ) -> Result<Self, crate::supervisor::RuntimeError> {
-        Self::from_configured_connection(store.open()?, config, account)
+        Self::from_configured_connection(store.open()?, config, account, store)
     }
 
     pub(crate) fn open_read_only(
@@ -489,13 +489,25 @@ impl SqliteAuthorizationStore {
         config: &crate::RuntimeConfig,
         account: &str,
     ) -> Result<Self, crate::supervisor::RuntimeError> {
-        Self::from_configured_connection(store.open_read_only()?, config, account)
+        Self::from_configured_connection(store.open_read_only()?, config, account, store)
+    }
+
+    /// Opens `copy`, a snapshot of the installation's database `store`, with
+    /// the issuer custody that belongs beside `store`, which it only reads.
+    pub(crate) fn open_copy(
+        copy: &crate::storage::SqliteStore,
+        store: &crate::storage::SqliteStore,
+        config: &crate::RuntimeConfig,
+        account: &str,
+    ) -> Result<Self, crate::supervisor::RuntimeError> {
+        Self::from_configured_connection(copy.open()?, config, account, store)
     }
 
     fn from_configured_connection(
         connection: rusqlite::Connection,
         config: &crate::RuntimeConfig,
         account: &str,
+        store: &crate::storage::SqliteStore,
     ) -> Result<Self, crate::supervisor::RuntimeError> {
         use crate::supervisor::RuntimeError;
         let authorization = config
@@ -556,11 +568,7 @@ impl SqliteAuthorizationStore {
         };
         // Successor custody follows the writable, persistent Auth database, not
         // the provisioned seed that may live on a read-only configuration mount.
-        let custody_directory = connection
-            .path()
-            .map(PathBuf::from)
-            .ok_or_else(|| RuntimeError::Platform("Auth database path is unavailable".into()))?
-            .with_extension("issuer-keys");
+        let custody_directory = store.path().with_extension("issuer-keys");
         let store = Self::from_connection(connection, signer, settings, custody_directory)
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
         let initialized: bool = store

@@ -201,3 +201,43 @@ async fn export_and_import_keep_to_their_own_working_folder() {
     );
     assert_eq!(listing(), before);
 }
+
+/// A preview only reads the database it previews against: it migrates and
+/// rehearses a copy, so it reports what the import would do while another
+/// connection holds the database's write lock, which a migration or any
+/// write here would wait for, and leaves the database as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_import_preview_writes_nothing_to_the_database() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let ports = reserve(2);
+    let (source, _source_broker) =
+        started_installation(&directory.path().join("source"), &ports[..4]).await;
+    let (target, _target_broker) =
+        started_installation(&directory.path().join("target"), &ports[4..]).await;
+    let person = with_store(&source, |store| {
+        create_user(store, &administrator_of(store), crate::clock::unix_now())
+    })
+    .await;
+    let content = exported(&source).await;
+
+    let crate::StorageBackend::Sqlite(storage) = target.platform_storage_backend().unwrap();
+    let holder = rusqlite::Connection::open(&storage.path).unwrap();
+    holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let report =
+        crate::platform::import_installation(&target, &mut std::io::Cursor::new(&content), true)
+            .await
+            .unwrap();
+    holder.execute_batch("ROLLBACK").unwrap();
+    drop(holder);
+    assert_eq!(report["applied"], false);
+    assert!(
+        report["created"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["kind"] == "user" && item["id"] == person.as_str()),
+        "{report}"
+    );
+    assert!(!has_user(&target, &person).await);
+}

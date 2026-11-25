@@ -39,7 +39,7 @@ reads the platform database and never migrates it, so the build under test
 can export a database an earlier release made and still runs. Import runs
 against an installation that has started once (so its `secrets.toml` and
 database exist) and is stopped, with its NATS running; it migrates the
-database first, as a start would. Before either reads data from NATS or
+database first, as a start would (a preview migrates a copy instead). Before either reads data from NATS or
 changes anything, it confirms, as `backup` and a start do, that the broker
 records this installation and the JetStream identity of its platform
 database; a broker that has no record, belongs to another installation, or
@@ -147,7 +147,11 @@ ready. A deployment whose data did not finish loading is reported, and
 running the same import again finishes it; records already there are found
 the same the second time and change nothing.
 
-`--check` runs the same transaction and rolls it back, and loads nothing.
+`--check` changes nothing here, the database's schema included. It copies
+the platform database into its working folder, migrates the copy as the
+import would migrate the database, runs the same transaction there and rolls
+it back, and loads nothing; it only reads the database, NATS and the State
+bucket.
 
 ### What the import decides
 
