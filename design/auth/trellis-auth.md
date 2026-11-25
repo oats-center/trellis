@@ -1038,7 +1038,10 @@ trust before spending credentials. The SDK awaits these operations and never
 retries an ambiguous token exchange. An HTTP 429 is not ambiguous: a rate
 limiter, Trellis's own or a proxy's, refuses before anything reads the token, so
 the SDK clears the spent marker (`abandon_rotation` / `abandonRotation`) and
-reports the issuer busy rather than demanding a new login. Discovery offers the
+reports the issuer busy rather than demanding a new login. A connected session
+whose renewal meets the limit keeps running on its still-valid admission and
+renews again later, at least 10 seconds on; every participant behind one
+address shares the budget, so other people's sign-ins can spend it. Discovery offers the
 token endpoint's current DPoP nonce in a `DPoP-Nonce` header, which browser
 apps on other origins may read too, so a native or browser code exchange or
 refresh needs one token request instead of a challenge and a retry. Failed acquisition does not release another
