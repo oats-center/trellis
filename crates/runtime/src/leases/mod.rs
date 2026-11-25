@@ -78,7 +78,7 @@ impl LeaseManager {
         Ok(manager)
     }
 
-    /// Whether NATS has stopped expiring the lease bucket's records.
+    /// Whether NATS still expires the lease bucket's records.
     ///
     /// Every record expires once it is older than the bucket's `max_age`, the
     /// lease lifetime, and a held lease is rewritten every renewal interval,
@@ -86,28 +86,16 @@ impl LeaseManager {
     /// interval. An older one means NATS stopped expiring the bucket, as it
     /// does after a critical storage write error such as a full disk, until
     /// NATS restarts. The age is taken from the stream's oldest record and
-    /// the server's own clock, so clock skew between this host and NATS
-    /// cannot make a healthy bucket look stalled.
+    /// the server's own clock. A reply without a usable server clock gives
+    /// [`ExpiryCheck::Unknown`]: comparing the broker's record time with this
+    /// host's clock would mistake clock skew for a stall.
     ///
     /// # Errors
     ///
     /// Returns [`LeaseError::Backend`] when NATS does not answer the stream
-    /// info request.
-    pub async fn stalled_expiry(&self) -> Result<Option<StalledExpiry>, LeaseError> {
-        #[derive(serde::Deserialize)]
-        struct Info {
-            /// The server's clock when it answered.
-            ts: Option<String>,
-            state: State,
-        }
-        #[derive(serde::Deserialize)]
-        struct State {
-            messages: u64,
-            first_ts: String,
-        }
-        let parse = |at: &str| {
-            time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339).ok()
-        };
+    /// info request. That, like [`ExpiryCheck::Unknown`], says nothing about
+    /// whether NATS still expires the records.
+    pub async fn check_expiry(&self) -> Result<ExpiryCheck, LeaseError> {
         let store = self.store()?;
         let backend = |message: String| LeaseError::Backend {
             key: None,
@@ -118,35 +106,19 @@ impl LeaseManager {
             .jetstream
             .as_ref()
             .ok_or_else(|| backend("lease KV bucket is not open".to_owned()))?;
-        let info = match jetstream
-            .request::<_, _, jetstream::response::Response<Info>>(
+        match jetstream
+            .request::<_, _, jetstream::response::Response<StreamInfoReply>>(
                 format!("STREAM.INFO.{}", store.stream_name),
                 &serde_json::json!({}),
             )
             .await
         {
-            Ok(jetstream::response::Response::Ok(info)) => info,
-            Ok(jetstream::response::Response::Err { error }) => {
-                return Err(backend(error.to_string()))
+            Ok(jetstream::response::Response::Ok(info)) => {
+                Ok(info.expiry(&store.stream_name, self.ttl, self.renew))
             }
-            Err(error) => return Err(backend(error.to_string())),
-        };
-        let Some(oldest) = parse(&info.state.first_ts).filter(|_| info.state.messages > 0) else {
-            return Ok(None);
-        };
-        // An older server does not send its clock; this host's stands in.
-        let now = info
-            .ts
-            .as_deref()
-            .and_then(parse)
-            .unwrap_or_else(time::OffsetDateTime::now_utc);
-        Ok(
-            (now - oldest > self.ttl + self.renew).then(|| StalledExpiry {
-                stream: store.stream_name.clone(),
-                oldest,
-                ttl: self.ttl,
-            }),
-        )
+            Ok(jetstream::response::Response::Err { error }) => Err(backend(error.to_string())),
+            Err(error) => Err(backend(error.to_string())),
+        }
     }
 
     /// Attempts to acquire a runtime lease.
@@ -542,6 +514,61 @@ fn broker_failure(error: &(dyn StdError + 'static)) -> String {
 /// What a lease write that timed out tells an operator.
 pub(crate) const LEASE_BUCKET_SILENT: &str = "The lease bucket stopped answering: NATS did not \
     confirm the write in time. Check the NATS log for storage errors, such as a full disk.";
+
+/// What [`LeaseManager::check_expiry`] observed of the lease bucket.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExpiryCheck {
+    /// No record is older than its lifetime by the server's clock, or the
+    /// bucket is empty: NATS expires the records.
+    Expiring,
+    /// NATS has stopped expiring the records.
+    Stalled(StalledExpiry),
+    /// The reply carried no usable server clock, so the oldest record's age
+    /// is not known.
+    Unknown,
+}
+
+/// The part of a JetStream stream info reply the expiry check reads.
+#[derive(serde::Deserialize)]
+struct StreamInfoReply {
+    /// The server's clock when it answered.
+    ts: Option<String>,
+    state: StreamInfoState,
+}
+
+#[derive(serde::Deserialize)]
+struct StreamInfoState {
+    messages: u64,
+    first_ts: String,
+}
+
+impl StreamInfoReply {
+    /// Whether the oldest record outlived `ttl` plus one `renew` interval,
+    /// both times by the server's clock.
+    fn expiry(&self, stream: &str, ttl: Duration, renew: Duration) -> ExpiryCheck {
+        let parse = |at: &str| {
+            time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339).ok()
+        };
+        if self.state.messages == 0 {
+            return ExpiryCheck::Expiring;
+        }
+        let (Some(oldest), Some(now)) = (
+            parse(&self.state.first_ts),
+            self.ts.as_deref().and_then(parse),
+        ) else {
+            return ExpiryCheck::Unknown;
+        };
+        if now - oldest > ttl + renew {
+            ExpiryCheck::Stalled(StalledExpiry {
+                stream: stream.to_owned(),
+                oldest,
+                ttl,
+            })
+        } else {
+            ExpiryCheck::Expiring
+        }
+    }
+}
 
 /// Records in the lease bucket older than their lifetime: NATS has stopped
 /// expiring them, and a lease such a record holds is never freed meanwhile.

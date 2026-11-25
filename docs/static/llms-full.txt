@@ -1852,7 +1852,9 @@ server whose lease bucket holds a record older than its lifetime logs at error,
 once a minute, that NATS has stopped expiring the runtime lease records, as
 NATS does after a storage write error such as a full disk until it restarts:
 free disk on the NATS host and restart NATS, and the server takes its leases
-and serves again by itself.
+and serves again by itself. The record's age is judged by the NATS server's
+clock only; without it the check is inconclusive (a `trellis doctor`
+warning), and a check that fails or times out never ends a reported stall.
 
 ## Trellis For TypeScript Consumers
 

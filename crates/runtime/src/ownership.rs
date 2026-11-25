@@ -25,7 +25,9 @@ use futures_util::StreamExt;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use crate::leases::{LeaseError, LeaseFence, LeaseGuard, LeaseKey, LeaseManager, Renewal};
+use crate::leases::{
+    ExpiryCheck, LeaseError, LeaseFence, LeaseGuard, LeaseKey, LeaseManager, Renewal,
+};
 use crate::shutdown::StopHandle;
 use crate::supervisor::{RuntimeError, OWNERSHIP_SHUTDOWN_TIMEOUT};
 use crate::{ResolvedLeasesConfig, RuntimeMode, SubsystemName};
@@ -121,7 +123,11 @@ impl RuntimeOwnership {
     /// bucket. When it has stopped, as after a storage write error, a lease
     /// record that outlived its lifetime is never freed, and no runtime can
     /// start this work until NATS restarts; that is logged at error, at most
-    /// once a minute while it lasts, and becomes the standby reason.
+    /// once a minute while it lasts, and becomes the standby reason. It stops
+    /// being the reason, and recovery is logged, only once an inspection shows NATS
+    /// expiring the records again; one that fails, times out or can't date
+    /// the records keeps the last reason. Without a stall found, a held lease
+    /// reads as held by another runtime.
     pub(crate) async fn acquire_when_free(
         manager: &LeaseManager,
         groups: &[OwnerGroup],
@@ -129,6 +135,9 @@ impl RuntimeOwnership {
         standing_by: impl Fn(String),
     ) -> Option<Self> {
         let mut last_failure = None;
+        // The reason of the stall found last, until NATS is seen expiring
+        // the records again.
+        let mut stalled: Option<String> = None;
         let mut stalled_log = trellis_rs::__internal::LogLimit::default();
         loop {
             if stop.is_stopped() {
@@ -144,49 +153,60 @@ impl RuntimeOwnership {
                     return Some(ownership);
                 }
                 Err(error) => {
-                    let stalled = match manager.stalled_expiry().await {
-                        Ok(stalled) => stalled,
+                    // An inspection that fails or can't date the records says
+                    // nothing either way: a stall found earlier stays the
+                    // reason until one shows NATS expires the records again.
+                    let expiry = match manager.check_expiry().await {
+                        Ok(expiry) => expiry,
                         Err(inspect) => {
                             tracing::debug!(error = %inspect, "lease bucket could not be inspected");
-                            None
+                            ExpiryCheck::Unknown
                         }
                     };
-                    let reason = match stalled {
-                        Some(stalled) => {
-                            let reason = stalled.to_string();
+                    if expiry == ExpiryCheck::Expiring {
+                        stalled = None;
+                        if stalled_log.recovered() {
+                            tracing::info!("NATS expires the runtime lease records again");
+                        }
+                    }
+                    let reason = match expiry {
+                        ExpiryCheck::Stalled(found) => {
+                            let reason = found.to_string();
                             if let Some(held_back) = stalled_log.admit() {
                                 tracing::error!(
-                                    stream = %stalled.stream,
-                                    oldest = %stalled.oldest,
-                                    ttl_secs = stalled.ttl.as_secs(),
+                                    stream = %found.stream,
+                                    oldest = %found.oldest,
+                                    ttl_secs = found.ttl.as_secs(),
                                     held_back,
                                     error = %error,
                                     "{reason}"
                                 );
                             }
+                            stalled = Some(reason.clone());
                             reason
                         }
-                        None => {
-                            if stalled_log.recovered() {
-                                tracing::info!("NATS expires the runtime lease records again");
+                        ExpiryCheck::Expiring | ExpiryCheck::Unknown => match &stalled {
+                            Some(reason) => reason.clone(),
+                            None => {
+                                let failure = error.to_string();
+                                if last_failure.as_ref() != Some(&failure) {
+                                    tracing::warn!(
+                                        error = %error,
+                                        "runtime is standing by until it can own its work"
+                                    );
+                                }
+                                match &error {
+                                    RuntimeError::OwnerHeld { key, .. } => format!(
+                                        "another Trellis runtime holds the lease {} in {}; this \
+                                        one takes the work over when that lease is released or \
+                                        expires",
+                                        key.as_str(),
+                                        manager.bucket
+                                    ),
+                                    _ => failure,
+                                }
                             }
-                            let failure = error.to_string();
-                            if last_failure.as_ref() != Some(&failure) {
-                                tracing::warn!(
-                                    error = %error,
-                                    "runtime is standing by until it can own its work"
-                                );
-                            }
-                            match &error {
-                                RuntimeError::OwnerHeld { key, .. } => format!(
-                                    "another Trellis runtime holds the lease {} in {}; this one \
-                                    takes the work over when that lease is released or expires",
-                                    key.as_str(),
-                                    manager.bucket
-                                ),
-                                _ => failure,
-                            }
-                        }
+                        },
                     };
                     last_failure = Some(error.to_string());
                     standing_by(reason);
@@ -987,6 +1007,135 @@ mod tests {
             message.starts_with(crate::leases::LEASE_BUCKET_SILENT),
             "{message}"
         );
+    }
+
+    /// A runtime standing by while NATS has stopped expiring the lease record
+    /// that holds its work. Before the record has outlived its lifetime, the
+    /// lease reads as held by another runtime. Once it has, the stall is the
+    /// reason. While the broker then answers nothing, each inspection times
+    /// out, which says nothing about expiry: the stall stays the reason and no
+    /// recovery is logged. Only once the broker answers and shows the records
+    /// expiring is recovery logged and the reason the ordinary one again.
+    /// Before, a timed-out inspection counted as no stall, logging a recovery
+    /// nobody saw and dropping the reason that told the operator what to do.
+    #[tokio::test]
+    async fn a_stall_stays_the_reason_until_nats_is_seen_expiring_again() {
+        const STALLED: &str = "NATS has stopped expiring the runtime lease records";
+        const HELD: &str = "another Trellis runtime holds the lease platform.owner";
+        const RECOVERED: &str = "NATS expires the runtime lease records again";
+
+        #[derive(Clone, Default)]
+        struct Logged(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Logged {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let logged = Logged::default();
+        let writer = logged.clone();
+        let _logging = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
+        let recoveries = || {
+            String::from_utf8_lossy(&logged.0.lock().unwrap())
+                .matches(RECOVERED)
+                .count()
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let (server, manager, config, _replies, direct) =
+            broker_and_manager(directory.path()).await;
+        // A record that never expires stands in for one NATS stopped
+        // expiring, as it does after a storage write error.
+        let jetstream = jetstream::new(direct);
+        let stream = format!("KV_{}", config.bucket);
+        let mut settings = jetstream
+            .get_stream(&stream)
+            .await
+            .unwrap()
+            .info()
+            .await
+            .unwrap()
+            .config
+            .clone();
+        settings.allow_message_ttl = true;
+        jetstream.update_stream(settings).await.unwrap();
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Nats-TTL", "never");
+        jetstream
+            .publish_with_headers(
+                format!("$KV.{}.platform.owner", config.bucket),
+                headers,
+                "a stopped runtime".into(),
+            )
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+
+        let (reasons, mut told) = tokio::sync::mpsc::unbounded_channel();
+        let stop = StopHandle::new();
+        let standing_by = RuntimeOwnership::acquire_when_free(
+            &manager,
+            &[OwnerGroup::Platform],
+            &stop,
+            move |reason| {
+                let _ = reasons.send(reason);
+            },
+        );
+        async fn next(told: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> String {
+            tokio::time::timeout(Duration::from_secs(10), told.recv())
+                .await
+                .expect("the runtime gave a standby reason")
+                .unwrap()
+        }
+        let observe = async {
+            let first = next(&mut told).await;
+            assert!(first.starts_with(HELD), "{first}");
+            loop {
+                let reason = next(&mut told).await;
+                if reason.contains(STALLED) {
+                    break;
+                }
+                assert!(reason.starts_with(HELD), "{reason}");
+            }
+
+            // Every inspection while the broker is stopped times out.
+            signal_broker(&server, "-STOP");
+            for _ in 0..3 {
+                let reason = next(&mut told).await;
+                assert!(reason.contains(STALLED), "{reason}");
+            }
+            assert_eq!(recoveries(), 0);
+            signal_broker(&server, "-CONT");
+
+            // The record goes, as when NATS restarts, and another runtime
+            // holds the lease with a record that expires.
+            let leases = jetstream.get_key_value(&config.bucket).await.unwrap();
+            leases.purge("platform.owner").await.unwrap();
+            leases
+                .create("platform.owner", "owner-b".into())
+                .await
+                .unwrap();
+            loop {
+                let reason = next(&mut told).await;
+                if reason.starts_with(HELD) {
+                    break;
+                }
+                assert!(reason.contains(STALLED), "{reason}");
+            }
+            assert_eq!(recoveries(), 1);
+            stop.stop();
+        };
+        let (ownership, ()) = tokio::join!(standing_by, observe);
+        assert!(ownership.is_none());
     }
 
     #[test]

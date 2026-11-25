@@ -29,6 +29,7 @@ use super::rpc::{caller, rpc_error};
 use super::{blocking, AuthError, OAuthEngine};
 use crate::capacity::{Capacity, Shortages};
 use crate::health::HealthStore;
+use crate::leases::ExpiryCheck;
 use crate::{ListenerTransport, RuntimeConfig, RuntimeMode, StorageBackend};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -571,9 +572,15 @@ async fn jetstream(diagnostics: &Diagnostics) -> (Status, Value) {
             .map(|refusal| (Status::Problem, refusal)),
     );
     // Records NATS stopped expiring hold their leases until it restarts.
-    match diagnostics.leases.stalled_expiry().await {
-        Ok(Some(stalled)) => findings.push((Status::Problem, stalled.to_string())),
-        Ok(None) => {}
+    match diagnostics.leases.check_expiry().await {
+        Ok(ExpiryCheck::Stalled(stalled)) => findings.push((Status::Problem, stalled.to_string())),
+        Ok(ExpiryCheck::Expiring) => {}
+        Ok(ExpiryCheck::Unknown) => findings.push((
+            Status::Warning,
+            "NATS did not send its clock with the runtime lease bucket's stream info, so \
+            whether it still expires the lease records is not known"
+                .to_owned(),
+        )),
         Err(error) => findings.push((
             Status::Problem,
             format!("the runtime lease bucket could not be inspected: {error}"),

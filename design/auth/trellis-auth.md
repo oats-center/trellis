@@ -1613,6 +1613,14 @@ critical storage write error such as a full disk, until NATS restarts; the
 records then hold their leases indefinitely. So each failed acquisition also
 reads the bucket stream's oldest record time and the server's clock from
 JetStream stream info, and an older record means NATS stopped expiring it.
+Both times come from the server, since the broker's record time compared with
+the Trellis host's clock would read skew as a stall: a reply without a usable
+server clock is inconclusive, and so is an inspection that fails or times out.
+Only an observation of records within their lifetime clears a stall found
+earlier and logs the recovery; an inconclusive one keeps the last reason, and
+without a stall found a held lease reads as held by another runtime.
+`Auth.Runtime.Diagnostics` reports a reply without the server clock as a
+warning.
 That is logged at error with the stream, the record's time and the advice to
 free disk and restart NATS, at most once a minute while it lasts, becomes the
 role's standby reason, and is a problem finding in `Auth.Runtime.Diagnostics`.

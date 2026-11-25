@@ -413,6 +413,16 @@ and in every 503 from Auth's pages. `trellis doctor` reports it as a problem
 too: in the JetStream section while Auth runs, and from `/readyz` while it
 stands by.
 
+The age comes from the NATS server's own clock, never the Trellis host's, so
+clock skew between the two hosts can't make a healthy bucket look stuck. If
+the server doesn't send its clock with the stream info, the age is unknown:
+`trellis doctor` gives a warning saying so, and the server judges nothing
+from it. Once the message has appeared, it stays the reason until the server
+sees NATS expiring the records again. A check that fails or times out, as
+while NATS is frozen, changes nothing and logs no recovery. Until a stuck
+record is found, a lease another server holds reads as `another Trellis
+runtime holds the lease …`.
+
 To recover, free disk space on the NATS host, then restart NATS. The records
 expire again, and the Trellis server takes its leases within one renewal
 interval and serves, with no restart of its own. Restarting NATS is the fix
