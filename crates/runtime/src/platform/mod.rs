@@ -899,7 +899,13 @@ pub async fn import_installation(
         let (config, folder) = (config.clone(), scratch.path().to_owned());
         auth::blocking(move || {
             let copy = check
-                .then(|| store.snapshot_into(&folder.join("platform.sqlite")))
+                .then(|| {
+                    store.snapshot_into(
+                        &folder.join("platform.sqlite"),
+                        crate::storage::SNAPSHOT_PAGES_PER_STEP,
+                        crate::storage::SNAPSHOT_STALL_LIMIT,
+                    )
+                })
                 .transpose()
                 .map_err(|error| RuntimeError::Platform(error.to_string()))?;
             open_installation(&config, &store, copy.as_ref(), true)

@@ -57,7 +57,9 @@ the export is lost, as for a [service move](/guides/move-a-service).
 
 Set up the new installation and start it once, so that it has its keys and
 database, then stop the server. Leave its NATS running. Check the import
-first; it changes nothing:
+first; it changes nothing. It works on a copy of the database, which takes as
+long as the database needs; it fails only if other programs keep changing or
+locking the database so the copy makes no progress for 10 seconds:
 
 ```sh
 trellis-server import trellis.trellis-installation --passphrase-file pass.txt --check

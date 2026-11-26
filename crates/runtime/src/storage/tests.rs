@@ -199,6 +199,86 @@ fn migration_check_can_run_while_transactions_commit() -> Result<(), Box<dyn std
     })
 }
 
+/// A source store filled with `rows` rows of one kilobyte on 512-byte pages,
+/// so copying it one page per step takes many thousands of steps.
+fn large_store(
+    directory: &Path,
+    rows: i64,
+) -> Result<(SqliteStore, Connection), Box<dyn std::error::Error>> {
+    let path = directory.join("platform.sqlite");
+    let connection = Connection::open(&path)?;
+    connection.execute_batch("PRAGMA page_size = 512; PRAGMA journal_mode = wal;")?;
+    connection.execute_batch("CREATE TABLE copy_probe (id INTEGER PRIMARY KEY, value BLOB)")?;
+    connection.execute(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1) \
+        INSERT INTO copy_probe (value) SELECT randomblob(1024) FROM n",
+        [rows],
+    )?;
+    Ok((
+        SqliteStore::new(SubsystemName::Platform, sqlite_config(path)),
+        connection,
+    ))
+}
+
+#[test]
+fn snapshot_that_keeps_progressing_outlasts_the_stall_limit(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let (store, _connection) = large_store(directory.path(), 40_960)?;
+    let stall_limit = Duration::from_millis(40);
+
+    let started = std::time::Instant::now();
+    let copy = store.snapshot_into(&directory.path().join("copy.sqlite"), 1, stall_limit)?;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed > stall_limit * 3,
+        "the copy must run well past the stall limit to show that only stalls fail ({elapsed:?})"
+    );
+    let rows: i64 =
+        copy.open_read_only()?
+            .query_row("SELECT COUNT(*) FROM copy_probe", [], |row| row.get(0))?;
+    assert_eq!(rows, 40_960, "the snapshot holds every committed row");
+    Ok(())
+}
+
+#[test]
+fn snapshot_fails_while_another_connection_keeps_changing_the_source(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let (store, connection) = large_store(directory.path(), 2_048)?;
+    let stall_limit = Duration::from_millis(200);
+    let stop = std::sync::atomic::AtomicBool::new(false);
+
+    let result = std::thread::scope(|scope| {
+        let stop = &stop;
+        let writer = scope.spawn(move || -> rusqlite::Result<()> {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                connection.execute(
+                    "UPDATE copy_probe SET value = randomblob(1024) WHERE id = 1",
+                    [],
+                )?;
+            }
+            Ok(())
+        });
+        let result = store.snapshot_into(&directory.path().join("copy.sqlite"), 1, stall_limit);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().expect("writer thread")?;
+        Ok::<_, rusqlite::Error>(result)
+    })?;
+
+    let error = result.expect_err("a source that changes on every step never finishes copying");
+    let StoreError::SqliteSnapshotChanged { stalled_for, .. } = error else {
+        panic!("unexpected error: {error}");
+    };
+    assert_eq!(stalled_for, stall_limit);
+    assert!(
+        error.to_string().contains("made no progress"),
+        "the message names the stall, not the copy time: {error}"
+    );
+    Ok(())
+}
+
 #[test]
 fn migrated_events_store_orders_events_and_dead_letters_by_timestamp(
 ) -> Result<(), Box<dyn std::error::Error>> {
