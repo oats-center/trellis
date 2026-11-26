@@ -199,15 +199,18 @@ fn migration_check_can_run_while_transactions_commit() -> Result<(), Box<dyn std
     })
 }
 
-/// A source store filled with `rows` rows of one kilobyte on 512-byte pages,
-/// so copying it one page per step takes many thousands of steps.
+/// A source store filled with `rows` rows of one kilobyte on 512-byte pages
+/// in `journal_mode`, so copying it one page per step takes many thousands
+/// of steps.
 fn large_store(
     directory: &Path,
     rows: i64,
+    journal_mode: &str,
 ) -> Result<(SqliteStore, Connection), Box<dyn std::error::Error>> {
     let path = directory.join("platform.sqlite");
     let connection = Connection::open(&path)?;
-    connection.execute_batch("PRAGMA page_size = 512; PRAGMA journal_mode = wal;")?;
+    connection.pragma_update(None, "page_size", 512)?;
+    connection.pragma_update(None, "journal_mode", journal_mode)?;
     connection.execute_batch("CREATE TABLE copy_probe (id INTEGER PRIMARY KEY, value BLOB)")?;
     connection.execute(
         "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1) \
@@ -220,25 +223,63 @@ fn large_store(
     ))
 }
 
+/// Another connection takes the source's exclusive lock again and again,
+/// for a fifth of the stall limit each time, and lets the copy through only
+/// until it has written another twentieth of the database to the
+/// destination. Every wait is far shorter than the limit and is followed by
+/// progress, while together they take several times the limit, however
+/// fast the machine copies.
 #[test]
 fn snapshot_that_keeps_progressing_outlasts_the_stall_limit(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let (store, _connection) = large_store(directory.path(), 40_960)?;
-    let stall_limit = Duration::from_millis(40);
+    // A rollback journal, where an exclusive lock keeps readers out. Taking
+    // and releasing it without writing leaves the content as it is, so the
+    // copy is never restarted.
+    let (store, connection) = large_store(directory.path(), 8_192, "delete")?;
+    let destination = directory.path().join("copy.sqlite");
+    let stall_limit = Duration::from_secs(1);
+    let hold = stall_limit / 5;
+    let share = std::fs::metadata(directory.path().join("platform.sqlite"))?.len() / 20;
+    let finished = std::sync::atomic::AtomicBool::new(false);
 
-    let started = std::time::Instant::now();
-    let copy = store.snapshot_into(&directory.path().join("copy.sqlite"), 1, stall_limit)?;
-    let elapsed = started.elapsed();
+    let (copy, elapsed, holds) = std::thread::scope(|scope| {
+        let (finished, destination) = (&finished, &destination);
+        let holder = scope.spawn(move || -> rusqlite::Result<u32> {
+            let written = || std::fs::metadata(destination).map_or(0, |meta| meta.len());
+            let mut holds = 0;
+            while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                let before = written();
+                connection.execute_batch("BEGIN EXCLUSIVE")?;
+                std::thread::sleep(hold);
+                connection.execute_batch("ROLLBACK")?;
+                holds += 1;
+                while written() < before + share
+                    && !finished.load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    std::thread::sleep(Duration::from_micros(100));
+                }
+            }
+            Ok(holds)
+        });
+        let started = std::time::Instant::now();
+        let copy = store.snapshot_into(destination, 1, stall_limit);
+        let elapsed = started.elapsed();
+        finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        let holds = holder.join().expect("lock holder thread")?;
+        Ok::<_, rusqlite::Error>((copy, elapsed, holds))
+    })?;
+    let copy = copy?;
 
     assert!(
         elapsed > stall_limit * 3,
-        "the copy must run well past the stall limit to show that only stalls fail ({elapsed:?})"
+        "the copy must run well past the stall limit to show that only stalls fail \
+        ({elapsed:?} over {holds} holds)"
     );
     let rows: i64 =
         copy.open_read_only()?
             .query_row("SELECT COUNT(*) FROM copy_probe", [], |row| row.get(0))?;
-    assert_eq!(rows, 40_960, "the snapshot holds every committed row");
+    assert_eq!(rows, 8_192, "the snapshot holds every committed row");
     Ok(())
 }
 
@@ -246,7 +287,7 @@ fn snapshot_that_keeps_progressing_outlasts_the_stall_limit(
 fn snapshot_fails_while_another_connection_keeps_changing_the_source(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let (store, connection) = large_store(directory.path(), 2_048)?;
+    let (store, connection) = large_store(directory.path(), 40_960, "wal")?;
     let stall_limit = Duration::from_millis(200);
     let stop = std::sync::atomic::AtomicBool::new(false);
 
