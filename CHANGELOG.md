@@ -39,6 +39,10 @@ and this project adheres to
 
 ### Fixed
 
+- `trellis-server import --check` lists a disabled deployment's data as
+  pending, and its database copy fails only when it stops making progress, not
+  after a fixed time. Sign-ins and role mappings move through disabled
+  providers as they were on the source.
 - Installation export and import refuse a broker that isn't the installation's,
   keep each run's working files apart, preview without touching the target's
   database, split large record kinds so the importer accepts them, fail on
