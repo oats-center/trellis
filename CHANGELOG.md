@@ -22,6 +22,12 @@ and this project adheres to
 
 ### Changed
 
+- Trellis no longer falls back to the system temp directory.
+  `trellis-server check` copies databases beside them. A user installation's
+  runtime folder falls back to `$XDG_STATE_HOME/trellis/run` or
+  `~/.local/state/trellis/run`. Accepted certificate fingerprints and the CLI
+  package cache fail clearly when no home or XDG folder is set.
+  `CertificateAcceptance::for_program` now returns `std::io::Result`.
 - `trellis svc import` recreates the roles, members, grants and app consents
   that use the service's APIs, matching users by ID and then by sign-in, and
   reports what it skipped. Service bundles are format 2; earlier bundles are
