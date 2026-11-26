@@ -985,11 +985,25 @@ impl RuntimePathDefaults {
         })
     }
 
+    /// Reads a folder variable such as `XDG_STATE_HOME` or `HOME` through
+    /// `get`. An empty or relative value counts as unset, as the XDG base
+    /// directory specification requires, so no default folder depends on the
+    /// working directory.
+    pub fn user_folder(
+        get: impl Fn(&str) -> Option<std::ffi::OsString>,
+        variable: &str,
+    ) -> Option<PathBuf> {
+        get(variable)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    }
+
     /// Resolve the ordinary user host's mutable roots for both server startup
     /// and offline administration, using the same XDG environment policy.
     ///
     /// Process-lifetime files go in `$XDG_RUNTIME_DIR/trellis`, or without it
-    /// in the state folder's `run`, never the shared temp directory.
+    /// in the state folder's `run`, never the shared temp directory. An empty
+    /// or relative variable counts as unset.
     ///
     /// # Errors
     /// Fails when a folder's XDG variable is unset and neither HOME nor
@@ -998,29 +1012,30 @@ impl RuntimePathDefaults {
     pub fn user_profile(
         get: impl Fn(&str) -> Option<std::ffi::OsString>,
     ) -> Result<Self, std::io::Error> {
-        let home = get("HOME")
-            .or_else(|| get("USERPROFILE"))
-            .map(PathBuf::from);
+        let folder = |variable: &str| Self::user_folder(&get, variable);
+        let home = folder("HOME").or_else(|| folder("USERPROFILE"));
         let root = |variable: &str, fallback: &str| {
-            get(variable)
-                .map(PathBuf::from)
+            folder(variable)
                 .or_else(|| home.as_ref().map(|home| home.join(fallback)))
                 .map(|path| path.join("trellis"))
                 .ok_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
-                        format!("cannot find the user's Trellis folders: set {variable} or HOME"),
+                        format!(
+                            "cannot find the user's Trellis folders: set {variable} or HOME \
+                            to an absolute path"
+                        ),
                     )
                 })
         };
         let state = root("XDG_STATE_HOME", ".local/state");
-        let runtime = match get("XDG_RUNTIME_DIR") {
-            Some(value) => PathBuf::from(value).join("trellis"),
+        let runtime = match folder("XDG_RUNTIME_DIR") {
+            Some(value) => value.join("trellis"),
             None => state.as_ref().map(|state| state.join("run")).map_err(|_| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "cannot find the user's Trellis folders: set XDG_RUNTIME_DIR, \
-                        XDG_STATE_HOME or HOME",
+                        XDG_STATE_HOME or HOME to an absolute path",
                 )
             })?,
         };

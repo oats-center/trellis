@@ -388,8 +388,9 @@ keeps both in one folder, with the writable part in `<folder>/var`. Without
 either, the installation is in `~/.config/trellis` and its data in the XDG
 folders; PID files go in `$XDG_RUNTIME_DIR/trellis`, or in
 `~/.local/state/trellis/run` (under `$XDG_STATE_HOME` when that is set) when
-there is no runtime folder. A
-`[paths]` section moves any of them:
+there is no runtime folder. An empty or relative `XDG_*` or `HOME` value counts
+as unset, as the XDG specification says, so these folders never depend on the
+working directory. A `[paths]` section moves any of them:
 
 ```toml
 [paths]

@@ -43,7 +43,8 @@ impl CertificateAcceptance {
     ///
     /// # Errors
     ///
-    /// Fails when neither an absolute `XDG_STATE_HOME` nor `HOME` is set, so
+    /// Fails when neither `XDG_STATE_HOME` nor `HOME` is an absolute path
+    /// (an empty or relative value counts as unset, as the XDG spec says), so
     /// there is no private folder to remember accepted certificates in; the
     /// message names the variables to set.
     pub fn for_program(program: &str) -> std::io::Result<Self> {
@@ -51,14 +52,17 @@ impl CertificateAcceptance {
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .or_else(|| {
-                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .filter(|home| home.is_absolute())
+                    .map(|home| home.join(".local/state"))
             })
             .ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     format!(
                         "no folder to remember accepted certificates for {program} in: set \
-                        XDG_STATE_HOME to an absolute path, or set HOME"
+                        XDG_STATE_HOME or HOME to an absolute path"
                     ),
                 )
             })?;
@@ -435,13 +439,26 @@ mod tests {
                 vec![("HOME", home.clone()), ("XDG_STATE_HOME", state.clone())],
                 state.join(servers),
             ),
-            // A relative XDG_STATE_HOME is ignored, as the XDG spec says.
+            // An empty or relative XDG_STATE_HOME is ignored, as the XDG spec
+            // says.
             (
                 vec![("HOME", home.clone()), ("XDG_STATE_HOME", relative.clone())],
                 home.join(".local/state").join(servers),
             ),
+            (
+                vec![("HOME", home.clone()), ("XDG_STATE_HOME", PathBuf::new())],
+                home.join(".local/state").join(servers),
+            ),
             (vec![], PathBuf::new()),
-            (vec![("XDG_STATE_HOME", relative)], PathBuf::new()),
+            (vec![("XDG_STATE_HOME", relative.clone())], PathBuf::new()),
+            (
+                vec![("HOME", PathBuf::new()), ("XDG_STATE_HOME", PathBuf::new())],
+                PathBuf::new(),
+            ),
+            (
+                vec![("HOME", relative.clone()), ("XDG_STATE_HOME", relative)],
+                PathBuf::new(),
+            ),
         ] {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([

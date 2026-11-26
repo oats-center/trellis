@@ -471,15 +471,18 @@ impl ServerPaths {
     }
 
     fn user(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> miette::Result<Self> {
-        let config_root = get("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
+        let folder = |variable: &str| RuntimePathDefaults::user_folder(&get, variable);
+        let config_root = folder("XDG_CONFIG_HOME")
             .or_else(|| {
-                get("HOME")
-                    .or_else(|| get("USERPROFILE"))
-                    .map(|home| PathBuf::from(home).join(".config"))
+                folder("HOME")
+                    .or_else(|| folder("USERPROFILE"))
+                    .map(|home| home.join(".config"))
             })
             .ok_or_else(|| {
-                miette!("cannot find the user's Trellis folders: set XDG_CONFIG_HOME or HOME")
+                miette!(
+                    "cannot find the user's Trellis folders: set XDG_CONFIG_HOME or HOME to an \
+                     absolute path"
+                )
             })?
             .join("trellis");
         let defaults = RuntimePathDefaults::user_profile(&get).into_diagnostic()?;
@@ -1301,7 +1304,9 @@ kind = "sqlite"
 
     /// Without XDG_RUNTIME_DIR, PID files and the like go in a private `run`
     /// folder of the user's state folder, never the shared temp directory,
-    /// and with no folder variable at all the server names what to set.
+    /// and with no folder variable at all the server names what to set. An
+    /// empty or relative variable counts as unset, so the folder never
+    /// depends on the working directory.
     #[cfg(unix)]
     #[test]
     fn runtime_files_fall_back_to_a_private_folder_in_the_state_folder() {
@@ -1339,6 +1344,22 @@ kind = "sqlite"
                 ][..],
                 runtime.join("trellis"),
             ),
+            (
+                &[
+                    ("HOME", home.as_path()),
+                    ("XDG_STATE_HOME", Path::new("")),
+                    ("XDG_RUNTIME_DIR", Path::new("")),
+                ][..],
+                home.join(".local/state/trellis/run"),
+            ),
+            (
+                &[
+                    ("HOME", home.as_path()),
+                    ("XDG_STATE_HOME", Path::new("state")),
+                    ("XDG_RUNTIME_DIR", Path::new("runtime")),
+                ][..],
+                home.join(".local/state/trellis/run"),
+            ),
         ] {
             let paths = resolve(values).expect("resolve user paths");
             assert_eq!(paths.runtime_root, expected);
@@ -1354,6 +1375,21 @@ kind = "sqlite"
             .expect_err("no state or runtime folder")
             .to_string();
         for variable in ["XDG_RUNTIME_DIR", "XDG_STATE_HOME", "HOME"] {
+            assert!(error.contains(variable), "{error}");
+        }
+        let empty = Path::new("");
+        let error = resolve(&[
+            ("HOME", empty),
+            ("USERPROFILE", empty),
+            ("XDG_CONFIG_HOME", empty),
+            ("XDG_DATA_HOME", empty),
+            ("XDG_STATE_HOME", empty),
+            ("XDG_CACHE_HOME", empty),
+            ("XDG_RUNTIME_DIR", empty),
+        ])
+        .expect_err("every folder variable is empty")
+        .to_string();
+        for variable in ["XDG_CONFIG_HOME", "HOME"] {
             assert!(error.contains(variable), "{error}");
         }
     }

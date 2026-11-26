@@ -498,11 +498,23 @@ fn cache_root() -> Result<PathBuf> {
     Ok(std::env::var_os("TRELLIS_CACHE")
         .map(PathBuf::from)
         .or_else(|| {
-            std::env::var_os("XDG_CACHE_HOME").map(|path| PathBuf::from(path).join("trellis"))
+            // An empty or relative XDG_CACHE_HOME or HOME counts as unset, as
+            // the XDG spec says, so the cache never follows the working
+            // directory.
+            let folder = |variable| {
+                std::env::var_os(variable)
+                    .map(PathBuf::from)
+                    .filter(|path| path.is_absolute())
+            };
+            folder("XDG_CACHE_HOME")
+                .map(|path| path.join("trellis"))
+                .or_else(|| folder("HOME").map(|path| path.join(".cache/trellis")))
         })
-        .or_else(|| std::env::var_os("HOME").map(|path| PathBuf::from(path).join(".cache/trellis")))
         .ok_or_else(|| {
-            miette!("no folder for the package cache: set TRELLIS_CACHE, XDG_CACHE_HOME or HOME")
+            miette!(
+                "no folder for the package cache: set TRELLIS_CACHE, or XDG_CACHE_HOME or HOME \
+                 to an absolute path"
+            )
         })?
         .join("oci/source-v1"))
 }
@@ -711,7 +723,8 @@ mod tests {
     /// Fetched packages are cached under TRELLIS_CACHE, else
     /// XDG_CACHE_HOME/trellis, else HOME/.cache/trellis; with none of them
     /// set, caching fails and names the variables instead of writing to the
-    /// shared temp directory.
+    /// shared temp directory. An empty or relative XDG_CACHE_HOME or HOME
+    /// counts as unset, so the cache never lands in the working directory.
     #[test]
     fn package_cache_follows_the_cache_variables_or_fails() {
         // Each case runs in a libtest process of its own, since the folder
@@ -745,6 +758,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let [trellis, xdg, home] =
             ["trellis", "xdg", "home"].map(|name| directory.path().join(name));
+        let (empty, relative) = (PathBuf::new(), PathBuf::from("relative"));
         for (variables, expected) in [
             (
                 vec![
@@ -759,8 +773,28 @@ mod tests {
                 xdg.join("trellis"),
             ),
             (vec![("HOME", &home)], home.join(".cache/trellis")),
+            (
+                vec![("XDG_CACHE_HOME", &empty), ("HOME", &home)],
+                home.join(".cache/trellis"),
+            ),
+            (
+                vec![("XDG_CACHE_HOME", &relative), ("HOME", &home)],
+                home.join(".cache/trellis"),
+            ),
             (vec![], PathBuf::new()),
+            (
+                vec![("XDG_CACHE_HOME", &empty), ("HOME", &empty)],
+                PathBuf::new(),
+            ),
+            (
+                vec![("XDG_CACHE_HOME", &relative), ("HOME", &relative)],
+                PathBuf::new(),
+            ),
         ] {
+            // Each case starts from empty folders, so it sees only its own entry.
+            for folder in [&trellis, &xdg, &home, &directory.path().join("relative")] {
+                let _ = std::fs::remove_dir_all(folder);
+            }
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -772,6 +806,7 @@ mod tests {
                 .env_remove("HOME")
                 .envs(variables)
                 .env("TRELLIS_OCI_CACHE_TEST_EXPECT", &expected)
+                .current_dir(directory.path())
                 .status()
                 .unwrap();
             assert!(status.success(), "case expecting {}", expected.display());

@@ -130,7 +130,7 @@ browser would: its issuer's SHA-256 fingerprint must match
 `TRELLIS_CERTIFICATE_FINGERPRINT`, or `TRELLIS_ACCEPT_SELF_SIGNED=1` accepts it
 on first contact, or the operator accepts it on a terminal. The answer is
 remembered per program and server under `$XDG_STATE_HOME` or `~/.local/state`
-(`for_program` fails when neither is set), a later different certificate is refused,
+(`for_program` fails when neither is an absolute path), a later different certificate is refused,
 and the returned trust carries it into the broker connection. A known CA file
 still works through `discover_native_oauth(issuer, &[ca_path])`. Never disable
 certificate verification.

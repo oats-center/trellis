@@ -50,8 +50,9 @@ build of the built-in package satisfies is taken from that build, which is the
 release published at `ghcr.io/oats-center/trellis`, without downloading it.
 
 Fetched packages are cached in `$TRELLIS_CACHE`, else
-`$XDG_CACHE_HOME/trellis`, else `~/.cache/trellis`. With none of those set,
-a command that fetches a package fails and names the variables.
+`$XDG_CACHE_HOME/trellis`, else `~/.cache/trellis`. An empty or relative
+`XDG_CACHE_HOME` or `HOME` counts as unset. With none of those set, a command
+that fetches a package fails and names the variables.
 
 Package references are declared in `trellis.toml`. Generated Rust and TypeScript
 modules consume exact locked semantic projections; application code does not
@@ -437,8 +438,10 @@ command names a folder installation with `--config`, given its folder or its
 The user installation keeps its PID files and other process-lifetime files in
 `$XDG_RUNTIME_DIR/trellis`, or without it in `run` under its state folder
 (`$XDG_STATE_HOME/trellis/run`, else `~/.local/state/trellis/run`), created
-owner-only. It never uses the shared temp directory, so with none of `HOME`,
-`XDG_STATE_HOME` or `XDG_RUNTIME_DIR` set it stops and names them. The system
+owner-only. An empty or relative `XDG_*` or `HOME` value counts as unset, so
+no default folder follows the working directory. It never uses the shared temp
+directory, so with none of `HOME`, `XDG_STATE_HOME` or `XDG_RUNTIME_DIR` set it
+stops and names them. The system
 installation uses `/run/trellis`; a folder installation uses `var/run`.
 `check` copies each SQLite database into a working folder of its own beside
 that database, which it removes when it ends.

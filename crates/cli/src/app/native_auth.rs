@@ -53,17 +53,20 @@ fn selection_file() -> miette::Result<PathBuf> {
 }
 
 pub(super) fn directory() -> miette::Result<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    // An empty or relative XDG_CONFIG_HOME or HOME counts as unset, as the
+    // XDG spec says.
+    let folder = |variable| {
+        std::env::var_os(variable)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+    };
+    let base = folder("XDG_CONFIG_HOME")
+        .or_else(|| folder("HOME").map(|home| home.join(".config")))
         .ok_or_else(|| {
-            miette::miette!("HOME or XDG_CONFIG_HOME is required for native OAuth custody")
+            miette::miette!(
+                "native OAuth custody needs XDG_CONFIG_HOME or HOME set to an absolute path"
+            )
         })?;
-    if !base.is_absolute() {
-        return Err(miette::miette!(
-            "native OAuth configuration directory must be absolute"
-        ));
-    }
     Ok(base.join("trellis/oauth"))
 }
 
