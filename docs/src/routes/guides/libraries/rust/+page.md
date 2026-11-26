@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let identity_seed = std::env::var("TRELLIS_IDENTITY_SEED")?;
     let server = discover_accepting_certificate(
         &trellis_url,
-        &CertificateAcceptance::for_program("orders-service"),
+        &CertificateAcceptance::for_program("orders-service")?,
     )
     .await?;
     let mut service = Participant::connect(

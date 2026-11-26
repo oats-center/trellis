@@ -38,21 +38,35 @@ pub struct CertificateAcceptance {
 impl CertificateAcceptance {
     /// Remembers accepted certificates for `program` under the user's state
     /// folder (`$XDG_STATE_HOME/trellis/<program>/servers`), asking on a
-    /// terminal when one is attached.
-    #[must_use]
-    pub fn for_program(program: &str) -> Self {
+    /// terminal when one is attached. Without `XDG_STATE_HOME`, the state
+    /// folder is `$HOME/.local/state`.
+    ///
+    /// # Errors
+    ///
+    /// Fails when neither an absolute `XDG_STATE_HOME` nor `HOME` is set, so
+    /// there is no private folder to remember accepted certificates in; the
+    /// message names the variables to set.
+    pub fn for_program(program: &str) -> std::io::Result<Self> {
         let state = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .or_else(|| {
                 std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
             })
-            .unwrap_or_else(std::env::temp_dir);
-        Self {
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "no folder to remember accepted certificates for {program} in: set \
+                        XDG_STATE_HOME to an absolute path, or set HOME"
+                    ),
+                )
+            })?;
+        Ok(Self {
             directory: state.join("trellis").join(program).join("servers"),
             fingerprint: None,
             interactive: true,
-        }
+        })
     }
 }
 
@@ -376,5 +390,72 @@ impl ServerCertVerifier for RecordChain {
         rustls::crypto::ring::default_provider()
             .signature_verification_algorithms
             .supported_schemes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Accepted certificates live in the user's state folder: an absolute
+    /// `XDG_STATE_HOME`, else `$HOME/.local/state`. With neither there is no
+    /// private place for them, so the program is told what to set instead of
+    /// keeping them in the shared temp directory.
+    #[test]
+    fn accepted_certificates_live_in_the_state_folder_or_nowhere() {
+        // Each case runs in a libtest process of its own, since the folder
+        // comes from the process environment.
+        if let Some(expected) = std::env::var_os("TRELLIS_ACCEPTANCE_TEST_EXPECT") {
+            let acceptance = CertificateAcceptance::for_program("orders-service");
+            if expected.is_empty() {
+                let error = acceptance.expect_err("no state folder").to_string();
+                assert!(
+                    error.contains("XDG_STATE_HOME") && error.contains("HOME"),
+                    "{error}"
+                );
+            } else {
+                assert_eq!(
+                    acceptance.expect("state folder").directory,
+                    PathBuf::from(expected)
+                );
+            }
+            return;
+        }
+        let directory = tempfile::tempdir().expect("create profile directory");
+        let home = directory.path().join("home");
+        let state = directory.path().join("state");
+        let servers = Path::new("trellis/orders-service/servers");
+        let relative = PathBuf::from("relative");
+        for (variables, expected) in [
+            (
+                vec![("HOME", home.clone())],
+                home.join(".local/state").join(servers),
+            ),
+            (
+                vec![("HOME", home.clone()), ("XDG_STATE_HOME", state.clone())],
+                state.join(servers),
+            ),
+            // A relative XDG_STATE_HOME is ignored, as the XDG spec says.
+            (
+                vec![("HOME", home.clone()), ("XDG_STATE_HOME", relative.clone())],
+                home.join(".local/state").join(servers),
+            ),
+            (vec![], PathBuf::new()),
+            (vec![("XDG_STATE_HOME", relative)], PathBuf::new()),
+        ] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "auth::certificate_acceptance::tests::accepted_certificates_live_in_the_state_folder_or_nowhere",
+                    "--nocapture",
+                ])
+                .env_remove("HOME")
+                .env_remove("XDG_STATE_HOME")
+                .envs(variables)
+                .env("TRELLIS_ACCEPTANCE_TEST_EXPECT", &expected)
+                .status()
+                .expect("run isolated case");
+            assert!(status.success(), "case expecting {}", expected.display());
+        }
     }
 }

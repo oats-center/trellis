@@ -275,7 +275,8 @@ An installation is a `config.toml` a person writes and the `secrets.toml`
 Trellis creates beside it on its first start (every private key, owner-only).
 `trellis-server config example` prints a commented `config.toml`. Plain
 `trellis-server` uses `~/.config/trellis` (`/etc/trellis` with `--system`,
-root's default on Linux), with data in the profile's XDG or FHS folders;
+root's default on Linux), with data in the profile's XDG or FHS folders
+(process files in `$XDG_RUNTIME_DIR/trellis`, else `<state>/trellis/run`);
 `--config <dir>` names a folder installation, which keeps everything the
 server writes in `<dir>/var`. A start without `config.toml` stops and says so.
 
@@ -2627,7 +2628,7 @@ use trellis_rs::service::ServiceConnectOptions;
 
 let server = discover_accepting_certificate(
     &trellis_url,
-    &CertificateAcceptance::for_program("orders-service"),
+    &CertificateAcceptance::for_program("orders-service")?,
 )
 .await?;
 let mut service = Participant::connect(
@@ -2643,13 +2644,14 @@ service.run().await?;
 ```
 
 The discovery call is
-`discover_accepting_certificate(issuer, &CertificateAcceptance::for_program("orders-service"))`
+`discover_accepting_certificate(issuer, &CertificateAcceptance::for_program("orders-service")?)`
 (the Console's address works; it names the sign-in issuer). A certificate the platform trust store vouches for
 needs nothing. A development installation's own certificate is accepted like a
 browser would: its issuer's SHA-256 fingerprint must match
 `TRELLIS_CERTIFICATE_FINGERPRINT`, or `TRELLIS_ACCEPT_SELF_SIGNED=1` accepts it
 on first contact, or the operator accepts it on a terminal. The answer is
-remembered per program and server, a later different certificate is refused,
+remembered per program and server under `$XDG_STATE_HOME` or `~/.local/state`
+(`for_program` fails when neither is set), a later different certificate is refused,
 and the returned trust carries it into the broker connection. A known CA file
 still works through `discover_native_oauth(issuer, &[ca_path])`. Never disable
 certificate verification.

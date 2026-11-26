@@ -269,7 +269,8 @@ An installation is a `config.toml` a person writes and the `secrets.toml`
 Trellis creates beside it on its first start (every private key, owner-only).
 `trellis-server config example` prints a commented `config.toml`. Plain
 `trellis-server` uses `~/.config/trellis` (`/etc/trellis` with `--system`,
-root's default on Linux), with data in the profile's XDG or FHS folders;
+root's default on Linux), with data in the profile's XDG or FHS folders
+(process files in `$XDG_RUNTIME_DIR/trellis`, else `<state>/trellis/run`);
 `--config <dir>` names a folder installation, which keeps everything the
 server writes in `<dir>/var`. A start without `config.toml` stops and says so.
 

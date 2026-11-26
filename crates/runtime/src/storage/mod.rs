@@ -177,6 +177,20 @@ pub struct SqliteStore {
     config: SqliteStorageConfig,
 }
 
+/// A new, uniquely named folder beside `file`, removed when the returned
+/// handle drops. Runs that overlap each get their own, so none shares or
+/// removes another's files.
+pub(crate) fn working_folder_beside(
+    file: &Path,
+    prefix: &str,
+) -> std::io::Result<tempfile::TempDir> {
+    let parent = file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    tempfile::Builder::new().prefix(prefix).tempdir_in(parent)
+}
+
 impl SqliteStore {
     /// Creates a config-only SQLite store for the given subsystem.
     #[must_use]
@@ -215,11 +229,22 @@ impl SqliteStore {
     }
 
     /// Verify migration compatibility on a temporary copy without changing the database.
+    ///
+    /// The copy goes in a working folder of its own beside the database, so
+    /// it stays on the database's filesystem, and the folder goes when the
+    /// check ends, whether or not it succeeds.
     pub fn check_migrations(&self) -> Result<(), StoreError> {
-        let directory = tempfile::tempdir().map_err(|error| StoreError::CopySqliteSnapshot {
-            from: self.config.path.clone(),
-            to: std::env::temp_dir(),
-            error,
+        if !self.config.path.exists() {
+            return Err(StoreError::MissingSqlite {
+                path: self.config.path.clone(),
+            });
+        }
+        let directory = working_folder_beside(&self.config.path, ".check-").map_err(|error| {
+            StoreError::CopySqliteSnapshot {
+                from: self.config.path.clone(),
+                to: self.config.path.with_file_name(".check-*"),
+                error,
+            }
         })?;
         let copy = self.snapshot_into(
             &directory.path().join("store.sqlite"),

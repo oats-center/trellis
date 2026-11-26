@@ -139,6 +139,68 @@ fn sqlite_migration_check_does_not_modify_configured_database(
     Ok(())
 }
 
+/// A check copies the database into a folder beside it, never the temp
+/// directory, and removes that folder whether the check passes or fails.
+#[cfg(unix)]
+#[test]
+fn migration_check_leaves_no_copy_behind() -> Result<(), Box<dyn std::error::Error>> {
+    // Everything in a folder; beside the database, only folders, since the
+    // database's own WAL files come and go.
+    let listing = |directory: &Path, folders_only: bool| -> std::io::Result<Vec<_>> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            if !folders_only || entry.file_type()?.is_dir() {
+                names.push(entry.file_name());
+            }
+        }
+        names.sort();
+        Ok(names)
+    };
+    // The check runs in a libtest process of its own, with TMPDIR pointing
+    // at an empty folder nothing can write to, so a copy there would fail
+    // the check, and other tests' temporary files never show there.
+    let Some(data) = std::env::var_os("TRELLIS_CHECK_COPY_TEST_DATA") else {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir()?;
+        let data = tempfile::tempdir()?;
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o500))?;
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "storage::tests::migration_check_leaves_no_copy_behind",
+                "--nocapture",
+            ])
+            .env("TRELLIS_CHECK_COPY_TEST_DATA", data.path())
+            .env("TMPDIR", temp.path())
+            .status()?;
+        assert!(status.success(), "isolated migration check failed");
+        assert_eq!(
+            listing(temp.path(), false)?,
+            Vec::<std::ffi::OsString>::new()
+        );
+        return Ok(());
+    };
+    let data = PathBuf::from(data);
+    let store = SqliteStore::new(
+        SubsystemName::Platform,
+        sqlite_config(data.join("platform.sqlite")),
+    );
+    store.migrate()?;
+    let before = listing(&data, true)?;
+    store.check_migrations()?;
+    assert_eq!(listing(&data, true)?, before);
+    // A check that fails removes its copy too.
+    let connection = store.open()?;
+    connection.execute("UPDATE refinery_schema_history SET checksum = '0'", [])?;
+    assert!(matches!(
+        store.check_migrations(),
+        Err(StoreError::MigrateSqlite { .. })
+    ));
+    assert_eq!(listing(&data, true)?, before);
+    Ok(())
+}
+
 #[test]
 fn migration_check_reads_committed_wal_history() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

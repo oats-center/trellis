@@ -116,9 +116,10 @@ build_testkit_live() {
     --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
     --config "patch.crates-io.trellis-testkit.path=\"$root/crates/trellis-testkit\"" \
     --test live \
-    --message-format=json-render-diagnostics > "$json"
+    --message-format=json-render-diagnostics > "$json" || { rm -f "$json"; exit 1; }
   local executable
   executable="$(jq -r 'select(.executable != null) | .executable' "$json" 2>/dev/null | tail -n1)"
+  rm -f "$json"
   [[ -n "$executable" ]] || { echo "failed to locate the testkit live test binary" >&2; exit 1; }
   mkdir -p "$(dirname "$testkit_live")"
   cp "$executable" "$testkit_live"

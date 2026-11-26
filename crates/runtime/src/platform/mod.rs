@@ -923,18 +923,12 @@ pub async fn import_installation(
 /// import makes a new one, so runs that overlap never share or remove each
 /// other's files, and it goes when the run ends.
 fn scratch_directory(beside: &std::path::Path) -> Result<tempfile::TempDir, RuntimeError> {
-    let parent = beside
-        .parent()
-        .ok_or_else(|| RuntimeError::Platform("the platform database has no folder".into()))?;
-    tempfile::Builder::new()
-        .prefix(".installation-")
-        .tempdir_in(parent)
-        .map_err(|error| {
-            RuntimeError::Platform(format!(
-                "cannot make a working folder in {}: {error}",
-                parent.display()
-            ))
-        })
+    crate::storage::working_folder_beside(beside, ".installation-").map_err(|error| {
+        RuntimeError::Platform(format!(
+            "cannot make a working folder beside {}: {error}",
+            beside.display()
+        ))
+    })
 }
 
 /// Bucket recording which installation, and which of its platform databases,

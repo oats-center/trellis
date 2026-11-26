@@ -988,49 +988,49 @@ impl RuntimePathDefaults {
     /// Resolve the ordinary user host's mutable roots for both server startup
     /// and offline administration, using the same XDG environment policy.
     ///
+    /// Process-lifetime files go in `$XDG_RUNTIME_DIR/trellis`, or without it
+    /// in the state folder's `run`, never the shared temp directory.
+    ///
     /// # Errors
-    /// Fails when neither HOME nor USERPROFILE identifies the user profile.
+    /// Fails when a folder's XDG variable is unset and neither HOME nor
+    /// USERPROFILE identifies the user profile; the message names the
+    /// variables to set.
     pub fn user_profile(
         get: impl Fn(&str) -> Option<std::ffi::OsString>,
     ) -> Result<Self, std::io::Error> {
         let home = get("HOME")
             .or_else(|| get("USERPROFILE"))
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "cannot resolve user profile: HOME is not set",
-                )
-            })?;
+            .map(PathBuf::from);
         let root = |variable: &str, fallback: &str| {
             get(variable)
                 .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(fallback))
-                .join("trellis")
+                .or_else(|| home.as_ref().map(|home| home.join(fallback)))
+                .map(|path| path.join("trellis"))
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("cannot find the user's Trellis folders: set {variable} or HOME"),
+                    )
+                })
         };
         let state = root("XDG_STATE_HOME", ".local/state");
-        let runtime = get("XDG_RUNTIME_DIR")
-            .map(|value| PathBuf::from(value).join("trellis"))
-            .unwrap_or_else(|| {
-                #[cfg(unix)]
-                // SAFETY: geteuid has no memory preconditions and reads only this process's
-                // identity.
-                let user = unsafe { libc::geteuid() }.to_string();
-                #[cfg(not(unix))]
-                let user = get("USERNAME")
-                    .unwrap_or_else(|| "user".into())
-                    .to_string_lossy()
-                    .into_owned();
-                std::env::temp_dir()
-                    .join(format!("trellis-runtime-{user}"))
-                    .join("trellis")
-            });
+        let runtime = match get("XDG_RUNTIME_DIR") {
+            Some(value) => PathBuf::from(value).join("trellis"),
+            None => state.as_ref().map(|state| state.join("run")).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "cannot find the user's Trellis folders: set XDG_RUNTIME_DIR, \
+                        XDG_STATE_HOME or HOME",
+                )
+            })?,
+        };
+        let state = state?;
         Ok(Self {
-            data: root("XDG_DATA_HOME", ".local/share"),
-            state: state.clone(),
-            cache: root("XDG_CACHE_HOME", ".cache"),
-            runtime,
+            data: root("XDG_DATA_HOME", ".local/share")?,
             logs: state.join("log"),
+            state,
+            cache: root("XDG_CACHE_HOME", ".cache")?,
+            runtime,
         })
     }
 }

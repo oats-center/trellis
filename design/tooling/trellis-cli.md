@@ -49,6 +49,10 @@ identities. A `trellis` dependency the CLI's own
 build of the built-in package satisfies is taken from that build, which is the
 release published at `ghcr.io/oats-center/trellis`, without downloading it.
 
+Fetched packages are cached in `$TRELLIS_CACHE`, else
+`$XDG_CACHE_HOME/trellis`, else `~/.cache/trellis`. With none of those set,
+a command that fetches a package fails and names the variables.
+
 Package references are declared in `trellis.toml`. Generated Rust and TypeScript
 modules consume exact locked semantic projections; application code does not
 author wire schemas.
@@ -430,6 +434,14 @@ in the FHS folders (Linux only); a folder installation holds both, its data in
 `var/`. `--user` is the default, and `--system` for root on Linux. Every
 command names a folder installation with `--config`, given its folder or its
 `config.toml`; naming one together with `--user` or `--system` is an error.
+The user installation keeps its PID files and other process-lifetime files in
+`$XDG_RUNTIME_DIR/trellis`, or without it in `run` under its state folder
+(`$XDG_STATE_HOME/trellis/run`, else `~/.local/state/trellis/run`), created
+owner-only. It never uses the shared temp directory, so with none of `HOME`,
+`XDG_STATE_HOME` or `XDG_RUNTIME_DIR` set it stops and names them. The system
+installation uses `/run/trellis`; a folder installation uses `var/run`.
+`check` copies each SQLite database into a working folder of its own beside
+that database, which it removes when it ends.
 `<mode>` is `all` (the default), `platform`, `jobs`, `health` or `events`.
 Options go after the subcommand, and each subcommand takes only its own. Those
 that report a result accept `--format json` for scripts.

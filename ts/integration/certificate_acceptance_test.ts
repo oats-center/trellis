@@ -3,7 +3,6 @@ import { execFile, spawn } from "node:child_process";
 import { X509Certificate } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { rootCertificates } from "node:tls";
@@ -77,7 +76,7 @@ test("a program accepts a development installation's certificate by its fingerpr
         );
         return JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
       };
-      const directory = await mkdtemp(join(tmpdir(), "trellis-accepted-"));
+      const directory = await mkdtemp(join(runtime.workdir, "accepted-"));
 
       // Nothing vouches for it and there's no terminal: refused, naming the
       // fingerprint to confirm.
@@ -92,7 +91,7 @@ test("a program accepts a development installation's certificate by its fingerpr
       // Remembered: the next start needs nothing.
       assert.equal((await run(directory)).issuer, runtime.trellisUrl);
 
-      const fresh = await mkdtemp(join(tmpdir(), "trellis-accepted-"));
+      const fresh = await mkdtemp(join(runtime.workdir, "accepted-"));
       // The Console's address, as people type it, leads to its sign-in.
       const selfSigned = await run(
         fresh,
@@ -105,7 +104,7 @@ test("a program accepts a development installation's certificate by its fingerpr
       // same certificate twice at once; both must succeed.
       for (let attempt = 0; attempt < 5; attempt++) {
         const together = await run(
-          await mkdtemp(join(tmpdir(), "trellis-accepted-")),
+          await mkdtemp(join(runtime.workdir, "accepted-")),
           { TRELLIS_CERTIFICATE_FINGERPRINT: fingerprint },
           runtime.trellisUrl,
           2,
@@ -139,7 +138,7 @@ test("a certificate accepted for one address doesn't stand in for another's pin"
       first.hostname = "127.0.0.1";
       const second = new URL(runtime.trellisUrl);
       second.hostname = "localhost";
-      const directory = await mkdtemp(join(tmpdir(), "trellis-accepted-"));
+      const directory = await mkdtemp(join(runtime.workdir, "accepted-"));
       // This program once accepted a different issuer at the second address.
       await writeFile(
         join(directory, `localhost_${second.port}.pem`),
@@ -213,7 +212,7 @@ for (const websocketOnly of [false, true])
             env: {
               ...inherited,
               TRELLIS_CERTIFICATE_FINGERPRINT: fingerprint,
-              XDG_STATE_HOME: await mkdtemp(join(tmpdir(), "trellis-state-")),
+              XDG_STATE_HOME: await mkdtemp(join(runtime.workdir, "state-")),
             },
           },
         );
@@ -326,7 +325,7 @@ for (const websocketOnly of [false, true])
         const env = {
           ...inherited,
           TRELLIS_CERTIFICATE_FINGERPRINT: fingerprint,
-          XDG_STATE_HOME: await mkdtemp(join(tmpdir(), "trellis-state-")),
+          XDG_STATE_HOME: await mkdtemp(join(runtime.workdir, "state-")),
         };
         const start = (mode: string, discovered = "") => {
           const child = spawn(
@@ -484,7 +483,7 @@ test("an installation can't make another's address trust its certificate", async
                 named,
                 first.trellisUrl,
                 claimingUrl,
-                await mkdtemp(join(tmpdir(), "trellis-accepted-")),
+                await mkdtemp(join(first.workdir, "accepted-")),
                 fingerprintOf(first),
                 fingerprintOf(other),
               ],

@@ -41,7 +41,7 @@ if [[ -z "${CI:-}${TRELLIS_TEST_STAGED:-}" ]]; then
     --config "patch.crates-io.trellis-models.path=\"$root/crates/models\"" \
     --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
     --config "patch.crates-io.trellis-testkit.path=\"$root/crates/trellis-testkit\"" \
-    "${args[@]}" --message-format=json-render-diagnostics > "$json"
+    "${args[@]}" --message-format=json-render-diagnostics > "$json" || { rm -f "$json"; exit 1; }
   mkdir -p "$staged"
   jq -r 'select(.executable != null) | "\(.target.name) \(.executable)"' "$json" |
     while read -r name executable; do cp "$executable" "$staged/$name"; done

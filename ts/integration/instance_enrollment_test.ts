@@ -5,7 +5,6 @@
  */
 import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ulid } from "ulid";
@@ -108,7 +107,10 @@ test("a key-file host restarts with its stored key after the secret was rotated"
   await withTrellisRuntime(async (runtime) => {
     const deploymentId = await deployment(runtime, "key-file-provider");
     const { secret, text } = await issue(runtime, deploymentId);
-    const keyFile = join(await mkdtemp(join(tmpdir(), "enroll-")), "key");
+    const keyFile = join(
+      await mkdtemp(join(runtime.workdir, "enroll-")),
+      "key",
+    );
     const first = await TrellisService.connect({
       trellisUrl: runtime.trellisUrl,
       participant,
@@ -147,7 +149,10 @@ test("a key-file host whose instance an administrator removed stops instead of e
   await withTrellisRuntime(async (runtime) => {
     const deploymentId = await deployment(runtime, "removed-provider");
     const { text } = await issue(runtime, deploymentId);
-    const keyFile = join(await mkdtemp(join(tmpdir(), "enroll-")), "key");
+    const keyFile = join(
+      await mkdtemp(join(runtime.workdir, "enroll-")),
+      "key",
+    );
     const first = await TrellisService.connect({
       trellisUrl: runtime.trellisUrl,
       participant,

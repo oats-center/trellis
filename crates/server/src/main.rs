@@ -298,7 +298,6 @@ pub(crate) struct ServerPaths {
     runtime_root: PathBuf,
     log_root: PathBuf,
     config: PathBuf,
-    runtime_fallback_root: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -472,27 +471,23 @@ impl ServerPaths {
     }
 
     fn user(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> miette::Result<Self> {
-        let home = get("HOME")
-            .or_else(|| get("USERPROFILE"))
-            .map(PathBuf::from)
-            .ok_or_else(|| miette!("cannot resolve user profile: HOME is not set"))?;
         let config_root = get("XDG_CONFIG_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".config"))
+            .or_else(|| {
+                get("HOME")
+                    .or_else(|| get("USERPROFILE"))
+                    .map(|home| PathBuf::from(home).join(".config"))
+            })
+            .ok_or_else(|| {
+                miette!("cannot find the user's Trellis folders: set XDG_CONFIG_HOME or HOME")
+            })?
             .join("trellis");
         let defaults = RuntimePathDefaults::user_profile(&get).into_diagnostic()?;
-        let runtime_fallback_root = if get("XDG_RUNTIME_DIR").is_none() {
-            defaults.runtime.parent().map(Path::to_path_buf)
-        } else {
-            None
-        };
-        let mut paths = Self::new(
+        Ok(Self::new(
             config_root.clone(),
             defaults,
             config_root.join("config.toml"),
-        );
-        paths.runtime_fallback_root = runtime_fallback_root;
-        Ok(paths)
+        ))
     }
 
     /// A self-contained installation keeps what the server creates in its
@@ -558,7 +553,6 @@ impl ServerPaths {
             runtime_root: defaults.runtime,
             log_root: defaults.logs,
             config,
-            runtime_fallback_root: None,
         }
     }
 }
@@ -603,53 +597,6 @@ fn prepare_directory(path: &Path) -> miette::Result<()> {
     }
 }
 
-#[cfg(unix)]
-fn ensure_private_runtime_fallback(path: &Path) -> miette::Result<()> {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let user = unsafe { libc::geteuid() };
-    let parent = path
-        .parent()
-        .ok_or_else(|| miette!("runtime fallback has no parent: {}", path.display()))?;
-    let parent_metadata = fs::symlink_metadata(parent).into_diagnostic()?;
-    let parent_mode = parent_metadata.mode();
-    let safe_parent = parent_metadata.file_type().is_dir()
-        && !parent_metadata.file_type().is_symlink()
-        && ((parent_metadata.uid() == 0 && parent_mode & 0o1000 != 0)
-            || (parent_metadata.uid() == user && parent_mode & 0o022 == 0));
-    if !safe_parent {
-        return Err(miette!(
-            "runtime fallback parent is unsafe: {}",
-            parent.display()
-        ));
-    }
-
-    match fs::symlink_metadata(path) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            create_secure_directory(path)?;
-        }
-        Err(error) => return Err(error).into_diagnostic(),
-    }
-    let metadata = fs::symlink_metadata(path).into_diagnostic()?;
-    if metadata.file_type().is_symlink()
-        || !metadata.file_type().is_dir()
-        || metadata.uid() != user
-        || metadata.mode() & 0o777 != 0o700
-    {
-        return Err(miette!(
-            "runtime fallback must be a user-owned 0700 directory: {}",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_private_runtime_fallback(path: &Path) -> miette::Result<()> {
-    prepare_directory(path)
-}
-
 async fn run(policy: StartupPolicy) -> miette::Result<()> {
     if !policy.paths.config.is_file() {
         match &policy.dev {
@@ -669,11 +616,6 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
     }
     let (mut config, paths) = load_runtime_config(&policy)?;
 
-    if let Some(root) = &policy.paths.runtime_fallback_root {
-        if paths.runtime.starts_with(root) {
-            ensure_private_runtime_fallback(root)?;
-        }
-    }
     tracing::debug!(
         config_root = %policy.paths.config_root.display(),
         data_root = %paths.data.display(),
@@ -1261,38 +1203,6 @@ kind = "sqlite"
 
     #[cfg(unix)]
     #[test]
-    fn creates_and_verifies_private_runtime_fallback() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let parent = tempfile::tempdir().expect("create fallback parent");
-        let root = parent.path().join("trellis-runtime");
-        ensure_private_runtime_fallback(&root).expect("create private fallback");
-        let metadata = fs::symlink_metadata(&root).expect("read fallback metadata");
-        assert!(metadata.is_dir());
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_symlinked_or_permissive_runtime_fallback() {
-        use std::os::unix::fs::{symlink, PermissionsExt as _};
-
-        let parent = tempfile::tempdir().expect("create fallback parent");
-        let target = parent.path().join("target");
-        fs::create_dir(&target).expect("create symlink target");
-        let symlinked = parent.path().join("symlinked");
-        symlink(&target, &symlinked).expect("create fallback symlink");
-        assert!(ensure_private_runtime_fallback(&symlinked).is_err());
-
-        let permissive = parent.path().join("permissive");
-        fs::create_dir(&permissive).expect("create permissive fallback");
-        fs::set_permissions(&permissive, fs::Permissions::from_mode(0o755))
-            .expect("set permissive mode");
-        assert!(ensure_private_runtime_fallback(&permissive).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn configured_roots_keep_existing_permissions_and_new_roots_are_private() {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -1387,8 +1297,65 @@ kind = "sqlite"
             PathBuf::from("/home/test/.local/state/trellis")
         );
         assert_eq!(paths.cache_root, PathBuf::from("/home/test/.cache/trellis"));
-        assert_ne!(paths.runtime_root, paths.config_root);
-        assert_ne!(paths.runtime_root, paths.data_root);
+    }
+
+    /// Without XDG_RUNTIME_DIR, PID files and the like go in a private `run`
+    /// folder of the user's state folder, never the shared temp directory,
+    /// and with no folder variable at all the server names what to set.
+    #[cfg(unix)]
+    #[test]
+    fn runtime_files_fall_back_to_a_private_folder_in_the_state_folder() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().expect("create profile directory");
+        let home = directory.path().join("home");
+        let state = directory.path().join("state");
+        let runtime = directory.path().join("runtime");
+        let resolve = |values: &[(&str, &Path)]| {
+            ServerPaths::user(|name| {
+                values
+                    .iter()
+                    .find(|(variable, _)| *variable == name)
+                    .map(|(_, path)| path.as_os_str().to_owned())
+            })
+        };
+        for (values, expected) in [
+            (
+                &[("HOME", home.as_path())][..],
+                home.join(".local/state/trellis/run"),
+            ),
+            (
+                &[
+                    ("HOME", home.as_path()),
+                    ("XDG_STATE_HOME", state.as_path()),
+                ][..],
+                state.join("trellis/run"),
+            ),
+            (
+                &[
+                    ("HOME", home.as_path()),
+                    ("XDG_STATE_HOME", state.as_path()),
+                    ("XDG_RUNTIME_DIR", runtime.as_path()),
+                ][..],
+                runtime.join("trellis"),
+            ),
+        ] {
+            let paths = resolve(values).expect("resolve user paths");
+            assert_eq!(paths.runtime_root, expected);
+            prepare_directory(&paths.runtime_root).expect("create runtime folder");
+            let mode = fs::symlink_metadata(&expected)
+                .expect("inspect runtime folder")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+
+        let error = resolve(&[("XDG_CONFIG_HOME", home.as_path())])
+            .expect_err("no state or runtime folder")
+            .to_string();
+        for variable in ["XDG_RUNTIME_DIR", "XDG_STATE_HOME", "HOME"] {
+            assert!(error.contains(variable), "{error}");
+        }
     }
 
     #[test]

@@ -384,7 +384,11 @@ instead of a link.
 
 `--system` keeps the installation in `/etc/trellis` and what the server writes
 in `/var/lib/trellis`, `/run/trellis` and `/var/log/trellis`. `--config <folder>`
-keeps both in one folder, with the writable part in `<folder>/var`. A
+keeps both in one folder, with the writable part in `<folder>/var`. Without
+either, the installation is in `~/.config/trellis` and its data in the XDG
+folders; PID files go in `$XDG_RUNTIME_DIR/trellis`, or in
+`~/.local/state/trellis/run` (under `$XDG_STATE_HOME` when that is set) when
+there is no runtime folder. A
 `[paths]` section moves any of them:
 
 ```toml

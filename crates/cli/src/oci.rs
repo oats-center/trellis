@@ -494,15 +494,17 @@ fn missing_repository(error: &OciDistributionError) -> bool {
     }
 }
 
-fn cache_root() -> PathBuf {
-    std::env::var_os("TRELLIS_CACHE")
+fn cache_root() -> Result<PathBuf> {
+    Ok(std::env::var_os("TRELLIS_CACHE")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("XDG_CACHE_HOME").map(|path| PathBuf::from(path).join("trellis"))
         })
         .or_else(|| std::env::var_os("HOME").map(|path| PathBuf::from(path).join(".cache/trellis")))
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("trellis-{}", std::process::id())))
-        .join("oci/source-v1")
+        .ok_or_else(|| {
+            miette!("no folder for the package cache: set TRELLIS_CACHE, XDG_CACHE_HOME or HOME")
+        })?
+        .join("oci/source-v1"))
 }
 
 fn cache_entry(digest: &str) -> Result<PathBuf> {
@@ -510,7 +512,7 @@ fn cache_entry(digest: &str) -> Result<PathBuf> {
         .strip_prefix("sha256:")
         .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .ok_or_else(|| miette!("invalid OCI manifest digest '{digest}'"))?;
-    Ok(cache_root().join("sha256").join(hex))
+    Ok(cache_root()?.join("sha256").join(hex))
 }
 
 fn read_cache(digest: &str) -> Result<SourcePackage> {
@@ -704,6 +706,76 @@ mod tests {
         )
         .is_err());
         unsafe { std::env::remove_var("TRELLIS_CACHE") };
+    }
+
+    /// Fetched packages are cached under TRELLIS_CACHE, else
+    /// XDG_CACHE_HOME/trellis, else HOME/.cache/trellis; with none of them
+    /// set, caching fails and names the variables instead of writing to the
+    /// shared temp directory.
+    #[test]
+    fn package_cache_follows_the_cache_variables_or_fails() {
+        // Each case runs in a libtest process of its own, since the folder
+        // comes from the process environment.
+        if let Some(expected) = std::env::var_os("TRELLIS_OCI_CACHE_TEST_EXPECT") {
+            let mut package = source_package(
+                "ghcr.io/acme/acme-orders",
+                &Version::parse("1.2.3").unwrap(),
+                &URL_SAFE_NO_PAD.encode([0_u8; 32]),
+                files(),
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+            package.manifest_digest = image(&package).unwrap().3;
+            let written = write_cache(&package);
+            if expected.is_empty() {
+                let error = format!("{:?}", written.expect_err("no cache folder"));
+                for variable in ["TRELLIS_CACHE", "XDG_CACHE_HOME", "HOME"] {
+                    assert!(error.contains(variable), "{error}");
+                }
+            } else {
+                written.unwrap();
+                let entry = PathBuf::from(expected)
+                    .join("oci/source-v1/sha256")
+                    .join(package.manifest_digest.strip_prefix("sha256:").unwrap());
+                assert!(entry.join("source.tar").is_file(), "{}", entry.display());
+            }
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let [trellis, xdg, home] =
+            ["trellis", "xdg", "home"].map(|name| directory.path().join(name));
+        for (variables, expected) in [
+            (
+                vec![
+                    ("TRELLIS_CACHE", &trellis),
+                    ("XDG_CACHE_HOME", &xdg),
+                    ("HOME", &home),
+                ],
+                trellis.clone(),
+            ),
+            (
+                vec![("XDG_CACHE_HOME", &xdg), ("HOME", &home)],
+                xdg.join("trellis"),
+            ),
+            (vec![("HOME", &home)], home.join(".cache/trellis")),
+            (vec![], PathBuf::new()),
+        ] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "oci::tests::package_cache_follows_the_cache_variables_or_fails",
+                    "--nocapture",
+                ])
+                .env_remove("TRELLIS_CACHE")
+                .env_remove("XDG_CACHE_HOME")
+                .env_remove("HOME")
+                .envs(variables)
+                .env("TRELLIS_OCI_CACHE_TEST_EXPECT", &expected)
+                .status()
+                .unwrap();
+            assert!(status.success(), "case expecting {}", expected.display());
+        }
     }
 
     #[test]
