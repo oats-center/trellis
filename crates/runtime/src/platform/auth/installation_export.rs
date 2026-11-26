@@ -1001,9 +1001,10 @@ fn records<'a>(received: &'a Received, kind: &str) -> &'a [Value] {
 }
 
 /// Make `user` here as the export recorded it, or say what is in the way.
-/// A sign-in through a provider the import did not bring here cannot be
-/// used, so it is left out and the account is still made; returns each one
-/// left out, by its subject.
+/// A sign-in through a provider the export does not have, such as one
+/// deleted there, or one the import skipped, has nothing to link to, so it
+/// is left out and the account is still made; returns each one left out, by
+/// its subject.
 fn create_user(
     connection: &Connection,
     user: &Value,
@@ -1304,18 +1305,14 @@ pub(super) fn apply(
                     "UPDATE auth_oidc_providers SET sealed_client_secret=?2 WHERE provider_id=?1",
                     params![provider_id, sealed],
                 )?;
-                if text(record, "state") == "active" {
-                    providers.insert(provider_id.clone(), provider_id.clone());
-                }
+                providers.insert(provider_id.clone(), provider_id.clone());
                 outcome.created("oidcProvider", &provider_id);
                 continue;
             }
         };
-        // The provider takes the export's state. Only an active one signs
-        // people in, so only its sign-ins and role mappings are carried.
-        if text(record, "state") == "active" {
-            providers.insert(provider_id.clone(), here.clone());
-        }
+        // The provider takes the export's settings, its state among them,
+        // and carries its sign-ins and role mappings whatever that state is.
+        providers.insert(provider_id.clone(), here.clone());
         let current = rows(
             connection,
             "SELECT display_name,client_id,issuer_certificate,config_json,\
@@ -1494,9 +1491,9 @@ pub(super) fn apply(
                         "userSignIn",
                         &user_id,
                         format!(
-                            "its sign-in {subject} is through an OIDC provider that is not \
-                            active here: one deleted or disabled there, or one this import \
-                            skipped; the account was created without it"
+                            "its sign-in {subject} is through an OIDC provider the export does \
+                            not have, such as one deleted there, or one this import skipped; \
+                            the account was created without it"
                         ),
                     );
                 }
@@ -1610,12 +1607,13 @@ pub(super) fn apply(
             outcome.skipped(
                 "oidcRoleMapping",
                 &mapping_id,
-                "its provider is not active here: it was not brought, or it is disabled",
+                "its provider is not in the export, such as one deleted there, or this import \
+                skipped it",
             );
             continue;
         };
-        // A mapping gives only roles this installation has as the export
-        // defines them.
+        // The export's roles are here now, so a role that is not is in
+        // neither the export nor this installation.
         let mut roles = BTreeSet::new();
         for role in mapping["roles"].as_array().into_iter().flatten() {
             let role = role.as_str().unwrap_or_default().to_owned();
@@ -1624,13 +1622,19 @@ pub(super) fn apply(
                 [&role],
                 |row| row.get(0),
             )?;
-            if skipped_roles.contains(&role) || !here {
+            if skipped_roles.contains(&role) {
+                outcome.skipped(
+                    "oidcRoleMappingRole",
+                    &mapping_id,
+                    format!("role {role} was skipped, so the mapping does not give it"),
+                );
+            } else if !here {
                 outcome.skipped(
                     "oidcRoleMappingRole",
                     &mapping_id,
                     format!(
-                        "role {role} is not here as the export defines it, so the mapping does \
-                        not give it"
+                        "role {role} is in neither the export nor this installation, so the \
+                        mapping does not give it"
                     ),
                 );
             } else {
@@ -1658,20 +1662,9 @@ pub(super) fn apply(
                 )?
                 .query_map([&mapping_id], |row| row.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
-            // The roles of the record this installation has.
-            let mut wanted = BTreeSet::new();
-            for role in &roles {
-                if connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM auth_roles WHERE role_id=?1 AND state='active')",
-                    [role],
-                    |row| row.get::<_, bool>(0),
-                )? {
-                    wanted.insert(role.clone());
-                }
-            }
             if provider_here != *provider
                 || (name.as_str(), value.as_str()) != claim
-                || wanted != held
+                || roles != held
             {
                 outcome.skipped(
                     "oidcRoleMapping",

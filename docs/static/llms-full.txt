@@ -325,9 +325,10 @@ exists with other contents. The exported administrator is not imported: the
 roles and grants it held go to this installation's administrator
 (`administrator` in the report). Only access the source still honours moves
 (no expired grants or assignments, no capability its catalog dropped); a
-disabled deployment stays disabled; sign-ins and OIDC role mappings move
-only through a provider active on the destination, the account moving with
-its other sign-ins; remembered consent moves only where the destination's
+disabled deployment stays disabled; OIDC providers keep their enabled or disabled
+state, and sign-ins and OIDC role mappings move through them in either state;
+only one through a provider the export lacks (deleted on the source) is left
+out and reported, the account moving with its other sign-ins; remembered consent moves only where the destination's
 capability has the same `grants` text, else the person is asked again.
 `--check` works on a copy of the database and reads stored State, so it
 reports a State value in the way as skipped. What waits for a later step (a

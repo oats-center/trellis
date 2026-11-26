@@ -492,35 +492,16 @@ fn provider(store: &SqliteAuthorizationStore, admin: &str, issuer: &str) -> Stri
     registration.provider_id
 }
 
-/// People's OIDC sign-ins, and the role mappings that give roles from a
-/// provider's claims, move only through a provider that is active on the
-/// new installation. A disabled provider moves with its settings, but a
-/// person's sign-in through it is left out and reported, the person moving
-/// with the rest, and its role mapping is skipped with a warning; a mapping
-/// gives only roles the new installation has.
+/// An OIDC role mapping moves through its provider whatever state the
+/// provider is in: one through a provider disabled on the old installation
+/// arrives with its role, and the provider arrives disabled, as it was. Only
+/// a mapping through a provider the old installation deleted, which the
+/// export does not have, stays behind and is reported.
 #[test]
-fn sign_ins_and_role_mappings_move_only_through_active_providers() {
+fn role_mappings_move_through_disabled_providers() {
     let f = fixture();
-    let active = provider(&f.store, &f.admin, "https://active.example.com/");
     let switched_off = provider(&f.store, &f.admin, "https://disabled.example.com/");
-    let input: trellis_runtime_apis::__types::trellis::AuthUserCreateRequest =
-        serde_json::from_value(serde_json::json!({
-            "username": "linked",
-            "displayName": "Linked person",
-            "password": "a person's own password",
-            "identities": [
-                { "providerId": active, "subject": "active-subject" },
-                { "providerId": switched_off, "subject": "disabled-subject" }
-            ],
-            "idempotencyKey": id()
-        }))
-        .unwrap();
-    let person =
-        super::super::rpc_users::create_user(&f.store, &mutation(&f.admin, &input), &input, NOW)
-            .unwrap()
-            .user
-            .principal_id
-            .to_string();
+    let gone = provider(&f.store, &f.admin, "https://deleted.example.com/");
     let role = id();
     policy(
         &f.store,
@@ -534,7 +515,7 @@ fn sign_ins_and_role_mappings_move_only_through_active_providers() {
         },
         NOW,
     );
-    let mappings: Vec<String> = [&active, &switched_off]
+    let mappings: Vec<String> = [&switched_off, &gone]
         .into_iter()
         .map(|provider| {
             let mapping = id();
@@ -554,46 +535,46 @@ fn sign_ins_and_role_mappings_move_only_through_active_providers() {
             mapping
         })
         .collect();
-    let disable = trellis_runtime_apis::__types::trellis::AuthOIDCProviderMutationRequest {
-        provider_id: switched_off.parse().unwrap(),
-        expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(1.into()),
-        idempotency_key: trellis_protocol::model::Ulid::generate().into(),
-        extra: Default::default(),
-    };
-    super::super::rpc_users::disable_provider(
-        &f.store,
-        &mutation(&f.admin, &disable),
-        &disable,
-        NOW,
-    )
-    .unwrap();
+    for (provider, delete) in [(&switched_off, false), (&gone, true)] {
+        let request = trellis_runtime_apis::__types::trellis::AuthOIDCProviderMutationRequest {
+            provider_id: provider.parse().unwrap(),
+            expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(1.into()),
+            idempotency_key: trellis_protocol::model::Ulid::generate().into(),
+            extra: Default::default(),
+        };
+        let identity = mutation(&f.admin, &request);
+        if delete {
+            super::super::rpc_users::delete_provider(&f.store, &identity, &request, NOW)
+        } else {
+            super::super::rpc_users::disable_provider(&f.store, &identity, &request, NOW)
+        }
+        .unwrap();
+    }
 
     let source = sealed(&f.store, 7);
     let (_directory, target, _) = destination("Sees contents.");
     let outcome = imported(&target, &exported_records(&source, NOW));
 
-    let sign_ins = |provider: &str| -> i64 {
-        read(
-            &target,
-            "SELECT count(*) FROM auth_provider_identities WHERE principal_id=?1 AND provider=?2",
-            [&person, provider],
-        )
-    };
-    assert_eq!(sign_ins(&active), 1);
-    assert_eq!(sign_ins(&switched_off), 0);
-    assert!(
-        skipped(&outcome, "userSignIn", &person),
-        "{:?}",
-        outcome.skipped
+    let state: String = read(
+        &target,
+        "SELECT state FROM auth_oidc_providers WHERE provider_id=?1",
+        [&switched_off],
     );
+    assert_eq!(state, "disabled");
     let mapped = |mapping: &str| -> i64 {
         read(
             &target,
-            "SELECT count(*) FROM auth_oidc_mapping_roles WHERE mapping_id=?1 AND role_id=?2",
+            "SELECT count(*) FROM auth_oidc_mapping_roles m JOIN auth_oidc_role_mappings o \
+            ON o.mapping_id=m.mapping_id WHERE m.mapping_id=?1 AND m.role_id=?2",
             [mapping, role.as_str()],
         )
     };
     assert_eq!(mapped(&mappings[0]), 1);
+    assert!(
+        !skipped(&outcome, "oidcRoleMapping", &mappings[0]),
+        "{:?}",
+        outcome.skipped
+    );
     assert_eq!(mapped(&mappings[1]), 0);
     assert!(
         skipped(&outcome, "oidcRoleMapping", &mappings[1]),

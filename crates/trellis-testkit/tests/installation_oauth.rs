@@ -1,6 +1,8 @@
 //! Every OAuth flow Trellis serves works after an installation moves, for
-//! the apps and people the export carried: a person signs in through the
-//! moved OIDC provider (Dex, with the moved client secret) and lands on
+//! the apps and people the export carried: a person who signs in only
+//! through an OIDC provider (Dex) that the source had disabled moves with
+//! that sign-in, the provider arrives disabled, and once it is enabled the
+//! person signs in through it (with the moved client secret) and lands on
 //! their own user ID with their role; the moved browser app signs people in
 //! with the authorization code flow (PKCE, DPoP), renews with the refresh
 //! token, and signs out by revoking it and ending the Portal login; the
@@ -217,8 +219,8 @@ async fn oauth_and_oidc_sign_in_work_for_moved_apps_and_people() {
     let mut dex = Value::Null;
     let (mut browser_client, mut native_client) = (String::new(), String::new());
     let (mut mover, mut twin, mut local) = (String::new(), String::new(), String::new());
-    let (mut twin_here, mut target_provider, mut role) =
-        (String::new(), String::new(), String::new());
+    let (mut twin_here, mut source_provider, mut target_provider, mut role) =
+        (String::new(), String::new(), String::new(), String::new());
     let mut device = None;
     let mut steps = Vec::new();
     for line in lines {
@@ -238,12 +240,21 @@ async fn oauth_and_oidc_sign_in_work_for_moved_apps_and_people() {
             // what the apps ask for.
             "dex" => {
                 dex = data;
-                let provider = add_provider(&source_admin, &dex).await;
-                mover =
-                    create_oidc_user(&source_admin, "mover", &provider, &dex["subjects"]["mover"])
-                        .await;
-                twin = create_oidc_user(&source_admin, "twin", &provider, &dex["subjects"]["twin"])
-                    .await;
+                source_provider = add_provider(&source_admin, &dex).await;
+                mover = create_oidc_user(
+                    &source_admin,
+                    "mover",
+                    &source_provider,
+                    &dex["subjects"]["mover"],
+                )
+                .await;
+                twin = create_oidc_user(
+                    &source_admin,
+                    "twin",
+                    &source_provider,
+                    &dex["subjects"]["twin"],
+                )
+                .await;
                 local = source_admin
                     .users_create(&wire(json!({
                         "username": LOCAL.0,
@@ -332,7 +343,8 @@ async fn oauth_and_oidc_sign_in_work_for_moved_apps_and_people() {
             }
             // The target's copy of the provider then holds a secret Dex
             // refuses, so its people sign in after the move only with the
-            // secret the export carried. Then the source moves.
+            // secret the export carried. The source disables Dex, and then
+            // moves.
             "target-twin-signed-in" => {
                 let admin = target_admin.take().unwrap();
                 let current = admin
@@ -356,6 +368,19 @@ async fn oauth_and_oidc_sign_in_work_for_moved_apps_and_people() {
                     .await
                     .unwrap();
                 drop(admin);
+                let current = source_admin
+                    .oidc_providers_get(&wire(json!({ "providerId": source_provider })))
+                    .await
+                    .unwrap();
+                source_admin
+                    .oidc_providers_disable(&wire(json!({
+                        "providerId": source_provider,
+                        "expectedRevision":
+                            serde_json::to_value(current).unwrap()["provider"]["revision"],
+                        "idempotencyKey": key()
+                    })))
+                    .await
+                    .unwrap();
                 let file = source.workdir().join("installation.trellis-installation");
                 source
                     .export_installation(None, &file, PASSPHRASE)
@@ -381,7 +406,38 @@ async fn oauth_and_oidc_sign_in_work_for_moved_apps_and_people() {
                         "{kind} {id}: {report}"
                     );
                 }
-                target_admin = Some(administrator(&mut target).await);
+                // Dex arrived disabled, as the source had it, and the mover
+                // with their only sign-in, through it. Enabling Dex lets them
+                // sign in.
+                let admin = administrator(&mut target).await;
+                let current = admin
+                    .oidc_providers_get(&wire(json!({ "providerId": target_provider })))
+                    .await
+                    .unwrap();
+                let current = serde_json::to_value(current).unwrap()["provider"].clone();
+                assert_eq!(current["enabled"], false, "{current}");
+                let found = admin
+                    .users_find(&wire(json!({ "userId": mover })))
+                    .await
+                    .unwrap();
+                let identities =
+                    serde_json::to_value(found).unwrap()["found"]["identities"].clone();
+                assert!(
+                    identities.as_array().unwrap().iter().any(|identity| {
+                        identity["providerId"] == target_provider.as_str()
+                            && identity["subject"] == dex["subjects"]["mover"]
+                    }),
+                    "{identities}"
+                );
+                admin
+                    .oidc_providers_enable(&wire(json!({
+                        "providerId": target_provider,
+                        "expectedRevision": current["revision"],
+                        "idempotencyKey": key()
+                    })))
+                    .await
+                    .unwrap();
+                target_admin = Some(admin);
                 json!({})
             }
             // Each sign-in through the moved app lands on the person's

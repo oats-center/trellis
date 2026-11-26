@@ -89,7 +89,9 @@ the file with three rules.
 settings and client secrets, the Portal themes, and who may sign up through
 the Console and CLI become the old installation's, even where this one changed
 them. The report's `changed` list shows each old and new value (never a
-secret).
+secret). A provider keeps the state it had: one disabled there arrives
+disabled, with the sign-ins and role mappings through it, and they work once
+you enable it.
 
 **The same person gets what the file gives them.** A user with the same
 Trellis user ID and the same username, or who signs in with the same OIDC
@@ -106,9 +108,9 @@ and State the file has for them. The report lists them under `matched`.
 - a role under the same ID with another name or other capabilities, with its
   members;
 - an OIDC provider whose ID is used by another issuer, with the sign-ins
-  through it; a person who signed in through it, or through a provider the
-  old installation deleted or disabled, still moves with their other
-  sign-ins, such as their password, and a role mapping through such a
+  and role mappings through it; a person who signed in through it, or through
+  a provider the old installation deleted, still moves with their other
+  sign-ins, such as their password, and a role mapping through a deleted
   provider is left out;
 - a registry or role mapping that exists with other settings;
 - State the same person has here in another form, or a value where another

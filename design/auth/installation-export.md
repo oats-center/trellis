@@ -210,14 +210,16 @@ issuer. Such a user is not created again and keeps its account as it is,
 but receives the export's roles, grants, consent and State (`matched` in the
 report, with how it was found). A user found nowhere is created with its ID,
 password hash, sign-ins and profile. Sign-ins and OIDC role mappings move
-only through a provider that is active here once the import has applied the
-providers' settings. A sign-in through any other provider, such as one
-deleted on the old installation, whose links a deletion keeps, one disabled
-there, or one skipped as a conflict, is left out and reported (`userSignIn`
-under `skipped`), and the account is still created with its other sign-ins;
-a role mapping through one is skipped with a warning. A mapping gives only
-roles this installation has as the export defines them; any other role is
-left out of it with a warning. An app with the same client ID and the
+through their provider whatever its state: one through a provider that was
+disabled moves, and works here once the provider is enabled. Only a sign-in
+or mapping whose provider the export does not have, such as one the old
+installation deleted (a deletion keeps its links), or whose provider was
+skipped as a conflict, has nothing to link to: the sign-in is left out and
+reported (`userSignIn` under `skipped`), the account still created with its
+other sign-ins, and the mapping is skipped with a warning. A mapping's roles
+come from the same export, which the import has already applied; a role in
+neither the export nor this installation is left out of the mapping with a
+warning. An app with the same client ID and the
 same settings, a registry with the same name and settings, an OIDC role
 mapping with the same ID and contents, and a role with the same ID, name and
 description whose capabilities are all in the record are the same record;
