@@ -16,10 +16,8 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-# Temporary files never go to the system /tmp: a caller's TMPDIR is kept,
-# else the runner's temp in CI, else an ignored directory in the checkout.
-export TMPDIR="${TMPDIR:-${RUNNER_TEMP:-$root/target/tmp}}"
-mkdir -p "$TMPDIR"
+# shellcheck source=lib/tmpdir.sh
+source "$root/scripts/lib/tmpdir.sh"
 [[ "${1:-}" == "--" ]] && shift
 features="trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres"
 

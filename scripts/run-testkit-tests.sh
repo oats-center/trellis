@@ -16,10 +16,8 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-# Temporary files never go to the system /tmp: a caller's TMPDIR is kept,
-# else the runner's temp in CI, else an ignored directory in the checkout.
-export TMPDIR="${TMPDIR:-${RUNNER_TEMP:-$root/target/tmp}}"
-mkdir -p "$TMPDIR"
+# shellcheck source=lib/tmpdir.sh
+source "$root/scripts/lib/tmpdir.sh"
 # A worktree resolves its own TypeScript packages, not the main checkout's.
 node ts/tools/link_checkout_modules.ts
 [[ "${1:-}" == "--" ]] && shift
