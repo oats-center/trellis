@@ -8,8 +8,10 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
-# shellcheck source=lib/tmpdir.sh
-source "$root/scripts/lib/tmpdir.sh"
+# Temporary files never go to the system /tmp: a caller's TMPDIR is kept,
+# else the runner's temp in CI, else an ignored directory in the checkout.
+export TMPDIR="${TMPDIR:-${RUNNER_TEMP:-$root/target/tmp}}"
+mkdir -p "$TMPDIR"
 
 test -s ts/packages/trellis/auth/protocol_wasm/client/trellis_protocol_wasm_bg.wasm
 test -s ts/packages/trellis/auth/protocol_wasm/provider/trellis_protocol_wasm_bg.wasm

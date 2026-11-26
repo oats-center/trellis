@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { globSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -17,21 +17,12 @@ const files = process.argv.slice(2).flatMap((directory) =>
 );
 if (files.length === 0) throw new Error("No unit tests discovered");
 const concurrency = process.env.TRELLIS_TEST_CONCURRENCY;
-// Temporary files never go to the system /tmp, as scripts/lib/tmpdir.sh
-// decides: a caller's TMPDIR is kept, else the same in-memory folder for this
-// CI job, else an ignored directory in the checkout.
+// Temporary files never go to the system /tmp: a caller's TMPDIR is kept, else
+// the runner's temp in CI, else an ignored directory in the checkout.
 const temp =
   process.env.TMPDIR ??
-  execFileSync(
-    "bash",
-    [
-      "-c",
-      'root="$1"; source "$1/scripts/lib/tmpdir.sh"; printf %s "$TMPDIR"',
-      "-",
-      resolve(import.meta.dirname, "../.."),
-    ],
-    { encoding: "utf8" },
-  );
+  process.env.RUNNER_TEMP ??
+  resolve(import.meta.dirname, "../../target/tmp");
 mkdirSync(temp, { recursive: true });
 const result = spawnSync(
   process.execPath,
