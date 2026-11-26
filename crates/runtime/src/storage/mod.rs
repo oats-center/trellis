@@ -271,32 +271,35 @@ impl SqliteStore {
         };
         let backup =
             rusqlite::backup::Backup::new(&source, &mut connection).map_err(snapshot_error)?;
-        // Progress is a step that leaves fewer pages to copy than any step
-        // before it. A restart sends the count back up, so steady commits
-        // only count while each pass gets further than the last. The fewest
-        // remaining pages only falls, so the copy ends either way.
+        // Progress is a step that copies pages and leaves fewer to copy than
+        // any step before it. A restart sends the count back up, so steady
+        // commits only count while each pass gets further than the last. The
+        // fewest remaining pages only falls, so the copy ends either way. A
+        // busy or locked step copies nothing, and SQLite leaves its counters
+        // at zero until a step succeeds, so only a step that copied is read.
         let mut fewest_remaining = std::ffi::c_int::MAX;
         let mut progressed_at = std::time::Instant::now();
         loop {
-            let step = backup.step(pages_per_step).map_err(snapshot_error)?;
-            if matches!(step, rusqlite::backup::StepResult::Done) {
-                break;
-            }
-            let remaining = backup.progress().remaining;
-            if remaining < fewest_remaining {
-                fewest_remaining = remaining;
+            let progressed = match backup.step(pages_per_step).map_err(snapshot_error)? {
+                rusqlite::backup::StepResult::Done => break,
+                rusqlite::backup::StepResult::More => {
+                    let remaining = backup.progress().remaining;
+                    let progressed = remaining < fewest_remaining;
+                    fewest_remaining = fewest_remaining.min(remaining);
+                    progressed
+                }
+                _ => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    false
+                }
+            };
+            if progressed {
                 progressed_at = std::time::Instant::now();
             } else if progressed_at.elapsed() >= stall_limit {
                 return Err(StoreError::SqliteSnapshotChanged {
                     path: self.config.path.clone(),
                     stalled_for: stall_limit,
                 });
-            }
-            if matches!(
-                step,
-                rusqlite::backup::StepResult::Busy | rusqlite::backup::StepResult::Locked
-            ) {
-                std::thread::sleep(Duration::from_millis(10));
             }
         }
         let mut config = self.config.clone();
