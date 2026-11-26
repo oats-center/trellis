@@ -80,7 +80,7 @@ async fn connect_device_if_configured(args: &Args) -> anyhow::Result<Option<Conn
     let identity = derive_device_identity(&root_secret)?;
     let server = trellis_rs::auth::discover_accepting_certificate(
         trellis_url,
-        &trellis_rs::auth::CertificateAcceptance::for_program("rust-field-ops-device-demo"),
+        &trellis_rs::auth::CertificateAcceptance::for_program("rust-field-ops-device-demo")?,
     )
     .await?;
     let activation = DeviceActivationOptions::new(

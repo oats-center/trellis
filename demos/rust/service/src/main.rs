@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
     // would: by its fingerprint, asked once and remembered.
     let server = trellis_rs::auth::discover_accepting_certificate(
         &trellis_url,
-        &trellis_rs::auth::CertificateAcceptance::for_program("rust-field-ops-demo"),
+        &trellis_rs::auth::CertificateAcceptance::for_program("rust-field-ops-demo")?,
     )
     .await?;
     let mut runtime = Participant::connect(
