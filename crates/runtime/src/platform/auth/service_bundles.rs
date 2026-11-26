@@ -1759,6 +1759,13 @@ pub(super) struct Bundle {
     report: Value,
 }
 
+impl Bundle {
+    /// The bundle's content digest, which names its import.
+    pub(super) fn digest(&self) -> &str {
+        &self.received.digest
+    }
+}
+
 fn document<T: serde::de::DeserializeOwned>(
     received: &Received,
     name: &str,
@@ -2794,17 +2801,7 @@ where
     let active: bool = {
         let deployment_id = deployment_id.clone();
         store
-            .transaction_blocking(move |connection| {
-                Ok(connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM auth_deployments d \
-                    JOIN auth_instances i ON i.deployment_id=d.deployment_id \
-                    JOIN auth_principals p ON p.principal_id=i.principal_id \
-                    WHERE d.deployment_id=?1 AND d.state='active' AND i.state='active' \
-                    AND p.state='active')",
-                    [deployment_id],
-                    |row| row.get(0),
-                )?)
-            })
+            .transaction_blocking(move |connection| can_run(connection, &deployment_id))
             .await?
     };
     let mut left = Vec::new();
@@ -2948,6 +2945,50 @@ pub(super) async fn finish_import(
     )
     .await?;
     Ok(Some(report))
+}
+
+/// Whether `deployment_id` has an instance that can run here now: the
+/// deployment, one of its instances and that instance's principal are all
+/// active. Loading a bundle prepares the resources only for such a
+/// deployment.
+fn can_run(connection: &Connection, deployment_id: &str) -> Result<bool, AuthError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_deployments d \
+        JOIN auth_instances i ON i.deployment_id=d.deployment_id \
+        JOIN auth_principals p ON p.principal_id=i.principal_id \
+        WHERE d.deployment_id=?1 AND d.state='active' AND i.state='active' \
+        AND p.state='active')",
+        [deployment_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// The content digest of the bundle `reader` sends, which names its import
+/// as [`finish_import`] looks it up.
+pub(super) async fn content_digest(
+    directory: &Path,
+    mut reader: impl AsyncRead + Unpin,
+) -> Result<String, AuthError> {
+    Ok(receive(&mut reader, directory).await?.digest)
+}
+
+/// Whether [`finish_import`] of the bundle with `digest`, as the caller's
+/// transaction leaves this installation, would stop short because
+/// `deployment_id` has no instance that can run: the bundle's data waits to
+/// load and [`can_run`] is false. Reads only the database, so a preview can
+/// tell without touching the broker.
+pub(super) fn waits_for_an_instance(
+    connection: &Connection,
+    deployment_id: &str,
+    digest: &str,
+) -> Result<bool, AuthError> {
+    let loading: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_service_imports \
+        WHERE deployment_id=?1 AND content_digest=?2 AND state='loading')",
+        params![deployment_id, digest],
+        |row| row.get(0),
+    )?;
+    Ok(loading && !can_run(connection, deployment_id)?)
 }
 
 /// Record a refused import in the audit and return why.

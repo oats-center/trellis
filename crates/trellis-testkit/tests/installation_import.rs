@@ -35,6 +35,15 @@ fn listed(report: &Value, list: &str, kind: &str, id: &str) -> bool {
     })
 }
 
+/// The reason `report` gives for its pending entry of `kind` for `id`.
+fn pending_reason<'a>(report: &'a Value, kind: &str, id: &str) -> Option<&'a Value> {
+    report["pending"]
+        .as_array()?
+        .iter()
+        .find(|item| item["kind"] == kind && item["id"] == id)
+        .map(|item| &item["reason"])
+}
+
 /// `user`'s State value through `app` on `runtime`, after writing `write`
 /// when it is given.
 async fn saved(
@@ -248,6 +257,17 @@ async fn deployment_data_waiting_for_an_instance_is_reported_until_a_retry_finis
         listed(&first["import"], "pending", "deploymentData", &deployment),
         "{first}"
     );
+    // A preview of the same import still knows the data waits, though its
+    // deployment is already here.
+    let preview = target
+        .import_installation(&file, PASSPHRASE, true, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        pending_reason(&preview["import"], "deploymentData", &deployment),
+        pending_reason(&first["import"], "deploymentData", &deployment),
+        "{preview}"
+    );
     let admin = administrator(&mut target).await;
     let instance = instances(&admin, &deployment).await.remove(0);
     admin
@@ -259,6 +279,15 @@ async fn deployment_data_waiting_for_an_instance_is_reported_until_a_retry_finis
         .await
         .unwrap();
     drop(admin);
+    // With an instance that can run, nothing known stands in the data's way.
+    let preview = target
+        .import_installation(&file, PASSPHRASE, true, None)
+        .await
+        .unwrap();
+    assert!(
+        !listed(&preview["import"], "pending", "deploymentData", &deployment),
+        "{preview}"
+    );
     let again = target
         .import_installation(&file, PASSPHRASE, false, None)
         .await
@@ -476,6 +505,15 @@ async fn a_disabled_deployment_stays_disabled_when_it_moves() {
         .await
         .unwrap();
 
+    // The preview already knows the deployment's data will wait: it reports
+    // the same step the import does, without loading anything.
+    let preview = target
+        .import_installation(&file, PASSPHRASE, true, None)
+        .await
+        .unwrap();
+    let previewed = pending_reason(&preview["import"], "deploymentData", &deployment);
+    assert!(previewed.is_some(), "{preview}");
+
     let imported = target
         .import_installation(&file, PASSPHRASE, false, Some(&source))
         .await
@@ -485,8 +523,9 @@ async fn a_disabled_deployment_stays_disabled_when_it_moves() {
         listed(report, "created", "deployment", &deployment),
         "{report}"
     );
-    assert!(
-        listed(report, "pending", "deploymentData", &deployment),
+    assert_eq!(
+        pending_reason(report, "deploymentData", &deployment),
+        previewed,
         "{report}"
     );
     let admin = administrator(&mut target).await;

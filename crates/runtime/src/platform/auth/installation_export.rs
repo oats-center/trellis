@@ -2013,6 +2013,12 @@ pub(super) fn apply(
     Ok(outcome)
 }
 
+/// Why a deployment's data waits after an import: it has no instance that
+/// can run here.
+const NO_INSTANCE_YET: &str = "the deployment has no instance that can run here yet, so its \
+    resources are not prepared and its waiting jobs have not moved; enable the deployment and \
+    an instance, or provision one, then run the same import again";
+
 /// Import the installation export `input` into the installation behind
 /// `storage` and `nats`, or with `check` report what it would do and change
 /// nothing.
@@ -2048,15 +2054,32 @@ pub(crate) async fn import(
     // before anything changes.
     let mut bundles = Vec::new();
     let mut refused = Vec::new();
+    // A preview also needs each bundle's digest, which names the import
+    // whose data loads afterwards. A bundle refused here can be one an
+    // earlier run recorded, whose data still waits.
+    let mut digests = Vec::new();
     for (deployment_id, spool) in &received.bundles {
         let reader = service_bundles::spool_reader(Arc::clone(spool));
         match service_bundles::prepare_import(nats, directory, reader).await {
-            Ok(bundle) => bundles.push((deployment_id.clone(), bundle)),
-            Err(error) => refused.push(json!({
-                "kind": "deployment",
-                "id": deployment_id,
-                "reason": error.to_string(),
-            })),
+            Ok(bundle) => {
+                if check {
+                    digests.push((deployment_id.clone(), bundle.digest().to_owned()));
+                }
+                bundles.push((deployment_id.clone(), bundle));
+            }
+            Err(error) => {
+                if check {
+                    let reader = service_bundles::spool_reader(Arc::clone(spool));
+                    if let Ok(digest) = service_bundles::content_digest(directory, reader).await {
+                        digests.push((deployment_id.clone(), digest));
+                    }
+                }
+                refused.push(json!({
+                    "kind": "deployment",
+                    "id": deployment_id,
+                    "reason": error.to_string(),
+                }));
+            }
         }
     }
     let now = crate::clock::unix_now();
@@ -2064,8 +2087,23 @@ pub(crate) async fn import(
     let mut outcome = {
         let (storage, received, bundles) = (storage.clone(), Arc::clone(&received), bundles);
         super::blocking(move || {
-            let run =
-                |connection: &Connection| apply(connection, &storage, &received, &bundles, now);
+            let run = |connection: &Connection| {
+                let mut outcome = apply(connection, &storage, &received, &bundles, now)?;
+                // What stops a deployment's data from loading after the
+                // records commit is known from them: no instance that can
+                // run it. Anything else happens only in the broker, so a
+                // preview does not claim it either way.
+                for (deployment_id, digest) in &digests {
+                    if service_bundles::waits_for_an_instance(connection, deployment_id, digest)? {
+                        outcome.pending.push(json!({
+                            "kind": "deploymentData",
+                            "id": deployment_id,
+                            "reason": NO_INSTANCE_YET,
+                        }));
+                    }
+                }
+                Ok(outcome)
+            };
             if check {
                 storage.authority.rehearse(run)
             } else {
@@ -2088,10 +2126,7 @@ pub(crate) async fn import(
                         outcome.pending.push(json!({
                             "kind": "deploymentData",
                             "id": deployment_id,
-                            "reason": "the deployment has no instance that can run here yet, so \
-                                its resources are not prepared and its waiting jobs have not \
-                                moved; enable the deployment and an instance, or provision one, \
-                                then run the same import again",
+                            "reason": NO_INSTANCE_YET,
                         }));
                     }
                     deployments.push(json!({ "deploymentId": deployment_id, "report": report }));

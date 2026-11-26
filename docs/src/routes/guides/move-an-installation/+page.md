@@ -140,6 +140,9 @@ yet", with what finishes it:
   same import again.
 
 Records already imported are skipped, and the data loads where it stopped.
+`--check` already lists a service with no instance that can run, with the
+same step. It does not load data, so a load that stops partway shows only
+when you run the import.
 
 ## Backups and releases
 
