@@ -9,20 +9,20 @@
 //! An import that waited for an instance finishes once one exists.
 //! An import never reaches past the deployment it creates, and running it
 //! again replaces only a stream it can show it restored itself.
-//! Import sends only the bytes whose digest it checked, and export reports
-//! the digest of the bytes it wrote.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures_util::StreamExt as _;
+use runtime_trellis::apps::runtime_trellis_moving_caller::Request as MovingCaller;
 use runtime_trellis::participants::runtime_trellis_moving_service::{
     types::{ResourceValue, Value as Payload},
     Participant, Provider,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
-use trellis_rs::auth::discover_native_oauth;
+use trellis_rs::auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient};
+use trellis_rs::client::UserConnectOptions;
 use trellis_rs::jobs::JobProcessError;
 use trellis_rs::service::ServiceConnectOptions;
 use trellis_testkit::{TestNatsUser, TrellisTestRuntime};
@@ -145,6 +145,51 @@ impl Cli {
             .to_string()
             .contains(id)
     }
+}
+
+/// A client of `runtime`'s administrator, signed in through the CLI's device
+/// flow with `capabilities`.
+async fn administrator(
+    runtime: &mut TrellisTestRuntime,
+    capabilities: &[&str],
+) -> trellis_rs::generated::Client {
+    let server = discover_native_oauth(runtime.trellis_url(), &runtime.trust_roots())
+        .await
+        .unwrap();
+    let native = NativeOAuthClient::open(
+        runtime
+            .workdir()
+            .join(format!("admin-{}", ulid::Ulid::generate())),
+        NativeCredentialScope {
+            issuer: server.issuer.clone(),
+            instance_id: server.trust.instance_id.clone(),
+            account: server.trust.account.clone(),
+            client_id: "trellis.cli".into(),
+            credential_handle: ulid::Ulid::generate(),
+        },
+        server.trust.clone(),
+    )
+    .await
+    .unwrap();
+    let device = native
+        .start_device(&json!([{
+            "type": "trellis_capabilities",
+            "required": capabilities,
+            "optional": []
+        }]))
+        .await
+        .unwrap();
+    runtime
+        .approve_device_login("trellis.cli", device.user_code())
+        .await
+        .unwrap();
+    trellis_rs::generated::Client::connect_user(UserConnectOptions::new(
+        server.nats_servers,
+        5_000,
+        device.complete().await.unwrap(),
+    ))
+    .await
+    .unwrap()
 }
 
 fn path(path: &Path) -> &str {
@@ -356,7 +401,7 @@ mod bundle {
             serde_json::to_vec(&manifest).unwrap(),
         ));
         let mut content = b"TRELLIS-SERVICE\n".to_vec();
-        content.extend_from_slice(&1u32.to_be_bytes());
+        content.extend_from_slice(&2u32.to_be_bytes());
         for (name, bytes) in entries {
             content.extend_from_slice(&u16::try_from(name.len()).unwrap().to_be_bytes());
             content.extend_from_slice(name.as_bytes());
@@ -380,22 +425,13 @@ mod bundle {
         let (_, bytes) = entries.iter_mut().find(|(entry, _)| entry == name).unwrap();
         *bytes = serde_json::to_vec(value).unwrap();
     }
-
-    /// The SHA-256 of a file, in lowercase hex, as import's `--digest` takes it.
-    pub fn digest(file: &[u8]) -> String {
-        Sha256::digest(file)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
-    }
 }
 
-/// Seal `entries` as a bundle file at `out`, and return its digest.
-fn write_bundle(entries: Vec<(String, Vec<u8>)>, passphrase: &Path, out: &Path) -> String {
+/// Seal `entries` as a bundle file at `out`.
+fn write_bundle(entries: Vec<(String, Vec<u8>)>, passphrase: &Path, out: &Path) {
     let passphrase = std::fs::read_to_string(passphrase).unwrap();
     let file = bundle::seal(&bundle::content(entries), passphrase.trim_end());
     std::fs::write(out, &file).unwrap();
-    bundle::digest(&file)
 }
 
 /// The entries of the bundle file at `file`.
@@ -407,8 +443,8 @@ fn read_bundle(file: &Path, passphrase: &Path) -> Vec<(String, Vec<u8>)> {
     ))
 }
 
-/// Export `id` with the production CLI into `out` and return the digest.
-async fn export(cli: &Cli, id: &str, out: &Path, passphrase: &Path) -> String {
+/// Export `id` with the production CLI into `out`.
+async fn export(cli: &Cli, id: &str, out: &Path, passphrase: &Path) {
     cli.json(&[
         "svc",
         id,
@@ -418,20 +454,15 @@ async fn export(cli: &Cli, id: &str, out: &Path, passphrase: &Path) -> String {
         "--passphrase-file",
         path(passphrase),
     ])
-    .await["digest"]
-        .as_str()
-        .unwrap()
-        .to_owned()
+    .await;
 }
 
 /// Import `file` with the production CLI.
-async fn import(cli: &Cli, file: &Path, digest: &str, passphrase: &Path) -> std::process::Output {
+async fn import(cli: &Cli, file: &Path, passphrase: &Path) -> std::process::Output {
     cli.run(&[
         "svc",
         "import",
         path(file),
-        "--digest",
-        digest,
         "--passphrase-file",
         path(passphrase),
     ])
@@ -500,22 +531,52 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
         .json(&["svc", &deployment, "enrollment", "issue", "--title", "pods"])
         .await;
     let enrollment = issued["text"].as_str().unwrap().to_owned();
+    // People reach its API through a role with two members, a direct grant,
+    // and a second role.
     let capability =
         runtime_trellis::apis::runtime_trellis_moving_v1::rpc::Ping::CALLER_CAPABILITIES[0];
-    old_cli
-        .json(&[
-            "roles",
-            "create",
-            "--title",
-            "Moving pingers",
-            "--description",
-            "Reach the moving service",
-            "--capability",
-            capability,
-        ])
-        .await;
-    let user = old.create_user("Pinger").await.unwrap();
-    old.grant_user_capabilities(&user, &[capability])
+    let role_id = |created: Value| created["role"]["roleId"].as_str().unwrap().to_owned();
+    let pingers = role_id(
+        old_cli
+            .json(&[
+                "roles",
+                "create",
+                "--title",
+                "Moving pingers",
+                "--description",
+                "Reach the moving service",
+                "--capability",
+                capability,
+            ])
+            .await,
+    );
+    let auditors = role_id(
+        old_cli
+            .json(&[
+                "roles",
+                "create",
+                "--title",
+                "Moving auditors",
+                "--capability",
+                capability,
+            ])
+            .await,
+    );
+    let kept = old.create_user("Kept ID").await.unwrap();
+    let named = old.create_user("Same username").await.unwrap();
+    let stranger = old.create_user("Stranger").await.unwrap();
+    let renamed = old.create_user("Renamed").await.unwrap();
+    for (role, user) in [
+        (&pingers, &kept),
+        (&pingers, &stranger),
+        (&pingers, &renamed),
+        (&auditors, &kept),
+    ] {
+        old_cli
+            .json(&["roles", "assign", role, "--user", user.principal_id()])
+            .await;
+    }
+    old.grant_user_capabilities(&named, &[capability])
         .await
         .unwrap();
     let old_url = old.webhook_urls(&identity).await.unwrap()["token"].clone();
@@ -531,19 +592,7 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     let passphrase = work.join("passphrase");
     std::fs::write(&passphrase, "a long enough passphrase\n").unwrap();
     let bundle = work.join("moving.trellis-service");
-    let exported = old_cli
-        .json(&[
-            "svc",
-            "moving",
-            "export",
-            "--out",
-            path(&bundle),
-            "--passphrase-file",
-            path(&passphrase),
-        ])
-        .await;
-    let digest = exported["digest"].as_str().unwrap().to_owned();
-    assert_eq!(digest.len(), 64);
+    export(&old_cli, "moving", &bundle, &passphrase).await;
     let bytes = std::fs::read(&bundle).unwrap();
     assert!(
         !bytes
@@ -584,8 +633,6 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
             "svc",
             "import",
             path(&bundle),
-            "--digest",
-            &digest,
             "--passphrase-file",
             path(&wrong),
         ])
@@ -601,21 +648,64 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
             "svc",
             "import",
             path(&tampered),
-            "--digest",
-            &digest,
             "--passphrase-file",
             path(&passphrase),
         ])
         .await;
-    assert!(refused.contains("notthefilethatwasexported"), "{refused}");
+    assert!(
+        refused.contains("thebundleisdamaged:achunkdoesnotdecrypt"),
+        "{refused}"
+    );
+    // The new installation has an account for one member under the same
+    // user ID and username, someone else's account with the grant holder's
+    // username, an account under another member's ID with another username,
+    // none for the last member, and a role of its own under the auditors'
+    // role ID.
+    let kept_here = new
+        .create_user_as("Kept ID", kept.username(), Some(kept.principal_id()))
+        .await
+        .unwrap();
+    let named_here = new
+        .create_user_as("Same username", named.username(), None)
+        .await
+        .unwrap();
+    let renamed_here = new
+        .create_user_as(
+            "Renamed",
+            &format!(
+                "renamed-{}",
+                ulid::Ulid::generate().to_string().to_lowercase()
+            ),
+            Some(renamed.principal_id()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(kept_here.principal_id(), kept.principal_id());
+    assert_ne!(named_here.principal_id(), named.principal_id());
+    trellis_runtime_apis::apis::trellis_auth_v1::Client::from_generated(
+        administrator(&mut new, &["trellis.auth.v1:roles.manage"]).await,
+    )
+    .roles_put(
+        &serde_json::from_value(json!({
+            "roleId": auditors,
+            "expectedRevision": "0",
+            "idempotencyKey": ulid::Ulid::generate().to_string(),
+            "title": "Auditors here",
+            "description": "",
+            "capabilityIds": ["trellis.auth.v1:users.read"],
+            "assignToNewUsers": false,
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
     // A check reports what the import would do and leaves nothing behind.
     let checked = new_cli
         .json(&[
             "svc",
             "import",
             path(&bundle),
-            "--digest",
-            &digest,
             "--passphrase-file",
             path(&passphrase),
             "--check",
@@ -631,15 +721,16 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
         .await
         .contains("notfound"));
 
-    // The import keeps the deployment ID and reports the access to
-    // recreate, which it does not create.
+    // The import keeps the deployment ID and recreates the access to the
+    // service's API for the people it finds by user ID. A member with no
+    // account here, an account with only the same username, which is someone
+    // else, and a role this installation has in another form, are reported
+    // and left alone.
     let imported = new_cli
         .json(&[
             "svc",
             "import",
             path(&bundle),
-            "--digest",
-            &digest,
             "--passphrase-file",
             path(&passphrase),
         ])
@@ -649,14 +740,78 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     assert_eq!(report["deploymentId"], deployment.as_str());
     assert_eq!(
         report["roles"],
-        json!([{ "name": "Moving pingers", "capabilities": [capability], "assignments": "0" }])
+        json!([
+            { "roleId": pingers, "name": "Moving pingers", "capabilities": [capability], "members": "3" },
+            { "roleId": auditors, "name": "Moving auditors", "capabilities": [capability], "members": "1" },
+        ])
     );
     assert_eq!(
         report["grants"],
-        json!([{ "capability": capability, "principals": "1" }])
+        json!([{ "capability": capability, "users": "1" }])
     );
-    let roles = new_cli.json(&["roles", "list"]).await.to_string();
-    assert!(!roles.contains("Moving pingers"), "{roles}");
+    let items = |list: &str| {
+        report["access"][list]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                let mut item = item.clone();
+                item.as_object_mut().unwrap().remove("reason");
+                item
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        items("recreated"),
+        vec![
+            json!({ "kind": "role", "roleId": pingers, "role": "Moving pingers" }),
+            json!({
+                "kind": "assignment", "roleId": pingers, "role": "Moving pingers",
+                "userId": kept.principal_id(), "matchedUserId": kept.principal_id(),
+                "matchedBy": "id",
+            }),
+        ]
+    );
+    let refusal = report["access"]["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "grant")
+        .unwrap()["reason"]
+        .clone();
+    assert!(
+        refusal
+            .as_str()
+            .unwrap()
+            .contains(&format!("belongs to user {}", named_here.principal_id())),
+        "{refusal}"
+    );
+    let mut skipped = items("skipped");
+    skipped.sort_by_key(Value::to_string);
+    let mut expected = vec![
+        json!({ "kind": "grant", "capability": capability, "userId": named.principal_id() }),
+        json!({ "kind": "assignment", "roleId": pingers, "role": "Moving pingers", "userId": stranger.principal_id() }),
+        json!({ "kind": "assignment", "roleId": pingers, "role": "Moving pingers", "userId": renamed.principal_id() }),
+        json!({ "kind": "role", "roleId": auditors, "role": "Moving auditors" }),
+        json!({ "kind": "assignment", "roleId": auditors, "role": "Moving auditors", "userId": kept.principal_id() }),
+    ];
+    expected.sort_by_key(Value::to_string);
+    assert_eq!(skipped, expected);
+    assert!(!new_cli
+        .json(&["users", "list"])
+        .await
+        .to_string()
+        .contains(stranger.principal_id()));
+    // The account with the same username is someone else's, and gains
+    // nothing.
+    let namesake = new_cli
+        .json(&["users", "show", named_here.principal_id()])
+        .await;
+    assert!(!namesake.to_string().contains(capability), "{namesake}");
+    assert_eq!(
+        new_cli.json(&["roles", "show", &auditors]).await["role"]["title"],
+        "Auditors here"
+    );
     let new_url = new.webhook_urls(&identity).await.unwrap()["token"].clone();
     let url_path = |url: &str| url::Url::parse(url).unwrap().path().to_owned();
     assert_eq!(url_path(&new_url), url_path(&old_url));
@@ -670,8 +825,6 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
             "svc",
             "import",
             path(&bundle),
-            "--digest",
-            &digest,
             "--passphrase-file",
             path(&passphrase),
         ])
@@ -681,24 +834,12 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
         "{refused}"
     );
     let second = work.join("again.trellis-service");
-    let again = old_cli
-        .json(&[
-            "svc",
-            &deployment,
-            "export",
-            "--out",
-            path(&second),
-            "--passphrase-file",
-            path(&passphrase),
-        ])
-        .await;
+    export(&old_cli, &deployment, &second, &passphrase).await;
     let refused = new_cli
         .refusal(&[
             "svc",
             "import",
             path(&second),
-            "--digest",
-            again["digest"].as_str().unwrap(),
             "--passphrase-file",
             path(&passphrase),
         ])
@@ -766,6 +907,28 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     let lifecycle = service.lifecycle();
     let running = tokio::spawn(service.run());
     assert!(lifecycle.ready().await, "the moved service serves");
+
+    // The person the import found calls the moved service's API through an
+    // app that needs its capability, as the role gives it. The accounts that
+    // were in the way, and someone given nothing, cannot sign in to that app.
+    let app = new
+        .register_native_application::<MovingCaller>("moving caller")
+        .await
+        .unwrap();
+    let login = new
+        .login_native_application_as(&app, &kept_here)
+        .await
+        .unwrap();
+    let moving = runtime_trellis::apis::runtime_trellis_moving_v1::Client::from_generated(
+        trellis_rs::generated::Client::connect_user(login.connect_options())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(moving.ping(&payload("ping")).await.unwrap().value, "ping");
+    let outsider = new.create_user("Outsider").await.unwrap();
+    for user in [&named_here, &renamed_here, &outsider] {
+        assert!(new.login_native_application_as(&app, user).await.is_err());
+    }
     let (ran_id, ran_value) = tokio::time::timeout(Duration::from_secs(30), runs.recv())
         .await
         .expect("the waiting job runs in the new installation")
@@ -904,9 +1067,9 @@ async fn an_import_waiting_for_an_instance_finishes_once_one_is_provisioned() {
     instances["instances"] = json!([]);
     bundle::set_document(&mut entries, "instances.json", &instances);
     let bundle_file = work.join("no-instance.trellis-service");
-    let digest = write_bundle(entries, &passphrase, &bundle_file);
+    write_bundle(entries, &passphrase, &bundle_file);
 
-    let first = import(&new_cli, &bundle_file, &digest, &passphrase).await;
+    let first = import(&new_cli, &bundle_file, &passphrase).await;
     assert!(
         first.status.success(),
         "{}",
@@ -914,7 +1077,7 @@ async fn an_import_waiting_for_an_instance_finishes_once_one_is_provisioned() {
     );
     let provisioned = new_cli.json(&["svc", &deployment, "provision"]).await;
     let seed = provisioned["instanceSeed"].as_str().unwrap().to_owned();
-    let again = import(&new_cli, &bundle_file, &digest, &passphrase).await;
+    let again = import(&new_cli, &bundle_file, &passphrase).await;
     assert!(
         again.status.success(),
         "{}",
@@ -1160,9 +1323,8 @@ async fn two_exports_to_one_file_never_replace_each_other() {
         .unwrap()
         .unwrap()
     };
-    let first = export(&cli, identity.deployment_id(), &out, &passphrase).await;
+    export(&cli, identity.deployment_id(), &out, &passphrase).await;
     let written = std::fs::read(&out).unwrap();
-    assert_eq!(bundle::digest(&written), first);
     {
         use std::io::Write as _;
         let mut writer = writer;
@@ -1267,9 +1429,9 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     );
     drop(service);
     let keeper_file = work.join("keeper.trellis-service");
-    let keeper_digest = export(&old_cli, keeping.deployment_id(), &keeper_file, &passphrase).await;
+    export(&old_cli, keeping.deployment_id(), &keeper_file, &passphrase).await;
     let moving_file = work.join("moving.trellis-service");
-    let moving_digest = export(&old_cli, &moving_id, &moving_file, &passphrase).await;
+    export(&old_cli, &moving_id, &moving_file, &passphrase).await;
     let kv_stream = |entries: &[(String, Vec<u8>)]| {
         bundle::document(entries, "resources.json")
             .as_array()
@@ -1297,8 +1459,8 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         change(kv);
         bundle::set_document(&mut entries, "resources.json", &resources);
         let file = work.join(name);
-        let digest = write_bundle(entries, &passphrase, &file);
-        (file, digest)
+        write_bundle(entries, &passphrase, &file);
+        file
     };
     let jetstream = jetstream(&new).await;
     let streams = || async {
@@ -1330,22 +1492,20 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     // Named before `keeper` is imported, its stream does not exist yet, so
     // nothing in the way shows; the bundle is refused all the same.
     let early = kept_stream.clone();
-    let (claims_keeper, claims_digest) = crafted("claims-keeper.trellis-service", &move |kv| {
+    let claims_keeper = crafted("claims-keeper.trellis-service", &move |kv| {
         kv["stream"] = json!(early);
     });
     let before = streams().await;
-    assert!(
-        !import(&new_cli, &claims_keeper, &claims_digest, &passphrase)
-            .await
-            .status
-            .success()
-    );
+    assert!(!import(&new_cli, &claims_keeper, &passphrase)
+        .await
+        .status
+        .success());
     assert!(!new_cli.has_deployment(&moving_id).await);
     assert_eq!(streams().await, before);
 
     // `keeper` moves, then the same crafted bundle runs again, as a retry of
     // an interrupted import does: `keeper`'s stream and record are intact.
-    let moved_keeper = import(&new_cli, &keeper_file, &keeper_digest, &passphrase).await;
+    let moved_keeper = import(&new_cli, &keeper_file, &passphrase).await;
     assert!(
         moved_keeper.status.success(),
         "{}",
@@ -1361,12 +1521,10 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         .state
         .messages;
     assert_eq!(kept_messages, 1);
-    assert!(
-        !import(&new_cli, &claims_keeper, &claims_digest, &passphrase)
-            .await
-            .status
-            .success()
-    );
+    assert!(!import(&new_cli, &claims_keeper, &passphrase)
+        .await
+        .status
+        .success());
     let still = jetstream
         .get_stream(&kept_stream)
         .await
@@ -1399,8 +1557,8 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         *jobs = serde_json::to_vec(&message).unwrap();
         jobs.push(b'\n');
         let file = work.join("deletes-keeper.trellis-service");
-        let digest = write_bundle(entries, &passphrase, &file);
-        (file, digest)
+        write_bundle(entries, &passphrase, &file);
+        file
     };
     // A waiting job whose payload replay could not decode.
     let undecodable = {
@@ -1415,25 +1573,23 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         *jobs = serde_json::to_vec(&message).unwrap();
         jobs.push(b'\n');
         let file = work.join("undecodable-job.trellis-service");
-        let digest = write_bundle(entries, &passphrase, &file);
-        (file, digest)
+        write_bundle(entries, &passphrase, &file);
+        file
     };
     let unknown = {
         let mut entries = moving_entries.clone();
         entries.insert(0, ("resources/../escape".into(), b"elsewhere".to_vec()));
         let file = work.join("unknown-entry.trellis-service");
-        let digest = write_bundle(entries, &passphrase, &file);
-        (file, digest)
+        write_bundle(entries, &passphrase, &file);
+        file
     };
     let before = streams().await;
-    for (file, digest) in [platform, copies, deletes, undecodable, unknown] {
+    for file in [platform, copies, deletes, undecodable, unknown] {
         let checked = new_cli
             .run(&[
                 "svc",
                 "import",
                 path(&file),
-                "--digest",
-                &digest,
                 "--passphrase-file",
                 path(&passphrase),
                 "--check",
@@ -1441,10 +1597,7 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
             .await;
         assert!(!checked.status.success(), "{} checks out", file.display());
         assert!(
-            !import(&new_cli, &file, &digest, &passphrase)
-                .await
-                .status
-                .success(),
+            !import(&new_cli, &file, &passphrase).await.status.success(),
             "{} was imported",
             file.display()
         );
@@ -1462,111 +1615,10 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         assert_eq!(streams().await, before);
     }
 
-    // The import reads the file once, so content that takes the file's
-    // place after its digest was checked is never sent. A FIFO gives the CLI
-    // `moving`'s bundle on the first open and a bundle Auth refuses on any
-    // later one.
-    let fifo = work.join("swapped.trellis-service");
-    assert!(std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()
-        .unwrap()
-        .success());
-    let mut feeder = tokio::process::Command::new("sh")
-        // `exec`, so the process waiting for a second reader is the one
-        // killed below.
-        .args(["-c", r#"cat "$1" > "$3"; exec cat "$2" > "$3""#, "sh"])
-        .args([&moving_file, &claims_keeper, &fifo])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    let swapped = new_cli
-        .run(&[
-            "svc",
-            "import",
-            path(&fifo),
-            "--digest",
-            &moving_digest,
-            "--passphrase-file",
-            path(&passphrase),
-            "--check",
-        ])
-        .await;
-    let _ = feeder.start_kill();
-    feeder.wait().await.unwrap();
-    assert!(
-        swapped.status.success(),
-        "{}",
-        String::from_utf8_lossy(&swapped.stderr)
-    );
-    let swapped: Value = serde_json::from_slice(&swapped.stdout).unwrap();
-    assert_eq!(swapped["import"]["applied"], false);
-    assert_eq!(swapped["import"]["report"]["deploymentId"], moving_id);
-
-    // Export reports the digest and size of the bytes it wrote: bytes
-    // another writer adds to the file meanwhile are not counted.
-    let elsewhere = work.join("added-to");
-    std::fs::create_dir(&elsewhere).unwrap();
-    let out = elsewhere.join("moving.trellis-service");
-    let exporting = old_cli
-        .command()
-        .args(["svc", &moving_id, "export", "--out", path(&out)])
-        .args(["--passphrase-file", path(&passphrase)])
-        .stdin(std::process::Stdio::null())
-        .output();
-    let adding = async {
-        use std::os::unix::fs::FileExt as _;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        loop {
-            let written = std::fs::read_dir(&elsewhere).unwrap().find_map(|entry| {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(entry.ok()?.path())
-                    .ok()
-            });
-            if let Some(file) = written {
-                file.write_all_at(b"added later", 4 << 20).unwrap();
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the export writes no file"
-            );
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    };
-    let (exported, ()) = tokio::join!(
-        async {
-            tokio::time::timeout(Duration::from_secs(120), exporting)
-                .await
-                .expect("the export finishes")
-                .unwrap()
-        },
-        adding
-    );
-    assert!(
-        exported.status.success(),
-        "{}",
-        String::from_utf8_lossy(&exported.stderr)
-    );
-    let exported: Value = serde_json::from_slice(&exported.stdout).unwrap();
-    let file = std::fs::read(&out).unwrap();
-    let size = usize::try_from(exported["size"].as_u64().unwrap()).unwrap();
-    assert!(size < file.len());
-    assert_eq!(exported["digest"], bundle::digest(&file[..size]));
-    let passphrase_text = std::fs::read_to_string(&passphrase).unwrap();
-    let written = bundle::entries(&bundle::open(&file[..size], passphrase_text.trim_end()));
-    assert_eq!(
-        bundle::document(&written, "deployment.json")["deploymentId"],
-        moving_id
-    );
-
-    // An import that stops after restoring a stream, before it records the
-    // stream loaded, resumes when run again: it restores again only a stream
-    // it made itself. A trigger refuses the record of the store loaded, as a
-    // stop between the two would leave it.
+    // An import that stops after restoring a stream, before it records
+    // anything about it, resumes when run again: it restores again only a
+    // stream it made itself. A trigger refuses the record of the store
+    // loaded, as a stop just after the broker made the stream would leave it.
     let store = bundle::document(&moving_entries, "resources.json")
         .as_array()
         .unwrap()
@@ -1595,29 +1647,21 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
             )
         }
     };
-    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
+    assert!(!import(&new_cli, &moving_file, &passphrase)
         .await
         .status
         .success());
     assert!(new_cli.has_deployment(&moving_id).await);
     let (made, _, _) = created(store_stream.clone()).await;
 
-    // Someone else's stream under the store's name: one without the
-    // import's mark, then one with another import's.
+    // Someone else's stream under the store's name, configured as the
+    // store is: one without the import's mark, then one with another
+    // import's.
     jetstream.delete_stream(&store_stream).await.unwrap();
-    let foreign = jetstream
-        .create_stream(async_nats::jetstream::stream::Config {
-            name: store_stream.clone(),
-            subjects: store["config"]["subjects"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|subject| subject.as_str().unwrap().to_owned())
-                .collect(),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+    let mut foreign_config: async_nats::jetstream::stream::Config =
+        serde_json::from_value(store["config"].clone()).unwrap();
+    foreign_config.metadata.clear();
+    let foreign = jetstream.create_stream(foreign_config).await.unwrap();
     let foreign_subject = store["config"]["subjects"][0]
         .as_str()
         .unwrap()
@@ -1629,10 +1673,17 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         .await
         .unwrap();
     let foreign_created = foreign.cached_info().created;
-    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
-        .await
-        .status
-        .success());
+    let refused = import(&new_cli, &moving_file, &passphrase).await;
+    assert!(
+        // The report wraps where a stream name has a hyphen.
+        String::from_utf8_lossy(&refused.stderr)
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│')
+            .collect::<String>()
+            .contains("didnotcreate"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
     let (kept_created, kept_messages_now, kept_metadata) = created(store_stream.clone()).await;
     assert_eq!(
         (
@@ -1650,10 +1701,17 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     let mut config = foreign.cached_info().config.clone();
     config.metadata = marked.clone();
     jetstream.update_stream(config).await.unwrap();
-    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
-        .await
-        .status
-        .success());
+    let refused = import(&new_cli, &moving_file, &passphrase).await;
+    assert!(
+        // The report wraps where a stream name has a hyphen.
+        String::from_utf8_lossy(&refused.stderr)
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│')
+            .collect::<String>()
+            .contains("didnotcreate"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
     let (kept_created, kept_messages_now, kept_metadata) = created(store_stream.clone()).await;
     assert_eq!(
         (kept_created, kept_messages_now),
@@ -1667,9 +1725,9 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
 
     // Without the stranger's stream the store is restored, and the record
     // refused again; once the record goes through, the store this import
-    // made is restored again and the import finishes.
+    // made and never recorded is restored again and the import finishes.
     jetstream.delete_stream(&store_stream).await.unwrap();
-    assert!(!import(&new_cli, &moving_file, &moving_digest, &passphrase)
+    assert!(!import(&new_cli, &moving_file, &passphrase)
         .await
         .status
         .success());
@@ -1678,7 +1736,7 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     records
         .execute_batch("DROP TRIGGER stop_before_store_loaded")
         .unwrap();
-    let finished = import(&new_cli, &moving_file, &moving_digest, &passphrase).await;
+    let finished = import(&new_cli, &moving_file, &passphrase).await;
     assert!(
         finished.status.success(),
         "{}",

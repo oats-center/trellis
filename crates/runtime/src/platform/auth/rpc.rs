@@ -249,6 +249,7 @@ pub(super) fn rpc_error(error: AuthError) -> ServerError {
             needed = format!("Not authorized: {detail}");
             (errors::AuthError::TYPE, "access_denied", needed.as_str())
         }
+        AuthError::InUse(detail) => (errors::AuthError::TYPE, "already_in_use", detail.as_str()),
         AuthError::IdentityTaken => (
             errors::AuthError::TYPE,
             "identity_linked_to_another_user",

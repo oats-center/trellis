@@ -352,7 +352,7 @@ fn files_in(folder: &Path) -> Result<Vec<String>, BackupError> {
 }
 
 /// Connects to the installation's NATS as Trellis's own user.
-async fn connect(config: &RuntimeConfig) -> Result<async_nats::Client, BackupError> {
+pub(crate) async fn connect(config: &RuntimeConfig) -> Result<async_nats::Client, BackupError> {
     let nats = config.resolve_nats_runtime()?;
     let options = crate::supervisor::nats_connect_options(&nats, &nats.trellis_creds)
         .map_err(|error| BackupError::Nats(error.to_string()))?
@@ -614,6 +614,69 @@ fn copy_database(from: &Path, to: &Path, busy_timeout: Duration) -> Result<(), B
     Ok(())
 }
 
+/// Confirms that `jetstream` is this installation's, and its platform
+/// database's when `identity` (the database's JetStream identity) is given,
+/// as a start confirms it, before a command reads or writes data there.
+/// `otherwise` says what going on with another broker would do.
+///
+/// # Errors
+///
+/// Returns [`BackupError::Refused`] when the broker has no record of its
+/// installation, belongs to another one, or holds another platform
+/// database's JetStream.
+pub(crate) async fn confirm_broker(
+    config: &RuntimeConfig,
+    jetstream: &async_nats::jetstream::Context,
+    identity: Option<&str>,
+    otherwise: &str,
+) -> Result<(), BackupError> {
+    let installation = instance_id(config);
+    let servers = config.resolve_nats_runtime()?.servers;
+    let (_, bound, store) = crate::platform::read_broker_identity(jetstream)
+        .await
+        .map_err(|error| {
+            BackupError::Refused(format!(
+                "cannot confirm that NATS at {servers} holds this installation's JetStream: \
+                {error}"
+            ))
+        })?;
+    let unconfirmed = |reason: String| {
+        BackupError::Refused(format!(
+            "NATS at {servers} {reason}, so {otherwise}; check [nats] servers and the \
+            Trellis NATS user"
+        ))
+    };
+    match (&bound, &installation) {
+        (None, _) => {
+            return Err(unconfirmed(
+                "has no record of the installation it belongs to; a broker gets one on \
+                the platform's first start"
+                    .into(),
+            ))
+        }
+        (Some(bound), None) => {
+            return Err(unconfirmed(format!(
+                "belongs to installation {bound}, and this configuration names no \
+                installation ID"
+            )))
+        }
+        (Some(bound), Some(installation)) if bound != installation => {
+            return Err(unconfirmed(format!(
+                "belongs to installation {bound}, not this installation {installation}"
+            )))
+        }
+        _ => {}
+    }
+    if let Some(identity) = identity {
+        if store.as_deref() != Some(identity) {
+            return Err(unconfirmed(
+                "holds a JetStream bound to a different platform database than this one".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Saves a recovery point of the installation that `config` was loaded from
 /// at `config_file`, with its data in `data_dir`, into the new or empty folder
 /// `destination`. The server may be running. NATS must be reachable.
@@ -791,50 +854,13 @@ pub async fn backup(
     let nats_server = Some(client.server_info().version);
     let leases = format!("KV_{}", config.resolve_leases()?.bucket);
     let jetstream = async_nats::jetstream::new(client.clone());
-    let installation = instance_id(config);
-    let servers = config.resolve_nats_runtime()?.servers;
-    let (_, bound, store) = crate::platform::read_broker_identity(&jetstream)
-        .await
-        .map_err(|error| {
-            BackupError::Refused(format!(
-                "cannot confirm that NATS at {servers} holds this installation's JetStream: \
-                {error}"
-            ))
-        })?;
-    let unconfirmed = |reason: String| {
-        BackupError::Refused(format!(
-            "NATS at {servers} {reason}, so the backup would pair data of different \
-            installations; check [nats] servers and the Trellis NATS user"
-        ))
-    };
-    match (&bound, &installation) {
-        (None, _) => {
-            return Err(unconfirmed(
-                "has no record of the installation it belongs to; a broker gets one on \
-                the platform's first start"
-                    .into(),
-            ))
-        }
-        (Some(bound), None) => {
-            return Err(unconfirmed(format!(
-                "belongs to installation {bound}, and this configuration names no \
-                installation ID"
-            )))
-        }
-        (Some(bound), Some(installation)) if bound != installation => {
-            return Err(unconfirmed(format!(
-                "belongs to installation {bound}, not this installation {installation}"
-            )))
-        }
-        _ => {}
-    }
-    if let Some(identity) = &jetstream_identity {
-        if store.as_ref() != Some(identity) {
-            return Err(unconfirmed(
-                "holds a JetStream bound to a different platform database than this one".into(),
-            ));
-        }
-    }
+    confirm_broker(
+        config,
+        &jetstream,
+        jetstream_identity.as_deref(),
+        "the backup would pair data of different installations",
+    )
+    .await?;
     let mut names = Vec::new();
     let mut listing = jetstream.stream_names();
     while let Some(name) = listing.next().await {
@@ -946,6 +972,7 @@ pub fn restore(
     force: bool,
 ) -> Result<Manifest, BackupError> {
     let manifest = verify(source)?;
+    let migrate = restorable(&manifest.trellis_version, env!("CARGO_PKG_VERSION"))?;
     let config_dir = config_file.parent().unwrap_or(Path::new("/"));
     if !force {
         // The installation already there is the one a start of it would be:
@@ -1006,6 +1033,7 @@ pub fn restore(
 
     // The restored configuration says where its data goes.
     let (config, paths) = RuntimeConfig::load_from_path_with_defaults(config_file, defaults)?;
+    let restored_config = config.clone();
     let databases = databases(&config)?;
     for entry in &manifest.entries {
         let EntryKind::Database { subsystem } = &entry.kind else {
@@ -1111,7 +1139,57 @@ pub fn restore(
         serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
     )
     .map_err(|error| file_error("write", &path)(std::io::Error::other(error.to_string())))?;
+    if migrate {
+        migrate_restored(&restored_config)?;
+    }
     Ok(manifest)
+}
+
+/// Whether a backup that release `taken` wrote restores into release
+/// `running`, and whether its databases then need this release's forward
+/// migrations. The same release restores as it is. Between stable releases
+/// an earlier one's backup restores and is migrated, as a start would
+/// migrate its databases. A release candidate's databases come from a
+/// baseline that later candidates edit in place, so a release candidate
+/// restores only its own backups; an installation export moves one to
+/// another release.
+///
+/// # Errors
+///
+/// Returns [`BackupError::Refused`] for any other pair of releases.
+fn restorable(taken: &str, running: &str) -> Result<bool, BackupError> {
+    let version = |text: &str| semver::Version::parse(text.split('+').next().unwrap_or(text));
+    if taken == running {
+        return Ok(false);
+    }
+    match (version(taken), version(running)) {
+        (Ok(taken), Ok(running))
+            if taken.pre.is_empty() && running.pre.is_empty() && taken < running =>
+        {
+            Ok(true)
+        }
+        (Ok(taken_version), Ok(running_version))
+            if taken_version.pre.is_empty() && running_version.pre.is_empty() =>
+        {
+            Err(BackupError::Refused(format!(
+                "this backup was taken by trellis-server {taken}, which is newer than this \
+                trellis-server {running}; restore it with {taken} or later"
+            )))
+        }
+        _ => Err(BackupError::Refused(format!(
+            "this backup was taken by trellis-server {taken}, and this is trellis-server \
+            {running}; a release candidate restores only its own backups. Restore it with \
+            trellis-server {taken}, then move the installation to {running} with \
+            `trellis-server export` there and `trellis-server import` here"
+        ))),
+    }
+}
+
+/// Bring restored databases up to this release's schema, as a start does.
+fn migrate_restored(config: &RuntimeConfig) -> Result<(), BackupError> {
+    crate::storage::RuntimeStores::from_config(config, crate::RuntimeMode::All)?
+        .migrate_all()
+        .map_err(|error| BackupError::Refused(format!("migrating the restored databases: {error}")))
 }
 
 /// Loads the streams a restore left in `data_dir` into the installation's
@@ -1285,7 +1363,7 @@ mod tests {
         }
         let manifest = Manifest {
             format: FORMAT,
-            trellis_version: "test".into(),
+            trellis_version: env!("CARGO_PKG_VERSION").into(),
             created_at: now(),
             completed_at: now(),
             instance_id: Some(instance.into()),
@@ -1341,6 +1419,36 @@ mod tests {
             .join(STAGED)
             .join(MANIFEST_FILE)
             .is_file());
+    }
+
+    /// Before the first stable release a backup restores only into the
+    /// release candidate that took it, and the refusal sends the operator to
+    /// an installation export, the way to move to another release. From then
+    /// on an earlier stable release's backup restores, and its databases are
+    /// migrated forward; a newer one's is refused. No baseline has later
+    /// migrations yet, so the migration itself runs only when that happens.
+    #[test]
+    fn a_backup_restores_into_its_own_release_or_a_later_stable_one() {
+        assert!(!restorable("0.100.0-rc.55", "0.100.0-rc.55").unwrap());
+        for (taken, running) in [
+            ("0.100.0-rc.55", "0.100.0-rc.56"),
+            ("0.100.0-rc.56", "0.100.0-rc.55"),
+            ("0.100.0-rc.56", "0.100.0"),
+        ] {
+            let Err(BackupError::Refused(reason)) = restorable(taken, running) else {
+                panic!("{taken} restored into {running}");
+            };
+            assert!(
+                reason.contains("`trellis-server export`")
+                    && reason.contains("`trellis-server import`"),
+                "{reason}"
+            );
+        }
+        assert!(restorable("1.0.0", "1.2.0").unwrap());
+        assert!(matches!(
+            restorable("1.2.0", "1.0.0"),
+            Err(BackupError::Refused(_))
+        ));
     }
 
     #[test]

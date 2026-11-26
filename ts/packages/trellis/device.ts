@@ -9,6 +9,10 @@ import type { NatsConnection } from "@nats-io/nats-core";
 export { checkDeviceActivation } from "./device/activation.ts";
 export type {
   ConfigChange,
+  ConfigCheck,
+  ConfigCheckContext,
+  DeriveOptions,
+  DerivedConfig,
   ParticipantConfig,
   ParticipantConfigOf,
 } from "./service/config.ts";
@@ -70,9 +74,8 @@ import {
 } from "./participant_runtime/participant.ts";
 import type { AppRequestDescriptor } from "./generated_support.ts";
 import {
-  type ConfigHandle,
+  ConfigHandle,
   loadConfig,
-  NO_CONFIG,
   ownReading,
   type ParticipantConfig,
   type ParticipantConfigOf,
@@ -653,7 +656,11 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
         participantId: args.participant.identity,
         fields: configFields,
         read,
+        report: (outcome) => trellis.reportOwnConfig(outcome),
         log: resolveDeviceLogger(args.log),
+        // A device has no serving phase: reading its settings is putting
+        // them to use, after the checks it registers at startup.
+        startsOnRead: true,
       });
       config.watch({
         transport: manager,
@@ -665,9 +672,17 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
         read: async (atConnect) => ownReading(await read(atConnect)),
         timeoutMs: args.timeout ?? 30_000,
       });
-      const watching = config;
-      void manager.closed().finally(() => watching.stop());
     }
+    // A device without settings still has a handle of its own, so what it
+    // registers or derives goes with this connection.
+    const settings =
+      config ??
+      new ConfigHandle<Record<string, unknown>>(
+        {},
+        { values: {}, revision: {} },
+        resolveDeviceLogger(args.log),
+      );
+    void manager.closed().finally(() => settings.retire());
     const health = new ServiceHealthRuntime({
       serviceName: args.participant.identity,
       kind: "device",
@@ -698,6 +713,13 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
         );
       }
     };
+    // A revision the device's own checks rejected degrades its health until
+    // one is accepted, and each outcome is reported at once.
+    if (config) {
+      const watched = config;
+      health.add("settings", () => watched.healthCheck());
+      watched.onOutcome(() => void publishHealth());
+    }
     await publishHealth();
     const heartbeat = setInterval(
       () => void publishHealth(),
@@ -715,7 +737,7 @@ export async function connectDeviceWithDeps<TContract extends DeviceContract>(
     return Object.assign(createCallerRuntime(trellis, args.participant), {
       health,
       companion,
-      config: config ?? NO_CONFIG,
+      config: settings,
     }) as TrellisDeviceConnection<TContract>;
   } catch (error) {
     await companion?.connection.close();

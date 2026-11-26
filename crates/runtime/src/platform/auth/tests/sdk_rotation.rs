@@ -95,6 +95,7 @@ async fn sdk_rotation(mode: &str) {
     }
     if mode == "native" {
         let input = trellis_runtime_apis::types::AuthUserCreateRequest {
+            user_id: None,
             given_name: None,
             family_name: None,
             email: None,

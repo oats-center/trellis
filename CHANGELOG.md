@@ -8,8 +8,95 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `trellis-server export` and `import` move a whole installation's
+  configuration: users with their IDs and sign-ins, admin, roles and grants,
+  sign-in providers and their secrets, apps and consents, themes, devices, and
+  every service with its settings and waiting jobs, and users' and devices'
+  State. Records are versioned, so an export imports into a later release.
+  Imported installation settings replace the target's; a conflicting user,
+  app or role is reported and skipped, and the exported admin's privileges go
+  to the target's admin. `--check` previews it.
+- `trellis users create --id` creates a user with a given Trellis user ID.
+
+### Changed
+
+- `trellis svc import` recreates the roles, members, grants and app consents
+  that use the service's APIs, matching users by ID and then by sign-in, and
+  reports what it skipped. Service bundles are format 2; earlier bundles are
+  refused.
+- Before the first stable release, `restore` refuses a backup from another
+  release and points to installation export; between stable releases it
+  migrates an earlier release's backup forward.
+
+### Changed
+
+- An unexpected failure in a settings check or derive builder shows fixed text
+  ("the check failed" / "building the value failed") in status and health; the
+  service's own log carries the error with secret values redacted. Explicit
+  rejection reasons are kept, redacted.
+
 ### Fixed
 
+- `trellis-server import --check` lists a disabled deployment's data as
+  pending, and its database copy fails only when it stops making progress, not
+  after a fixed time. Sign-ins and role mappings move through disabled
+  providers as they were on the source.
+- Installation export and import refuse a broker that isn't the installation's,
+  keep each run's working files apart, preview without touching the target's
+  database, split large record kinds so the importer accepts them, fail on
+  missing State instead of exporting it empty, and list deployment data that
+  still needs another run. Disabled deployments stay disabled, and only
+  current grants, active sign-in providers and consent whose wording matches
+  carry over.
+- A Rust client no longer refuses its own request when a session renewal lands
+  mid-check, and a rate-limited renewal leaves a native session running.
+- A settings status reads pending as soon as a different build is installed,
+  and TypeScript `stop()` waits for derived-value disposals already running.
+- Rollback advice names the layer each refused value came from, and advises
+  restoring an accepted instance override when its removal exposed a value the
+  instance refuses.
+- Lease diagnostics judge expiry only by the broker's own clock and report
+  recovery only after seeing the lease records expire again.
+
+## [0.100.0-rc.55] - 2026-11-24
+
+### Added
+
+- Live settings: `config.check` and `config.derive` in the TypeScript and Rust
+  SDKs. Checks run before a revision takes effect; a rejection keeps the
+  current values, names the fields and reason, and waits at startup with the
+  Console link instead of exiting. Derived clients rebuild only when their own
+  fields change.
+- Each instance reports whether it applied, rejected or hasn't read the latest
+  settings revision. `Config.Get`, `config show`, `instances` and the Console
+  show it, and a rejected revision makes the instance's health degraded.
+- `config set` mixes plain and secret fields (`--secret F=@file`,
+  `--values-file`, `--env-file`, `--secret-keys`), and `set-secret` takes
+  several fields, each as one revision.
+
+### Changed
+
+- `trellis svc import` no longer takes `--digest`, and export no longer prints
+  one: the passphrase-sealed bundle is the proof of integrity.
+- A starting settings revision reads pending until the service serves, so a
+  startup check's rejection never shows as applied first.
+
+### Fixed
+
+- When NATS stops expiring the runtime lease records, as it does after a
+  storage write error such as a full disk, Trellis says so in its log, in
+  `/readyz`, in its 503 answers and in `trellis doctor`, and tells the operator
+  to free disk space and restart NATS. Lease renewals name the error NATS gave
+  instead of a bare timeout, and doctor warns when the data disk is nearly full.
+- Live settings: status reports are retried until Auth has them, the status
+  names pending restart-only fields and the right rollback scope, Rust derived
+  values are in place before `changed()` wakes, TypeScript disposes derived
+  values when a participant stops, and env and values files keep literal
+  backslashes and refuse duplicate keys.
+- Service import: a retry replaces any stream it tagged, even one it never
+  recorded, so a crash mid-import no longer needs a manual cleanup.
 - Service import: a retry after provisioning an instance finishes it, every
   restored resource must belong to the imported deployment, export streams
   unfinished jobs instead of loading job history, and never overwrites a file
@@ -22,26 +109,6 @@ and this project adheres to
 - A refused startup checks every database before migrating any, new Portal or
   Console files trigger the stale-asset check, embedded apps build without
   Git, and the upgrade test reads every page of releases.
-
-### Added
-
-- `trellis svc <id> export` and `trellis svc import` move a service to another
-  installation in a passphrase-encrypted bundle: the build, deployment,
-  instance keys, enrollment secret hashes, settings and secrets, webhook
-  endpoints, KV and store data and unfinished jobs. Import keeps every ID,
-  refuses conflicts, reports the roles to recreate, and `--check` dry-runs it.
-- `trellis doctor` and the Console's Diagnostics page report server, health,
-  JetStream, disk, certificates, recent failures and stuck work in one view,
-  gated by `diagnostics.read`.
-- `scripts/check.sh quick` runs the Pipeline's fast checks locally, and an
-  `upgrade` Pipeline job tests upgrading from the previous release.
-
-### Changed
-
-- A development server build refuses a stale embedded Portal or Console.
-- A changed database schema is refused at startup naming both Trellis
-  versions, the webhooks database included.
-- `xtask release prepare` moves Unreleased into the release's dated section.
 
 ## [0.100.0-rc.54] - 2026-11-23
 

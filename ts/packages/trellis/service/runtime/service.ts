@@ -117,9 +117,8 @@ import {
 } from "../../provider.ts";
 import { serviceRuntimeLogger } from "./logger.ts";
 import {
-  type ConfigHandle,
+  ConfigHandle,
   loadConfig,
-  NO_CONFIG,
   ownReading,
   type ParticipantConfig,
 } from "../config.ts";
@@ -1415,6 +1414,8 @@ export function createConnectedService<
   telemetry?: ReturnType<typeof startConnectionTelemetry>;
   /** The process's lifecycle, started before the transport connected. @internal */
   lifecycle?: ServiceLifecycle;
+  /** Live settings, whose rejections the `settings` health check reports. @internal */
+  config?: ConfigHandle<Record<string, unknown>>;
 }): Promise<TrellisServiceSession<TOwnedApi, TTrellisApi, TJobs, TKv>> {
   const resolvedLog = resolveServiceLogger(args.runtime.log);
   const lifecycle =
@@ -1578,6 +1579,11 @@ export function createConnectedService<
       : {}),
   }));
 
+  // A revision the service's own checks rejected degrades its health until
+  // one is accepted.
+  const settings = args.config;
+  if (settings) health.add("settings", () => settings.healthCheck());
+
   // Each webhook endpoint feeds the service's health with the check Trellis
   // keeps for it, so a wrong or missing secret shows on the service.
   if (args.healthIdentity) {
@@ -1724,6 +1730,8 @@ export function createConnectedService<
   if (heartbeatEnabled) {
     // A phase change is reported at once, so a watcher sees it move.
     lifecycle.subscribe(() => void publishHealthHeartbeat());
+    // So is what became of a revision of its settings.
+    settings?.onOutcome(() => void publishHealthHeartbeat());
     // Generation 1 activates after construction, so admission must not block it.
     void publishHealthHeartbeat();
     healthPublishTimer = setInterval(() => {
@@ -3396,6 +3404,7 @@ function connectServiceSession<
             participantId: args.participant.identity,
             fields: configFields,
             read: readOwnConfig,
+            report: (outcome) => configClient.reportOwnConfig(outcome),
             log: resolveServiceLogger(args.runtime?.log),
             status: (text) => lifecycle?.status(text),
             ...(args.signal ? { signal: args.signal } : {}),
@@ -3453,6 +3462,7 @@ function connectServiceSession<
           activeNats: () => manager.currentNats(),
           telemetry,
           lifecycle,
+          ...(config ? { config } : {}),
         });
         ingress = service[SERVICE_PROVIDER_INGRESS];
         const generation = manager.currentGeneration();
@@ -3529,7 +3539,7 @@ function connectServiceSession<
           });
           // A connection that ends without stop() must not leave the watch retrying.
           const watching = config;
-          void manager.closed().finally(() => watching.stop());
+          void manager.closed().finally(() => watching.retire());
         }
         transitionConnectionAvailability(service.connection, true, "connected");
         return Result.ok(service);
@@ -3684,7 +3694,13 @@ export class TrellisServiceSession<
 
   /** Settings Trellis keeps for this service. */
   get config(): ParticipantConfig<Record<string, unknown>> {
-    return this[SERVICE_CONFIG] ?? NO_CONFIG;
+    // A service without settings still has a handle of its own, so what it
+    // registers or derives goes with it when it stops.
+    return (this[SERVICE_CONFIG] ??= new ConfigHandle<Record<string, unknown>>(
+      {},
+      { values: {}, revision: {} },
+      this.#log,
+    ));
   }
   /** Event lifecycle surface for service startup listeners and publishers. */
   readonly event: ActiveEventFacade<TTrellisApi>;
@@ -4358,6 +4374,9 @@ export class TrellisServiceSession<
           };
           this.connection.subscribe(follow);
           follow();
+          // Every check and derive registered before wait() has run, so the
+          // starting revision's outcome is final and Auth hears it now.
+          this[SERVICE_CONFIG]?.started();
         }
         // Supervise the logical connection: an authoritative terminal failure of
         // the logical transport must stop the service. A single physical
@@ -4499,6 +4518,10 @@ export class TrellisServiceSession<
                   );
                 }
               }
+              // Nothing is served any more, so the clients and pools built
+              // from settings can go.
+              enter("settings");
+              await this[SERVICE_CONFIG]?.retire();
               enter("runtime");
               await this.#runtime.stop();
             } finally {

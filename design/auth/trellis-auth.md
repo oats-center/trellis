@@ -405,9 +405,9 @@ mapped onto one origin.
 Fresh initialization provisions `oauth_storage_key` in `secrets.toml`,
 independently of the online issuer, as a canonical base64url 32-byte key.
 Retain and back up this key together with Auth's database. Issuer rotation does
-not replace it. The runtime refuses a `secrets.toml` that is a symlink, has
-other hard links, is not owned by the process user, is readable by anyone else,
-or exceeds its size bound, opening it without following links. The OAuth
+not replace it. The runtime refuses a `secrets.toml` that is a symlink, is not
+owned by the process user, is readable by anyone else, or exceeds its size
+bound, opening it without following links. The OAuth
 adapter refuses a missing or malformed key and authenticates existing encrypted
 OAuth material before accepting new writes. Startup never generates a
 replacement key.
@@ -1038,7 +1038,10 @@ trust before spending credentials. The SDK awaits these operations and never
 retries an ambiguous token exchange. An HTTP 429 is not ambiguous: a rate
 limiter, Trellis's own or a proxy's, refuses before anything reads the token, so
 the SDK clears the spent marker (`abandon_rotation` / `abandonRotation`) and
-reports the issuer busy rather than demanding a new login. Discovery offers the
+reports the issuer busy rather than demanding a new login. A connected session
+whose renewal meets the limit keeps running on its still-valid admission and
+renews again later, at least 10 seconds on; every participant behind one
+address shares the budget, so other people's sign-ins can spend it. Discovery offers the
 token endpoint's current DPoP nonce in a `DPoP-Nonce` header, which browser
 apps on other origins may read too, so a native or browser code exchange or
 refresh needs one token request instead of a challenge and a retry. Failed acquisition does not release another
@@ -1580,8 +1583,7 @@ role in its own process: from its own seed and build, with the same idempotent
 initialization. The caller chooses nothing about what is installed, so a split
 role runs under the revision of the platform's build: upgrade the platform
 first, then its roles. The platform answers one request at a time, with the
-provisioned deployment, a refusal, or the preparation failure; the role checks
-its installed authority against that deployment once it connects. No answer,
+provisioned deployment, a refusal, or the preparation failure. No answer,
 as while no platform runs, counts as Auth being unavailable. A refusal or a
 failed preparation ends the role's process. The request carries no time, so
 clocks on split hosts need not agree; replaying one can only repeat an
@@ -1606,10 +1608,37 @@ ends a process. A lease moves no data: a standby can run Auth only with the
 same broker, platform database, `.issuer-keys` folder and `secrets.toml`,
 shared or restored from a backup (see `tooling/trellis-cli.md#recovery`).
 
+Lease records expire through the bucket's `max_age`, the lease lifetime, and
+a held lease is rewritten every renewal interval, so while NATS is healthy no
+record in the bucket is older than the lifetime plus one interval. NATS stops
+expiring a stream, and refuses every write to it without answering, after a
+critical storage write error such as a full disk, until NATS restarts; the
+records then hold their leases indefinitely. So each failed acquisition also
+reads the bucket stream's oldest record time and the server's clock from
+JetStream stream info, and an older record means NATS stopped expiring it.
+Both times come from the server, since the broker's record time compared with
+the Trellis host's clock would read skew as a stall: a reply without a usable
+server clock is inconclusive, and so is an inspection that fails or times out.
+Only an observation of records within their lifetime clears a stall found
+earlier and logs the recovery; an inconclusive one keeps the last reason, and
+without a stall found a held lease reads as held by another runtime.
+`Auth.Runtime.Diagnostics` reports a reply without the server clock as a
+warning.
+That is logged at error with the stream, the record's time and the advice to
+free disk and restart NATS, at most once a minute while it lasts, becomes the
+role's standby reason, and is a problem finding in `Auth.Runtime.Diagnostics`.
+Trellis never deletes or recreates the bucket on its own. A renewal or release
+that JetStream refuses is reported with JetStream's answer (`NATS refused to
+store the lease: <description> (code, error code)`); one that times out says
+the bucket stopped answering and points at the NATS log.
+
 In such a process the platform role starts first; the others start once it
 runs or stands by. The listener belongs to the process and accepts connections
 from that point on. It serves the platform's routes while the platform role
-runs here, and answers `503` for them otherwise. `/readyz` is
+runs here, and answers `503` for them otherwise, with the platform's standby
+reason as a plain-text body when it has one. `/readyz` carries every standing
+role's reason under `standingBy`, keyed by role, so an operator can learn why
+without the log; `trellis doctor` reads it when it cannot reach Auth. `/readyz` is
 ready once every role has first started or stood by, while some role runs and,
 when the process includes the platform, the platform runs. A role other than
 the platform restarting on its own leaves readiness unchanged. When the
@@ -1620,8 +1649,7 @@ to another server, or cannot be reached, the role keeps its lease but stands
 by, is not counted as running, and tries again, waiting 250 ms at first and
 doubling to 15 s, until the provider connects, the lease is lost, or the
 process stops. A provider that can never connect as configured, such as one
-whose installed authority does not match its generated role or whose broker certificate does not verify, still
-ends the process. The platform's own provider
+whose broker certificate does not verify, still ends the process. The platform's own provider
 connects to the Auth it runs, which serves until the platform stops, so it does
 not wait this way.
 

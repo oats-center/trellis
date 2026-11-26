@@ -284,6 +284,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         mode: context.mode,
         nats: context.trellis_nats.clone(),
         shortages: Arc::clone(&context.shortages),
+        leases: context.leases.clone(),
         started_at: context.started_at,
     };
     let join = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
@@ -752,6 +753,190 @@ fn initialize_admin_credentials_in(
     }
 }
 
+/// The platform database of the installation `config` names, with the
+/// JetStream identity it is bound to, read without writing anything.
+fn platform_store(
+    config: &RuntimeConfig,
+) -> Result<(crate::storage::SqliteStore, String), RuntimeError> {
+    let crate::StorageBackend::Sqlite(storage) = config
+        .platform_storage_backend()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let store = crate::storage::SqliteStore::new(SubsystemName::Platform, storage);
+    if !store.path().exists() {
+        return Err(RuntimeError::Platform(format!(
+            "{} has no platform database; start the installation once first",
+            store.path().display()
+        )));
+    }
+    let identity = store
+        .open_read_only()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+        .query_row(
+            "SELECT jetstream_id FROM trellis_platform_store_marker WHERE id=1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| {
+            RuntimeError::Platform(format!("read the platform store marker: {error}"))
+        })?;
+    Ok((store, identity))
+}
+
+/// The Auth storage of the installation `config` names in `store`, opened
+/// as the server opens it, without running it, or in `copy`, a snapshot of
+/// `store`. An import migrates the database it works on first, as a start
+/// would; an export only reads it, so it reads one an earlier release made.
+fn open_installation(
+    config: &RuntimeConfig,
+    store: &crate::storage::SqliteStore,
+    copy: Option<&crate::storage::SqliteStore>,
+    migrate: bool,
+) -> Result<auth::OAuthStorage, RuntimeError> {
+    if migrate {
+        copy.unwrap_or(store)
+            .migrate()
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    }
+    let keys = callout_keys(config)?;
+    let auth = Arc::new(match copy {
+        Some(copy) => {
+            SqliteAuthorizationStore::open_copy(copy, store, config, keys.target_account())?
+        }
+        None => SqliteAuthorizationStore::open(store, config, keys.target_account())?,
+    });
+    let custody = auth::oauth_storage_key(config)?;
+    auth::OAuthStorage::open(auth, &custody)
+        .map_err(|error| RuntimeError::Platform(error.to_string()))
+}
+
+/// Connects to the NATS of the installation `config` names and confirms it
+/// holds that installation's JetStream, bound to the platform database whose
+/// JetStream identity is `identity`, as `trellis-server backup` and a start
+/// confirm it. `otherwise` says what going on would do.
+async fn installation_broker(
+    config: &RuntimeConfig,
+    identity: &str,
+    otherwise: &str,
+) -> Result<async_nats::Client, RuntimeError> {
+    let nats = crate::backup::connect(config)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    crate::backup::confirm_broker(
+        config,
+        &async_nats::jetstream::new(nats.clone()),
+        Some(identity),
+        otherwise,
+    )
+    .await
+    .map_err(|error| RuntimeError::BrokerIdentity(error.to_string()))?;
+    Ok(nats)
+}
+
+/// Write the configuration of the installation `config` names into `out` as
+/// the content of an installation export: its users, roles, grants, sign-in
+/// policy and providers, apps and their consent, Portal themes, package
+/// registries, and every service and device deployment as a service bundle.
+/// Secrets are opened with this installation's storage key. The server may
+/// run; its NATS must. Returns the export's report.
+///
+/// # Errors
+/// Returns an error when the installation can't be opened, has no
+/// administrator yet, or its database or NATS fails.
+pub async fn export_installation(
+    config: &RuntimeConfig,
+    out: &mut dyn std::io::Write,
+) -> Result<serde_json::Value, RuntimeError> {
+    let (storage, identity) = {
+        let config = config.clone();
+        auth::blocking(move || {
+            let (store, identity) = platform_store(&config)?;
+            Ok::<_, RuntimeError>((open_installation(&config, &store, None, false)?, identity))
+        })
+        .await?
+    };
+    let nats = installation_broker(
+        config,
+        &identity,
+        "the export would carry another installation's data",
+    )
+    .await?;
+    let scratch = scratch_directory(&storage.authority.custody_directory)?;
+    auth::export_installation(&storage, &nats, scratch.path(), out)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))
+}
+
+/// Import the installation export content `input` into the installation
+/// `config` names, which must be stopped while its NATS runs. Records that
+/// existing data is in the way of are skipped and reported, and the rest is
+/// imported. With `check`, nothing changes and the report says what the
+/// import would do.
+///
+/// # Errors
+/// Returns an error when the content is damaged or of a format this build
+/// does not read, or the installation's database or NATS fails.
+pub async fn import_installation(
+    config: &RuntimeConfig,
+    input: &mut (dyn std::io::Read + Send),
+    check: bool,
+) -> Result<serde_json::Value, RuntimeError> {
+    // Nothing changes, the database's migration included, until the broker
+    // is known to be this installation's.
+    let (store, identity) = {
+        let config = config.clone();
+        auth::blocking(move || platform_store(&config)).await?
+    };
+    let nats = installation_broker(
+        config,
+        &identity,
+        "the import would load data into another installation's broker",
+    )
+    .await?;
+    let scratch = scratch_directory(store.path())?;
+    // A preview works on a copy of the database, migrated as the import
+    // would migrate it, so it changes nothing here, schema included.
+    let storage = {
+        let (config, folder) = (config.clone(), scratch.path().to_owned());
+        auth::blocking(move || {
+            let copy = check
+                .then(|| {
+                    store.snapshot_into(
+                        &folder.join("platform.sqlite"),
+                        crate::storage::SNAPSHOT_PAGES_PER_STEP,
+                        crate::storage::SNAPSHOT_STALL_LIMIT,
+                    )
+                })
+                .transpose()
+                .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+            open_installation(&config, &store, copy.as_ref(), true)
+        })
+        .await?
+    };
+    auth::import_installation(&storage, &nats, scratch.path(), input, check)
+        .await
+        .map_err(|error| RuntimeError::Platform(error.to_string()))
+}
+
+/// A directory of this run's own beside `beside`, the platform database or
+/// what it keeps next to it, for the encrypted spools of the bundles a run
+/// reads and writes and a preview's copy of the database. Each export or
+/// import makes a new one, so runs that overlap never share or remove each
+/// other's files, and it goes when the run ends.
+fn scratch_directory(beside: &std::path::Path) -> Result<tempfile::TempDir, RuntimeError> {
+    let parent = beside
+        .parent()
+        .ok_or_else(|| RuntimeError::Platform("the platform database has no folder".into()))?;
+    tempfile::Builder::new()
+        .prefix(".installation-")
+        .tempdir_in(parent)
+        .map_err(|error| {
+            RuntimeError::Platform(format!(
+                "cannot make a working folder in {}: {error}",
+                parent.display()
+            ))
+        })
+}
+
 /// Bucket recording which installation, and which of its platform databases,
 /// a JetStream belongs to.
 const IDENTITY_BUCKET: &str = "TRELLIS_PLATFORM_IDENTITY";
@@ -766,8 +951,7 @@ const STORE_KEY: &str = "store";
 ///
 /// # Errors
 ///
-/// Returns [`RuntimeError::BrokerIdentity`] when the record can't be read, or
-/// isn't kept in persistent, nonexpiring storage.
+/// Returns [`RuntimeError::BrokerIdentity`] when the record can't be read.
 pub(crate) async fn read_broker_identity(
     jetstream: &async_nats::jetstream::Context,
 ) -> Result<
@@ -798,14 +982,6 @@ pub(crate) async fn read_broker_identity(
         }
         Err(error) => return Err(failed(&error)),
     };
-    let status = marker.status().await.map_err(|error| failed(&error))?;
-    if status.info.config.storage != async_nats::jetstream::stream::StorageType::File
-        || !status.max_age().is_zero()
-    {
-        return Err(RuntimeError::BrokerIdentity(
-            "its identity record needs persistent, nonexpiring storage".into(),
-        ));
-    }
     let mut recorded = [None, None];
     for (key, value) in [INSTALLATION_KEY, STORE_KEY].into_iter().zip(&mut recorded) {
         *value = marker

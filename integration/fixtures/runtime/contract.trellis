@@ -600,6 +600,7 @@ api moving@v1 {
     capability moving.ping { title "Ping"; description "Reach the moved service."; grants "The caller can reach the moved service."; allows { rpc Ping; } }
   }
 }
+agent MovingCaller { use moving { required capability moving.ping; } }
 service MovingService {
   implements moving;
   config label { title "Label"; description "Shown beside the service's records."; type string; }

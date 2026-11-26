@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-trellis-rs = "0.100.0-rc.54"
+trellis-rs = "0.100.0-rc.55"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 futures-util = "0.3"

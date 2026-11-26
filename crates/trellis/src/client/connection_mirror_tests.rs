@@ -57,6 +57,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
     .await
     .unwrap();
     let user = AuthUserCreateRequest {
+        user_id: None,
         given_name: None,
         family_name: None,
         email: None,

@@ -185,12 +185,17 @@ test(
           ).items.filter((session) => session.state === "active");
 
         // Creating with a sign-in links it at once. The account needs no
-        // password, so the CLI prints no setup code for it.
+        // password, so the CLI prints no setup code for it. It keeps the
+        // user ID the person has in the installation they come from, which
+        // their first sign-in below lands on.
+        const movedId = ulid();
         const created = await run(
           "users",
           "create",
           "--username",
           "first",
+          "--id",
+          movedId,
           "--provider",
           providerId,
           "--subject",
@@ -198,6 +203,27 @@ test(
         );
         assert.equal(created.setupFlow, null);
         const first: string = created.user.principalId;
+        assert.equal(first, movedId);
+        // An ID someone has is never given again, and one that is not a
+        // user ID never reaches Auth. Neither creates an account.
+        const accounts = await userCount();
+        await assert.rejects(
+          runtime.callAdminRpc(
+            "authUsersCreate",
+            apis.auth.API.actions["rpc:Users.Create"].input.decode({
+              userId: movedId,
+              username: "first-again",
+              displayName: "First again",
+              idempotencyKey: codecs.ulid.decode(ulid()),
+            }),
+          ),
+          failedWith("already_in_use"),
+        );
+        await assert.rejects(
+          run("users", "create", "--username", "malformed", "--id", "user-1"),
+          printed("is not a Trellis user ID"),
+        );
+        assert.equal(await userCount(), accounts);
         assert.deepEqual(await subjects(first), [subject(emails.first)]);
         assert.equal(await owner(subject(emails.first)), first);
         // Until the provider has spoken, the link adds nothing to the

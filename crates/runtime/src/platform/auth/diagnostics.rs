@@ -29,6 +29,7 @@ use super::rpc::{caller, rpc_error};
 use super::{blocking, AuthError, OAuthEngine};
 use crate::capacity::{Capacity, Shortages};
 use crate::health::HealthStore;
+use crate::leases::ExpiryCheck;
 use crate::{ListenerTransport, RuntimeConfig, RuntimeMode, StorageBackend};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -44,6 +45,8 @@ pub(crate) struct Diagnostics {
     pub(crate) mode: RuntimeMode,
     pub(crate) nats: async_nats::Client,
     pub(crate) shortages: Arc<Shortages>,
+    /// The runtime lease bucket, checked for records NATS stopped expiring.
+    pub(crate) leases: crate::leases::LeaseManager,
     pub(crate) started_at: OffsetDateTime,
 }
 
@@ -568,11 +571,45 @@ async fn jetstream(diagnostics: &Diagnostics) -> (Status, Value) {
             .into_iter()
             .map(|refusal| (Status::Problem, refusal)),
     );
+    // Records NATS stopped expiring hold their leases until it restarts.
+    match diagnostics.leases.check_expiry().await {
+        Ok(ExpiryCheck::Stalled(stalled)) => findings.push((Status::Problem, stalled.to_string())),
+        Ok(ExpiryCheck::Expiring) => {}
+        Ok(ExpiryCheck::Unknown) => findings.push((
+            Status::Warning,
+            "NATS did not send its clock with the runtime lease bucket's stream info, so \
+            whether it still expires the lease records is not known"
+                .to_owned(),
+        )),
+        Err(error) => findings.push((
+            Status::Problem,
+            format!("the runtime lease bucket could not be inspected: {error}"),
+        )),
+    }
     section(&findings, fields)
 }
 
-/// Free and total space of the file system holding the Auth database: below
-/// 10% free is a warning, below 5% a problem.
+/// How nearly full a file system with `free` of `total` bytes is: under 10%
+/// or 1 GiB free is a warning, under 2% or 200 MiB a problem.
+///
+/// The share alone misjudges both ends: 5% of a small disk is too little to
+/// work in, and 5% of a large one is plenty. The byte floors cover small
+/// disks, where a database or a JetStream block can take the last few
+/// hundred MiB at once; the shares cover large ones before they run out.
+fn disk_status(free: u64, total: u64) -> Status {
+    const MIB: u64 = 1 << 20;
+    let fraction = free as f64 / total.max(1) as f64;
+    if fraction < 0.02 || free < 200 * MIB {
+        Status::Problem
+    } else if fraction < 0.10 || free < 1024 * MIB {
+        Status::Warning
+    } else {
+        Status::Ok
+    }
+}
+
+/// Free and total space of the file system holding the Trellis data
+/// directory, the Auth database's folder, judged by [`disk_status`].
 fn disk(config: &RuntimeConfig) -> (Status, Value) {
     let mut findings = Findings::new();
     let path = match config.platform_storage_backend() {
@@ -585,23 +622,18 @@ fn disk(config: &RuntimeConfig) -> (Status, Value) {
     let space = file_system_space(&path);
     match space {
         Some((free, total)) if total > 0 => {
-            let fraction = free as f64 / total as f64;
-            let status = if fraction < 0.05 {
-                Status::Problem
-            } else if fraction < 0.10 {
-                Status::Warning
-            } else {
-                Status::Ok
-            };
+            let status = disk_status(free, total);
             if status != Status::Ok {
                 findings.push((
                     status,
                     format!(
-                        "{} has {} free of {} ({:.0}%)",
+                        "{} has {} free of {} ({:.0}%). When it fills, Trellis can no longer \
+                        write its databases, and a NATS server storing on the same disk stops \
+                        storing and expiring messages until it restarts.",
                         path.display(),
                         crate::capacity::bytes(free),
                         crate::capacity::bytes(total),
-                        fraction * 100.0
+                        free as f64 / total as f64 * 100.0
                     ),
                 ));
             }
@@ -854,4 +886,30 @@ fn work(oauth: &OAuthEngine, health: &HealthReader) -> (Status, Value) {
             })).collect::<Vec<_>>(),
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A nearly full disk is judged by its free share and its free bytes, so
+    /// a small disk with a healthy-looking share and a large disk with a
+    /// small share are each judged by what is actually left.
+    #[test]
+    fn a_disk_is_nearly_full_by_its_free_share_or_its_free_bytes() {
+        const MIB: u64 = 1 << 20;
+        const GIB: u64 = 1 << 30;
+        for (free, total, expected) in [
+            (15 * GIB, 100 * GIB, Status::Ok),
+            (9 * GIB, 100 * GIB, Status::Warning),
+            (GIB + GIB / 2, 100 * GIB, Status::Problem),
+            // A small disk: a fifth free is still under 1 GiB.
+            (900 * MIB, 4 * GIB, Status::Warning),
+            (150 * MIB, 4 * GIB, Status::Problem),
+            // A large disk: 3% free is hundreds of GiB.
+            (300 * GIB, 10_240 * GIB, Status::Warning),
+        ] {
+            assert_eq!(disk_status(free, total), expected, "{free} of {total}");
+        }
+    }
 }

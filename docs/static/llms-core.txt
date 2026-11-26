@@ -295,11 +295,54 @@ files the config names, an online SQLite copy of each database,
 Trellis's account except the lease bucket, and a checksummed `manifest.json`;
 it fails, without a manifest, when the broker isn't bound to this installation
 and its platform database.
+`trellis-server export --out <file> [--passphrase-file <path|->]` writes a
+whole installation's configuration as plain records, each kind with its own
+format number, sealed with a passphrase (the service bundle envelope): users
+with their IDs, password hashes and OIDC sign-ins, roles, members and direct
+grants, sign-in settings, OIDC providers and package registries with their
+secrets, apps with their client IDs and remembered consent, Portal themes,
+the State values of users and devices, and every service and device
+deployment as a service bundle with its data and waiting jobs. Sessions, NATS
+keys, TLS, issuer keys and history are not carried. `trellis-server import
+<file> [--check]` adds it to an installation that has started once and is
+stopped, with its NATS running. Installation-wide settings (sign-in settings,
+OIDC provider settings, Portal themes, who may sign up through the Console
+and CLI) take the export's values, and the report lists each one's old and
+new value (`changed`). A user with the same user ID and agreeing sign-ins,
+or with the same OIDC issuer and subject, is the same person (`matched`) and
+gets the roles, grants, consent and State the export gives them. A user that
+someone else here is in the way of (only the same username, or the same ID
+with another username) is skipped with a warning, and nothing goes to the
+existing account; so is an app with the same client ID and other settings,
+with the consent, State and theme that name it, and any other record that
+exists with other contents. The exported administrator is not imported: the
+roles and grants it held go to this installation's administrator
+(`administrator` in the report). Only access the source still honours moves
+(no expired grants or assignments, no capability its catalog dropped); a
+disabled deployment stays disabled; OIDC providers keep their enabled or disabled
+state, and sign-ins and OIDC role mappings move through them in either state;
+only one through a provider the export lacks (deleted on the source) is left
+out and reported, the account moving with its other sign-ins; remembered consent moves only where the destination's
+capability has the same `grants` text, else the person is asked again.
+`--check` works on a copy of the database and reads stored State, so it
+reports a State value in the way as skipped. What waits for a later step (a
+deployment with no instance that can run, device State) is listed under
+`pending` ("Not finished yet" in text) with what finishes it. State keeps its values and creation and
+update times; its revision tokens are new. An export with registered State
+fails when the broker has no State bucket, and neither command uses a bucket
+that expires values. Running the import again finishes
+a deployment whose data did not load. It moves an installation between
+releases, release candidates included. Export and import refuse, before
+reading or changing anything, a broker that is not bound to this
+installation and its platform database, as backup does.
 `trellis-server restore <dir> [--config <dir>] [--force]` checks it and writes
 it into a stopped or fresh installation, refusing one with another ID (its
 `[auth] instance_id`, else `secrets.toml`'s) or an unreadable `config.toml`
 unless `--force`; the next platform start loads the streams into an empty
-JetStream store. An interrupted restore is run again (restore, then start),
+JetStream store. It restores a backup of its own release; from the first
+stable release also one of an earlier stable release, which it migrates
+forward. Before then it refuses another release's backup and points to
+`trellis-server export`. An interrupted restore is run again (restore, then start),
 which replaces the streams the interrupted one loaded. Leases only pick which
 server runs a role: a standby needs the same NATS and, for Auth, the same database, issuer keys and `secrets.toml`.
 
@@ -309,26 +352,35 @@ deployment, active and disabled instances' public keys (no seeds),
 enrollment secret hashes, current settings with their secrets, webhook
 endpoints with their URL IDs, KV and store snapshots, and the lifecycle of
 jobs not yet settled, encrypted by the CLI with the operator's passphrase
-(Argon2id and ChaCha20-Poly1305; the passphrase never reaches Auth), and
-prints the file's SHA-256; it never replaces an existing file. Export
+(Argon2id and ChaCha20-Poly1305; the passphrase never reaches Auth); it
+never replaces an existing file. Export
 changes nothing in the old installation; stop the service's processes first,
 and disable then remove the old deployment once it runs in the new one. The
 deployment keeps its ID in both installations, so sign in to each under its
 own `--profile <name>` and name the profile in every command (`trellis
 --profile old svc <id> disable`); `disable` of a deployment imported within
 the last day, and every `remove`, ask for confirmation naming the
-installation (`-f` skips it). `trellis svc import <file> --digest
-<sha256> [--check]` refuses a file with another digest, a wrong passphrase, a
+installation (`-f` skips it). `trellis svc import <file>
+[--check]` refuses a changed file, a wrong passphrase, a
 deployment ID or participant already deployed, or an instance key,
 enrollment secret or webhook URL already in use; it keeps the deployment,
 instance and resource IDs, so KV revisions, job subjects and webhook paths
 are unchanged, and a run that stopped while loading data, or for want of an
 active instance, finishes when run again. It refuses a bundle naming any
 stream, bucket, job subject or entry outside the deployment it creates. It
-creates no roles or grants: its report lists the roles and direct grants
-of the service's APIs to recreate, the webhook URLs at the new origin,
-and what stayed behind (job and settings history, unconsumed events,
-Operations). Both need `users.manage` and `config.manageSecrets`
+recreates the roles (same role ID), role members, direct grants and app
+implied consent that give the service's API capabilities, for users it
+finds as the same person: the same Trellis user ID with agreeing sign-ins,
+or the same OIDC subject at a provider with the same issuer; it never
+creates users. A user it cannot find, a user someone else here is in the way
+of (an account with only the same username is someone else), or a role that
+exists under the same ID with another name or other capabilities, is skipped
+and reported with its reason, nothing goes to the existing account, and the
+rest applies. Create the users first, keeping their IDs with
+`trellis users create --id`. The report lists the access recreated and
+skipped (`access.recreated`, `access.skipped`), the webhook URLs at the new
+origin, and what stayed behind (job and settings history, unconsumed
+events, Operations, remembered consent). Both need `users.manage` and `config.manageSecrets`
 (`platform.manage` for an administrative service) and are audited. Processes
 reconnect with their existing seed once their Trellis URL points at the new
 installation; restart each one.
@@ -964,7 +1016,10 @@ approve declined capabilities. Signed revocations remain effective through
 mirror reconnect or missing entries until context acceptance deadlines expire.
 Service and device authority is deployment-owned and separate from
 independently consented user companion authority. Read-only capabilities do not
-grant write access.
+grant write access. Whoever operates the installation (its host, NATS operator
+or system account, configuration and secrets, or the `platform.manage` role) is
+trusted, so a service does not defend against it; it defends against other
+callers and untrusted input.
 
 Capability approvals are policy decisions over whole capabilities, not saved
 exact-action grant snapshots. Holding a group grants its current members, so a
@@ -1215,9 +1270,13 @@ RPCs acts on the caller's own account.
   as in `trellis roles assign <role> --user <user>`. Input shaped like an
   ID is looked up only as an ID; an unknown ID is refused, never matched as
   a name. The same holds for `trellis svc|dev <deployment>`: a deployment
-  ID never matches another deployment's title. To
-  migrate users keyed by ID from another system, create each with its
-  provider `sub` in `identities` and re-key to the returned `principalId`.
+  ID never matches another deployment's title. `Users.Create` also takes an
+  optional `userId` (CLI `--id <user id>`): the account gets that Trellis
+  user ID, so users moved from another Trellis installation keep the IDs
+  services stored. An ID any user, service or device has or had fails with
+  `already_in_use`. To migrate users keyed by ID from another system, create
+  each with its provider `sub` in `identities` and re-key to the returned
+  `principalId`.
 
 A handler sees its own caller's profile without any directory capability: a
 verified user caller carries `user` with `displayName`, optional `givenName`,
@@ -1505,10 +1564,45 @@ connect the SDK reads the values before handlers start; while a required value
 is missing or doesn't fit, the participant prints which, a Console link, and a
 QR code, and waits until it is fixed. Live fields follow
 changes without a restart, a `restart` field keeps its connect-time value, and
-per-instance overrides take precedence over the deployment's values.
+per-instance overrides take precedence over the deployment's values. Live
+settings work only when code reads the current values at each use; a copy
+taken once keeps the values it was taken from. A change takes effect in two
+steps: the participant's checks and derive builders run against the candidate
+values first, and if any refuses, the revision is rejected and the values in
+effect stay the ones accepted last; only an accepted revision reaches change
+listeners. A derived value is rebuilt only when one of its own fields
+changes. Registering a check or derive tests the values in effect and waits,
+printing the reasons and Console link, until a revision passes. Each instance
+reports what it did with each revision (`Config.Own.Report`); `Config.Get`
+shows it per instance as `settings` (`applied`, `rejected` with `fields`,
+`reason`, `sources`, the layer each refused value came from, and
+`overrideRevision`, the instance revision it still runs when rolling the
+instance back to it restores refused values it had overridden, or `pending`
+while it hasn't read the newest revision with the build installed now, such
+as when it is stopped or an upgrade was installed since). That reason also reaches the CLI, the Console and the `settings`
+health check, which other users read. An explicit rejection keeps its reason
+with every secret field's value (four characters or longer, candidate or in
+effect) replaced by `[redacted]`, so it must never include a secret value. An
+unexpected error (a throw, or a Rust error converted through `?`) from any
+check or builder is reported as `the check failed` or `building the value
+failed`, with no type or message, whatever the build declares, since its text
+can carry any credential the code read; only the participant's own log and
+startup output show the error, with secret values replaced. Auth keeps a reason's first KiB,
+marking a cut with `…`. The revision an instance starts with is reported as `applied`
+only once startup ends, when a service first serves (after `wait()` or
+`run()` begins) or a device first reads its settings, so a starting value a
+startup check refuses shows `rejected` without first showing `applied`; until
+then it reads `pending`, and a restarted instance's earlier report is dropped
+when it connects. A report that fails is retried with backoff until Auth has
+it or a newer outcome replaces it, without another save. A rejection degrades the instance's `settings` health check
+until the next accepted revision, saving never waits for instances, and a
+rejected revision stays stored for `rollback`.
 Administrators use `trellis svc <ID> config` (`set FIELD=VALUE` or
-`set --null FIELD`,
-`set-secret FIELD --from-file PATH` or `--null`, `reveal FIELD`, `unset`,
+`set --null FIELD`, with `--secret FIELD=@PATH`, `--values-file PATH`,
+`--env-file PATH`, and `--secret-keys a,b` in the same revision (fields the
+build declares secret are secrets automatically),
+`set-secret FIELD --from-file PATH` or `--null`, `set-secret FIELD=@PATH ...`
+or `--env-file PATH` for several, `reveal FIELD`, `unset`,
 `history`, `rollback`, `delete-revision`, `--instance`), `trellis dev <ID>
 config` for device types, or the Console's Settings section, whose form types
 each input from the field's IDL type (lists, models, maps, switches, bounded
@@ -1528,8 +1622,11 @@ kept until an administrator deletes it with `delete-revision`, which is how a
 replaced secret stops existing; deleting a revision that holds a secret needs
 `config.manageSecrets`, and a revision a build in use still takes a fallback
 value from can't be deleted until a fitting value is set.
+`trellis svc <ID> instances` shows the outcome in a Settings column (`applied r12`, `rejected r13: awsSecret: set both or neither`, `pending r13`), as does the Console per instance.
 `Config.Get` reports `restartPending` for instances whose `restart` fields
-would now read differently; Trellis never restarts anything. Tests set values through the
+would now read differently; such an instance runs only the newest live values,
+which the CLI shows as `applied r12, restart pending` and the Console as
+Restart needed. Trellis never restarts anything. Tests set values through the
 same RPCs, never through environment variables. App settings are public to
 the app's users, need defaults, and cannot be secret; register the app's
 declaration with its client using `trellis clients add|edit --source PATH
@@ -1787,11 +1884,24 @@ which reports in one view: the server's version, installation ID, mode and
 uptime; each service deployment's instances with the settings they wait for,
 an update awaiting approval, and every degraded or failed check (Auth's
 `enforcement`, `webhook:<endpoint>`, and the service's own); devices that are
-degraded or unhealthy; JetStream use against its limits and refusals; free
-disk where the Auth database lives; the served certificate's subject, issuer
-and expiry; the last 20 failure references the Auth process logged (route,
-code and error, kept in memory, the last 50); and stuck Auth enforcement and
-set-aside effects. Each section and finding is `ok`, `warning` or `problem`,
-and `trellis doctor` exits non-zero unless everything is `ok`. A record the
-report couldn't read is a `problem` finding, never an empty or healthy result,
-and a connected instance that hasn't reported health yet is a `warning`.
+degraded or unhealthy; JetStream use against its limits and refusals, and
+runtime lease records NATS stopped expiring; free disk where the Auth database
+lives (a warning under 10% or 1 GiB, a problem under 2% or 200 MiB); the
+served certificate's subject, issuer and expiry; the last 20 failure
+references the Auth process logged (route, code and error, kept in memory, the
+last 50); and stuck Auth enforcement and set-aside effects. Each section and
+finding is `ok`, `warning` or `problem`, and `trellis doctor` exits non-zero
+unless everything is `ok`. A record the report couldn't read is a `problem`
+finding, never an empty or healthy result, and a connected instance that
+hasn't reported health yet is a `warning`.
+
+While a server part stands by, its `/readyz` answers 503 with the reason for
+each part under `standingBy`, and Auth's pages answer 503 with Auth's reason
+as text; `trellis doctor` reports those reasons when it can't reach Auth. A
+server whose lease bucket holds a record older than its lifetime logs at error,
+once a minute, that NATS has stopped expiring the runtime lease records, as
+NATS does after a storage write error such as a full disk until it restarts:
+free disk on the NATS host and restart NATS, and the server takes its leases
+and serves again by itself. The record's age is judged by the NATS server's
+clock only; without it the check is inconclusive (a `trellis doctor`
+warning), and a check that fails or times out never ends a reported stall.

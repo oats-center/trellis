@@ -109,6 +109,10 @@ pub enum TrellisTestStage {
     Backup,
     /// Destroying the installation and restoring it from a backup.
     Restore,
+    /// Writing an installation export with `trellis-server export`.
+    Export,
+    /// Adding an installation export with `trellis-server import`.
+    Import,
     /// Runtime shutdown and cleanup.
     Shutdown,
 }
@@ -130,6 +134,8 @@ impl TrellisTestStage {
             Self::ClientLogin => "client_login",
             Self::Backup => "backup",
             Self::Restore => "restore",
+            Self::Export => "export",
+            Self::Import => "import",
             Self::Shutdown => "shutdown",
         }
     }

@@ -1249,12 +1249,32 @@ CREATE TABLE auth_config_secret_generations (
     CHECK ((predecessor IS NULL) = (predecessor_revision IS NULL))
 );
 -- What each instance loaded when it last connected, so administrators see
--- which instances still run settings that only apply after a restart.
+-- which instances still run settings that only apply after a restart, and
+-- the build it connected with: a report from that build says nothing about
+-- another one installed since.
 CREATE TABLE auth_config_connections (
     instance_id TEXT PRIMARY KEY REFERENCES auth_instances(instance_id) ON DELETE CASCADE,
     deployment_revision INTEGER,
     instance_revision INTEGER,
+    installed_revision INTEGER NOT NULL,
     connected_at INTEGER NOT NULL CHECK (connected_at BETWEEN 0 AND 9007199254740991)
+);
+-- What each instance last reported about the settings it read: the
+-- revisions, and whether it applied them or its own checks rejected them. An
+-- instance whose report names older revisions than the current ones, or that
+-- connected with a build other than the one installed now, has not read the
+-- newest yet, which administrators see as pending. A rejecting instance keeps
+-- the settings it applied last; their instance revision tells whether rolling
+-- its overrides back restores one it accepted.
+CREATE TABLE auth_config_reports (
+    instance_id TEXT PRIMARY KEY REFERENCES auth_instances(instance_id) ON DELETE CASCADE,
+    deployment_revision INTEGER CHECK (deployment_revision BETWEEN 1 AND 4294967295),
+    instance_revision INTEGER CHECK (instance_revision BETWEEN 1 AND 4294967295),
+    applied_instance_revision INTEGER CHECK (applied_instance_revision BETWEEN 1 AND 4294967295),
+    state TEXT NOT NULL CHECK (state IN ('applied', 'rejected')),
+    fields_json TEXT NOT NULL CHECK (json_valid(fields_json)),
+    reason TEXT CHECK (length(reason) <= 1024),
+    reported_at INTEGER NOT NULL CHECK (reported_at BETWEEN 0 AND 9007199254740991)
 );
 -- The settings an app build declares, attached to its registered client by an
 -- administrator. App settings are checked against it.
@@ -1302,11 +1322,10 @@ CREATE TABLE auth_webhook_settings (
 -- deployment first and loads its data after, so running the same bundle again
 -- finishes an import that stopped partway. `restores_json` names the KV and
 -- store resources whose streams the import restores. `import_id` is a random
--- ID the import writes into the metadata of each stream it restores, and
--- `created_json` maps a resource to the creation time of the stream the broker
--- made for it, recorded once the restore succeeded. A later attempt deletes a
--- stream only when it carries `import_id` and the recorded creation time; any
--- other stream under that name is left alone. `loaded_json` names the
+-- ID the import writes into the metadata of each stream it restores. A later
+-- attempt deletes a stream not yet loaded only when it carries `import_id` and
+-- the resource's configuration; any other stream under that name is left
+-- alone. `loaded_json` names the
 -- resources whose data is in place, with `jobs.jsonl` once the waiting jobs
 -- are queued. No instance prepares a resource of `restores_json` until it is
 -- loaded.
@@ -1316,7 +1335,6 @@ CREATE TABLE auth_service_imports (
     content_digest TEXT NOT NULL CHECK (length(content_digest) = 43),
     state TEXT NOT NULL CHECK (state IN ('loading', 'complete')),
     restores_json TEXT NOT NULL CHECK (json_valid(restores_json)),
-    created_json TEXT NOT NULL CHECK (json_valid(created_json)),
     loaded_json TEXT NOT NULL CHECK (json_valid(loaded_json)),
     report_json TEXT NOT NULL CHECK (json_valid(report_json)),
     imported_by TEXT NOT NULL,

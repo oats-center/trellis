@@ -191,7 +191,9 @@ device, such as its hostname; the Portal shows it on the confirmation step as
 custody. The SDK retains credential custody and renews admission with the same
 runtime identity and key, using its owner's authenticated issuer pin. Recovery
 failure closes application transport without deleting the durable credential
-record.
+record. A renewal refused by the issuer's per-address request limit spends
+nothing: `refresh_authorization_context()` returns the error, and the session
+keeps working and renews again later.
 
 Native OAuth custody binds each credential handle to the selected issuer,
 installation, NATS account, and client identity. Owner-only files retain the
@@ -370,10 +372,28 @@ field per setting. Services read it through `Provider::new(&mut service).config(
 and devices through the generated client's `config()`; both return
 `trellis_rs::service::ConfigHandle<Config>`. `current()` decodes the values in
 effect, `revision()` names the deployment and instance revisions, and
-`changed().await` waits for the next live change. Restart-only fields keep their
+`changed().await` waits for the next accepted live change. Restart-only fields keep their
 connect-time value, and values for fields the build doesn't declare, or that
 don't fit its types, never reach `changed()`. `connect` returns only once every
-required field has a value that fits. Rust native apps have no settings handle.
+required field has a value that fits. Call `current()` at each use; a `Config`
+kept from an earlier call or cloned out of `changed()` keeps the values it was
+read from. `config.check(|c: &Config| -> Result<(), Rejection> { ... }).await?`
+checks every later revision before it takes effect;
+`trellis_rs::service::Rejection::new(["webhook_url"], "must be an https URL")`
+refuses named fields (snake_case or declared names), and any other error
+through `?` refuses every changed field with the fixed reason `the check
+failed` (its message goes only to the participant's own log). `let stripe =
+config.derive(["stripe_secret_key"], |c| Ok(Stripe::new(..))).await?` (or
+`derive_async` with an awaiting builder taking an owned `Config`) builds a
+value now and rebuilds it only when one of its fields changes;
+`stripe.current()` returns an `Arc<T>`, already rebuilt when `changed()`
+returns the revision it was built for. A failing builder rejects those fields
+(an error converted through `?` gives `building the value failed`) and keeps the old value, and a replaced value drops after its replacement took
+effect. A rejected revision leaves `current()` as it was and never reaches
+`changed()`. Registering a check or derive tests the values in effect at once
+and waits, printing the fields, reasons, and Console link, until a revision
+passes; register them before `run()`.
+Rust native apps have no settings handle.
 In tests, `TrellisTestRuntime::set_config(&identity, values, secrets)`
 stores values through `Auth.Config.Set`.
 
@@ -473,7 +493,9 @@ one, so an upgrade test starts from
 newer than `version`) and restarts with the build under test;
 shutdown/cancellation reaps owned children before sandbox cleanup.
 
-Live user tests use `TrellisTestRuntime::create_user`, explicit
+Live user tests use `TrellisTestRuntime::create_user` (or
+`create_user_as(name, username, Some(user_id))` for an account with a chosen
+username and Trellis user ID, as a moved installation has), explicit
 `grant_user_capabilities(&user, Request::REQUIRED_CAPABILITIES)`, one
 `register_native_application::<Request>("app")`, then independent
 `login_native_application_as(&app, &user)` calls. `register_client_as` composes

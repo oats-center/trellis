@@ -775,6 +775,11 @@ model AuthUserFindMatch { user: AuthUser; identities: list<AuthUserIdentity>; }
 model AuthUserGetResponse { user: AuthUser; }
 type AuthUsersListResponse = CursorPage<AuthUser>;
 model AuthUserCreateRequest {
+  /// The new user's Trellis user ID. Leave it out for a new one. Give one to
+  /// keep the ID a user has in another installation, so that services that
+  /// stored it need no change. An ID that any user, service or device has or
+  /// had here fails the creation with `already_in_use`.
+  userId?: ulid;
   username: AuthName;
   displayName: AuthName;
   password?: AuthPassword;
@@ -1126,20 +1131,46 @@ model AuthServiceBundleWebhook {
   /// The full URL in this installation.
   url: string;
 }
-/// A role in the exporting installation that holds a capability of an API the service provides.
+/// A role a bundle carries: one that gives a capability of an API the service provides.
 model AuthServiceBundleRole {
+  roleId: ulid;
   name: string;
+  /// Every capability the role gives, those of other APIs included.
   capabilities: list<AuthCapabilityId>;
-  /// How many users and apps hold the role there.
-  assignments: uint64;
+  /// How many users had the role in the exporting installation.
+  members: uint64;
 }
-/// A capability of the service's APIs granted directly to principals in the exporting installation.
+/// A capability of the service's APIs that a bundle carries as granted directly to users.
 model AuthServiceBundleGrant {
   capability: AuthCapabilityId;
-  /// How many principals hold it directly there.
-  principals: uint64;
+  /// How many users held it directly in the exporting installation.
+  users: uint64;
 }
-/// What a service bundle holds, what stayed behind, and what an administrator recreates by hand.
+enum AuthAccessChangeKind { role; roleCapability; assignment; grant; appConsent; }
+/// How an import found a user: by their user ID, or by one of their sign-ins.
+enum AuthAccessMatch { id; signIn; }
+/// One role, role capability, role member, direct grant or app consent an import recreated or skipped.
+model AuthAccessChange {
+  kind: AuthAccessChangeKind;
+  roleId?: ulid;
+  /// The role's name.
+  role?: string;
+  /// The user's ID in the exporting installation.
+  userId?: string;
+  /// The user here who was given it.
+  matchedUserId?: string;
+  matchedBy?: AuthAccessMatch;
+  capability?: AuthCapabilityId;
+  clientId?: string;
+  /// Why it was skipped, in plain words.
+  reason?: string;
+}
+/// The access an import recreated, and what it skipped and why. A record found already present is in neither list.
+model AuthAccessReport {
+  recreated: list<AuthAccessChange>;
+  skipped: list<AuthAccessChange>;
+}
+/// What a service bundle holds, what stayed behind, and what an import recreated.
 model AuthServiceBundleReport {
   deploymentId: ulid;
   title: string;
@@ -1155,10 +1186,12 @@ model AuthServiceBundleReport {
   enrollmentSecrets: uint64;
   resources: list<AuthServiceBundleResource>;
   webhooks: list<AuthServiceBundleWebhook>;
-  /// Roles to recreate: import creates none.
+  /// Roles the bundle carries, which an import recreates.
   roles: list<AuthServiceBundleRole>;
-  /// Direct grants to recreate: import creates none.
+  /// Direct grants the bundle carries, which an import recreates.
   grants: list<AuthServiceBundleGrant>;
+  /// What the import recreated and skipped; absent from an export's report.
+  access?: AuthAccessReport;
   /// What stayed in the exporting installation, in plain words.
   leftBehind: list<string>;
 }
@@ -1730,6 +1763,52 @@ model AuthConfigInstanceStatus {
   /// A setting that applies after a restart has a different value for this
   /// instance's build than the one it loaded when it connected.
   restartPending: bool;
+  /// What the instance did with its newest settings. Absent when its build
+  /// declares no settings.
+  settings?: AuthConfigApplyStatus;
+}
+/// What an instance did with a revision of its settings. `pending` until it
+/// reads the newest one; `rejected` when one of its own checks refused it, in
+/// which case it keeps the values it accepted last.
+enum AuthConfigApplyState { applied; rejected; pending; }
+/// Why an instance's checks refused a revision, in its own words.
+type AuthConfigRejectReason = string(max_length=1024);
+model AuthConfigApplyStatus {
+  /// The deployment revision; absent while the deployment has none.
+  revision?: AuthConfigRevisionNumber;
+  /// The instance's own override revision; absent while it has none.
+  instanceRevision?: AuthConfigRevisionNumber;
+  state: AuthConfigApplyState;
+  /// Fields a check refused. Empty when it refused the revision as a whole.
+  fields: list<AuthConfigFieldName>;
+  /// For `rejected`, where each refused field's value came from in the
+  /// revisions the instance refused: its own overrides (`instance`), its
+  /// deployment's settings, or the build's default. Rolling back the layer
+  /// that holds a refused value undoes it.
+  sources?: map<AuthConfigSource>;
+  /// For `rejected`, when every refused value that came from beneath the
+  /// instance's overrides was its own override in the settings it applied
+  /// last and still runs: that instance revision. Rolling the instance back
+  /// to it restores those overrides without changing the deployment's
+  /// settings.
+  overrideRevision?: AuthConfigRevisionNumber;
+  reason?: AuthConfigRejectReason;
+  /// When the instance reported it, or for `pending`, when the newest
+  /// revision was saved.
+  at?: timestamp;
+}
+/// What a service or device did with the settings it read last.
+enum AuthConfigOutcome { applied; rejected; }
+model AuthConfigOwnReportRequest {
+  /// The deployment revision it read, as `Config.Own.Get` returned it.
+  revision?: AuthConfigRevisionNumber;
+  /// The instance revision it read, as `Config.Own.Get` returned it.
+  instanceRevision?: AuthConfigRevisionNumber;
+  state: AuthConfigOutcome;
+  /// Fields its checks refused; empty for `applied`.
+  fields: list<AuthConfigFieldName>;
+  /// Why, in its own words. Auth keeps the first KiB and marks a cut with `…`.
+  reason?: string;
 }
 model AuthConfigResponse {
   target: AuthConfigTarget;

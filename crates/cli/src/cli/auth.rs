@@ -653,6 +653,12 @@ pub struct UserIdentityChangeArgs {
 #[derive(Debug, Args)]
 /// Create one Trellis user.
 pub struct UserCreateArgs {
+    /// Give the user this Trellis user ID instead of a new one, such as the
+    /// ID the person has in another installation. It is refused when any
+    /// user, service or device here has or had it.
+    #[arg(long, value_name = "USER_ID")]
+    pub id: Option<String>,
+
     /// Name shown for the user; defaults to the username.
     #[arg(long)]
     pub name: Option<String>,

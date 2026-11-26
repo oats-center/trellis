@@ -209,7 +209,8 @@ job_testkit_tests() {
 }
 
 # Starts the candidate server on an installation the previous published release
-# made. CI passes the producer-built server, NATS and test binary; elsewhere the
+# made, and moves such an installation into the candidate with
+# `trellis-server export` and `import`. CI passes the producer-built server, NATS and test binary; elsewhere the
 # server is built here and the test as the build-fixtures job builds it. The
 # test lists releases through the GitHub API; GITHUB_TOKEN lifts its rate limit.
 job_upgrade() {
@@ -227,6 +228,7 @@ job_upgrade() {
   export TRELLIS_TEST_CACHE_DIR="${TRELLIS_TEST_CACHE_DIR:-$temp/trellis-testkit-cache}"
   mkdir -p -m 700 "$TRELLIS_TEST_CACHE_DIR"
   "$tests/upgrade" --test-threads=2 "$@"
+  "$tests/installation_move" --test-threads=2 "$@"
 }
 
 job_demos() {
@@ -244,7 +246,8 @@ job_demos() {
       cargo check --locked --config "$root/.cargo/publication.toml"
       # The generated crate builds from a copy outside this repository, with no
       # Trellis CLI or API cache, as a consumer would.
-      consumer="$(mktemp -d)"
+      mkdir -p "$temp"
+      consumer="$(mktemp -d "$temp/demo-consumer.XXXXXX")"
       trap 'rm -rf "$consumer"' EXIT
       cp -R Cargo.toml src trellis "$consumer/"
       export PATH="$(dirname "$(rustup which cargo)"):/usr/bin:/bin"

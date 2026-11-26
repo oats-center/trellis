@@ -3,7 +3,7 @@
 use super::Administration;
 use super::{
     rpc::{caller, mutation, rpc_error},
-    sqlite::{changed_since, digest, AuthError, Mutation, SqliteAuthorizationStore},
+    sqlite::{changed_since, AuthError, Mutation, SqliteAuthorizationStore},
 };
 use crate::platform::auth::blocking;
 use crate::platform::auth::sqlite::Connection;
@@ -245,43 +245,13 @@ pub(super) async fn remove_resource(
                             input_copy.expected_revision.0 .0,
                         ));
                     }
-                    let kind = if resource.kind == AuthResourceKind::EventConsumer {
-                        "consumer"
-                    } else {
-                        resource.kind.as_str()
-                    };
-                    let expected_id = if resource.owner_kind.as_str() == "deployment" {
-                        digest(&(
-                            resource.owner_kind.as_str(),
-                            resource.owner_id.to_string(),
-                            &resource.participant_id,
-                            kind,
-                            &resource.local_name,
-                        ))?
-                    } else if resource.owner_kind.as_str() == "user"
-                        && resource.kind == AuthResourceKind::State
+                    if resource.owner_kind.as_str() != "deployment"
+                        && !(resource.owner_kind.as_str() == "user"
+                            && resource.kind == AuthResourceKind::State)
                     {
-                        let namespace: String = connection.query_row(
-                            "SELECT namespace_json FROM auth_resources WHERE resource_id=?1",
-                            [&id],
-                            |row| row.get(0),
-                        )?;
-                        digest(&(
-                            "trellis.state",
-                            resource.owner_id.to_string(),
-                            serde_json::from_str::<serde_json::Value>(&namespace)?,
-                            &resource.local_name,
-                        ))?
-                    } else {
                         return Err(AuthError::Invalid(format!(
                             "resource {id} can't be removed here; only deployment resources and \
                             user state can"
-                        )));
-                    };
-                    if expected_id != id {
-                        return Err(AuthError::Invalid(format!(
-                            "resource {id} does not match the allocation Trellis made for it, so \
-                            Trellis leaves it in place"
                         )));
                     }
                     let (physical, allocation): (String, String) = connection.query_row(
@@ -291,39 +261,6 @@ pub(super) async fn remove_resource(
                         [&id],
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )?;
-                    let owned_name = format!("TRELLIS_RESOURCE_{id}_{allocation}");
-                    let physical_matches = match resource.kind {
-                        AuthResourceKind::Kv | AuthResourceKind::Store => physical == owned_name,
-                        AuthResourceKind::State => physical == format!("{id}.{allocation}"),
-                        AuthResourceKind::EventConsumer | AuthResourceKind::Webhook => {
-                            serde_json::from_str::<serde_json::Value>(&physical).is_ok_and(
-                                |value| {
-                                    value["consumer"] == owned_name
-                                        && value["replay_consumer"]
-                                            == format!("{owned_name}_replay")
-                                        && value["stream"] == crate::resources::EVENT_STREAM
-                                },
-                            )
-                        }
-                        AuthResourceKind::Job => serde_json::from_str::<serde_json::Value>(
-                            &physical,
-                        )
-                        .is_ok_and(|value| {
-                            value["consumer"] == owned_name
-                                && value["work_stream"] == crate::resources::JOBS_WORK_STREAM
-                                && value["namespace"].as_str()
-                                    == digest(&("jobs", resource.owner_id.to_string()))
-                                        .ok()
-                                        .as_deref()
-                        }),
-                        AuthResourceKind::Unknown(_) => false,
-                    };
-                    if !physical_matches {
-                        return Err(AuthError::Invalid(format!(
-                            "resource {id} does not match the allocation Trellis made for it, so \
-                            Trellis leaves it in place"
-                        )));
-                    }
                     let revision = resource.revision.0 .0 + 1;
                     if connection.execute(
                         "UPDATE auth_resources \

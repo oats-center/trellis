@@ -23,15 +23,22 @@ fn marker(status: &str) -> String {
 }
 
 pub(super) async fn run(format: OutputFormat) -> miette::Result<()> {
-    let (_state, connected) = connect_authenticated_cli_client().await?;
-    let report = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
-        .trellis_auth_v1()
-        .runtime_diagnostics(&AuthEmpty {
-            extra: Default::default(),
-        })
-        .await
-        .into_diagnostic()?;
-    let report = serde_json::to_value(report).into_diagnostic()?;
+    let diagnostics = async {
+        let (_state, connected) = connect_authenticated_cli_client().await?;
+        trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+            .trellis_auth_v1()
+            .runtime_diagnostics(&AuthEmpty {
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()
+    };
+    let report = match diagnostics.await {
+        Ok(report) => serde_json::to_value(report).into_diagnostic()?,
+        // The platform answers the report; while it stands by, sign-in and
+        // the report fail, and the server's readiness answer says why.
+        Err(error) => return standing_by(format, error).await,
+    };
     output::emit(format, &report, |report| {
         print(report);
         Ok(())
@@ -59,6 +66,77 @@ pub(super) async fn run(format: OutputFormat) -> miette::Result<()> {
             output::plural(count("warning"), "warning")
         )),
     }
+}
+
+/// Reports why the server does not serve the diagnostics report: its
+/// `/readyz` answer names each piece of work that stands by and why, as when
+/// NATS stopped expiring the runtime lease records. Without such an answer,
+/// `failure`, why the report could not be had, is the error.
+async fn standing_by(format: OutputFormat, failure: miette::Report) -> miette::Result<()> {
+    let readiness = async {
+        let selection = super::native_auth::Selection::load().ok()?;
+        let mut client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .no_proxy();
+        if !selection.root_certificates.is_empty() {
+            let mut certificates = Vec::new();
+            for root in &selection.root_certificates {
+                certificates.extend(
+                    reqwest::Certificate::from_pem_bundle(&std::fs::read(root).ok()?).ok()?,
+                );
+            }
+            client = client.tls_certs_only(certificates);
+        }
+        let origin = selection.scope.issuer.trim_end_matches('/');
+        let response = client
+            .build()
+            .ok()?
+            .get(format!("{origin}/readyz"))
+            .send()
+            .await
+            .ok()?;
+        let answer: Value = serde_json::from_slice(&response.bytes().await.ok()?).ok()?;
+        let standing_by = answer["standingBy"].as_object()?.clone();
+        (!standing_by.is_empty()).then_some((origin.to_owned(), standing_by))
+    };
+    let Some((origin, standing_by)) = readiness.await else {
+        return Err(failure);
+    };
+    let findings: Vec<Value> = standing_by
+        .iter()
+        .map(|(work, reason)| {
+            serde_json::json!({
+                "status": "problem",
+                "message": format!("{work} is standing by: {}", reason.as_str().unwrap_or_default()),
+            })
+        })
+        .collect();
+    let report = serde_json::json!({
+        "status": "problem",
+        "server": { "status": "problem", "origin": origin, "findings": findings },
+    });
+    output::emit(format, &report, |report| {
+        let mut stdout = anstream::stdout().lock();
+        let _ = writeln!(stdout, "{} {}", marker("problem"), "Server".bold());
+        let _ = writeln!(
+            stdout,
+            "    {}  {}",
+            "Origin".dimmed(),
+            output::field(&report["server"], "origin")
+        );
+        for finding in output::list(&report["server"], "findings") {
+            let _ = writeln!(
+                stdout,
+                "  {} {}",
+                marker("problem"),
+                output::field(finding, "message")
+            );
+        }
+        Ok(())
+    })?;
+    Err(miette::miette!(
+        "Trellis is not serving, so its full report is unavailable: {failure}"
+    ))
 }
 
 fn print(report: &Value) {

@@ -173,6 +173,11 @@ impl ServiceHealth {
         self.publish_now.notify_one();
     }
 
+    /// Publish a heartbeat at once, after a check's answer changed.
+    pub(crate) fn publish_soon(&self) {
+        self.publish_now.notify_one();
+    }
+
     /// Resolves when a phase change asks for a heartbeat before the next interval.
     pub(crate) async fn publish_requested(&self) {
         self.publish_now.notified().await;

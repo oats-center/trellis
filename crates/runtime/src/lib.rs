@@ -73,8 +73,8 @@ pub use config::{
 };
 pub use mode::{RuntimeMode, RuntimeModeParseError, SubsystemName};
 pub use server::{
-    bind_http_listener, build_version_info, run_http_server, serve_http_listener, ServerError,
-    VersionInfo,
+    bind_http_listener, build_version_info, run_http_server, serve_http_listener, Readiness,
+    ServerError, VersionInfo,
 };
 
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]

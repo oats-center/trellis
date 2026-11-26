@@ -402,9 +402,30 @@ function. Restart-only fields never appear in `changed`, and neither does a
 change to a field the build doesn't declare or a value that doesn't fit its
 type. `TrellisService.connect` and `TrellisDevice.connect` resolve only once
 every required field has a value that fits.
+Read `config.current` (or a derived value's `current`) at each use; a copy
+in a module-level constant keeps the values it was copied from.
+`await config.check((candidate, { reject, changed }) => ...)` checks every
+later revision before it takes effect: `reject(["awsKeyId", "awsSecret"],
+"set both or neither")` refuses named fields, a throw refuses every changed
+field with the fixed reason `the check failed` (the error goes only to the
+participant's own log), and
+the check may be async. `const stripe = await
+config.derive(["stripeSecretKey"], (c) => new Stripe(c.stripeSecretKey), {
+dispose: (old) => ... })` builds a value now and rebuilds it only when one of
+its fields changes; a builder that throws rejects those fields and keeps the
+old value (with the fixed reason `building the value failed`), and `dispose` gets the
+replaced value after its replacement took
+effect, and the value in effect when the participant stops (before
+`service.stop()` returns, after any earlier disposal still running) or its
+connection closes. Use `stripe.current`. A rejected revision leaves `current` as it was
+and runs no `onChange` listener; a listener that throws is logged, never a
+rejection. Registering a check or derive tests the values in effect at once
+and, while they fail, keeps waiting (printing the fields, reasons, and Console
+link with a QR code) until a revision passes, so register them before
+`service.wait()`.
 Browser and native apps get `client.config` the same way, with
-`config.revision.app`; an app with settings never waits, since its fields have
-defaults. In the testkit, `runtime.services.createInstance({ ..., config: {
+`config.revision.app`, `check`, and `derive`; an app with settings never
+waits, since its fields have defaults, and its rejections are not reported. In the testkit, `runtime.services.createInstance({ ..., config: {
 values, secrets } })` stores initial values through `Auth.Config.Set`, and
 `runtime.registerClient` attaches an app's declaration to its client.
 

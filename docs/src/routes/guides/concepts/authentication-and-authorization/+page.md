@@ -94,6 +94,7 @@ On the command line:
 
 ```sh
 trellis users create --username ada --provider <provider id> --subject 'auth0|1234'
+trellis users create --username ada --id 01JD8Z3XQ5V7H2N4K6M8P0R2T4 --provider <provider id> --subject 'auth0|1234'
 trellis users link ada --provider <provider id> --subject 'auth0|1234'
 trellis users unlink ada --provider <provider id> --subject 'auth0|1234'
 ```
@@ -102,7 +103,15 @@ Commands that take a user accept a username, an email address or a user ID,
 and role commands take a role's name or ID (`trellis roles assign Auditors
 --user ada`). A name that fits several users or roles is refused with their
 IDs. Something shaped like an ID is looked up only as an ID, so an ID nobody
-has is refused, even when it is someone's username. An account created with `--provider` gets no password setup link. In the
+has is refused, even when it is someone's username. An account created with `--provider` gets no password setup link.
+
+`--id` gives the new account a Trellis user ID you choose instead of a new
+one. Use it when people move from another Trellis installation, so that
+services which stored their user IDs need no change. The ID must be a ULID,
+and Auth refuses one that any user, service or device in the installation has
+or had, with `already_in_use`.
+
+In the
 Console, the **OIDC sign-ins** panel of a user's page lists their sign-ins and
 links or unlinks one.
 

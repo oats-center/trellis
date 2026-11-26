@@ -127,7 +127,11 @@ export type {
 } from "./runtime/lifecycle.ts";
 export type {
   ConfigChange,
+  ConfigCheck,
+  ConfigCheckContext,
   ConfigRevision,
+  DeriveOptions,
+  DerivedConfig,
   ParticipantConfig,
   ParticipantConfigOf,
 } from "./config.ts";

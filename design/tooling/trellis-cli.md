@@ -177,7 +177,7 @@ trellis svc <id> disable|remove [-f]
 trellis svc <deployment-id> updates
 trellis svc <deployment-id> approve|reject [<update-id>] [--acknowledge-shared-apis]
 trellis svc <id> export [--out <file>] [--passphrase-file <path|->]
-trellis svc import <file> [--digest <sha256>] [--passphrase-file <path|->] [--check]
+trellis svc import <file> [--passphrase-file <path|->] [--check]
                    [--acknowledge-shared-apis] [--acknowledge-unauthenticated-webhooks]
 
 trellis dev <name> create --source <project> | --package <release> ...
@@ -272,20 +272,19 @@ see `design/auth/service-export.md`. Export starts the
 arrives, writing a temporary file beside the destination and moving it into
 place with a rename that refuses an existing file, so a file that appeared
 meanwhile, such as another export's, is never replaced. It prints the
-SHA-256 and size of the bytes it wrote. `remove` names the installation in its confirmation; for a
+file's size. `remove` names the installation in its confirmation; for a
 deployment imported within the last day, `disable` asks the same confirmation
 and `remove` warns, since the installation it moved from has a deployment
-with the same ID. Import copies the file once into a private temporary file
-and refuses it when that copy's SHA-256 differs from `--digest`;
-without `--digest` it asks a terminal to confirm the digest and fails
-elsewhere. It checks the passphrase against the bundle's header before it
-connects, then streams that copy's decrypted content as the `Auth.Deployments.Import`
+with the same ID. Import checks the passphrase against the bundle's header
+before it connects, then streams the file's decrypted content as the `Auth.Deployments.Import`
 Operation's byte stream and prints the report: webhook URLs at the new
-origin, roles and direct grants to recreate, and what stayed behind. The
+origin, the roles and direct grants the bundle carries, the access the
+import recreated and what it skipped with each reason, and what stayed
+behind. The
 passphrase comes from `--passphrase-file` (`-` for standard input), a
 terminal question (asked twice for export), or piped standard input, and is
 never sent to Auth. With `--format json`, export prints `{ file, size,
-digest, deploymentId, report }` and import `{ digest, import }`.
+deploymentId, report }` and import `{ import }`.
 
 Provisioning returns one-use service/device material once. The CLI does not
 persist returned private identity material unless the caller explicitly directs
@@ -321,14 +320,18 @@ trellis storage
 `doctor` prints `Auth.Runtime.Diagnostics` as sections (server, health,
 JetStream, disk, certificates, recent server failures, background work), each
 marked ok, warning or problem with a line per finding, and exits non-zero
-unless the report's status is `ok`, so scripts and monitors can run it.
-`storage` prints `Health.Storage`.
+unless the report's status is `ok`, so scripts and monitors can run it. When
+the report cannot be had, as while the platform stands by and nothing answers
+sign-in, `doctor` reads the saved login's Trellis origin `/readyz`, trusting
+the login's CA files, and when it names roles standing by, reports each
+reason as a problem in a `server` section and fails; otherwise it fails with
+the original error. `storage` prints `Health.Storage`.
 
 ## Users And Portals
 
 ```text
 trellis users list|show|find|create|edit|delete ...
-trellis users create [--username <name>] [--name <name>] [--email <address>] [--provider <id> --subject <sub>]
+trellis users create [--username <name>] [--name <name>] [--email <address>] [--id <user id>] [--provider <id> --subject <sub>]
 trellis users show|edit|delete <user>
 trellis users link|unlink <user> --provider <id> --subject <sub>
 trellis roles list|create ...
@@ -352,7 +355,10 @@ A service command then tries a waiting claim with that claim ID, never a
 claim's title. A deployment name moves on to waiting claims only when the
 deployment list answered without it. The CLI resolves names with `Auth.Users.List` and `Auth.Roles.List` and sends
 IDs to Auth. User commands use generated Auth account operations. `users create
---provider --subject` links that OIDC sign-in in the creating call and prints
+--id` gives the new user that Trellis user ID instead of a new one, such as
+the ID the person has in another installation; the CLI refuses a value that is
+not a ULID, and Auth refuses an ID any user, service or device has or had with
+`already_in_use`. `users create --provider --subject` links that OIDC sign-in in the creating call and prints
 no password setup link. Otherwise it prints the one-time setup link,
 `/account/reset?token=...` on the Trellis origin, and says when password
 sign-in is off, since the password chosen there signs in only while it is on;
@@ -413,6 +419,8 @@ trellis-server nats new --out <dir> [--servers <n>] [--hosts <name,...>] [--list
 trellis-server nats <system|trellis|auth> [--config <path> | --user | --system] [--print] [<nats args>...]
 trellis-server backup <dir> [--config <path> | --user | --system]
 trellis-server restore <dir> [--config <path> | --user | --system] [--force]
+trellis-server export --out <file> [--passphrase-file <path|->] [--config <path> | --user | --system]
+trellis-server import <file> [--passphrase-file <path|->] [--check] [--config <path> | --user | --system]
 trellis-server upgrade [--check] [--prerelease]
 ```
 
@@ -528,6 +536,25 @@ record as a start does: it must name the configuration's instance ID and,
 when the platform database was copied, that database's JetStream identity. A
 broker with no record, or one bound to another installation or database,
 fails the backup before its manifest is written.
+
+`restore` restores a backup of its own release as it is. From the first
+stable release it also restores one an earlier stable release took and then
+migrates the restored databases forward as a start does, and refuses one a
+newer release took. Before then it refuses a backup of any other release and
+says to move the installation with `export` and `import` instead.
+
+`export` and `import` move a whole installation's configuration as plain,
+versioned records: users with their IDs and password hashes, roles and
+grants, sign-in settings and OIDC providers with their secrets, apps and
+consent, Portal themes, package registries, users' and devices' State, and
+every service and device deployment as a service bundle. Import runs against
+a stopped installation with its NATS running. Settings take the export's
+values and the report shows the old ones; a user found here as the same
+person gets what the export gives them; any other record in the way is
+skipped with a warning and changes nothing; and the exported administrator's
+roles and grants go to this installation's administrator. With `--check` it
+changes nothing. See
+[installation-export.md](../auth/installation-export.md).
 
 `restore` verifies every checksum before writing. It refuses a target folder
 holding another installation, and an outside file that exists with other

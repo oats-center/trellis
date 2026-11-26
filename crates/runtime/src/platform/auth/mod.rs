@@ -4,6 +4,7 @@
 //! Broker effects are durable outbox work; no distributed policy ancestry is
 //! required to verify the resulting authority.
 
+mod access_records;
 mod administration;
 pub(crate) use administration::Administration;
 mod authorization_sessions;
@@ -13,6 +14,7 @@ mod config;
 mod deployments;
 mod diagnostics;
 pub(crate) use diagnostics::{register_rpc as register_diagnostics_rpc, Diagnostics};
+mod installation_export;
 mod instances;
 pub(crate) use instances::STARTUP_QUIET_SECONDS;
 mod framework_storage;
@@ -59,6 +61,9 @@ pub(crate) use broker::{MATERIAL_BUCKET, REVOCATION_BUCKET};
 #[cfg(test)]
 use catalog::ApiAcceptance;
 pub(crate) use deployments::{DeploymentProvisioning, ProvisionedDeployment};
+pub(crate) use installation_export::{
+    export as export_installation, import as import_installation,
+};
 pub(crate) use lifecycle::{ClientRegistration, GrantApproval, VerifiedLogin};
 pub(crate) use oauth::router as oauth_router;
 pub(crate) use oauth::{OAuthEngine, OAuthStorage};

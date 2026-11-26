@@ -1,6 +1,6 @@
 ---
 title: "Keep Trellis running"
-description: "Diagnose a deployment with trellis doctor, upgrade the server, keep certificates current, know what a failure costs, find a failure from its reference, back up and restore, reset the administrator password, use the nats CLI, run jobs, health or events on their own server, run a second Trellis on one machine, and start over."
+description: "Diagnose a deployment with trellis doctor, upgrade the server, keep certificates current, know what a failure costs, find a failure from its reference, back up and restore, reset the administrator password, use the nats CLI, find out why a server answers 503, run jobs, health or events on their own server, run a second Trellis on one machine, and start over."
 ---
 
 ## Diagnose a deployment
@@ -31,9 +31,15 @@ attention:
 - **JetStream**: storage and memory used and reserved against the account's
   and the server's limits, a warning at 85% of a limit, and a problem for each
   stream NATS refused for lack of room. These are the numbers from
-  `trellis storage`.
-- **Disk**: free and total space where the Auth database lives; a warning
-  below 10% free and a problem below 5%.
+  `trellis storage`. It's also a problem when NATS has stopped expiring the
+  runtime lease records (see
+  [Trellis answers 503 and says lease records aren't expiring](#trellis-answers-503-and-says-lease-records-arent-expiring)).
+- **Disk**: free and total space of the file system holding the Trellis data
+  folder, where the Auth database lives. Under 10% or 1 GiB free is a
+  warning, and under 2% or 200 MiB a problem. The byte floors matter on small
+  disks, the shares on large ones. A full disk stops more than Trellis's own
+  databases: a NATS server storing on it stops storing messages, and stops
+  expiring them, until it restarts.
 - **Certificates**: the subject, issuer and expiry of the certificate the
   Trellis listener serves, and of the CA behind a generated one; a warning
   within 30 days of expiry and a problem once expired. A certificate file the
@@ -54,7 +60,13 @@ the same report as JSON. The Console's Diagnostics page, under Platform, shows
 it too. Both read `Auth.Runtime.Diagnostics`, which needs the
 `trellis.auth.v1:diagnostics.read` capability; the Administrator role has it.
 
-The report comes from the process serving Auth. When health runs on another
+The report comes from the process serving Auth. While Auth stands by, nothing
+answers it, and sign-in fails too. `trellis doctor` then reads the server's
+`/readyz` answer instead, prints why each part of the server stands by as a
+problem, and exits non-zero. With `--format json` that report has only its
+`server` section.
+
+When health runs on another
 host (see [Run jobs, health or events on their own server](#run-jobs-health-or-events-on-their-own-server)),
 the Health section shows what Auth knows of each instance and says that the
 health reports aren't on this host, and the failures listed are only that
@@ -288,6 +300,12 @@ the time since the last one. Keep the backups off the machine they came from.
 
 ## Restore
 
+A backup restores onto the release that took it. Once Trellis has stable
+releases, one taken by an earlier stable release also restores onto a newer
+one, and `restore` migrates its databases forward. Before then, `restore`
+refuses a backup from another release; move the installation with
+[`trellis-server export` and `import`](/guides/move-an-installation) instead.
+
 Stop the server, then restore into a fresh folder, or over the same
 installation:
 
@@ -356,7 +374,65 @@ lease is free. A second server for the same NATS waits this way too, and takes
 over whichever parts the first one stops running, given the state those parts
 need (see [What a failure costs](#what-a-failure-costs)). `/readyz` reports a server
 unready while Auth runs elsewhere, since Auth's pages and sign-in are what its
-listener serves.
+listener serves. While a part stands by, `/readyz` says why under
+`standingBy`, one entry for each part, and Auth's pages answer 503 with
+Auth's reason as plain text:
+
+```json
+{
+  "version": "…",
+  "mode": "all",
+  "processId": 4242,
+  "standingBy": {
+    "platform": "another Trellis runtime holds the lease platform.owner in trellis_runtime_leases; this one takes the work over when that lease is released or expires"
+  }
+}
+```
+
+A renewal NATS refuses is logged with NATS's own answer, as in `NATS refused
+to store the lease: insufficient resources (code 503, error code 10023)`. A
+renewal NATS doesn't answer at all is logged as `The lease bucket stopped
+answering`; look in the NATS log for a storage error.
+
+## Trellis answers 503 and says lease records aren't expiring
+
+When the disk under NATS fills, NATS can mark a stream with a critical write
+error. Its log shows a line like this one:
+
+```text
+[ERR] Filestore [KV_trellis_runtime_leases] Critical write error: write …/msgs/1.blk: no space left on device
+```
+
+From then on that stream takes no writes and expires nothing until NATS
+restarts, even after disk space is freed. Each lease record in it stays, so
+no Trellis server can take the part that lease belongs to. A server that
+starts then stands by, and finds that the bucket holds a record older than
+the lease lifetime plus one renewal interval, which can't happen while NATS
+expires it. It logs this at error, once a minute while it lasts:
+
+```text
+NATS has stopped expiring the runtime lease records (KV_trellis_runtime_leases holds a record from 2026-11-24T04:24:16Z, older than its 30s lifetime). NATS usually does this after a storage write error such as a full disk. Free disk space on the NATS host and restart NATS.
+```
+
+The same message is the platform's reason under `standingBy` in `/readyz`
+and in every 503 from Auth's pages. `trellis doctor` reports it as a problem
+too: in the JetStream section while Auth runs, and from `/readyz` while it
+stands by.
+
+The age comes from the NATS server's own clock, never the Trellis host's, so
+clock skew between the two hosts can't make a healthy bucket look stuck. If
+the server doesn't send its clock with the stream info, the age is unknown:
+`trellis doctor` gives a warning saying so, and the server judges nothing
+from it. Once the message has appeared, it stays the reason until the server
+sees NATS expiring the records again. A check that fails or times out, as
+while NATS is frozen, changes nothing and logs no recovery. Until a stuck
+record is found, a lease another server holds reads as `another Trellis
+runtime holds the lease …`.
+
+To recover, free disk space on the NATS host, then restart NATS. The records
+expire again, and the Trellis server takes its leases within one renewal
+interval and serves, with no restart of its own. Restarting NATS is the fix
+for any other stream the NATS log names with the same error, too.
 
 ## Run jobs, health or events on their own server
 

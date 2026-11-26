@@ -139,6 +139,9 @@ export class NativeTransportGate {
         refused: PromiseWithResolvers<string[]>;
       }
     | undefined;
+  #requestDrop:
+    | { subjectPrefix: string; dropped: PromiseWithResolvers<string> }
+    | undefined;
 
   /** Allocate the next proxied connection id. */
   connectionOpened(writer: SerialWriter): number {
@@ -284,6 +287,24 @@ export class NativeTransportGate {
       refused,
     };
     return refused.promise;
+  }
+
+  /**
+   * Drop the next client request, a `PUB`/`HPUB` with a reply subject, whose
+   * subject starts with `subjectPrefix`, as a network that loses one message
+   * does: it never reaches the broker, so nothing serves it and the client's
+   * request times out while its connection stays up. Resolves with the
+   * dropped subject. Arming while a drop is pending, or with an empty prefix,
+   * is rejected.
+   */
+  dropNextRequest(subjectPrefix: string): Promise<string> {
+    if (subjectPrefix.length === 0)
+      throw new Error("a request drop needs a subject prefix");
+    if (this.#requestDrop !== undefined)
+      throw new Error("a request drop is already armed");
+    const dropped = Promise.withResolvers<string>();
+    this.#requestDrop = { subjectPrefix, dropped };
+    return dropped.promise;
   }
 
   /**
@@ -442,6 +463,16 @@ export class NativeTransportGate {
         break;
       }
       case "pub": {
+        const drop = this.#requestDrop;
+        if (
+          drop !== undefined &&
+          op.reply !== undefined &&
+          op.subject.startsWith(drop.subjectPrefix)
+        ) {
+          this.#requestDrop = undefined;
+          drop.dropped.resolve(op.subject);
+          return true;
+        }
         connection.outboundContexts.push({
           subject: op.subject,
           context: op.headers?.["authorization-context"],

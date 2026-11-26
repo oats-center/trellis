@@ -30,6 +30,7 @@
   import Icon from "$lib/components/Icon.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import SettingInput from "$lib/components/SettingInput.svelte";
+  import StatusBadge from "$lib/components/StatusBadge.svelte";
 
   type View = apis.auth.ConfigGetOutput;
   type Field = View["fields"][number];
@@ -207,6 +208,24 @@
   const behind = $derived(
     (view?.instances ?? []).filter((instance) => instance.restartPending),
   );
+  // What each instance did with the newest settings, for instances whose
+  // build declares any.
+  const applying = $derived(
+    (view?.instances ?? []).flatMap((instance) =>
+      instance.settings ? [{ instance, settings: instance.settings }] : [],
+    ),
+  );
+  const refusing = $derived(
+    applying.filter(({ settings }) => settings.state === "rejected"),
+  );
+  function titlesOf(names: readonly string[]): string {
+    return names
+      .map(
+        (name) =>
+          view?.fields.find((field) => field.name === name)?.title ?? name,
+      )
+      .join(", ");
+  }
 
   // Drafts belong to one target: choosing another discards them.
   $effect(() => {
@@ -607,6 +626,58 @@
         {behind.length === 1 ? "it" : "them"} to apply settings marked “Applies after
         restart”.</Notice
       >{/if}
+    {#each refusing as { instance, settings } (instance.instanceId)}
+      <!-- A fixed value for one of these reaches it only when it restarts. -->
+      {@const afterRestart = settings.fields.filter(
+        (name) => view?.fields.find((field) => field.name === name)?.restart,
+      )}<Notice variant="warning"
+        >{nameOf(instance)} rejected the latest settings{settings.fields
+          .length > 0
+          ? ` for ${titlesOf(settings.fields)}`
+          : ""}: {settings.reason}. It keeps using the settings it had. Fix them
+        below or restore an earlier version.{afterRestart.length > 0
+          ? ` ${titlesOf(afterRestart)} ${afterRestart.length === 1 ? "applies" : "apply"} after restart, so restart it once fixed.`
+          : ""}</Notice
+      >{/each}
+    {#if applying.length > 0}
+      <ul class="grid gap-1 text-sm" aria-label="Instances">
+        {#each applying as { instance, settings } (instance.instanceId)}
+          <!-- An instance that applied the latest settings but still runs
+          older values that apply after a restart uses only part of them. -->
+          {@const partly =
+            settings.state === "applied" && instance.restartPending}
+          <li class="flex flex-wrap items-center gap-x-2">
+            <StatusBadge
+              dot
+              label={partly
+                ? "Restart needed"
+                : settings.state === "applied"
+                  ? "Applied"
+                  : settings.state === "rejected"
+                    ? "Rejected"
+                    : "Waiting"}
+              status={partly
+                ? "degraded"
+                : settings.state === "applied"
+                  ? "healthy"
+                  : settings.state === "rejected"
+                    ? "degraded"
+                    : "offline"}
+            />
+            <span>{nameOf(instance)}</span>
+            <span class="text-base-content/65"
+              >{partly
+                ? "Uses the latest settings except those that apply after restart"
+                : settings.state === "applied"
+                  ? "Uses the latest settings"
+                  : settings.state === "rejected"
+                    ? "Rejected the latest settings"
+                    : "Hasn't read the latest settings yet"}</span
+            >
+          </li>
+        {/each}
+      </ul>
+    {/if}
     {#if !view.declared}<p class="text-sm text-base-content/65">
         Trellis doesn't have its IDL yet. Add settings by name; the service
         checks them when it connects.

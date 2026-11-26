@@ -55,16 +55,17 @@ safe_extract() {
   tar -xzf "$archive" -C "$dest" --no-same-owner
 }
 
-# Keep Cargo targets on the runner work volume. A self-hosted runner can
-# have a small memory-backed /tmp, and the final consumer link is large.
-work="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/testkit-consumer.XXXXXXXX")"
+# On the runner's work disk rather than /tmp: a self-hosted runner's /tmp can
+# fill while ld maps its output, which kills the link with SIGBUS.
+temp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+work="$(mktemp -d "$temp/rust-test-package.XXXXXX")"
 extracted=""
 cleanup() { rm -rf "$work" ${extracted:+"$extracted"}; }
 trap cleanup EXIT
 
 # 0. Accept either a tarball or an already-extracted bundle directory.
 if [[ -f "$bundle" ]]; then
-  extracted="$(mktemp -d)"
+  extracted="$(mktemp -d "$temp/rust-test-bundle.XXXXXX")"
   safe_extract "$bundle" "$extracted"
   bundle="$extracted"
 fi

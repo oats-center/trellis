@@ -1331,7 +1331,26 @@ pub(super) fn create_user(
                 &identity.actor,
                 Administration::ManageAccounts,
             )?;
-            let principal = id();
+            // A chosen ID keeps a user's identity from another installation.
+            // A revoked principal's row stays as the audit's tombstone, so an
+            // ID any principal ever had is refused, never reused.
+            let principal = match &input.user_id {
+                Some(chosen) => {
+                    let chosen = chosen.to_string();
+                    let taken: bool = connection.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1)",
+                        [&chosen],
+                        |row| row.get(0),
+                    )?;
+                    if taken {
+                        return Err(AuthError::InUse(format!(
+                            "user ID {chosen} is already in use in this installation"
+                        )));
+                    }
+                    chosen
+                }
+                None => id(),
+            };
             insert_user(connection, &principal, now)?;
             insert_local_account(
                 connection,

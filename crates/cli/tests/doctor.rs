@@ -403,6 +403,160 @@ async fn doctor_finds_an_unhealthy_device_past_the_first_page() {
     runtime.shutdown().await.unwrap();
 }
 
+// NATS stops expiring the runtime lease bucket while a record holds the
+// platform's lease, as it does after a storage write error such as a full
+// disk. A record written with a `Nats-TTL: never` header outlives the bucket's
+// lifetime the same way on a healthy broker, so it stands in for a stuck
+// bucket here: the filling a real disk needs a mount this test cannot make.
+// The restarted server stands by. Its log names the stuck bucket and the
+// restart advice at error and repeats that once a minute; /readyz and the
+// platform's routes answer 503 with the reason; and doctor, which cannot
+// sign in while the platform stands by, reports the reason as a problem and
+// fails. Once the record is gone, as after a NATS restart, the server takes
+// its leases and serves, and doctor passes. This catches a server that serves
+// 503 for hours with nothing anywhere saying why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lease_record_nats_stopped_expiring_is_named_until_it_is_gone() {
+    const STALLED: &str = "NATS has stopped expiring the runtime lease records";
+    const STREAM: &str = "KV_trellis_runtime_leases";
+    const RECORD: &str = "$KV.trellis_runtime_leases.platform.owner";
+
+    let mut runtime = TrellisTestRuntime::builder()
+        .timeouts(trellis_testkit::TestTimeouts {
+            // The record must outlive its lifetime, and the error repeat.
+            startup: Duration::from_secs(300),
+            ..Default::default()
+        })
+        .start()
+        .await
+        .unwrap();
+    let cli = Cli::login(&mut runtime).await;
+    cli.passing().await;
+    let nats = async_nats::ConnectOptions::with_credentials(
+        &runtime.nats_creds(TestNatsUser::Trellis).await.unwrap(),
+    )
+    .unwrap()
+    .add_root_certificates(runtime.trust_roots()[0].clone())
+    .connect(runtime.nats_url())
+    .await
+    .unwrap();
+    let jetstream = async_nats::jetstream::new(nats);
+    runtime.stop_server().await.unwrap();
+
+    let mut config = jetstream
+        .get_stream(STREAM)
+        .await
+        .unwrap()
+        .info()
+        .await
+        .unwrap()
+        .config
+        .clone();
+    config.allow_message_ttl = true;
+    jetstream.update_stream(config).await.unwrap();
+    let mut headers = async_nats::HeaderMap::new();
+    headers.insert("Nats-TTL", "never");
+    jetstream
+        .publish_with_headers(RECORD, headers, "a stopped runtime".into())
+        .await
+        .unwrap()
+        .await
+        .unwrap();
+
+    let log = runtime.workdir().join("logs/trellis-server.log");
+    let logged_before = std::fs::metadata(&log).unwrap().len() as usize;
+    let stalled_lines = || {
+        let text = std::fs::read(&log).unwrap_or_default();
+        String::from_utf8_lossy(&text[logged_before.min(text.len())..])
+            .lines()
+            .filter(|line| {
+                line.contains(STALLED) && line.contains(STREAM) && line.contains("restart NATS")
+            })
+            .count()
+    };
+    let http = reqwest::Client::builder()
+        .tls_certs_only(
+            reqwest::Certificate::from_pem_bundle(
+                &std::fs::read(&runtime.trust_roots()[0]).unwrap(),
+            )
+            .unwrap(),
+        )
+        .build()
+        .unwrap();
+    let origin = runtime.trellis_url().trim_end_matches('/').to_owned();
+    let observe = async {
+        let first = tokio::time::timeout(Duration::from_secs(120), async {
+            while stalled_lines() == 0 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            std::time::Instant::now()
+        })
+        .await
+        .expect("the server logged the stalled lease records");
+
+        let ready = http.get(format!("{origin}/readyz")).send().await.unwrap();
+        assert_eq!(ready.status(), 503);
+        let ready: Value = ready.json().await.unwrap();
+        let reason = ready["standingBy"]["platform"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains(STALLED) && reason.contains(STREAM),
+            "{ready:#}"
+        );
+        let page = http.get(format!("{origin}/console")).send().await.unwrap();
+        assert_eq!(page.status(), 503);
+        assert!(page.text().await.unwrap().contains(STALLED));
+
+        let (passed, report) = cli.doctor().await;
+        assert!(!passed, "{report:#}");
+        assert_eq!(report["status"], "problem", "{report:#}");
+        assert!(
+            findings(&report)
+                .iter()
+                .any(|(status, message)| status == "problem"
+                    && message.contains("platform is standing by")
+                    && message.contains(STALLED)
+                    && message.contains("restart NATS")),
+            "{report:#}"
+        );
+        let text = cli.run(&["doctor"]).await;
+        assert!(!text.status.success());
+        assert!(
+            String::from_utf8_lossy(&text.stdout).contains(STALLED),
+            "{}",
+            String::from_utf8_lossy(&text.stdout)
+        );
+
+        // While it lasts the error repeats, rate-limited to once a minute.
+        tokio::time::timeout(Duration::from_secs(90), async {
+            while stalled_lines() < 2 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("the error repeated");
+        assert!(first.elapsed() >= Duration::from_secs(55));
+        assert_eq!(stalled_lines(), 2);
+
+        // Without the record the lease is free again.
+        jetstream
+            .get_stream(STREAM)
+            .await
+            .unwrap()
+            .purge()
+            .filter(RECORD)
+            .await
+            .unwrap();
+    };
+    let (restarted, ()) = tokio::join!(runtime.restart(), observe);
+    restarted.unwrap();
+    let ready = http.get(format!("{origin}/readyz")).send().await.unwrap();
+    assert_eq!(ready.status(), 200);
+    let ready: Value = ready.json().await.unwrap();
+    assert!(ready["standingBy"]["platform"].is_null(), "{ready:#}");
+    cli.passing().await;
+    runtime.shutdown().await.unwrap();
+}
+
 /// The runtime's SQLite database named `file`.
 fn database(runtime: &TrellisTestRuntime, file: &str) -> PathBuf {
     let mut pending = vec![runtime.workdir().to_path_buf()];

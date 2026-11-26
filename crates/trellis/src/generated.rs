@@ -729,9 +729,13 @@ impl Client {
             connected.config = Some(Arc::new(crate::service::config::follow(
                 Arc::clone(&client),
                 P::CONFIG_FIELDS,
+                P::ID,
                 loaded,
                 client.own_deployment_id()?,
                 client.own_instance_id()?,
+                // A device has no serving phase: reading its settings is
+                // putting them to use, after the checks it registers at startup.
+                None,
             )));
         }
         Ok(connected)
@@ -740,14 +744,12 @@ impl Client {
     /// A device's settings, decoded as its generated `Config` struct.
     /// Generated code calls this; devices use the generated `config()` accessor.
     #[must_use]
-    pub fn generated_config<T: serde::de::DeserializeOwned>(
+    pub fn generated_config<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
     ) -> crate::service::ConfigHandle<T> {
         match &self.config {
-            Some(live) => crate::service::ConfigHandle::new(live.state.clone()),
-            None => crate::service::ConfigHandle::new(
-                tokio::sync::watch::channel(crate::service::config::ConfigState::default()).1,
-            ),
+            Some(config) => crate::service::ConfigHandle::new(&config.live),
+            None => crate::service::ConfigHandle::new(&crate::service::config::Live::detached()),
         }
     }
 

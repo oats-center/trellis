@@ -78,6 +78,10 @@ pub(crate) enum AuthError {
     /// An administrator linked an OIDC sign-in that another account has.
     #[error("identity linked to another user")]
     IdentityTaken,
+    /// A caller-chosen ID that something else has or had. The detail names
+    /// the ID and what holds it.
+    #[error("already in use: {0}")]
+    InUse(String),
     #[error("not authorized")]
     Denied,
     /// Denied, with what the caller would need, such as a capability.
@@ -175,7 +179,7 @@ pub(crate) struct SqliteAuthorizationStore {
     /// for nor delay the writer. Without WAL, reads share the writer.
     reader: Option<Mutex<rusqlite::Connection>>,
     pub(super) signer: SigningKey,
-    pub(super) custody_directory: PathBuf,
+    pub(crate) custody_directory: PathBuf,
     current_key: Mutex<Option<(String, SigningKey)>>,
     /// Origins of every usable client's redirect URIs, answered from memory
     /// for CORS and rebuilt after any commit that changed a client row.
@@ -394,8 +398,6 @@ pub(crate) fn read_custody_key(
     let invalid =
         |reason: &str| RuntimeError::Platform(format!("custody key '{}' {reason}", path.display()));
     let unreadable = |error: std::io::Error| invalid(&format!("cannot be read: {error}"));
-    // Open without following a link and check the opened file, so a swap
-    // between inspection and read cannot substitute another file.
     let metadata = std::fs::symlink_metadata(path).map_err(unreadable)?;
     if !metadata.is_file() {
         return Err(invalid("must be a regular file"));
@@ -414,14 +416,9 @@ pub(crate) fn read_custody_key(
         use std::os::unix::fs::MetadataExt as _;
         // SAFETY: geteuid has no arguments or borrowed memory.
         let owner = unsafe { libc::geteuid() };
-        if metadata.dev() != opened.dev()
-            || metadata.ino() != opened.ino()
-            || opened.mode() & 0o077 != 0
-            || opened.uid() != owner
-            || opened.nlink() != 1
-        {
+        if opened.mode() & 0o077 != 0 || opened.uid() != owner {
             return Err(invalid(
-                "must be a single-link file owned by this user without group or world access",
+                "must be owned by this user without group or world access",
             ));
         }
     }
@@ -484,7 +481,7 @@ impl SqliteAuthorizationStore {
         config: &crate::RuntimeConfig,
         account: &str,
     ) -> Result<Self, crate::supervisor::RuntimeError> {
-        Self::from_configured_connection(store.open()?, config, account)
+        Self::from_configured_connection(store.open()?, config, account, store)
     }
 
     pub(crate) fn open_read_only(
@@ -492,13 +489,25 @@ impl SqliteAuthorizationStore {
         config: &crate::RuntimeConfig,
         account: &str,
     ) -> Result<Self, crate::supervisor::RuntimeError> {
-        Self::from_configured_connection(store.open_read_only()?, config, account)
+        Self::from_configured_connection(store.open_read_only()?, config, account, store)
+    }
+
+    /// Opens `copy`, a snapshot of the installation's database `store`, with
+    /// the issuer custody that belongs beside `store`, which it only reads.
+    pub(crate) fn open_copy(
+        copy: &crate::storage::SqliteStore,
+        store: &crate::storage::SqliteStore,
+        config: &crate::RuntimeConfig,
+        account: &str,
+    ) -> Result<Self, crate::supervisor::RuntimeError> {
+        Self::from_configured_connection(copy.open()?, config, account, store)
     }
 
     fn from_configured_connection(
         connection: rusqlite::Connection,
         config: &crate::RuntimeConfig,
         account: &str,
+        store: &crate::storage::SqliteStore,
     ) -> Result<Self, crate::supervisor::RuntimeError> {
         use crate::supervisor::RuntimeError;
         let authorization = config
@@ -559,11 +568,7 @@ impl SqliteAuthorizationStore {
         };
         // Successor custody follows the writable, persistent Auth database, not
         // the provisioned seed that may live on a read-only configuration mount.
-        let custody_directory = connection
-            .path()
-            .map(PathBuf::from)
-            .ok_or_else(|| RuntimeError::Platform("Auth database path is unavailable".into()))?
-            .with_extension("issuer-keys");
+        let custody_directory = store.path().with_extension("issuer-keys");
         let store = Self::from_connection(connection, signer, settings, custody_directory)
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
         let initialized: bool = store

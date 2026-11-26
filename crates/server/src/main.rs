@@ -87,6 +87,15 @@ enum OperationArgs {
     /// start loads the NATS streams into an empty JetStream store. To finish
     /// an interrupted restore, run it again, then start.
     Restore(commands::RestoreArgs),
+    /// Write the installation's configuration into a file sealed with a
+    /// passphrase, for `trellis-server import` on another installation or
+    /// release: users, roles, grants, sign-in policy and providers, apps,
+    /// themes, and every service and device with its data.
+    Export(commands::ExportArgs),
+    /// Add an installation export to this installation, which must be
+    /// stopped while its NATS runs. What existing data is in the way of is
+    /// skipped and reported.
+    Import(commands::ImportArgs),
     /// Replace this binary with the newest trellis-server release for this
     /// platform.
     Upgrade(UpgradeArgs),
@@ -334,6 +343,8 @@ impl StartupPolicy {
                 | OperationArgs::Config(_)
                 | OperationArgs::Backup(_)
                 | OperationArgs::Restore(_)
+                | OperationArgs::Export(_)
+                | OperationArgs::Import(_)
                 | OperationArgs::Upgrade(_),
             ) => {
                 return Err(miette!(
@@ -994,6 +1005,8 @@ async fn serve() -> miette::Result<()> {
         Some(OperationArgs::Nats(nats)) => return commands::nats(nats),
         Some(OperationArgs::Backup(backup)) => return commands::backup(backup).await,
         Some(OperationArgs::Restore(restore)) => return commands::restore(restore),
+        Some(OperationArgs::Export(export)) => return commands::export(export).await,
+        Some(OperationArgs::Import(import)) => return commands::import(import).await,
         Some(OperationArgs::Upgrade(upgrade_args)) => return upgrade(&upgrade_args),
         _ => {}
     }

@@ -47,11 +47,18 @@ pub enum StoreError {
         #[source]
         error: std::io::Error,
     },
-    /// A configured SQLite snapshot did not complete within its bounded budget.
-    #[error("configured sqlite store changed while creating a check snapshot: {path}")]
+    /// A configured SQLite snapshot stopped making progress because other
+    /// connections kept changing or locking the database.
+    #[error(
+        "could not copy configured sqlite store {path} for a check: the copy made no progress \
+        for {} seconds while other connections kept changing or locking it",
+        stalled_for.as_secs()
+    )]
     SqliteSnapshotChanged {
         /// Configured database path.
         path: PathBuf,
+        /// How long the copy went without progress before giving up.
+        stalled_for: Duration,
     },
     /// SQLite connection opening failed.
     #[error("failed to open sqlite store {path}: {source}")]
@@ -209,49 +216,19 @@ impl SqliteStore {
 
     /// Verify migration compatibility on a temporary copy without changing the database.
     pub fn check_migrations(&self) -> Result<(), StoreError> {
-        if !self.config.path.exists() {
-            return Err(StoreError::MissingSqlite {
-                path: self.config.path.clone(),
-            });
-        }
-        let runner = self.schema.runner();
         let directory = tempfile::tempdir().map_err(|error| StoreError::CopySqliteSnapshot {
             from: self.config.path.clone(),
             to: std::env::temp_dir(),
             error,
         })?;
-        let temporary_path = directory.path().join("store.sqlite");
-        let source = self.open_read_only()?;
-        let mut connection =
-            Connection::open(&temporary_path).map_err(|source| StoreError::OpenSqlite {
-                path: temporary_path.clone(),
-                source,
-            })?;
-        {
-            let snapshot_error = |error| StoreError::CopySqliteSnapshot {
-                from: self.config.path.clone(),
-                to: temporary_path.clone(),
-                error: std::io::Error::other(error),
-            };
-            let backup =
-                rusqlite::backup::Backup::new(&source, &mut connection).map_err(snapshot_error)?;
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            loop {
-                match backup.step(128).map_err(snapshot_error)? {
-                    rusqlite::backup::StepResult::Done => break,
-                    _ if std::time::Instant::now() >= deadline => {
-                        return Err(StoreError::SqliteSnapshotChanged {
-                            path: self.config.path.clone(),
-                        });
-                    }
-                    rusqlite::backup::StepResult::Busy | rusqlite::backup::StepResult::Locked => {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        runner
+        let copy = self.snapshot_into(
+            &directory.path().join("store.sqlite"),
+            SNAPSHOT_PAGES_PER_STEP,
+            SNAPSHOT_STALL_LIMIT,
+        )?;
+        let mut connection = copy.open()?;
+        self.schema
+            .runner()
             .set_abort_missing(false)
             .run(&mut connection)
             .map_err(|source| StoreError::MigrateSqlite {
@@ -260,6 +237,77 @@ impl SqliteStore {
                 source,
             })?;
         Ok(())
+    }
+
+    /// A copy of this database's committed contents at `path`, read without
+    /// writing to this database, with this store's schema and settings.
+    ///
+    /// The copy runs `pages_per_step` pages at a time, so writers are never
+    /// held off for long. A commit from another connection restarts it, and a
+    /// lock makes a step wait. Neither is a failure while the copy still gets
+    /// further than it ever has: only `stall_limit` without such progress
+    /// fails, so a large database copies however long that takes, and steady
+    /// writes or a held lock cannot keep it waiting forever.
+    pub(crate) fn snapshot_into(
+        &self,
+        path: &Path,
+        pages_per_step: std::ffi::c_int,
+        stall_limit: Duration,
+    ) -> Result<Self, StoreError> {
+        if !self.config.path.exists() {
+            return Err(StoreError::MissingSqlite {
+                path: self.config.path.clone(),
+            });
+        }
+        let source = self.open_read_only()?;
+        let mut connection = Connection::open(path).map_err(|source| StoreError::OpenSqlite {
+            path: path.to_owned(),
+            source,
+        })?;
+        let snapshot_error = |error| StoreError::CopySqliteSnapshot {
+            from: self.config.path.clone(),
+            to: path.to_owned(),
+            error: std::io::Error::other(error),
+        };
+        let backup =
+            rusqlite::backup::Backup::new(&source, &mut connection).map_err(snapshot_error)?;
+        // Progress is a step that copies pages and leaves fewer to copy than
+        // any step before it. A restart sends the count back up, so steady
+        // commits only count while each pass gets further than the last. The
+        // fewest remaining pages only falls, so the copy ends either way. A
+        // busy or locked step copies nothing, and SQLite leaves its counters
+        // at zero until a step succeeds, so only a step that copied is read.
+        let mut fewest_remaining = std::ffi::c_int::MAX;
+        let mut progressed_at = std::time::Instant::now();
+        loop {
+            let progressed = match backup.step(pages_per_step).map_err(snapshot_error)? {
+                rusqlite::backup::StepResult::Done => break,
+                rusqlite::backup::StepResult::More => {
+                    let remaining = backup.progress().remaining;
+                    let progressed = remaining < fewest_remaining;
+                    fewest_remaining = fewest_remaining.min(remaining);
+                    progressed
+                }
+                _ => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    false
+                }
+            };
+            if progressed {
+                progressed_at = std::time::Instant::now();
+            } else if progressed_at.elapsed() >= stall_limit {
+                return Err(StoreError::SqliteSnapshotChanged {
+                    path: self.config.path.clone(),
+                    stalled_for: stall_limit,
+                });
+            }
+        }
+        let mut config = self.config.clone();
+        config.path = path.to_owned();
+        Ok(Self {
+            schema: self.schema,
+            config,
+        })
     }
 
     /// The first migration applied to this existing database that differs
@@ -334,6 +382,12 @@ impl SqliteStore {
         self.config.path.exists()
     }
 }
+
+/// Pages a check snapshot copies per step, between which writers can commit.
+pub(crate) const SNAPSHOT_PAGES_PER_STEP: std::ffi::c_int = 128;
+
+/// How long a check snapshot may go without progress before it fails.
+pub(crate) const SNAPSHOT_STALL_LIMIT: Duration = Duration::from_secs(10);
 
 /// Subsystem-scoped collection of open runtime stores.
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]

@@ -57,7 +57,7 @@ pub use bindings::{
 };
 #[doc(hidden)]
 pub use bootstrap_ports::BootstrapBindingInfo;
-pub use config::{ConfigHandle, ConfigRevision};
+pub use config::{ConfigHandle, ConfigRevision, Derived, Rejection};
 #[cfg(feature = "http")]
 pub use enrollment::ENROLLMENT_SECRET_ENV;
 pub use error::{

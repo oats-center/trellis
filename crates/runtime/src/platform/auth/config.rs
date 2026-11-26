@@ -363,7 +363,76 @@ pub(crate) fn register_rpc<P: ParticipantDescriptor>(
                 .map_err(rpc_error)
         }
     });
+    let report = Arc::clone(&engine);
+    provider.register_config_own_report(move |context, input| {
+        let engine = Arc::clone(&report);
+        async move {
+            let actor = caller(&context, None).map_err(rpc_error)?;
+            blocking(move || {
+                let now = crate::clock::unix_now();
+                engine.server.store().authority.transaction(|connection| {
+                    let instance: String = connection
+                        .query_row(
+                            "SELECT i.instance_id FROM auth_instances i \
+                            JOIN auth_deployments d USING(deployment_id) \
+                            WHERE i.principal_id=?1 AND i.state='active' AND d.state='active'",
+                            [&actor],
+                            |row| row.get(0),
+                        )
+                        .optional()?
+                        .ok_or(AuthError::Denied)?;
+                    let report = serde_json::to_value(&input)?;
+                    // Status shows the reason in lists and on one line, so
+                    // only its first KiB is kept, cut at a character.
+                    let reason = report["reason"].as_str().map(|reason| {
+                        if reason.len() <= REPORTED_REASON_LIMIT {
+                            return reason.to_owned();
+                        }
+                        let mut end = REPORTED_REASON_LIMIT - '…'.len_utf8();
+                        while !reason.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        format!("{}…", &reason[..end])
+                    });
+                    // A rejection leaves the instance on the settings it
+                    // applied last, so their instance revision is kept.
+                    connection.execute(
+                        "INSERT INTO auth_config_reports(instance_id,deployment_revision,\
+                        instance_revision,applied_instance_revision,state,fields_json,reason,\
+                        reported_at) \
+                        VALUES(?1,?2,?3,CASE WHEN ?4='applied' THEN ?3 END,?4,?5,?6,?7) \
+                        ON CONFLICT(instance_id) DO UPDATE SET \
+                        deployment_revision=excluded.deployment_revision,\
+                        instance_revision=excluded.instance_revision,\
+                        applied_instance_revision=CASE WHEN excluded.state='applied' \
+                        THEN excluded.instance_revision \
+                        ELSE auth_config_reports.applied_instance_revision END,\
+                        state=excluded.state,\
+                        fields_json=excluded.fields_json,reason=excluded.reason,\
+                        reported_at=excluded.reported_at",
+                        params![
+                            instance,
+                            report["revision"].as_u64(),
+                            report["instanceRevision"].as_u64(),
+                            report["state"].as_str(),
+                            json(&report["fields"])?,
+                            reason,
+                            now
+                        ],
+                    )?;
+                    Ok(AuthEmpty {
+                        extra: Default::default(),
+                    })
+                })
+            })
+            .await
+            .map_err(rpc_error)
+        }
+    });
 }
+
+/// Longest rejection reason stored from `Config.Own.Report`, in bytes.
+const REPORTED_REASON_LIMIT: usize = 1024;
 
 /// Secrets one administrator may be shown within [`REVEAL_WINDOW_SECONDS`].
 /// Enough to read every secret of a few services in one sitting, too few to
@@ -1286,54 +1355,211 @@ fn response(
     }
     let mut statement = connection.prepare(
         "SELECT i.instance_id,i.title,c.deployment_revision,c.instance_revision,c.connected_at,\
-        d.participant_id,i.installed_revision \
+        d.participant_id,i.installed_revision,\
+        (SELECT max(revision) FROM auth_config_revisions WHERE target_key='instance:'||i.instance_id),\
+        r.deployment_revision,r.instance_revision,r.state,r.fields_json,r.reason,r.reported_at,\
+        r.applied_instance_revision \
         FROM auth_instances i JOIN auth_deployments d ON d.deployment_id=i.deployment_id \
         LEFT JOIN auth_config_connections c ON c.instance_id=i.instance_id \
+        LEFT JOIN auth_config_reports r ON r.instance_id=i.instance_id \
+        AND c.installed_revision=i.installed_revision \
         WHERE i.deployment_id=?1 AND i.state='active' AND (?2 IS NULL OR i.instance_id=?2) \
         ORDER BY i.instance_id",
     )?;
     type Row = (
-        String,
-        String,
+        (
+            String,
+            String,
+            Option<u32>,
+            Option<u32>,
+            Option<i64>,
+            String,
+            u64,
+        ),
+        Option<u32>,
+        Report,
+    );
+    /// The revisions an instance last reported on, what it did with them,
+    /// the fields and reason of a rejection, when, and the instance revision
+    /// of the settings it applied last.
+    type Report = (
         Option<u32>,
         Option<u32>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
         Option<i64>,
-        String,
-        u64,
+        Option<u32>,
     );
     let rows = statement
         .query_map(params![target.deployment(), target.instance()], |row| {
             Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
+                (
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ),
+                row.get(7)?,
+                (
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
+                ),
             ))
         })?
         .collect::<rusqlite::Result<Vec<Row>>>()?;
+    let deployment_current = match target.deployment() {
+        Some(deployment) => {
+            current(connection, &format!("deployment:{deployment}"))?.map(|stored| stored.revision)
+        }
+        None => None,
+    };
+    let saved_at = |key: String, revision: Option<u32>| -> Result<Option<i64>, AuthError> {
+        Ok(match revision {
+            Some(revision) => connection
+                .query_row(
+                    "SELECT created_at FROM auth_config_revisions \
+                    WHERE target_key=?1 AND revision=?2",
+                    params![key, revision],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            None => None,
+        })
+    };
     let mut builds: BTreeMap<u64, Declared> = BTreeMap::new();
     let mut instances = Vec::new();
-    for (instance, title, revision, instance_revision, connected, participant, build) in rows {
+    for (
+        (instance, title, revision, instance_revision, connected, participant, build),
+        instance_current,
+        (reported, reported_instance, state, fields, reason, reported_at, applied_instance),
+    ) in rows
+    {
+        let declared = match builds.entry(build) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(Declared::of(connection, &participant, build)?)
+            }
+        };
+        let declared = &*declared;
+        let own = Target::Instance {
+            deployment: target.deployment().unwrap_or_default().to_owned(),
+            instance: instance.clone(),
+        };
+        // A report on the current revisions stands; any other means the
+        // instance has not read the newest settings yet. Only a report from
+        // the build installed now is joined: once another build is
+        // installed, the earlier build's report says nothing about it.
+        let settings = if declared.fields.is_empty() {
+            None
+        } else if state.is_some()
+            && reported == deployment_current
+            && reported_instance == instance_current
+        {
+            let fields = fields
+                .as_deref()
+                .map(decode::<Vec<String>>)
+                .transpose()?
+                .unwrap_or_default();
+            // Where each refused value came from in the revisions refused,
+            // so the advice names the layer whose rollback undoes it.
+            let (sources, override_revision) = if state.as_deref() == Some("rejected") {
+                let refused = effective(
+                    declared,
+                    &self::layers(
+                        connection,
+                        storage,
+                        declared,
+                        &own,
+                        Some((reported_instance, reported)),
+                    )?,
+                );
+                let sources = fields
+                    .iter()
+                    .filter_map(|name| refused.get(name).map(|value| (name.clone(), value.source)))
+                    .collect::<BTreeMap<_, _>>();
+                // A refused value that came from beneath the instance may
+                // have been its own override in the settings it still runs,
+                // removed by the revision refused. Rolling the instance back
+                // to those settings restores the override it accepted.
+                let beneath = sources
+                    .iter()
+                    .filter(|(_, source)| **source != "instance")
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>();
+                let override_revision = match applied_instance {
+                    Some(applied) if !beneath.is_empty() && Some(applied) != reported_instance => {
+                        let kept = layer(
+                            connection,
+                            storage,
+                            declared,
+                            &own.key(),
+                            Some(applied),
+                            "instance",
+                        )?;
+                        beneath
+                            .iter()
+                            .all(|name| {
+                                kept.fields
+                                    .get(name.as_str())
+                                    .is_some_and(|(value, _)| value.is_some())
+                            })
+                            .then_some(applied)
+                    }
+                    _ => None,
+                };
+                (
+                    Some(
+                        sources
+                            .into_iter()
+                            .map(|(name, source)| (name, json!(source)))
+                            .collect::<Map<String, Value>>(),
+                    ),
+                    override_revision,
+                )
+            } else {
+                (None, None)
+            };
+            Some(json!({
+                "revision": reported,
+                "instanceRevision": reported_instance,
+                "state": state,
+                "fields": fields,
+                "sources": sources,
+                "overrideRevision": override_revision,
+                "reason": reason,
+                "at": reported_at.map(timestamp).transpose()?,
+            }))
+        } else {
+            let at = saved_at(format!("instance:{instance}"), instance_current)?
+                .into_iter()
+                .chain(saved_at(
+                    format!("deployment:{}", target.deployment().unwrap_or_default()),
+                    deployment_current,
+                )?)
+                .max();
+            Some(json!({
+                "revision": deployment_current,
+                "instanceRevision": instance_current,
+                "state": "pending",
+                "fields": [],
+                "at": at.map(timestamp).transpose()?,
+            }))
+        };
         // Only what the instance's own build reads after a restart counts:
         // values for fields it doesn't declare, or that don't fit it, leave
         // it as it is.
         let restart_pending = match connected {
             None => false,
             Some(_) => {
-                let declared = match builds.entry(build) {
-                    std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(Declared::of(connection, &participant, build)?)
-                    }
-                };
-                let declared = &*declared;
-                let own = Target::Instance {
-                    deployment: target.deployment().unwrap_or_default().to_owned(),
-                    instance: instance.clone(),
-                };
                 let now = effective(
                     declared,
                     &self::layers(connection, storage, declared, &own, None)?,
@@ -1361,6 +1587,7 @@ fn response(
             "connectedInstanceRevision": instance_revision,
             "connectedAt": connected.map(timestamp).transpose()?,
             "restartPending": restart_pending,
+            "settings": settings,
         }));
     }
     let deployment_revision = match target {
@@ -1894,7 +2121,7 @@ pub(super) fn missing_settings(
 /// A service or device reads its own effective configuration, secrets
 /// included, as the build it runs declares it. At connect, the revisions it
 /// loaded are recorded so restart-only settings show which instances still
-/// run older values.
+/// run older values, and the previous run's report is dropped.
 fn own_config(
     storage: &OAuthStorage,
     principal: &str,
@@ -1945,10 +2172,18 @@ fn own_config(
         if at_connect {
             connection.execute(
                 "INSERT INTO auth_config_connections(instance_id,deployment_revision,\
-                instance_revision,connected_at) VALUES(?1,?2,?3,?4) \
+                instance_revision,installed_revision,connected_at) VALUES(?1,?2,?3,?4,?5) \
                 ON CONFLICT(instance_id) DO UPDATE SET deployment_revision=excluded.deployment_revision,\
-                instance_revision=excluded.instance_revision,connected_at=excluded.connected_at",
-                params![instance, deployment_revision, instance_revision, now],
+                instance_revision=excluded.instance_revision,\
+                installed_revision=excluded.installed_revision,connected_at=excluded.connected_at",
+                params![instance, deployment_revision, instance_revision, revision, now],
+            )?;
+            // What an earlier run reported says nothing about this one, whose
+            // checks may refuse the same revision: it reads pending until
+            // this run reports.
+            connection.execute(
+                "DELETE FROM auth_config_reports WHERE instance_id=?1",
+                [&instance],
             )?;
         }
         let section = if kind == "device" { "devices" } else { "services" };
