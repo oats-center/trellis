@@ -1174,7 +1174,7 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           platforms: linux/amd64,linux/arm64
-          outputs: type=oci,dest=/tmp/${{ matrix.image }}.tar
+          outputs: type=oci,dest=${{ runner.temp }}/${{ matrix.image }}.tar
           build-args: |
             TRELLIS_VERSION=${{ github.ref_name }}
             TRELLIS_REVISION=${{ github.sha }}
@@ -1202,15 +1202,15 @@ jobs:
 
       # The image index digest publication pushes and checks the registry for.
       - name: Record the verified image digest
-        run: tar -xOf /tmp/${{ matrix.image }}.tar index.json | jq -jr '.manifests[0].digest' > /tmp/${{ matrix.image }}.digest
+        run: tar -xOf ${{ runner.temp }}/${{ matrix.image }}.tar index.json | jq -jr '.manifests[0].digest' > ${{ runner.temp }}/${{ matrix.image }}.digest
 
       - name: Upload verified image archive
         uses: actions/upload-artifact@v7
         with:
           name: verified-image-${{ matrix.image }}
           path: |
-            /tmp/${{ matrix.image }}.tar
-            /tmp/${{ matrix.image }}.digest
+            ${{ runner.temp }}/${{ matrix.image }}.tar
+            ${{ runner.temp }}/${{ matrix.image }}.digest
           compression-level: 0
           retention-days: 3
 
@@ -1218,7 +1218,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: verified-image-digest-${{ matrix.image }}
-          path: /tmp/${{ matrix.image }}.digest
+          path: ${{ runner.temp }}/${{ matrix.image }}.digest
           retention-days: 3
 
   # The packed npm packages in an empty consumer on the oldest and newest

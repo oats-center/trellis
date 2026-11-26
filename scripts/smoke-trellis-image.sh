@@ -32,7 +32,9 @@ network="trellis-smoke-${suffix}"
 bundle_volume="trellis-bundle-${suffix}"
 state_volume="trellis-state-${suffix}"
 
-work="$(mktemp -d)"
+# Never the system /tmp: the caller's temp directory, else the runner's, else
+# the current directory.
+work="$(mktemp -d "${TMPDIR:-${RUNNER_TEMP:-$PWD}}/trellis-smoke.XXXXXX")"
 
 cleanup() {
   rm -rf "${work}"

@@ -438,7 +438,7 @@ fn binary_path(pid_file: &Path) -> PathBuf {
 fn live_process_without_nats_identity_is_stale() {
     // Our own test process is alive but its exe is not the managed binary, so the
     // identity gate must classify it as stale rather than "already running".
-    let binary = Path::new("/tmp/trellis-managed-nats-server");
+    let binary = Path::new("/opt/trellis-managed-nats-server");
     assert!(!process_is_managed_nats(std::process::id() as i32, binary));
     assert!(process_alive(std::process::id() as i32));
 }
@@ -484,7 +484,7 @@ fn unreadable_exe_with_comm_mismatch_is_stale() {
     // A zombie has an unreadable /proc/<pid>/exe; the comm fallback ("true") does not
     // start with `nats-server`, so the gate must classify the pid as stale.
     let pid = zombie_child(Path::new("/bin/true"));
-    let binary = Path::new("/tmp/trellis-managed-nats-server");
+    let binary = Path::new("/opt/trellis-managed-nats-server");
     assert!(process_alive(pid));
     assert!(!process_is_managed_nats(pid, binary));
 }

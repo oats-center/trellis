@@ -3021,7 +3021,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-builtin-contracts"
-version = "0.100.0-rc.52"
+version = "0.100.0-rc.55"
 dependencies = [
  "miette",
  "trellis-idl",
@@ -3029,7 +3029,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-codegen-rust"
-version = "0.100.0-rc.52"
+version = "0.100.0-rc.55"
 dependencies = [
  "prettyplease",
  "semver",
@@ -3044,7 +3044,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-idl"
-version = "0.100.0-rc.52"
+version = "0.100.0-rc.55"
 dependencies = [
  "base64 0.23.1",
  "jsonschema",
@@ -3061,7 +3061,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-models"
-version = "0.100.0-rc.51"
+version = "0.100.0-rc.55"
 dependencies = [
  "serde",
  "serde_json",
@@ -3070,7 +3070,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-protocol"
-version = "0.100.0-rc.51"
+version = "0.100.0-rc.54"
 dependencies = [
  "base64 0.23.1",
  "ed25519-dalek 3.0.0",
@@ -3089,7 +3089,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-rs"
-version = "0.100.0-rc.52"
+version = "0.100.0-rc.55"
 dependencies = [
  "async-nats",
  "base64 0.23.1",
@@ -3149,7 +3149,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-runtime-apis"
-version = "0.100.0-rc.52"
+version = "0.100.0-rc.55"
 dependencies = [
  "futures-util",
  "serde",

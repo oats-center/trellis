@@ -55,9 +55,10 @@ safe_extract() {
   tar -xzf "$archive" -C "$dest" --no-same-owner
 }
 
-# On the runner's work disk rather than /tmp: a self-hosted runner's /tmp can
-# fill while ld maps its output, which kills the link with SIGBUS.
-temp="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+# Never the system /tmp: a runner's /tmp can fill while ld maps its output,
+# which kills the link with SIGBUS. Without a runner or caller temp directory
+# the work goes beside the bundle, since no checkout is available.
+temp="${RUNNER_TEMP:-${TMPDIR:-$(dirname "$bundle")}}"
 work="$(mktemp -d "$temp/rust-test-package.XXXXXX")"
 extracted=""
 cleanup() { rm -rf "$work" ${extracted:+"$extracted"}; }

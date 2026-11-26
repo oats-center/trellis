@@ -1,6 +1,7 @@
 import { strictEqual } from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
@@ -199,16 +200,20 @@ test("the Console signs in without asking for access and uses the real authentic
         .click();
       await page.getByLabel("Username", { exact: true }).waitFor();
     } catch (error) {
+      const results = fileURLToPath(
+        new URL("./test-results/", import.meta.url),
+      );
+      await mkdir(results, { recursive: true });
       await page.screenshot({
-        path: "/tmp/opencode/console-signout-failure.png",
+        path: `${results}console-signout-failure.png`,
         fullPage: true,
       });
       await writeFile(
-        "/tmp/opencode/console-signout-failure.html",
+        `${results}console-signout-failure.html`,
         await page.content(),
       );
       await writeFile(
-        "/tmp/opencode/console-signout-network.log",
+        `${results}console-signout-network.log`,
         diagnostics.join("\n"),
       );
       console.error(await page.locator("body").innerText());

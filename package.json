@@ -24,7 +24,7 @@
     "test": "bash scripts/check.sh",
     "test:sdk": "bash scripts/run-sdk-tests.sh",
     "check:benchmarks": "tsc -p benchmarks/runtime/tsconfig.json && tsc -p benchmarks/codecs/tsconfig.json",
-    "test:benchmarks": "node --test benchmarks/runtime/*_test.ts",
+    "test:benchmarks": "node ts/tools/run_unit_tests.ts benchmarks/runtime",
     "bench:codecs": "node benchmarks/codecs/run.ts",
     "bench:runtime": "node benchmarks/runtime/run.ts",
     "bench:runtime:report": "node benchmarks/runtime/report.ts",

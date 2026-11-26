@@ -22,6 +22,10 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 temp="${RUNNER_TEMP:-$root/target/check-tmp}"
+# Temporary files never go to the system /tmp: every job and the scripts it
+# runs use a caller's TMPDIR, else this run's temp directory.
+export TMPDIR="${TMPDIR:-$temp}"
+mkdir -p "$TMPDIR"
 
 # The fast jobs `npm test` runs by default, and the slower packaging, upgrade
 # and container-image jobs `--all` adds.

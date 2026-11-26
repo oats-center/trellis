@@ -41,7 +41,7 @@ fn nats_config_render_round_trips_custom_ports() {
 fn local_nats_config_render_round_trips_custom_ports() {
     let config = render_local_nats_config(
         "trellis",
-        "/tmp/trellis/nats/data",
+        "/srv/trellis/nats/data",
         "",
         NatsListeners {
             native: 4322,
@@ -49,8 +49,8 @@ fn local_nats_config_render_round_trips_custom_ports() {
             websocket: 8180,
         },
         Some(&NatsTlsFiles {
-            certificate: "/tmp/trellis/nats/tls/nats.crt".into(),
-            private_key: "/tmp/trellis/nats/tls/nats.key".into(),
+            certificate: "/srv/trellis/nats/tls/nats.crt".into(),
+            private_key: "/srv/trellis/nats/tls/nats.key".into(),
         }),
         NatsWebsocket::BehindProxy,
     );
@@ -268,7 +268,7 @@ fn parse_config(config: &str) -> Result<NatsListeners, NatsConfigError> {
 fn local_nats_config_quotes_host_paths_with_spaces() {
     let config = render_local_nats_config(
         "trellis",
-        "/tmp/trellis data/store dir",
+        "/srv/trellis data/store dir",
         "",
         NatsListeners {
             native: 4222,
@@ -278,7 +278,7 @@ fn local_nats_config_quotes_host_paths_with_spaces() {
         None,
         NatsWebsocket::Loopback,
     );
-    assert!(config.contains("store_dir: \"/tmp/trellis data/store dir\""));
+    assert!(config.contains("store_dir: \"/srv/trellis data/store dir\""));
 
     let rendered = nats_accounts(
         "listen: 1\noperator: x\nresolver: {\n  dir: /data/jwt\n}\n",

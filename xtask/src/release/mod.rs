@@ -720,12 +720,6 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, contents).unwrap();
         }
-        assert!(std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&root)
-            .status()
-            .unwrap()
-            .success());
         // The models changed since they were published; the protocol did not.
         super::prepare_with_components(
             &root,
@@ -846,6 +840,15 @@ mod tests {
                 .expect("time")
                 .as_nanos()
         ));
+        // Each root is its own checkout, so git never applies the ignore rules
+        // of a repository that encloses the temp directory.
+        fs::create_dir_all(&path).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&path)
+            .status()
+            .unwrap()
+            .success());
         path
     }
 }
