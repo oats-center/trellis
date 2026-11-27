@@ -1,6 +1,6 @@
 [package]
 name = "trellis"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 
 [sources]
 types = "src/builtin_source/types.trellis"

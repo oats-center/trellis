@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.56] - 2026-11-27
+
 ### Added
 
 - `trellis-server export` and `import` move a whole installation's
@@ -35,9 +37,6 @@ and this project adheres to
 - Before the first stable release, `restore` refuses a backup from another
   release and points to installation export; between stable releases it
   migrates an earlier release's backup forward.
-
-### Changed
-
 - An unexpected failure in a settings check or derive builder shows fixed text
   ("the check failed" / "building the value failed") in status and health; the
   service's own log carries the error with secret values redacted. Explicit
@@ -45,6 +44,9 @@ and this project adheres to
 
 ### Fixed
 
+- An empty or relative `XDG_*`, `HOME` or `USERPROFILE` counts as unset, so
+  runtime files never land in the working directory, and a bundle needs only
+  the cache folder from the user's environment to start.
 - `trellis-server import --check` lists a disabled deployment's data as
   pending, and its database copy fails only when it stops making progress, not
   after a fixed time. Sign-ins and role mappings move through disabled

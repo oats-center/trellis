@@ -3,13 +3,13 @@ root = "localhost/trellis-test-fixture"
 
 [[packages]]
 id = "localhost/trellis-test-fixture"
-version = "0.100.0-rc.55"
-digest = "WqNmocBJ1ywleZGac4pDsoveKMaUyDSqCo8uIFhwUoI"
-distribution-digest = "sha256:fc4316b7530f2eb8f83051e493d965a030f901815c6efe58345b043df5161b5a"
+version = "0.100.0-rc.56"
+digest = "UNwD1cvweXepieTnEsRcrkySk8TIRWSYni5Xg8q-qJQ"
+distribution-digest = "sha256:7041a3cb6a9122f3841332965349a1f199b175f6ccbf671cc7ce66cf4c3d83a8"
 
 [[packages.dependencies]]
 id = "trellis"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 digest = "zftfUyX81aGr9sNhJzEw3aMDMuDtNCTLxLYNZ0uDmK0"
 
 [packages.source]
@@ -18,9 +18,9 @@ path = "."
 
 [[packages]]
 id = "trellis"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 digest = "zftfUyX81aGr9sNhJzEw3aMDMuDtNCTLxLYNZ0uDmK0"
-distribution-digest = "sha256:83c102748a99767fc6bb4779c728be25476ad00147c44604a815fce7c7eb0503"
+distribution-digest = "sha256:662b0e9be3eaca800ad5ad79dcb1e54a89f022bd823ac2490b488e07df682e07"
 dependencies = []
 
 [packages.source]

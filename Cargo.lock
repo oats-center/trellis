@@ -6131,7 +6131,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-bootstrap"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "argon2",
  "base64 0.23.1",
@@ -6154,7 +6154,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-builtin-contracts"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "miette",
  "trellis-idl",
@@ -6162,7 +6162,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-cli"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "anstream",
  "argon2",
@@ -6220,7 +6220,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-codegen-rust"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "prettyplease",
  "semver",
@@ -6236,7 +6236,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-codegen-ts"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "oxc_allocator",
  "oxc_codegen",
@@ -6253,7 +6253,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-events-runtime"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "async-nats",
  "base64 0.23.1",
@@ -6279,7 +6279,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-idl"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "base64 0.23.1",
  "jsonschema",
@@ -6296,7 +6296,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-jobs-runtime"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "async-nats",
  "futures-util",
@@ -6317,7 +6317,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-local-nats"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "flate2",
  "getrandom 0.4.3",
@@ -6335,7 +6335,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-models"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "serde",
  "serde_json",
@@ -6363,7 +6363,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-protocol-wasm"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "base64 0.23.1",
  "ed25519-dalek 3.0.0",
@@ -6376,7 +6376,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-rs"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "async-nats",
  "base64 0.23.1",
@@ -6422,7 +6422,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-runtime"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "argon2",
  "async-nats",
@@ -6488,7 +6488,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-runtime-apis"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "futures-util",
  "serde",
@@ -6500,7 +6500,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-self-update"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "miette",
  "self-replace",
@@ -6512,7 +6512,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-server"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "clap",
  "libc",
@@ -6537,7 +6537,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-testkit"
-version = "0.100.0-rc.55"
+version = "0.100.0-rc.56"
 dependencies = [
  "async-nats",
  "base64 0.23.1",
