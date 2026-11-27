@@ -1044,9 +1044,37 @@ impl RuntimePathDefaults {
             data: root("XDG_DATA_HOME", ".local/share")?,
             logs: state.join("log"),
             state,
-            cache: root("XDG_CACHE_HOME", ".cache")?,
+            cache: Self::user_cache(&get)?,
             runtime,
         })
+    }
+
+    /// The user's shared Trellis cache, `$XDG_CACHE_HOME/trellis` or else
+    /// `~/.cache/trellis`, which a self-contained bundle also uses so bundles
+    /// download NATS once. It needs no other user folder. An empty or relative
+    /// variable counts as unset.
+    ///
+    /// # Errors
+    /// Fails when neither XDG_CACHE_HOME nor HOME or USERPROFILE is an
+    /// absolute path; the message names the variables to set.
+    pub fn user_cache(
+        get: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<PathBuf, std::io::Error> {
+        let folder = |variable: &str| Self::user_folder(&get, variable);
+        folder("XDG_CACHE_HOME")
+            .or_else(|| {
+                folder("HOME")
+                    .or_else(|| folder("USERPROFILE"))
+                    .map(|home| home.join(".cache"))
+            })
+            .map(|path| path.join("trellis"))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "cannot find the user's Trellis folders: set XDG_CACHE_HOME or HOME \
+                    to an absolute path",
+                )
+            })
     }
 }
 

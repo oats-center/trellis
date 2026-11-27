@@ -517,11 +517,8 @@ impl ServerPaths {
                     .into_diagnostic()?
                     .cache
             }
-            _ => {
-                RuntimePathDefaults::user_profile(&get)
-                    .into_diagnostic()?
-                    .cache
-            }
+            // Only the shared cache: the bundle keeps everything else in `var`.
+            _ => RuntimePathDefaults::user_cache(&get).into_diagnostic()?,
         };
         Ok(Self::new(
             root,
@@ -1413,6 +1410,15 @@ kind = "sqlite"
         }
         // Every bundle shares one download of NATS.
         assert!(!by_folder.cache_root.starts_with("/srv/dev1"));
+
+        // A bundle needs only the cache folder from the user's environment.
+        if !matches!(Location::profile(false, false), Location::System) {
+            let values = HashMap::from([("XDG_CACHE_HOME", "/cache"), ("HOME", "")]);
+            let get = |name: &str| values.get(name).map(Into::into);
+            let paths = ServerPaths::resolve(&Location::Bundle("/srv/dev1".into()), get).unwrap();
+            assert_eq!(paths.cache_root, PathBuf::from("/cache/trellis"));
+            assert!(paths.state_root.starts_with("/srv/dev1/var"));
+        }
 
         for profile in ["--user", "--system"] {
             assert!(
