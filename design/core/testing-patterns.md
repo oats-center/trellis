@@ -70,11 +70,16 @@ Executable Rust and Node tests are the catalog. Cross-language behavior is
 proved by the smallest live test that crosses the real transport boundary;
 Rust-only runtime behavior remains in ordinary Rust integration tests.
 
-Tests never write to the system `/tmp`. Every test entry point
-(`scripts/check.sh`, the `scripts/run-*.sh` runners and
-`ts/tools/run_unit_tests.ts`) sets `TMPDIR` before it runs anything: it keeps a
-`TMPDIR` the caller already set, otherwise uses the runner's `RUNNER_TEMP` in
-CI, otherwise an ignored directory under `target/` in the checkout. Tests take
+Tests never write to the system `/tmp` outside a CI runner. Every test entry
+point (`scripts/check.sh`, the `scripts/run-*.sh` runners and
+`ts/tools/run_unit_tests.ts`) sets `TMPDIR` through `scripts/lib/tmpdir.sh`
+before it runs anything: it keeps a `TMPDIR` the caller already set, otherwise
+uses a folder for the job in the GitHub Actions runner's own `/tmp`, otherwise
+an ignored directory under `target/` in the checkout. On the self-hosted
+runners that `/tmp` is a private 8 GB tmpfs for each runner container, while
+their work disk is btrfs, where many test servers' write syncs at once are too
+slow for readiness deadlines. Builds that need more room use `RUNNER_TEMP` on
+disk explicitly. Tests take
 temporary paths from the language's temp-dir API, so they follow it. A test
 whose temporary tree is sensitive to an enclosing checkout, such as one that
 asks git which files are ignored, makes that tree its own repository.
