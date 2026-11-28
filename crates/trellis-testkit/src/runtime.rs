@@ -743,6 +743,7 @@ impl TrellisTestRuntime {
         .await?;
         self.distribution.server = resolved.server;
         self.distribution.version = resolved.version;
+        self.distribution.release = resolved.release;
         self.restart_runtime(false, None).await
     }
 
@@ -1097,6 +1098,17 @@ impl TrellisTestRuntime {
     #[must_use]
     pub fn server_version(&self) -> &str {
         &self.distribution.version
+    }
+    /// The `trellis` CLI of the same Trellis as the running server, for
+    /// commands of that release: a published release's own CLI, downloaded
+    /// once and checked against the checksum published with it, or for a
+    /// server given by path, `TRELLIS_TEST_CLI_BIN`.
+    ///
+    /// # Errors
+    /// Returns a download or checksum failure, or a missing or
+    /// non-executable `TRELLIS_TEST_CLI_BIN`.
+    pub async fn cli(&self) -> Result<PathBuf, TrellisTestError> {
+        crate::distribution::cli(&self.distribution).await
     }
     /// Sandbox work directory.
     #[must_use]

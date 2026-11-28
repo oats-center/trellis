@@ -212,14 +212,16 @@ job_testkit_tests() {
 }
 
 # Starts the candidate server on an installation the previous published release
-# made, and moves such an installation into the candidate with
-# `trellis-server export` and `import`. CI passes the producer-built server, NATS and test binary; elsewhere the
-# server is built here and the test as the build-fixtures job builds it. The
-# test lists releases through the GitHub API; GITHUB_TOKEN lifts its rate limit.
+# made, and moves installations and services between the candidate and earlier
+# releases in both directions with `trellis-server export` and `import` and
+# `trellis svc export` and `import`. CI passes the producer-built server, CLI,
+# NATS and test binaries; elsewhere the server and CLI are built here and the
+# tests as the build-fixtures job builds them. The tests list releases through
+# the GitHub API; GITHUB_TOKEN lifts its rate limit.
 job_upgrade() {
   local tests="${TRELLIS_TESTKIT_TESTS_DIR:-$root/target/debug/testkit-tests}"
   if [[ -z "${CI:-}${TRELLIS_TEST_STAGED:-}" ]]; then
-    cargo build -p trellis-server
+    cargo build -p trellis-cli --bin trellis -p trellis-server --bin trellis-server
     job_build_fixtures
   fi
   local nats_version nats_bin
@@ -228,10 +230,12 @@ job_upgrade() {
   [[ -x "$nats_bin" ]] || bash scripts/acquire-test-nats.sh --dest "$(dirname "$nats_bin")"
   export TRELLIS_TEST_NATS_BIN="$nats_bin"
   export TRELLIS_TEST_SERVER_BIN="${TRELLIS_TEST_SERVER_BIN:-$root/target/debug/trellis-server}"
+  export TRELLIS_TEST_CLI_BIN="${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}"
   export TRELLIS_TEST_CACHE_DIR="${TRELLIS_TEST_CACHE_DIR:-$temp/trellis-testkit-cache}"
   mkdir -p -m 700 "$TRELLIS_TEST_CACHE_DIR"
   "$tests/upgrade" --test-threads=2 "$@"
   "$tests/installation_move" --test-threads=2 "$@"
+  "$tests/service_move" --test-threads=2 "$@"
 }
 
 job_demos() {

@@ -883,9 +883,10 @@ jobs:
 
   # The candidate starts on an installation the previous
   # published release made: it must upgrade it once both are stable releases,
-  # and may refuse it, changing nothing, only between release candidates. The
-  # test binary comes from build-fixtures and the server from build; nothing
-  # is rebuilt.
+  # and may refuse it, changing nothing, only between release candidates.
+  # Installation exports and service bundles move between it and earlier
+  # releases in both directions. The test binaries come from build-fixtures
+  # and the server and CLI from build; nothing is rebuilt.
   upgrade:
     name: Upgrade from the previous release
     needs: [install, build, build-fixtures]
@@ -917,6 +918,7 @@ jobs:
           # unauthenticated requests per address.
           GITHUB_TOKEN: ${{ github.token }}
           TRELLIS_TEST_SERVER_BIN: ${{ runner.temp }}/staged/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ runner.temp }}/staged/trellis
           TRELLIS_TEST_NATS_BIN: ${{ runner.temp }}/staged/nats/nats-server
           TRELLIS_TESTKIT_TESTS_DIR: ${{ runner.temp }}/staged/testkit-tests
         run: bash scripts/check.sh upgrade

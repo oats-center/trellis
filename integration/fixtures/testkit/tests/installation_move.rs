@@ -1,7 +1,10 @@
 //! A whole installation moves to another one with `trellis-server export`
-//! and `trellis-server import`, across releases: an installation the
-//! previous release runs is exported, and a fresh installation of the build
-//! under test imported into needs no setup. Its users sign in with their IDs,
+//! and `trellis-server import`, across releases in both directions: the
+//! previous release exports an installation it runs, and a fresh
+//! installation of the build under test imports it with nothing left out
+//! and needs no setup; the build under test then exports that installation,
+//! and a fresh installation of the previous release imports it. Its users
+//! sign in with their IDs,
 //! their roles hold, its app signs them in and finds their State, its theme
 //! is served, and its devices and service reconnect with the keys they have,
 //! a device finding its State and the service its settings and waiting job.
@@ -11,9 +14,6 @@
 //! ID is the same person and gets what the export gives them, and a user
 //! and an app that only share a username or client ID are someone else's,
 //! left as they are and given nothing.
-//!
-//! The previous release has no exporter, so the build under test exports
-//! the database the previous release made and still runs.
 //!
 //! Needs `TRELLIS_TEST_SERVER_BIN`, the build under test; the earlier release
 //! is downloaded and checked against its published checksum.
@@ -216,7 +216,7 @@ async fn saved(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_installation_moves_to_another_and_to_a_newer_release_without_setup() {
+async fn an_installation_moves_between_releases_without_setup() {
     let current = current();
     let release = {
         let output = std::process::Command::new(&current)
@@ -232,7 +232,7 @@ async fn an_installation_moves_to_another_and_to_a_newer_release_without_setup()
             .to_owned()
     };
     let mut old = TrellisTestRuntime::builder()
-        .native(NativeSource::PreviousRelease(release))
+        .native(NativeSource::PreviousRelease(release.clone()))
         .admin_username(ADMIN.0)
         .admin_password(ADMIN.1)
         .start()
@@ -429,10 +429,10 @@ async fn an_installation_moves_to_another_and_to_a_newer_release_without_setup()
         Some("21.5 degrees".into())
     );
 
-    // The build under test exports the database the previous release runs.
+    // The previous release exports the installation it runs.
     let file = old.workdir().join("installation.trellis-installation");
     let exported = old
-        .export_installation(Some(&current), &file, PASSPHRASE)
+        .export_installation(None, &file, PASSPHRASE)
         .await
         .unwrap();
     assert_eq!(
@@ -471,6 +471,7 @@ async fn an_installation_moves_to_another_and_to_a_newer_release_without_setup()
     let report = &imported["import"];
     assert_eq!(report["target"]["empty"], true, "{report}");
     assert_eq!(report["access"]["skipped"], json!([]), "{report}");
+    assert_eq!(report["notUnderstood"], json!([]), "{report}");
     for kind in ["user", "oauthClient", "portalTheme", "deployment", "state"] {
         assert!(
             report["created"]
@@ -608,6 +609,80 @@ async fn an_installation_moves_to_another_and_to_a_newer_release_without_setup()
     drop(moving);
     lifecycle.stop();
     serving.await.unwrap().unwrap();
+
+    // Back to the previous release: the build under test exports the
+    // installation it now runs, and a fresh installation of the previous
+    // release imports it. The person signs in there under the same ID and
+    // finds their State, the theme is served, and the service connects and
+    // finds its settings.
+    let back_file = new.workdir().join("back.trellis-installation");
+    new.export_installation(None, &back_file, PASSPHRASE)
+        .await
+        .unwrap();
+    let mut back = TrellisTestRuntime::builder()
+        .native(NativeSource::PreviousRelease(release))
+        .admin_username(ADMIN.0)
+        .admin_password(ADMIN.1)
+        .start()
+        .await
+        .unwrap();
+    let imported = back
+        .import_installation(&back_file, PASSPHRASE, false, Some(&new))
+        .await
+        .unwrap();
+    let report = &imported["import"];
+    assert_eq!(report["access"]["skipped"], json!([]), "{report}");
+    assert!(
+        listed(report, "created", "user", user.principal_id()),
+        "{report}"
+    );
+    assert!(
+        listed(report, "created", "deployment", service.deployment_id()),
+        "{report}"
+    );
+    assert!(
+        report["deployments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["error"].is_null()),
+        "{report}"
+    );
+    let login = back.login_native_application_as(&app, &user).await.unwrap();
+    let auth = trellis_auth_v1::Client::from_generated(
+        Client::connect_user(login.connect_options()).await.unwrap(),
+    );
+    assert_eq!(principal(&auth).await, user.principal_id());
+    drop(auth);
+    assert_eq!(
+        saved(&back, &stateful, &user, None).await,
+        Some("the person's value".into())
+    );
+    assert_eq!(theme(&back).await["name"], "Moved theme");
+    let server = discover_native_oauth(back.trellis_url(), &back.trust_roots())
+        .await
+        .unwrap();
+    let mut returned = tokio::time::timeout(
+        Duration::from_secs(60),
+        Moving::connect(ServiceConnectOptions::new(
+            server.nats_servers,
+            server.trust,
+            service.seed(),
+        )),
+    )
+    .await
+    .expect("the service connects to the previous release with its settings in place")
+    .unwrap();
+    assert_eq!(
+        MovingProvider::new(&mut returned)
+            .config()
+            .current()
+            .unwrap()
+            .label,
+        "moved label"
+    );
+    drop(returned);
+    back.shutdown().await.unwrap();
 
     // An installation in use, with settings and a theme of its own, the
     // kept person's account under the same ID, someone else's account with

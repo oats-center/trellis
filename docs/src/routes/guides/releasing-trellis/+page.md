@@ -341,9 +341,19 @@ The phase follows the two versions' semver prerelease parts, so the stable
 rule applies from the first stable release on without a change to the test.
 The test's second case restarts the candidate on an installation it made
 itself and runs the same checks, so the stable checks run on every candidate.
-To run the test locally, run `bash scripts/check.sh upgrade`. It builds
-`trellis-server` and the test binary, then runs the test as the Pipeline does;
-`npm test -- --all` includes it.
+
+The same job proves that exports cross releases in both directions. The
+previous release exports an installation and the candidate imports it with
+nothing left out; the candidate exports it again and the previous release
+imports that. A service bundle Trellis 0.100.0-rc.55 exported, in the format
+from before bundles carried roles, imports into the candidate, and a bundle
+the candidate exports, alone and with a field a newer Trellis may add,
+imports into the previous release. Each installation runs its own release's
+`trellis` CLI, downloaded beside its server.
+
+To run the tests locally, run `bash scripts/check.sh upgrade`. It builds
+`trellis-server`, `trellis` and the test binaries, then runs the tests as the
+Pipeline does; `npm test -- --all` includes them.
 
 ## 1. Pick the release
 

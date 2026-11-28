@@ -38,6 +38,9 @@ pub(crate) struct Distribution {
     pub server: PathBuf,
     /// The version the server reports, without build metadata.
     pub version: String,
+    /// The published release the server was acquired from; `None` for a
+    /// server given by path.
+    pub release: Option<String>,
     pub nats: PathBuf,
 }
 
@@ -242,41 +245,7 @@ pub(crate) async fn resolve(
                 _ => None,
             };
             let version = release_version(&cache, upgraded).await?;
-            let platform = if cfg!(target_os = "linux") {
-                "unknown-linux-gnu"
-            } else {
-                "apple-darwin"
-            };
-            let target = format!("{}-{platform}", std::env::consts::ARCH);
-            // The binary is its own release asset with a published checksum.
-            // Release assets are immutable, so a fetched checksum is kept.
-            let binary = "trellis-server";
-            let installed = {
-                let recorded = cache.join(format!("{binary}-{version}-{target}.sha256"));
-                let checksum = match std::fs::read_to_string(&recorded) {
-                    Ok(checksum) => checksum,
-                    Err(_) => {
-                        let url = format!(
-                            "{RELEASES}/v{version}/checksum-{version}-{target}-{binary}.sha256"
-                        );
-                        let published = String::from_utf8_lossy(&get(&url).await?)
-                            .split_whitespace()
-                            .next()
-                            .unwrap_or_default()
-                            .to_owned();
-                        std::fs::write(&recorded, &published)?;
-                        published
-                    }
-                };
-                install(
-                    &format!("{RELEASES}/v{version}/{binary}-{version}-{target}.tar.gz"),
-                    checksum.trim(),
-                    &[binary],
-                    &cache,
-                )
-                .await?
-                .remove(0)
-            };
+            let installed = release_binary(&cache, &version, "trellis-server").await?;
             expected = Some(version);
             installed
         }
@@ -371,8 +340,69 @@ pub(crate) async fn resolve(
     Ok(Distribution {
         server,
         version,
+        release: expected,
         nats,
     })
+}
+
+/// The `binary` asset of published release `version`, for this platform,
+/// checked against the checksum published with it. Release assets are
+/// immutable, so a fetched checksum is kept in `cache`.
+async fn release_binary(
+    cache: &Path,
+    version: &str,
+    binary: &str,
+) -> Result<PathBuf, TrellisTestError> {
+    let platform = if cfg!(target_os = "linux") {
+        "unknown-linux-gnu"
+    } else {
+        "apple-darwin"
+    };
+    let target = format!("{}-{platform}", std::env::consts::ARCH);
+    let recorded = cache.join(format!("{binary}-{version}-{target}.sha256"));
+    let checksum = match std::fs::read_to_string(&recorded) {
+        Ok(checksum) => checksum,
+        Err(_) => {
+            let url = format!("{RELEASES}/v{version}/checksum-{version}-{target}-{binary}.sha256");
+            let published = String::from_utf8_lossy(&get(&url).await?)
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            std::fs::write(&recorded, &published)?;
+            published
+        }
+    };
+    Ok(install(
+        &format!("{RELEASES}/v{version}/{binary}-{version}-{target}.tar.gz"),
+        checksum.trim(),
+        &[binary],
+        cache,
+    )
+    .await?
+    .remove(0))
+}
+
+/// The `trellis` CLI of the same Trellis as `distribution`'s server: the
+/// published CLI of its release, or `TRELLIS_TEST_CLI_BIN` for a server given
+/// by path.
+pub(crate) async fn cli(distribution: &Distribution) -> Result<PathBuf, TrellisTestError> {
+    match &distribution.release {
+        Some(version) => {
+            let cache = cache_dir()?;
+            private_dir(&cache)?;
+            release_binary(&cache, version, "trellis").await
+        }
+        None => {
+            let path = std::env::var_os("TRELLIS_TEST_CLI_BIN").ok_or_else(|| {
+                error(
+                    TrellisTestErrorKind::MissingBinary,
+                    "set TRELLIS_TEST_CLI_BIN to the trellis CLI built with the server under test",
+                )
+            })?;
+            executable(Path::new(&path))
+        }
+    }
 }
 
 fn target() -> Result<String, TrellisTestError> {

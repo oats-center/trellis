@@ -21,12 +21,13 @@ trellis-protocol = "0.100.0-rc.54"
 rusqlite = { version = "0.41.1", features = ["bundled", "fallible_uint"] }
 semver = "1"
 serde = "1"
+sha2 = "0.11.1"
 ulid = "3"
 serde_json = "1"
 toml = "1.1.2"
 trellis-testkit = "0.100.0-rc.56"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "json", "form"] }
-tokio = { version = "1", features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 
 [profile.dev]
 debug = "line-tables-only"
