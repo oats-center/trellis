@@ -28,6 +28,17 @@ export class ActiveJobCancellationGuard {
 export class ActiveJobCancellationRegistry {
   readonly #tokens = new Map<string, Set<JobCancellationToken>>();
   readonly #pending = new Set<string>();
+  readonly #receipts = new Set<string>();
+
+  /**
+   * Claims one work message for an attempt in this host. Returns the release
+   * function, or undefined while another attempt here still holds the message.
+   */
+  claimReceipt(receipt: string): (() => void) | undefined {
+    if (this.#receipts.has(receipt)) return undefined;
+    this.#receipts.add(receipt);
+    return () => this.#receipts.delete(receipt);
+  }
 
   register(
     key: string,

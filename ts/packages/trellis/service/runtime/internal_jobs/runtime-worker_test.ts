@@ -602,6 +602,53 @@ test("progress acknowledgements prevent redelivery during a held handler", () =>
     }
   }));
 
+test("a redelivery of a job its host still runs is left to the running attempt", () =>
+  withBroker(async (f) => {
+    // Exhausted deliveries also leave the broker's pending list, so only an
+    // unlimited budget makes settlement prove the running attempt's ACK.
+    await f.jsm.consumers.update("ADAPTER_JOBS", "worker", { max_deliver: -1 });
+    const job = await f.manager.create("refresh", {});
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let handlers = 0;
+    try {
+      await f.host(async () => {
+        handlers++;
+        entered.resolve();
+        await release.promise;
+        return { once: true };
+      }, 2);
+      await deadline(entered.promise, 5_000);
+      // Stall this process past several ack waits, as a descheduled host
+      // does. No progress ACK leaves it, so the broker redelivers the running
+      // job into this host's spare slot.
+      const stalledUntil =
+        performance.now() + 4 * f.binding.jobs.queues.refresh.ackWaitMs;
+      while (performance.now() < stalledUntil);
+      // A spare slot that leaves the redelivery alone pulls again; one that
+      // runs the job does not.
+      await waitFor(async () => {
+        const info = await f.jsm.consumers.info("ADAPTER_JOBS", "worker");
+        return (
+          handlers > 1 ||
+          (info.delivered.consumer_seq >= 2 && info.num_waiting === 1)
+        );
+      });
+      assert.deepEqual(
+        handlers,
+        1,
+        "the redelivery must not run the job again",
+      );
+      release.resolve();
+      // The running attempt's ACK settles the redelivered message too.
+      await f.settled();
+      assert.deepEqual((await f.completed(job)).result, { once: true });
+      assert.deepEqual(handlers, 1);
+    } finally {
+      release.resolve();
+    }
+  }));
+
 test("a real projection outage NAKs work and the slot processes later deliveries", () =>
   withBroker(async (f) => {
     const job = await f.manager.create("refresh", {});
