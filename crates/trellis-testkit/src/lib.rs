@@ -41,7 +41,8 @@ pub use identity::{
     TestClientIdentity, TestRegisteredNativeClient, TestServiceIdentity, TestUserIdentity,
 };
 pub use runtime::{
-    NatsSource, TestNatsUser, TestTimeouts, TrellisTestRuntime, TrellisTestRuntimeBuilder,
+    InstallationImport, NatsSource, TestNatsUser, TestTimeouts, TrellisTestRuntime,
+    TrellisTestRuntimeBuilder,
 };
 pub use sandbox::{remove_retained_workdirs, WorkdirRetention};
 

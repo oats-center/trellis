@@ -188,10 +188,12 @@ correctness checks.
 **Why.** A check against the operator proves nothing, because the operator
 can change the code, the database, the broker or the file it guards, and each
 one adds an error path, a test and a way for a good installation to fail. An
-import tags each stream it restores with the import's ID, and that tag is
-enough to know the stream is the import's own; a database record proving the
-same thing again only guards against someone who can already edit the
-database. A bundle digest that the importing administrator confirmed by hand
+import names each stream it restores from the deployment's own resource and
+allocation IDs, and that name is enough to know the stream belongs to the
+deployment; a metadata tag or a database record proving the same thing again
+only guards against someone who can already edit the broker or the
+database. Replacing such a stream still asks the operator first, because
+that is a decision, not a proof. A bundle digest that the importing administrator confirmed by hand
 repeated what the passphrase-sealed envelope already proves: a bundle that
 opens with the passphrase is whole and came from whoever holds it.
 

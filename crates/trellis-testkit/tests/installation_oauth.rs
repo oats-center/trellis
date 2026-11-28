@@ -22,7 +22,7 @@ use trellis_rs::auth::{discover_native_oauth, NativeCredentialScope, NativeOAuth
 use trellis_rs::client::UserConnectOptions;
 use trellis_rs::generated::Client;
 use trellis_runtime_apis::apis::trellis_auth_v1;
-use trellis_testkit::TrellisTestRuntime;
+use trellis_testkit::{InstallationImport, TrellisTestRuntime};
 
 const PASSPHRASE: &str = "the passphrase of a moving installation";
 const PROVIDER: &str = "Company";
@@ -387,7 +387,12 @@ async fn oauth_and_oidc_sign_in_work_for_moved_apps_and_people() {
                     .await
                     .unwrap();
                 let imported = target
-                    .import_installation(&file, PASSPHRASE, false, Some(&source))
+                    .import_installation(
+                        &file,
+                        PASSPHRASE,
+                        InstallationImport::Apply,
+                        Some(&source),
+                    )
                     .await
                     .unwrap();
                 let report = &imported["import"];

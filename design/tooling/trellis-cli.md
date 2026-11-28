@@ -184,6 +184,7 @@ trellis svc <deployment-id> approve|reject [<update-id>] [--acknowledge-shared-a
 trellis svc <id> export [--out <file>] [--passphrase-file <path|->]
 trellis svc import <file> [--passphrase-file <path|->] [--check]
                    [--acknowledge-shared-apis] [--acknowledge-unauthenticated-webhooks]
+                   [--replace-existing]
 
 trellis dev <name> create --source <project> | --package <release> ...
 trellis dev <id> apply --source <project> | --package <release> ...
@@ -285,7 +286,11 @@ before it connects, then streams the file's decrypted content as the `Auth.Deplo
 Operation's byte stream and prints the report: webhook URLs at the new
 origin, the roles and direct grants the bundle carries, the access the
 import recreated and what it skipped with each reason, and what stayed
-behind. The
+behind. When Auth answers that loading the data would replace streams or
+queued jobs already under the deployment's names, and changed nothing, the
+CLI warns with that list, asks for the deployment ID to be typed, and sends
+the bundle again with `replaceExisting`; without a terminal it refuses
+unless `--replace-existing` was given. The
 passphrase comes from `--passphrase-file` (`-` for standard input), a
 terminal question (asked twice for export), or piped standard input, and is
 never sent to Auth. With `--format json`, export prints `{ file, size,
@@ -425,7 +430,7 @@ trellis-server nats <system|trellis|auth> [--config <path> | --user | --system] 
 trellis-server backup <dir> [--config <path> | --user | --system]
 trellis-server restore <dir> [--config <path> | --user | --system] [--force]
 trellis-server export --out <file> [--passphrase-file <path|->] [--config <path> | --user | --system]
-trellis-server import <file> [--passphrase-file <path|->] [--check] [--config <path> | --user | --system]
+trellis-server import <file> [--passphrase-file <path|->] [--check] [--replace-existing] [--config <path> | --user | --system]
 trellis-server upgrade [--check] [--prerelease]
 ```
 

@@ -103,34 +103,83 @@ struct ResourcePlan {
     key_bucket_materialized: bool,
 }
 
+/// What preparing a deployment's resources does while an import of it has
+/// not loaded its data yet.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum WhileImporting {
+    /// Refuse with a conflict.
+    Refuse,
+    /// Do nothing: the import prepares them when it finishes.
+    Skip,
+    /// Prepare them, as the import does once its data is in place, and end
+    /// the import in the transaction that commits them.
+    Finish,
+}
+
 /// Materialize installed declarations using the operational connection, then
 /// commit actual bindings before any native provider is admitted. This is a
 /// startup-owner operation, not a caller authorization or allocation API.
+/// It refuses a deployment whose import has not loaded its data yet.
 pub(crate) async fn materialize_native_kv(
     store: &Arc<SqliteAuthorizationStore>,
     operational: &async_nats::Client,
     deployment: &str,
     now: i64,
 ) -> Result<ServiceResourceBindings, AuthError> {
+    materialize(store, operational, deployment, now, WhileImporting::Refuse)
+        .await?
+        .ok_or_else(|| still_importing(deployment))
+}
+
+/// Prepare the resources of `deployment` for an instance just provisioned,
+/// enrolled or approved, unless an import of it has not loaded its data yet:
+/// the import prepares them when it finishes.
+pub(crate) async fn prepare_for_instance(
+    store: &Arc<SqliteAuthorizationStore>,
+    operational: &async_nats::Client,
+    deployment: &str,
+    now: i64,
+) -> Result<(), AuthError> {
+    materialize(store, operational, deployment, now, WhileImporting::Skip)
+        .await
+        .map(drop)
+}
+
+fn still_importing(deployment: &str) -> AuthError {
+    AuthError::Conflict(format!(
+        "deployment {deployment} is still loading the data of its import; run the import \
+        again to finish it"
+    ))
+}
+
+/// Materialize `deployment`'s resources, as `importing` says for one whose
+/// import has not finished; `None` when that skips them.
+pub(super) async fn materialize(
+    store: &Arc<SqliteAuthorizationStore>,
+    operational: &async_nats::Client,
+    deployment: &str,
+    now: i64,
+    importing: WhileImporting,
+) -> Result<Option<ServiceResourceBindings>, AuthError> {
     let selected = deployment.to_owned();
     let plan = store
         .transaction_blocking(move |connection| {
             let deployment = selected.as_str();
-            // An import that has not loaded a stream yet would find it
-            // missing and make it empty, and its next attempt could then
-            // delete only what it made itself, so it could never finish.
-            let importing: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM auth_service_imports, json_each(restores_json) r \
-                WHERE deployment_id=?1 AND state='loading' \
-                AND r.value NOT IN (SELECT value FROM json_each(loaded_json)))",
-                [deployment],
-                |row| row.get(0),
-            )?;
-            if importing {
-                return Err(AuthError::Conflict(format!(
-                    "deployment {deployment} is still loading the data of its import; run the \
-                    import again to finish it"
-                )));
+            // Preparing a stream the import has not restored yet would make
+            // it empty, and the import would then replace what the service
+            // wrote to it.
+            let loading: bool = connection
+                .query_row(
+                    "SELECT importing FROM auth_deployments WHERE deployment_id=?1",
+                    [deployment],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(false);
+            match (loading, importing) {
+                (true, WhileImporting::Refuse) => return Err(still_importing(deployment)),
+                (true, WhileImporting::Skip) => return Ok(None),
+                _ => {}
             }
             let (principal, participant, installed_revision, binding_revision, evidence): (
                 String,
@@ -522,7 +571,7 @@ pub(crate) async fn materialize_native_kv(
                     super::webhooks::declare_endpoint(connection, deployment, name, now)?;
                 }
             }
-            Ok(ResourcePlan {
+            Ok(Some(ResourcePlan {
                 principal,
                 deployment: deployment.into(),
                 participant,
@@ -531,9 +580,12 @@ pub(crate) async fn materialize_native_kv(
                 kv,
                 materialized,
                 key_bucket_materialized,
-            })
+            }))
         })
         .await?;
+    let Some(plan) = plan else {
+        return Ok(None);
+    };
     let jetstream = async_nats::jetstream::new(operational.clone());
     // Empty projections are valid only after inspecting the installed declaration set.
     let mut bindings = ServiceResourceBindings::default();
@@ -1073,6 +1125,12 @@ pub(crate) async fn materialize_native_kv(
             WHERE deployment_id=?2",
             params![json(&bindings)?, plan.deployment],
         )?;
-        Ok(bindings.clone())
+        if importing == WhileImporting::Finish {
+            connection.execute(
+                "UPDATE auth_deployments SET importing=0 WHERE deployment_id=?1",
+                [&plan.deployment],
+            )?;
+        }
+        Ok(Some(bindings.clone()))
     }).await
 }

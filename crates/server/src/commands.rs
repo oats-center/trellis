@@ -515,6 +515,11 @@ pub(crate) struct ImportArgs {
     /// changing nothing.
     #[arg(long)]
     pub(crate) check: bool,
+    /// Replace what this installation's NATS already holds under a
+    /// deployment's own names, such as the streams an interrupted import
+    /// left, with the export's data. Without it, a terminal asks.
+    #[arg(long)]
+    pub(crate) replace_existing: bool,
     /// Print the result as text or JSON.
     #[arg(long, value_enum, default_value_t)]
     pub(crate) format: OutputFormat,
@@ -667,16 +672,49 @@ impl<W: std::io::Write> std::io::Write for SealedWriter<'_, W> {
 pub(crate) async fn import(args: ImportArgs) -> miette::Result<()> {
     let passphrase = passphrase(args.passphrase_file.as_deref(), false)?;
     let config = installation_config(&args.profile)?;
-    let file = std::fs::File::open(&args.file)
-        .map_err(|error| miette!("cannot read {}: {error}", args.file.display()))?;
-    let mut opened = trellis_bootstrap::envelope::Decryptor::open(
-        std::io::BufReader::new(file),
-        trellis_bootstrap::envelope::INSTALLATION,
-        &passphrase,
-    )?;
-    let report = trellis_runtime::platform::import_installation(&config, &mut opened, args.check)
-        .await
-        .into_diagnostic()?;
+    let run = |replace: bool| {
+        let (config, passphrase) = (&config, &passphrase);
+        let path = &args.file;
+        async move {
+            let file = std::fs::File::open(path)
+                .map_err(|error| miette!("cannot read {}: {error}", path.display()))?;
+            let mut opened = trellis_bootstrap::envelope::Decryptor::open(
+                std::io::BufReader::new(file),
+                trellis_bootstrap::envelope::INSTALLATION,
+                passphrase,
+            )?;
+            trellis_runtime::platform::import_installation(config, &mut opened, args.check, replace)
+                .await
+                .into_diagnostic()
+        }
+    };
+    let mut report = run(args.replace_existing).await?;
+    // Data a deployment's import would replace: an interrupted import's
+    // streams, say. On a terminal the operator is asked, and the import runs
+    // again with the answer; otherwise the report names them.
+    let in_the_way: Vec<String> = report["pending"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| item["replaces"].is_array())
+        .map(|item| {
+            format!(
+                "  deployment {}: {}",
+                item["id"].as_str().unwrap_or_default(),
+                item["reason"].as_str().unwrap_or_default()
+            )
+        })
+        .collect();
+    if !args.check && !in_the_way.is_empty() && crate::interactive() {
+        eprintln!(
+            "Loading these deployments' data replaces what this installation's NATS holds \
+            under their names:\n{}",
+            in_the_way.join("\n")
+        );
+        if crate::confirm("Replace it with the export's data?")? {
+            report = run(true).await?;
+        }
+    }
     if args.format == OutputFormat::Json {
         print_json(&json!({ "import": report }));
         return Ok(());

@@ -4,6 +4,7 @@
 //! the step that finishes it.
 use std::time::Duration;
 
+use futures_util::StreamExt as _;
 use runtime_trellis::apps::runtime_trellis_account_caller::Request as AccountCaller;
 use runtime_trellis::apps::runtime_trellis_native_state_caller as state_caller;
 use runtime_trellis::participants::runtime_trellis_moving_service::{
@@ -16,7 +17,10 @@ use trellis_rs::generated::Client;
 use trellis_rs::jobs::JobProcessError;
 use trellis_rs::service::ServiceConnectOptions;
 use trellis_runtime_apis::apis::trellis_auth_v1;
-use trellis_testkit::{TestRegisteredNativeClient, TestUserIdentity, TrellisTestRuntime};
+use trellis_testkit::{
+    InstallationImport, TestNatsUser, TestRegisteredNativeClient, TestUserIdentity,
+    TrellisTestRuntime,
+};
 
 const PASSPHRASE: &str = "the passphrase of a moving installation";
 /// What a person needs to keep State through an app.
@@ -100,7 +104,7 @@ async fn a_preview_reports_state_stored_here_as_in_the_way() {
     let state = format!("{}/savedResource", person.principal_id());
 
     let first = target
-        .import_installation(&file, PASSPHRASE, false, Some(&source))
+        .import_installation(&file, PASSPHRASE, InstallationImport::Apply, Some(&source))
         .await
         .unwrap();
     assert!(
@@ -113,11 +117,11 @@ async fn a_preview_reports_state_stored_here_as_in_the_way() {
     );
 
     let checked = target
-        .import_installation(&file, PASSPHRASE, true, None)
+        .import_installation(&file, PASSPHRASE, InstallationImport::Check, None)
         .await
         .unwrap();
     let again = target
-        .import_installation(&file, PASSPHRASE, false, None)
+        .import_installation(&file, PASSPHRASE, InstallationImport::Apply, None)
         .await
         .unwrap();
     for report in [&checked["import"], &again["import"]] {
@@ -199,14 +203,35 @@ async fn instances(admin: &trellis_auth_v1::Client, deployment: &str) -> Vec<Val
         .clone()
 }
 
+/// JetStream of `runtime`'s broker, as the Trellis account's administrator.
+async fn jetstream(runtime: &TrellisTestRuntime) -> async_nats::jetstream::Context {
+    let nats = async_nats::ConnectOptions::with_credentials(
+        &runtime.nats_creds(TestNatsUser::Trellis).await.unwrap(),
+    )
+    .unwrap()
+    .add_root_certificates(runtime.trust_roots()[0].clone())
+    .connect(runtime.nats_url())
+    .await
+    .unwrap();
+    async_nats::jetstream::new(nats)
+}
+
+/// The names of the streams `jetstream` has.
+async fn stream_names(jetstream: &async_nats::jetstream::Context) -> Vec<String> {
+    jetstream.stream_names().map(Result::unwrap).collect().await
+}
+
 /// A deployment none of whose instances can run moves its records, and the
 /// import reports its data as not finished with what finishes it. Once an
-/// instance is enabled here, the same import finishes it: nothing is
+/// instance is enabled here, the same import loads it, replacing a stream
+/// under the deployment's names only once that is approved: nothing is then
 /// pending, and the waiting job runs on the moved service.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deployment_data_waiting_for_an_instance_is_reported_until_a_retry_finishes_it() {
     let mut source = TrellisTestRuntime::builder().start().await.unwrap();
     let mut target = TrellisTestRuntime::builder().start().await.unwrap();
+    let source_streams = jetstream(&source).await;
+    let platform_streams = stream_names(&source_streams).await;
     let service = source.register_service::<Moving>("waiting").await.unwrap();
     let deployment = service.deployment_id().to_owned();
     source
@@ -228,6 +253,12 @@ async fn deployment_data_waiting_for_an_instance_is_reported_until_a_retry_finis
         .unwrap();
     let job_id = job.identity().id.clone();
     drop((job, running));
+    // The service's own KV stream, which the export carries.
+    let kv_stream = stream_names(&source_streams)
+        .await
+        .into_iter()
+        .find(|name| name.starts_with("KV_TRELLIS_RESOURCE_") && !platform_streams.contains(name))
+        .expect("the service's KV stream");
     let admin = administrator(&mut source).await;
     let instance = instances(&admin, &deployment).await.remove(0);
     admin
@@ -246,7 +277,7 @@ async fn deployment_data_waiting_for_an_instance_is_reported_until_a_retry_finis
         .unwrap();
 
     let first = target
-        .import_installation(&file, PASSPHRASE, false, Some(&source))
+        .import_installation(&file, PASSPHRASE, InstallationImport::Apply, Some(&source))
         .await
         .unwrap();
     assert!(
@@ -260,7 +291,7 @@ async fn deployment_data_waiting_for_an_instance_is_reported_until_a_retry_finis
     // A preview of the same import still knows the data waits, though its
     // deployment is already here.
     let preview = target
-        .import_installation(&file, PASSPHRASE, true, None)
+        .import_installation(&file, PASSPHRASE, InstallationImport::Check, None)
         .await
         .unwrap();
     assert_eq!(
@@ -281,18 +312,78 @@ async fn deployment_data_waiting_for_an_instance_is_reported_until_a_retry_finis
     drop(admin);
     // With an instance that can run, nothing known stands in the data's way.
     let preview = target
-        .import_installation(&file, PASSPHRASE, true, None)
+        .import_installation(&file, PASSPHRASE, InstallationImport::Check, None)
         .await
         .unwrap();
     assert!(
         !listed(&preview["import"], "pending", "deploymentData", &deployment),
         "{preview}"
     );
+
+    // A stream under the deployment's names that the data would replace, as
+    // an attempt that stopped while loading leaves one. Without approval the
+    // import leaves it and names it; so does a preview.
+    let target_streams = jetstream(&target).await;
+    let bucket = kv_stream.trim_start_matches("KV_");
+    let in_the_way = target_streams
+        .create_stream(async_nats::jetstream::stream::Config {
+            name: kv_stream.clone(),
+            subjects: vec![format!("$KV.{bucket}.>")],
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .cached_info()
+        .created;
+    target_streams
+        .publish(format!("$KV.{bucket}.left"), "left behind".into())
+        .await
+        .unwrap()
+        .await
+        .unwrap();
+    let left = |runtime_streams: async_nats::jetstream::Context, name: String| async move {
+        let mut stream = runtime_streams.get_stream(&name).await.unwrap();
+        let info = stream.info().await.unwrap();
+        (info.created, info.state.messages)
+    };
+    let names_it = |report: &Value| {
+        report["pending"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["kind"] == "deploymentData"
+                    && item["id"] == deployment.as_str()
+                    && item["replaces"]
+                        .as_array()
+                        .is_some_and(|streams| streams.contains(&json!({ "stream": kv_stream })))
+            })
+        })
+    };
+    let unapproved = target
+        .import_installation(&file, PASSPHRASE, InstallationImport::Apply, None)
+        .await
+        .unwrap();
+    assert!(names_it(&unapproved["import"]), "{unapproved}");
+    assert_eq!(
+        left(target_streams.clone(), kv_stream.clone()).await,
+        (in_the_way, 1)
+    );
+    let preview = target
+        .import_installation(&file, PASSPHRASE, InstallationImport::Check, None)
+        .await
+        .unwrap();
+    assert!(names_it(&preview["import"]), "{preview}");
+
     let again = target
-        .import_installation(&file, PASSPHRASE, false, None)
+        .import_installation(
+            &file,
+            PASSPHRASE,
+            InstallationImport::ApplyReplacingExisting,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(again["import"]["pending"], json!([]), "{again}");
+    let (replaced, _) = left(target_streams.clone(), kv_stream.clone()).await;
+    assert_ne!(replaced, in_the_way, "the stream was replaced");
 
     let server = discover_native_oauth(target.trellis_url(), &target.trust_roots())
         .await
@@ -437,7 +528,7 @@ async fn an_account_with_a_deleted_providers_sign_in_moves_and_signs_in() {
         .unwrap();
 
     let imported = target
-        .import_installation(&file, PASSPHRASE, false, Some(&source))
+        .import_installation(&file, PASSPHRASE, InstallationImport::Apply, Some(&source))
         .await
         .unwrap();
     let report = &imported["import"];
@@ -508,14 +599,14 @@ async fn a_disabled_deployment_stays_disabled_when_it_moves() {
     // The preview already knows the deployment's data will wait: it reports
     // the same step the import does, without loading anything.
     let preview = target
-        .import_installation(&file, PASSPHRASE, true, None)
+        .import_installation(&file, PASSPHRASE, InstallationImport::Check, None)
         .await
         .unwrap();
     let previewed = pending_reason(&preview["import"], "deploymentData", &deployment);
     assert!(previewed.is_some(), "{preview}");
 
     let imported = target
-        .import_installation(&file, PASSPHRASE, false, Some(&source))
+        .import_installation(&file, PASSPHRASE, InstallationImport::Apply, Some(&source))
         .await
         .unwrap();
     let report = &imported["import"];

@@ -49,6 +49,7 @@ openidconnect.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 rustls.workspace = true
 # Both CI profiles run the server outside its build checkout.
 rust-embed = { version = "8", features = ["debug-embed"] }

@@ -238,14 +238,13 @@ async fn materialize(
     if update.state != AuthServiceUpdateState::Applied {
         return Ok(());
     }
-    super::resources::materialize_native_kv(
+    super::resources::prepare_for_instance(
         store,
         operational,
         &update.deployment_id.to_string(),
         now,
     )
     .await
-    .map(drop)
     .map_err(rpc_error)
 }
 

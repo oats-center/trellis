@@ -652,6 +652,20 @@ async fn wait_for_readyz(
     }
 }
 
+/// How [`TrellisTestRuntime::import_installation`] runs `trellis-server
+/// import`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstallationImport {
+    /// Import, leaving alone what NATS already holds under a deployment's
+    /// names.
+    Apply,
+    /// Report what the import would do, changing nothing (`--check`).
+    Check,
+    /// Import, replacing what NATS already holds under a deployment's names
+    /// with the export's data (`--replace-existing`).
+    ApplyReplacingExisting,
+}
+
 /// A NATS user of a test runtime's installation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TestNatsUser {
@@ -821,8 +835,8 @@ impl TrellisTestRuntime {
     /// Adds the installation export `file` to this installation as an
     /// operator does: stops the server, leaving its NATS running, runs
     /// `trellis-server import` with `passphrase`, then starts the server again
-    /// and signs the administrator in once more. With `check` the import
-    /// changes nothing. Returns the import's JSON report.
+    /// and signs the administrator in once more, as `mode` says. Returns the
+    /// import's JSON report.
     ///
     /// The administrator signs in with this runtime's username and password;
     /// an import keeps this installation's administrator. With `from`, the
@@ -838,9 +852,10 @@ impl TrellisTestRuntime {
         &mut self,
         file: &Path,
         passphrase: &str,
-        check: bool,
+        mode: InstallationImport,
         from: Option<&TrellisTestRuntime>,
     ) -> Result<serde_json::Value, TrellisTestError> {
+        let check = mode == InstallationImport::Check;
         self.stop_server().await?;
         let log = self.workdir.join("logs/import.log");
         let mut command = Command::new(&self.distribution.server);
@@ -849,8 +864,14 @@ impl TrellisTestRuntime {
             .arg(file)
             .args(["--format", "json", "--passphrase-file", "-", "--config"])
             .arg(&self.config);
-        if check {
-            command.arg("--check");
+        match mode {
+            InstallationImport::Apply => {}
+            InstallationImport::Check => {
+                command.arg("--check");
+            }
+            InstallationImport::ApplyReplacingExisting => {
+                command.arg("--replace-existing");
+            }
         }
         let imported = crate::process::run(
             &mut command,

@@ -136,19 +136,27 @@ A role or grant the import skips changes nothing, and the rest still applies.
 To recreate a skipped member later, create their account and give them the
 role with `trellis roles assign`.
 
-If the import stops while it loads the data, run the same command again; it
-picks up where it stopped. It deletes and loads again only a stream it
-restored itself, one that carries the import's ID in its metadata, even when
-the import stopped right after the stream was made. Any other stream under
-that name is left as it is, and the import stops and names it. Until the data
-is loaded, the service's processes cannot connect.
+If the import stops while it loads the data, run the same command again. It
+keeps the deployment it recorded and loads all of the data again from the
+bundle. Whatever the stopped attempt already restored or queued is in the
+way, so the import first lists it: the streams named after the deployment's
+own resources, and the waiting jobs it queued. It changes nothing until you
+approve. On a terminal it asks you to type the deployment's ID; a script
+passes `--replace-existing`, and without it the import refuses and changes
+nothing. `--check` shows the same list. Until the data is loaded, the
+service's processes cannot connect.
+
+```sh
+trellis --profile new svc import orders.trellis-service --check
+trellis --profile new svc import orders.trellis-service --replace-existing
+```
 
 A bundle whose instances were all retired or disabled imports without one
-that can run, so the import stops before it prepares the resources and
-queues the waiting jobs. So does a deployment that was disabled when it was
-exported: it stays disabled in the new installation. Enable it, provision or
-enable an instance in the new installation, then run the same import again
-to finish it:
+that can run, so the import records the deployment and leaves its data and
+waiting jobs in the bundle. So does a deployment that was disabled when it
+was exported: it stays disabled in the new installation. Enable it,
+provision or enable an instance in the new installation, then run the same
+import again to load the data:
 
 ```sh
 trellis --profile new svc orders provision
@@ -157,17 +165,25 @@ trellis --profile new svc import orders.trellis-service
 
 ## Between releases
 
-A bundle from any Trellis release imports into any other, older or newer,
-release candidates included, so the two installations need not run the same
-release. A newer Trellis only adds to bundles, and an older one reads past
-what it added and lists it in the report.
+What a bundle imports into depends on the release that reads it:
+
+- Trellis 0.100.0-rc.55 and earlier read only the bundles of rc.55 and
+  earlier. They refuse a bundle from any later release before reading it,
+  so a service cannot move back to them from a newer installation.
+- Trellis 0.100.0-rc.56 reads only the bundles of rc.56 and later releases:
+  it refuses a bundle of rc.55 or earlier, and a bundle with a part it does
+  not know, so a bundle from a later release that adds one does not import
+  into rc.56 either.
+- Every release after rc.56 reads the bundles of every release, older or
+  newer. A newer Trellis only adds to bundles, and an older one reads past
+  what it added and lists it in the report under "Not understood, left out".
+
+Check the destination's release before you stop the service at the source.
 
 A bundle from Trellis 0.100.0-rc.55 or earlier carries no roles or grants.
-Its report says so under what stayed behind and names the roles to recreate
-by hand, and the deployment arrives enabled even if it was disabled.
-
-Trellis 0.100.0-rc.56 refuses a bundle with a part it does not know, so a
-bundle from a later release that adds one does not import into rc.56.
+Its report says so under what stayed behind and names the roles, and the
+capabilities granted directly with how many people held each, to recreate
+by hand. The deployment arrives enabled even if it was disabled.
 
 ## Point the processes at the new installation
 

@@ -145,6 +145,7 @@ async fn export_and_import_refuse_another_installations_broker() {
         &misdirected(&target, &source),
         &mut std::io::Cursor::new(&content),
         false,
+        false,
     )
     .await;
     assert!(
@@ -153,9 +154,14 @@ async fn export_and_import_refuse_another_installations_broker() {
     );
     assert!(!has_user(&target, &person).await);
 
-    crate::platform::import_installation(&target, &mut std::io::Cursor::new(&content), false)
-        .await
-        .unwrap();
+    crate::platform::import_installation(
+        &target,
+        &mut std::io::Cursor::new(&content),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
     assert!(has_user(&target, &person).await);
 }
 
@@ -188,10 +194,10 @@ async fn export_and_import_keep_to_their_own_working_folder() {
     let before = listing();
 
     let (first, second) = tokio::join!(exported(&config), exported(&config));
-    crate::platform::import_installation(&config, &mut std::io::Cursor::new(&first), true)
+    crate::platform::import_installation(&config, &mut std::io::Cursor::new(&first), true, false)
         .await
         .unwrap();
-    crate::platform::import_installation(&config, &mut std::io::Cursor::new(&second), true)
+    crate::platform::import_installation(&config, &mut std::io::Cursor::new(&second), true, false)
         .await
         .unwrap();
 
@@ -224,10 +230,14 @@ async fn an_import_preview_writes_nothing_to_the_database() {
     let crate::StorageBackend::Sqlite(storage) = target.platform_storage_backend().unwrap();
     let holder = rusqlite::Connection::open(&storage.path).unwrap();
     holder.execute_batch("BEGIN IMMEDIATE").unwrap();
-    let report =
-        crate::platform::import_installation(&target, &mut std::io::Cursor::new(&content), true)
-            .await
-            .unwrap();
+    let report = crate::platform::import_installation(
+        &target,
+        &mut std::io::Cursor::new(&content),
+        true,
+        false,
+    )
+    .await
+    .unwrap();
     holder.execute_batch("ROLLBACK").unwrap();
     drop(holder);
     assert_eq!(report["applied"], false);
@@ -302,10 +312,14 @@ async fn an_export_a_newer_trellis_wrote_imports_without_what_it_added() {
     })
     .await;
     let content = exported(&source).await;
-    let own =
-        crate::platform::import_installation(&target, &mut std::io::Cursor::new(&content), true)
-            .await
-            .unwrap();
+    let own = crate::platform::import_installation(
+        &target,
+        &mut std::io::Cursor::new(&content),
+        true,
+        false,
+    )
+    .await
+    .unwrap();
     assert_eq!(own["notUnderstood"], serde_json::json!([]), "{own}");
 
     let mut entries = export_entries(&content);
@@ -344,6 +358,7 @@ async fn an_export_a_newer_trellis_wrote_imports_without_what_it_added() {
     let report = crate::platform::import_installation(
         &target,
         &mut std::io::Cursor::new(export_content(&entries)),
+        false,
         false,
     )
     .await
@@ -468,9 +483,13 @@ async fn state_moves_only_from_and_into_a_bucket_that_keeps_it() {
         })
         .await
         .unwrap();
-    let refused =
-        crate::platform::import_installation(&target, &mut std::io::Cursor::new(&content), false)
-            .await;
+    let refused = crate::platform::import_installation(
+        &target,
+        &mut std::io::Cursor::new(&content),
+        false,
+        false,
+    )
+    .await;
     assert!(
         matches!(refused, Err(crate::RuntimeError::Platform(_))),
         "{refused:?}"
@@ -482,10 +501,14 @@ async fn state_moves_only_from_and_into_a_bucket_that_keeps_it() {
         .delete_stream("KV_trellis_state")
         .await
         .unwrap();
-    let report =
-        crate::platform::import_installation(&target, &mut std::io::Cursor::new(&content), false)
-            .await
-            .unwrap();
+    let report = crate::platform::import_installation(
+        &target,
+        &mut std::io::Cursor::new(&content),
+        false,
+        false,
+    )
+    .await
+    .unwrap();
     assert!(has_user(&target, &person).await);
     let kept = crate::platform::state::existing_store(&target_jetstream)
         .await
@@ -845,4 +868,78 @@ fn consent_moves_only_where_the_new_installation_asks_the_same() {
         "{:?}",
         outcome.skipped
     );
+}
+
+/// An export whose documents have the wrong JSON shape is refused, by the
+/// preview and the import alike, with an error naming the entry and the
+/// field, and nothing of it arrives: a document that is not an object, a
+/// record part that should be an object, and a State declaration that is
+/// not one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_misshapen_export_is_refused_naming_where() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let ports = reserve(2);
+    let (source, _source_broker) =
+        started_installation(&directory.path().join("source"), &ports[..4]).await;
+    let (target, _target_broker) =
+        started_installation(&directory.path().join("target"), &ports[4..]).await;
+    let person = with_store(&source, |store| {
+        create_user(store, &administrator_of(store), crate::clock::unix_now())
+    })
+    .await;
+    let entries = export_entries(&exported(&source).await);
+    // The export's entries with `entry` replaced by `document`.
+    let changed = |entry: &str, document: serde_json::Value| {
+        let mut entries = entries.clone();
+        match entries.iter_mut().find(|(name, _)| name == entry) {
+            Some((_, bytes)) => *bytes = serde_json::to_vec(&document).unwrap(),
+            None => entries.push((entry.to_owned(), serde_json::to_vec(&document).unwrap())),
+        }
+        export_content(&entries)
+    };
+    let mut users: serde_json::Value = serde_json::from_slice(
+        &entries
+            .iter()
+            .find(|(name, _)| name == "records/users.json")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    for user in users["records"].as_array_mut().unwrap() {
+        user["profile"] = serde_json::json!("a profile");
+    }
+    let state = serde_json::json!({ "kind": "state", "format": 1, "records": [{
+        "owner": "user", "userId": person, "namespace": "app", "name": "notes",
+        "declaration": "not a declaration", "revision": 1,
+    }]});
+    for (content, names) in [
+        (
+            changed("records/users.json", serde_json::json!([])),
+            "records/users.json is not a JSON object",
+        ),
+        (
+            changed("records/users.json", users),
+            "records/users.json: field profile of a users record",
+        ),
+        (
+            changed("records/state.json", state),
+            "records/state.json: field declaration of a state record",
+        ),
+    ] {
+        for check in [true, false] {
+            let refused = crate::platform::import_installation(
+                &target,
+                &mut std::io::Cursor::new(&content),
+                check,
+                false,
+            )
+            .await;
+            assert!(
+                matches!(&refused, Err(crate::RuntimeError::Platform(error)) if error.contains(names)),
+                "{refused:?}"
+            );
+        }
+        assert!(!has_user(&target, &person).await);
+    }
 }

@@ -36,7 +36,8 @@ use trellis_rs::service::ServiceConnectOptions;
 use trellis_runtime_apis::apis::trellis_auth_v1;
 use trellis_test_fixture::participants::trellis_test_fixture_unsupported_device::Participant as Device;
 use trellis_testkit::{
-    NativeSource, TestRegisteredNativeClient, TestUserIdentity, TrellisTestRuntime,
+    InstallationImport, NativeSource, TestRegisteredNativeClient, TestUserIdentity,
+    TrellisTestRuntime,
 };
 
 const PASSPHRASE: &str = "the passphrase of a moving installation";
@@ -454,7 +455,7 @@ async fn an_installation_moves_between_releases_without_setup() {
     let new_admin =
         principal(&administrator(&mut new, &["trellis.auth.v1:users.manage"]).await).await;
     let checked = new
-        .import_installation(&file, PASSPHRASE, true, None)
+        .import_installation(&file, PASSPHRASE, InstallationImport::Check, None)
         .await
         .unwrap();
     assert_eq!(checked["import"]["applied"], false);
@@ -465,7 +466,7 @@ async fn an_installation_moves_between_releases_without_setup() {
         user.principal_id()
     ));
     let imported = new
-        .import_installation(&file, PASSPHRASE, false, Some(&old))
+        .import_installation(&file, PASSPHRASE, InstallationImport::Apply, Some(&old))
         .await
         .unwrap();
     let report = &imported["import"];
@@ -627,7 +628,12 @@ async fn an_installation_moves_between_releases_without_setup() {
         .await
         .unwrap();
     let imported = back
-        .import_installation(&back_file, PASSPHRASE, false, Some(&new))
+        .import_installation(
+            &back_file,
+            PASSPHRASE,
+            InstallationImport::Apply,
+            Some(&new),
+        )
         .await
         .unwrap();
     let report = &imported["import"];
@@ -728,7 +734,7 @@ async fn an_installation_moves_between_releases_without_setup() {
         .unwrap();
     drop(admin);
     let imported = busy
-        .import_installation(&file, PASSPHRASE, false, Some(&old))
+        .import_installation(&file, PASSPHRASE, InstallationImport::Apply, Some(&old))
         .await
         .unwrap();
     let report = &imported["import"];

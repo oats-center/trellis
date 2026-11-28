@@ -124,6 +124,8 @@ fn shape(kind: &str) -> Value {
                 "owner,userId,deploymentId,participantId,namespace,name,declaration,revision,\
                 createdAt,updatedAt,value",
             );
+            // Read whole, and named here before it is written.
+            state["declaration"] = json!("object");
             state["history"] = json!([fields("revision,commitment_json,state,changed_at")]);
             state["values"] = json!([fields("principalId,value")]);
             state
@@ -132,6 +134,46 @@ fn shape(kind: &str) -> Value {
             fields("format,trellisVersion,exportedAt,sourceInstallationId,sourceOrigin,kinds")
         }
         _ => Value::Null,
+    }
+}
+
+/// The first part of `value` whose JSON type does not fit `known`, a
+/// [`shape`]: an object where it names fields, a list where it has one, and
+/// an object for a field read whole that it marks `"object"`; `None` when
+/// every part fits. A null field holds nothing and fits anything.
+fn misshapen(value: &Value, known: &Value, at: &str) -> Option<String> {
+    let here = || {
+        if at.is_empty() {
+            ".".to_owned()
+        } else {
+            at.to_owned()
+        }
+    };
+    match (value, known) {
+        (Value::Null, _) => None,
+        (Value::Object(fields), Value::Object(shape)) => fields.iter().find_map(|(name, field)| {
+            let path = if at.is_empty() {
+                name.clone()
+            } else {
+                format!("{at}.{name}")
+            };
+            shape
+                .get(name)
+                .and_then(|shape| misshapen(field, shape, &path))
+        }),
+        (Value::Array(items), Value::Array(shape)) => {
+            items.iter().enumerate().find_map(|(index, item)| {
+                let shape = if shape.len() == 1 {
+                    shape.first()
+                } else {
+                    shape.get(index)
+                };
+                shape.and_then(|shape| misshapen(item, shape, &format!("{at}[]")))
+            })
+        }
+        (_, Value::Object(_) | Value::Array(_)) => Some(here()),
+        (value, Value::String(kind)) => (kind == "object" && !value.is_object()).then(here),
+        _ => None,
     }
 }
 
@@ -935,6 +977,9 @@ fn receive(input: &mut dyn Read, directory: &Path, limit: usize) -> Result<Recei
         read_entry(input, &mut bytes, limit)?;
         let mut document: Value =
             serde_json::from_slice(&bytes).map_err(|error| damaged(format!("{name}: {error}")))?;
+        let Some(object) = document.as_object_mut() else {
+            return Err(damaged(format!("{name} is not a JSON object")));
+        };
         let Some(kind) = kind else {
             let mut found = BTreeSet::new();
             service_bundles::unread_fields(&mut document, &shape("meta"), "", &mut found);
@@ -946,7 +991,7 @@ fn receive(input: &mut dyn Read, directory: &Path, limit: usize) -> Result<Recei
             received.meta = document;
             continue;
         };
-        let Value::Array(records) = document["records"].take() else {
+        let Some(Value::Array(records)) = object.remove("records") else {
             return Err(damaged(format!("{name} has no records")));
         };
         let format = document["format"]
@@ -972,6 +1017,11 @@ fn receive(input: &mut dyn Read, directory: &Path, limit: usize) -> Result<Recei
         let known = shape(kind);
         let mut found = BTreeSet::new();
         for record in &mut records {
+            if let Some(field) = misshapen(record, &known, "") {
+                return Err(damaged(format!(
+                    "{name}: field {field} of a {kind} record is not what this Trellis reads"
+                )));
+            }
             service_bundles::unread_fields(record, &known, "", &mut found);
         }
         fields.extend(
@@ -2149,18 +2199,40 @@ pub(super) fn apply(
 /// Why a deployment's data waits after an import: it has no instance that
 /// can run here.
 const NO_INSTANCE_YET: &str = "the deployment has no instance that can run here yet, so its \
-    resources are not prepared and its waiting jobs have not moved; enable the deployment and \
-    an instance, or provision one, then run the same import again";
+    data and waiting jobs have not loaded; enable the deployment and an instance, or provision \
+    one, then run the same import again";
+
+/// Why a deployment's data waits after an import: loading it replaces what
+/// `replaces` names, and that was not approved.
+fn needs_approval(replaces: &[Value]) -> String {
+    let named = replaces
+        .iter()
+        .map(|item| {
+            let stream = item["stream"].as_str().unwrap_or_default();
+            match item["subjects"].as_str() {
+                Some(subjects) => format!("{subjects} in stream {stream}"),
+                None => format!("stream {stream}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "this installation's NATS already holds {named}, under the deployment's own names; run \
+        the import again with --replace-existing to replace it with the export's data"
+    )
+}
 
 /// Import the installation export `input` into the installation behind
 /// `storage` and `nats`, or with `check` report what it would do and change
-/// nothing.
+/// nothing. A deployment's data replaces what is already in NATS under its
+/// names only with `replace`.
 pub(crate) async fn import(
     storage: &OAuthStorage,
     nats: &async_nats::Client,
     directory: &Path,
     input: &mut (dyn Read + Send),
     check: bool,
+    replace: bool,
 ) -> Result<Value, AuthError> {
     let received = receive(input, directory, MAX_RECORDS)?;
     // State is kept until it is deleted, so its values go only into a bucket
@@ -2187,32 +2259,25 @@ pub(crate) async fn import(
     // before anything changes.
     let mut bundles = Vec::new();
     let mut refused = Vec::new();
-    // A preview also needs each bundle's digest, which names the import
-    // whose data loads afterwards. A bundle refused here can be one an
-    // earlier run recorded, whose data still waits.
-    let mut digests = Vec::new();
+    // What loading each deployment's data would replace without approval,
+    // which a preview reports.
+    let mut in_the_way = Vec::new();
     let mut not_understood = received.not_understood.clone();
     for (deployment_id, spool) in &received.bundles {
         let reader = service_bundles::spool_reader(Arc::clone(spool));
         match service_bundles::prepare_import(nats, directory, reader).await {
-            Ok(bundle) => {
+            Ok((bundle, replaces)) => {
                 not_understood.extend(
                     bundle
                         .not_understood()
                         .map(|item| format!("deployment {deployment_id}: {item}")),
                 );
-                if check {
-                    digests.push((deployment_id.clone(), bundle.digest().to_owned()));
+                if !replace && !replaces.is_empty() {
+                    in_the_way.push((deployment_id.clone(), replaces));
                 }
                 bundles.push((deployment_id.clone(), bundle));
             }
             Err(error) => {
-                if check {
-                    let reader = service_bundles::spool_reader(Arc::clone(spool));
-                    if let Ok(digest) = service_bundles::content_digest(directory, reader).await {
-                        digests.push((deployment_id.clone(), digest));
-                    }
-                }
                 refused.push(json!({
                     "kind": "deployment",
                     "id": deployment_id,
@@ -2225,6 +2290,11 @@ pub(crate) async fn import(
     let received = Arc::new(received);
     let mut outcome = {
         let (storage, received, bundles) = (storage.clone(), Arc::clone(&received), bundles);
+        let waiting: Vec<String> = if check {
+            received.bundles.iter().map(|(id, _)| id.clone()).collect()
+        } else {
+            Vec::new()
+        };
         super::blocking(move || {
             let run = |connection: &Connection| {
                 let mut outcome = apply(connection, &storage, &received, &bundles, now)?;
@@ -2232,8 +2302,8 @@ pub(crate) async fn import(
                 // records commit is known from them: no instance that can
                 // run it. Anything else happens only in the broker, so a
                 // preview does not claim it either way.
-                for (deployment_id, digest) in &digests {
-                    if service_bundles::waits_for_an_instance(connection, deployment_id, digest)? {
+                for deployment_id in &waiting {
+                    if service_bundles::waits_for_an_instance(connection, deployment_id)? {
                         outcome.pending.push(json!({
                             "kind": "deploymentData",
                             "id": deployment_id,
@@ -2252,6 +2322,16 @@ pub(crate) async fn import(
         .await?
     };
     outcome.skipped.extend(refused);
+    if check {
+        for (deployment_id, replaces) in &in_the_way {
+            outcome.pending.push(json!({
+                "kind": "deploymentData",
+                "id": deployment_id,
+                "reason": needs_approval(replaces),
+                "replaces": replaces,
+            }));
+        }
+    }
     // The data of each deployment whose records are committed and whose data
     // has not loaded yet, loaded as a service import that resumes. Running
     // the same import again finishes one that stopped here.
@@ -2259,9 +2339,20 @@ pub(crate) async fn import(
     if !check {
         for (deployment_id, spool) in &received.bundles {
             let reader = service_bundles::spool_reader(Arc::clone(spool));
-            match service_bundles::finish_import(storage, nats, directory, reader).await {
+            match service_bundles::finish_import(storage, nats, directory, reader, replace).await {
                 Ok(Some(report)) => {
-                    if report["complete"] == false {
+                    let replaces = report["replaces"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    if report["complete"] == false && !replace && !replaces.is_empty() {
+                        outcome.pending.push(json!({
+                            "kind": "deploymentData",
+                            "id": deployment_id,
+                            "reason": needs_approval(replaces),
+                            "replaces": replaces,
+                        }));
+                    } else if report["complete"] == false {
                         outcome.pending.push(json!({
                             "kind": "deploymentData",
                             "id": deployment_id,

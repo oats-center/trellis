@@ -10,8 +10,9 @@ file, and `trellis-server import` adds that file to another installation.
 Users keep their Trellis user IDs, so services that stored them need no
 change, and services and devices keep their keys, so they reconnect with the
 seeds they have. The file holds plain records rather than database files, so
-an export of any release imports into any other, older or newer, release
-candidates included, which a backup cannot do.
+an export can import into another release than the one that wrote it, which
+a backup cannot do; [Exports, backups and releases](#exports-backups-and-releases)
+says which.
 
 The file carries:
 
@@ -133,26 +134,36 @@ Some data cannot move in one run. The import lists it under "Not finished
 yet", with what finishes it:
 
 - a service whose deployment or instances are all disabled, or that has no
-  instance, gets its records, but its resources and waiting jobs move only
-  once it has an instance that can run: enable the deployment and an
-  instance, or provision one, then run the same import again;
-- a service whose data stopped loading partway finishes when you run the
-  same import again.
+  instance, gets its records, but its data and waiting jobs move only once
+  it has an instance that can run: enable the deployment and an instance,
+  or provision one, then run the same import again;
+- a service whose data stopped loading partway loads all of it again when
+  you run the same import again;
+- a service whose data would replace what this installation's NATS already
+  holds under the service's own names, such as the streams a load that
+  stopped partway left, is named with that list and loads nothing. On a
+  terminal the import asks whether to replace it and runs again if you
+  agree; otherwise run it again with `--replace-existing`.
 
-Records already imported are skipped, and the data loads where it stopped.
-`--check` already lists a service with no instance that can run, with the
-same step. It does not load data, so a load that stops partway shows only
-when you run the import.
+Records already imported are skipped. `--check` already lists a service with
+no instance that can run, and a service whose data would replace something,
+with the same steps. It does not load data, so a load that stops partway
+shows only when you run the import.
 
 ## Exports, backups and releases
 
-An export of any Trellis release imports into any other, older or newer. A
-newer Trellis only adds to exports, and an older one reads past what it
-added: the report lists each part under "Not understood, left out".
-Trellis 0.100.0-rc.56, the first release with exports, is stricter: it
-refuses an export with a record kind or other part it does not know, or with
-a new field on an app, OIDC provider, user profile or theme, so an export
-from a later release that adds one does not import into rc.56.
+Trellis 0.100.0-rc.56 is the first release with exports, and what an export
+imports into depends on the release that reads it:
+
+- rc.56 refuses an export with a record kind or other part it does not
+  know, or with a new field on an app, OIDC provider, user profile or theme,
+  so an export from a later release that adds one does not import into it.
+- Every release after rc.56 reads the exports of every release, older or
+  newer. A newer Trellis only adds to exports, and an older one reads past
+  what it added: the report lists each part under "Not understood, left
+  out".
+
+Check the destination's release before you stop the source.
 
 A backup is for the same release. `trellis-server restore` puts back a backup
 of its own release, and once Trellis has stable releases, one an earlier
