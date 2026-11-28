@@ -34,7 +34,7 @@ test("an administrator issues an enrollment secret, sees it once, and revokes it
       const shown = section.locator("[data-enrollment-secret]");
       await shown.waitFor();
       const text = await shown.innerText();
-      assert.match(text, /^trellis-enroll-[0-9A-Z]{26}-/);
+      assert.match(text, /^trellis-enroll-E[0-9A-Z]{26}-/);
       const { items } = await runtime.callAdminRpc(
         "authEnrollmentSecretsList",
         { deploymentId: seeded.deploymentId },
