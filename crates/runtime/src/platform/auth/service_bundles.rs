@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt as _};
+use trellis_protocol::model::IdKind;
 use trellis_rs::generated::{ParticipantDescriptor, SerializableErrorData, TrellisError};
 use trellis_rs::service::{FileTransferInfo, OperationControl, RequestContext, ServerError};
 use trellis_runtime_apis::apis::trellis_auth_v1::{errors, operations, rpc, Provider};
@@ -1163,7 +1164,7 @@ async fn export(
         exported.digest,
         exported.report,
     );
-    let export_id = id();
+    let export_id = IdKind::Export.generate();
     let audit = json!({
         "exportId": export_id,
         "contentDigest": content_digest,
@@ -2103,8 +2104,22 @@ fn validate(bundle: &Bundle, devices: bool) -> Result<(), AuthError> {
     let deployment = &bundle.deployment;
     let deployment_id = deployment.deployment_id.as_str();
     let participant_id = deployment.participant_id.as_str();
-    let ulid = |text: &str| ulid::Ulid::from_string(text).is_ok();
-    if !ulid(deployment_id) {
+    // An ID of one of `kinds`, bare as rc.56 and earlier wrote them or with
+    // its kind's prefix.
+    let ulid =
+        |text: &str, kinds: &[IdKind]| trellis_protocol::model::parse_id(text, kinds).is_ok();
+    let (deployment_kind, instance_kind) = if devices {
+        (
+            &[IdKind::ServiceDeployment, IdKind::DeviceDeployment][..],
+            &[IdKind::ServiceInstance, IdKind::DeviceInstance][..],
+        )
+    } else {
+        (
+            &[IdKind::ServiceDeployment][..],
+            &[IdKind::ServiceInstance][..],
+        )
+    };
+    if !ulid(deployment_id, deployment_kind) {
         return Err(damaged("its deployment ID is not a deployment ID"));
     }
     if !matches!(deployment.state.as_str(), "active" | "disabled") {
@@ -2148,14 +2163,16 @@ fn validate(bundle: &Bundle, devices: bool) -> Result<(), AuthError> {
     };
     let mut secrets = BTreeSet::new();
     for secret in &bundle.instances.enrollment_secrets {
-        if !ulid(&secret.secret_id) || !secrets.insert(secret.secret_id.as_str()) {
+        if !ulid(&secret.secret_id, &[IdKind::EnrollmentSecret])
+            || !secrets.insert(secret.secret_id.as_str())
+        {
             return Err(damaged(format!("enrollment secret {}", secret.secret_id)));
         }
     }
     let mut instances = BTreeSet::new();
     for instance in &bundle.instances.instances {
-        if !ulid(&instance.instance_id)
-            || !ulid(&instance.principal_id)
+        if !ulid(&instance.instance_id, instance_kind)
+            || !ulid(&instance.principal_id, &[IdKind::InstancePrincipal])
             || !instances.insert(instance.instance_id.as_str())
             || !matches!(instance.state.as_str(), "active" | "disabled")
             || instance
@@ -2216,7 +2233,7 @@ fn validate(bundle: &Bundle, devices: bool) -> Result<(), AuthError> {
         ))?;
         let refuse = || damaged(format!("resource {} {}", resource.kind, resource.name));
         if expected != resource.resource_id
-            || !ulid(&resource.allocation_id)
+            || !ulid(&resource.allocation_id, &[])
             || !resources.insert(resource.resource_id.as_str())
         {
             return Err(refuse());

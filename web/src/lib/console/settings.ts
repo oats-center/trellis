@@ -166,7 +166,7 @@ export function shapeOf(
         format:
           target.contentEncoding === "base64"
             ? "bytes"
-            : target.pattern === "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+            : target.pattern === "^(?:[A-Z]{1,2})?[0-7][0-9A-HJKMNP-TV-Z]{25}$"
               ? "ulid"
               : "text",
         minLength: numberAt(target, "minLength"),
@@ -322,9 +322,9 @@ export function problemOf(
         return `Use at most ${plural(shape.maxLength, "character")}.`;
       if (
         shape.format === "ulid" &&
-        !/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value)
+        !/^(?:[A-Z]{1,2})?[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(value)
       )
-        return "Enter an ID of 26 letters and digits, such as 01J9Z8X7W6V5T4S3R2Q1P0N9MK.";
+        return "Enter an ID as Trellis shows it, in capital letters and digits, such as U01J9Z8X7W6V5T4S3R2Q1P0N9MK.";
       if (
         shape.format === "bytes" &&
         !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(

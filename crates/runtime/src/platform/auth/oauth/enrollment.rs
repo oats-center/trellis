@@ -2,6 +2,7 @@
 use super::super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
+use trellis_protocol::model::IdKind;
 
 use crate::platform::auth::sqlite::Connection;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -920,7 +921,7 @@ fn enroll(store: &SqliteAuthorizationStore, mut body: Value, now: i64) -> Result
                     "device instance {instance} already has an activation waiting for review"
                 )));
             }
-            let review = id();
+            let review = IdKind::Review.generate();
             let payload = json!({
                 "participantId":participant,
                 "installedRevision":revision,
@@ -1016,7 +1017,13 @@ pub(crate) fn provision(
                         "INSERT INTO auth_device_provisioning_secrets(secret_id,instance_id,\
                         secret_hash,state,created_at,expires_at,version) \
                         VALUES(?1,?2,?3,'pending',?4,?5,1)",
-                        params![id(), result.instance_id, hash, now, now + 86400],
+                        params![
+                            IdKind::EnrollmentSecret.generate(),
+                            result.instance_id,
+                            hash,
+                            now,
+                            now + 86400
+                        ],
                     )?;
                     Some(secret)
                 } else {

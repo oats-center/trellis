@@ -44,7 +44,7 @@ gets nothing, so create each account with the ID the person has in the old
 installation:
 
 ```sh
-trellis --profile new users create --username ada --id 01JD8Z3XQ5V7H2N4K6M8P0R2T4
+trellis --profile new users create --username ada --id U01JD8Z3XQ5V7H2N4K6M8P0R2T4
 ```
 
 `trellis --profile old users show ada` prints the ID. Then try the whole move once
@@ -173,7 +173,9 @@ What a bundle imports into depends on the release that reads it:
 - Trellis 0.100.0-rc.56 reads only the bundles of rc.56 and later releases:
   it refuses a bundle of rc.55 or earlier, and a bundle with a part it does
   not know, so a bundle from a later release that adds one does not import
-  into rc.56 either.
+  into rc.56 either. It reads only bare IDs, so a service a later release
+  created, whose IDs start with their kind's letters, does not import into
+  rc.56; one that rc.56 or earlier created and that moved on does.
 - Every release after rc.56 reads the bundles of every release, older or
   newer. A newer Trellis only adds to bundles, and an older one reads past
   what it added and lists it in the report under "Not understood, left out".

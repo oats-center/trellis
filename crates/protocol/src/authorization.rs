@@ -114,14 +114,11 @@ fn verifying_key(value: &str) -> Result<VerifyingKey, ProtocolError> {
 }
 
 pub(crate) fn validate_id(value: &str, field: &str) -> Result<(), ProtocolError> {
-    if value.len() != 26
-        || ulid::Ulid::from_string(value).is_err()
-        || value != value.to_ascii_uppercase()
-    {
+    if crate::model::Ulid::parse(value).is_err() {
         return Err(authorization_error(
             AuthorizationErrorCode::InvalidFormat,
             [field],
-            "identifier must be a canonical ULID",
+            "identifier must be a canonical ULID, with or without its kind's prefix",
         ));
     }
     Ok(())

@@ -44,10 +44,16 @@ impl AvatarSigner {
     /// profile change or an inactive account ends it, because serving checks
     /// both against current state.
     pub(super) fn mint(&self, principal: &str, revision: u64) -> Option<String> {
-        let principal: ulid::Ulid = principal.parse().ok()?;
-        let mut bytes = Vec::with_capacity(57);
-        bytes.push(2);
-        bytes.extend_from_slice(&principal.to_bytes());
+        // The user ID's prefix, padded to two bytes, then its ULID.
+        let prefix = trellis_protocol::model::Ulid::parse(principal).ok()?;
+        let prefix = prefix.prefix();
+        let value: ulid::Ulid = principal[prefix.len()..].parse().ok()?;
+        let mut bytes = Vec::with_capacity(59);
+        bytes.push(3);
+        let mut letters = [0; 2];
+        letters[..prefix.len()].copy_from_slice(prefix.as_bytes());
+        bytes.extend_from_slice(&letters);
+        bytes.extend_from_slice(&value.to_bytes());
         bytes.extend_from_slice(&revision.to_be_bytes());
         let mac = hmac::sign(&self.0, &bytes);
         bytes.extend_from_slice(mac.as_ref());
@@ -55,19 +61,27 @@ impl AvatarSigner {
     }
 
     fn verify(&self, token: &str) -> Option<ImageToken> {
-        if token.len() != 76 {
+        if token.len() != 79 {
             return None;
         }
         let bytes = URL_SAFE_NO_PAD.decode(token).ok()?;
-        if bytes.len() != 57
-            || bytes[0] != 2
-            || hmac::verify(&self.0, &bytes[..25], &bytes[25..]).is_err()
+        if bytes.len() != 59
+            || bytes[0] != 3
+            || hmac::verify(&self.0, &bytes[..27], &bytes[27..]).is_err()
         {
             return None;
         }
+        let prefix: String = bytes[1..3]
+            .iter()
+            .take_while(|byte| **byte != 0)
+            .map(|byte| char::from(*byte))
+            .collect();
         Some(ImageToken {
-            principal: ulid::Ulid::from_bytes(bytes[1..17].try_into().ok()?).to_string(),
-            revision: u64::from_be_bytes(bytes[17..25].try_into().ok()?),
+            principal: format!(
+                "{prefix}{}",
+                ulid::Ulid::from_bytes(bytes[3..19].try_into().ok()?)
+            ),
+            revision: u64::from_be_bytes(bytes[19..27].try_into().ok()?),
         })
     }
 }

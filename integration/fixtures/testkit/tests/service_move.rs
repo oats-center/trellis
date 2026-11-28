@@ -401,6 +401,10 @@ async fn a_bundle_from_before_roles_moved_imports_into_this_build() {
     old.shutdown().await.unwrap();
 }
 
+/// A service the previous release made moves to this build and back to
+/// a fresh installation of the previous release. The IDs this build makes
+/// carry a kind prefix the previous release may not read, so the service
+/// and its role come from that release, with the IDs it makes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bundle_this_build_exports_imports_into_the_previous_release() {
     let mut new = TrellisTestRuntime::builder()
@@ -410,7 +414,24 @@ async fn a_bundle_this_build_exports_imports_into_the_previous_release() {
         .unwrap();
     let release = new.server_version().to_owned();
     let new_cli = Cli::login(&mut new).await;
-    let service = moving_service(&mut new, &new_cli).await;
+    let mut origin = TrellisTestRuntime::builder()
+        .native(NativeSource::PreviousRelease(release.clone()))
+        .start()
+        .await
+        .unwrap();
+    let origin_cli = Cli::login(&mut origin).await;
+    let service = moving_service(&mut origin, &origin_cli).await;
+    let (arrived, passphrase) = export(&origin, &origin_cli, &service).await;
+    new_cli
+        .json(&[
+            "svc",
+            "import",
+            path(&arrived),
+            "--passphrase-file",
+            path(&passphrase),
+        ])
+        .await;
+    origin.shutdown().await.unwrap();
     let (file, passphrase) = export(&new, &new_cli, &service).await;
     let content = exported_content(&administrator(&mut new).await, service.deployment_id()).await;
 
@@ -425,9 +446,14 @@ async fn a_bundle_this_build_exports_imports_into_the_previous_release() {
         deployment["futureField"] = json!({ "added": "later" });
     });
     let auth = trellis_auth_v1::Client::from_generated(administrator(&mut old).await);
+    // 0.100.0-rc.56 reads only a bare invocation ID, not the operation ID
+    // with its prefix that this build's client makes.
     let operation = auth
         .deployments_import()
-        .start(&wire(json!({ "check": true })))
+        .start_with_invocation_id(
+            ulid::Ulid::generate().to_string(),
+            &wire(json!({ "check": true })),
+        )
         .await
         .unwrap();
     operation.upload_from(&mut newer.as_slice()).await.unwrap();

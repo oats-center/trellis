@@ -158,6 +158,10 @@ imports into depends on the release that reads it:
 - rc.56 refuses an export with a record kind or other part it does not
   know, or with a new field on an app, OIDC provider, user profile or theme,
   so an export from a later release that adds one does not import into it.
+  It reads only bare IDs: a later release's export imports into rc.56 only
+  what rc.56 or earlier made, and leaves out the roles and refuses the
+  users and deployments the later release created, whose IDs start with
+  their kind's letters.
 - Every release after rc.56 reads the exports of every release, older or
   newer. A newer Trellis only adds to exports, and an older one reads past
   what it added: the report lists each part under "Not understood, left

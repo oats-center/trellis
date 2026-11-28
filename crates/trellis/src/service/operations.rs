@@ -1220,7 +1220,12 @@ where
     }
 
     fn start(&self, context: RequestContext, input: D::Input) -> AcceptedOperationFuture<D> {
-        self.start_invocation(context, ulid::Ulid::generate().to_string(), input, None)
+        self.start_invocation(
+            context,
+            trellis_protocol::model::IdKind::Operation.generate(),
+            input,
+            None,
+        )
     }
 
     fn start_invocation(

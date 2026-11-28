@@ -39,6 +39,7 @@ import {
   type TrellisTransportProvider,
 } from "../../transport/generations.ts";
 import type { InferSchemaType } from "../../participant.ts";
+import { newId } from "../../values.ts";
 import type { RuntimeApi } from "../../participant_runtime/api.ts";
 import type {
   ParticipantJobsMetadata,
@@ -1852,7 +1853,7 @@ function createSqlOutboxJobEnqueueFacade<
           );
         }
         const submissionId = ulid();
-        const jobId = ulid();
+        const jobId = newId("job");
         const submission = prepareJobSubmission({
           submissionId,
           mode: "create",
@@ -1909,7 +1910,7 @@ function createSqlOutboxJobEnqueueFacade<
           );
         }
         const submissionId = ulid();
-        const jobId = ulid();
+        const jobId = newId("job");
         const submission = prepareJobSubmission({
           submissionId,
           mode: "submit",

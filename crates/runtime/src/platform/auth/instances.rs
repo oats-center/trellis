@@ -2,6 +2,7 @@
 //! instances that stay offline (design/auth/instance-enrollment.md).
 
 use std::sync::Arc;
+use trellis_protocol::model::IdKind;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rusqlite::{params, OptionalExtension};
@@ -241,7 +242,7 @@ fn issue_secret(
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            let secret_id = id();
+            let secret_id = IdKind::EnrollmentSecret.generate();
             let mut random = [0u8; 32];
             getrandom::fill(&mut random).map_err(|_| AuthError::Unavailable)?;
             let issued = format!(
@@ -943,10 +944,13 @@ fn enroll(
         return Ok(Err(refusal));
     }
     let text = input.enrollment_secret.as_str();
+    // `trellis-enroll-<secret ID>-<random>`: an ID has no `-`.
     let named = text
         .strip_prefix(SECRET_PREFIX)
-        .and_then(|rest| rest.get(..26).zip(rest.get(26..)))
-        .filter(|(_, rest)| rest.starts_with('-'))
+        .and_then(|rest| rest.split_once('-'))
+        .filter(|(secret, _)| {
+            trellis_protocol::model::parse_id(secret, &[IdKind::EnrollmentSecret]).is_ok()
+        })
         .map(|(secret, _)| secret.to_owned());
     let Some(named) = named else {
         return Ok(Err(Refusal::Unknown));
@@ -1128,7 +1132,7 @@ fn enroll(
             "INSERT INTO auth_direct_capabilities(grant_id,principal_id,capability_id,\
             capability_generation,revision,expires_at,created_at) VALUES(?1,?2,?3,?4,1,?5,?6)",
             params![
-                id(),
+                IdKind::Grant.generate(),
                 created.principal_id,
                 RETIRE_OWN_CAPABILITY,
                 retire_own.identity_generation.get(),

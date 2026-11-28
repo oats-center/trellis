@@ -1739,13 +1739,16 @@ pub(super) async fn lookup_waiting_claim(id: &str) -> miette::Result<Option<Stri
         .into_iter()
         .map(|claim| json!({ "deploymentId": claim.claim_id.to_string(), "title": claim.title }));
     // A claim ID names only the claim with that ID, never another claim's title.
-    let found = if id.parse::<ulid::Ulid>().is_ok() {
-        claims
-            .into_iter()
-            .find(|claim| claim.get("deploymentId").and_then(Value::as_str) == Some(id))
-    } else {
-        find_deployment_entry(claims, id)?
-    };
+    let found =
+        if trellis_protocol::model::parse_id(id, &[trellis_protocol::model::IdKind::ServiceClaim])
+            .is_ok()
+        {
+            claims
+                .into_iter()
+                .find(|claim| claim.get("deploymentId").and_then(Value::as_str) == Some(id))
+        } else {
+            find_deployment_entry(claims, id)?
+        };
     found
         .map(|claim| {
             claim
@@ -1812,7 +1815,15 @@ async fn list_deployments(
         DeploymentKind::Service => auth_types::AuthDeploymentKind::Service,
         DeploymentKind::Device => auth_types::AuthDeploymentKind::Device,
     };
-    if deployment_id.parse::<ulid::Ulid>().is_ok() {
+    if trellis_protocol::model::parse_id(
+        deployment_id,
+        &[
+            trellis_protocol::model::IdKind::ServiceDeployment,
+            trellis_protocol::model::IdKind::DeviceDeployment,
+        ],
+    )
+    .is_ok()
+    {
         return match trellis_runtime_apis::apps::trellis_cli::Client::from_generated(
             connected.clone(),
         )

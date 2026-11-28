@@ -12,7 +12,8 @@ const MAX_ATTRIBUTE_LENGTH = 96;
 const LOW_CARDINALITY_PATTERN = /^[A-Za-z0-9_.:-]+$/;
 const UUID_PATTERN =
   /(^|[_.:-])[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}($|[_.:-])/i;
-const ULID_PATTERN = /(^|[_.:-])[0-7][0-9A-HJKMNP-TV-Z]{25}($|[_.:-])/i;
+const ULID_PATTERN =
+  /(^|[_.:-])(?:[A-Z]{1,2})?[0-7][0-9A-HJKMNP-TV-Z]{25}($|[_.:-])/i;
 const LONG_HEX_SEGMENT_PATTERN = /(^|[_.:-])[0-9a-f]{12,}($|[_.:-])/i;
 const TRELLIS_SUBJECT_PREFIX_PATTERN =
   /^(rpc|events|lives|operations|jobs|state|kv|store|resources|transfer)\.v\d+\./;

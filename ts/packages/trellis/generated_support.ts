@@ -27,7 +27,7 @@ type OpenEnum<T extends string> =
   T | (string & { readonly __openEnum?: never });
 /** An IDL `timestamp`: a canonical UTC RFC 3339 string. */
 export type Timestamp = string & { readonly __timestamp: unique symbol };
-/** An IDL `ulid`: a canonical ULID string. */
+/** An IDL `ulid`: a canonical ULID string, optionally after its kind's one- or two-letter prefix. */
 export type Ulid = string & { readonly __ulid: unique symbol };
 type OptionalCodec<T> = Codec<T | undefined> & Readonly<{ optional: true }>;
 type ModelField = Codec<unknown> | OptionalCodec<unknown>;
@@ -165,7 +165,7 @@ function timestamp(value: unknown): Timestamp {
   return `${canonical}${digits ? `.${digits}` : ""}Z` as Timestamp;
 }
 
-const ulidPattern = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+const ulidPattern = /^(?:[A-Z]{1,2})?[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 /** Declared IDL constraints a generated codec enforces. */
 type Limits = Readonly<{

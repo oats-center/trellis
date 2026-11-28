@@ -256,7 +256,9 @@ fn primitive_schema(value: Primitive, bounds: &Bounds) -> Value {
                 "x-trellis-canonical":"utc-rfc3339"
             })
         }
-        Primitive::Ulid => json!({"type":"string","pattern":"^[0-7][0-9A-HJKMNP-TV-Z]{25}$"}),
+        Primitive::Ulid => {
+            json!({"type":"string","pattern":"^(?:[A-Z]{1,2})?[0-7][0-9A-HJKMNP-TV-Z]{25}$"})
+        }
         // Any JSON value; the contract does not constrain its shape.
         Primitive::Json => json!({}),
     };

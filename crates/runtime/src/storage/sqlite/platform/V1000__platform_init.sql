@@ -27,7 +27,7 @@ CREATE TABLE auth_principals (
 );
 
 CREATE TABLE auth_provider_identities (
-    identity_id TEXT NOT NULL UNIQUE CHECK (length(identity_id) = 26),
+    identity_id TEXT NOT NULL UNIQUE,
     provider TEXT NOT NULL CHECK (length(provider) > 0),
     provider_subject TEXT NOT NULL CHECK (length(provider_subject) > 0),
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id) ON DELETE CASCADE,
@@ -142,7 +142,7 @@ CREATE TABLE auth_deployments (
 -- Only the SHA-256 hash of the secret's text is stored; the text is shown
 -- once, when it is issued. Revoked secrets stay so later use can be reported.
 CREATE TABLE auth_enrollment_secrets (
-    secret_id TEXT PRIMARY KEY CHECK (length(secret_id) = 26),
+    secret_id TEXT PRIMARY KEY,
     deployment_id TEXT NOT NULL REFERENCES auth_deployments(deployment_id) ON DELETE CASCADE,
     title TEXT NOT NULL CHECK (length(trim(title)) > 0),
     secret_hash TEXT NOT NULL UNIQUE CHECK (length(secret_hash) = 43),
@@ -236,7 +236,7 @@ CREATE TABLE auth_devices (
 
 CREATE TABLE auth_resources (
     resource_id TEXT PRIMARY KEY CHECK (length(resource_id) = 43),
-    allocation_id TEXT NOT NULL CHECK (length(allocation_id) = 26),
+    allocation_id TEXT NOT NULL,
     owner_kind TEXT NOT NULL CHECK (owner_kind IN ('user', 'deployment')),
     owner_id TEXT NOT NULL CHECK (length(owner_id) > 0),
     participant_id TEXT CHECK (participant_id IS NULL OR length(participant_id) > 0),
@@ -274,7 +274,7 @@ CREATE TABLE auth_resource_removals (
     resource_id TEXT NOT NULL CHECK (length(resource_id) = 43),
     resource_revision INTEGER NOT NULL,
     physical_id TEXT NOT NULL,
-    allocation_id TEXT NOT NULL CHECK (length(allocation_id) = 26),
+    allocation_id TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('accepted', 'executing', 'completed')),
     execution_owner TEXT,
     lease_until INTEGER,
@@ -437,7 +437,7 @@ CREATE INDEX auth_device_activation_reviews_state_expiry
 
 -- A participant revision a running service instance submitted for itself.
 CREATE TABLE auth_service_updates (
-    update_id TEXT PRIMARY KEY CHECK (length(update_id) = 26),
+    update_id TEXT PRIMARY KEY,
     deployment_id TEXT NOT NULL,
     instance_id TEXT NOT NULL,
     participant_id TEXT NOT NULL,
@@ -462,7 +462,7 @@ CREATE INDEX auth_service_updates_deployment
 -- identity. Approving the connecting service's update creates the deployment
 -- and an instance holding this identity, and marks the claim claimed.
 CREATE TABLE auth_service_claims (
-    claim_id TEXT PRIMARY KEY CHECK (length(claim_id) = 26),
+    claim_id TEXT PRIMARY KEY,
     -- The principal the waiting service connects as; retired once claimed.
     principal_id TEXT NOT NULL UNIQUE REFERENCES auth_principals(principal_id),
     identity_key_id TEXT NOT NULL UNIQUE CHECK (length(identity_key_id) = 43),
@@ -537,7 +537,7 @@ CREATE TABLE auth_post_commit_actions (
     attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     next_attempt_at INTEGER NOT NULL CHECK (next_attempt_at BETWEEN 0 AND 9007199254740991),
     claimed_until INTEGER CHECK (claimed_until BETWEEN 0 AND 9007199254740991),
-    claim_token TEXT CHECK (claim_token IS NULL OR length(claim_token) = 26),
+    claim_token TEXT,
     last_error TEXT,
     predecessor_action_id TEXT,
     enforcement_work_id TEXT REFERENCES auth_enforcement_work(work_id),
@@ -561,7 +561,7 @@ CREATE TABLE auth_bootstrap_administrator (
 );
 
 CREATE TABLE auth_roles (
-    role_id TEXT NOT NULL CHECK (length(role_id) = 26),
+    role_id TEXT NOT NULL,
     identity_generation INTEGER NOT NULL CHECK (identity_generation >= 1),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 256),
@@ -587,7 +587,7 @@ CREATE TABLE auth_accepted_apis (
     UNIQUE (api_id, generation)
 );
 CREATE TABLE auth_api_reviews (
-    review_id TEXT PRIMARY KEY CHECK (length(review_id) = 26),
+    review_id TEXT PRIMARY KEY,
     api_id TEXT NOT NULL,
     review_json TEXT NOT NULL CHECK (json_valid(review_json)),
     created_at INTEGER NOT NULL,
@@ -683,7 +683,7 @@ CREATE TABLE auth_role_capabilities (
         REFERENCES auth_capability_identities(capability_id, identity_generation)
 );
 CREATE TABLE auth_role_assignments (
-    assignment_id TEXT NOT NULL UNIQUE CHECK (length(assignment_id) = 26),
+    assignment_id TEXT NOT NULL UNIQUE,
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
     role_id TEXT NOT NULL,
     role_generation INTEGER NOT NULL,
@@ -695,7 +695,7 @@ CREATE TABLE auth_role_assignments (
 );
 CREATE INDEX auth_role_assignments_role ON auth_role_assignments(role_id, role_generation, principal_id);
 CREATE TABLE auth_direct_capabilities (
-    grant_id TEXT NOT NULL UNIQUE CHECK (length(grant_id) = 26),
+    grant_id TEXT NOT NULL UNIQUE,
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
     capability_id TEXT NOT NULL,
     capability_generation INTEGER NOT NULL,
@@ -710,7 +710,7 @@ CREATE INDEX auth_direct_capabilities_identity
 ON auth_direct_capabilities(capability_id, capability_generation, principal_id);
 
 CREATE TABLE auth_oidc_providers (
-    provider_id TEXT PRIMARY KEY CHECK (length(provider_id) = 26),
+    provider_id TEXT PRIMARY KEY,
     issuer TEXT NOT NULL,
     display_name TEXT NOT NULL,
     client_id TEXT NOT NULL,
@@ -730,7 +730,7 @@ CREATE TABLE auth_oidc_providers (
 CREATE UNIQUE INDEX auth_oidc_providers_live_issuer
     ON auth_oidc_providers(issuer) WHERE state != 'deleted';
 CREATE TABLE auth_oidc_role_mappings (
-    mapping_id TEXT PRIMARY KEY CHECK (length(mapping_id) = 26),
+    mapping_id TEXT PRIMARY KEY,
     provider_id TEXT NOT NULL REFERENCES auth_oidc_providers(provider_id),
     claim_name TEXT NOT NULL,
     claim_value TEXT NOT NULL,
@@ -745,7 +745,7 @@ CREATE TABLE auth_oidc_mapping_roles (
     PRIMARY KEY (mapping_id, role_id, role_generation)
 );
 CREATE TABLE auth_login_sessions (
-    login_session_id TEXT PRIMARY KEY CHECK (length(login_session_id) = 26),
+    login_session_id TEXT PRIMARY KEY,
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
     method TEXT NOT NULL CHECK (method IN ('local', 'oidc')),
     provider_id TEXT REFERENCES auth_oidc_providers(provider_id),
@@ -770,7 +770,7 @@ CREATE INDEX auth_login_sessions_principal ON auth_login_sessions(principal_id, 
 CREATE INDEX auth_login_sessions_provider ON auth_login_sessions(provider_id, principal_id, observation_order);
 
 CREATE TABLE auth_portal_sessions (
-    portal_session_id TEXT PRIMARY KEY CHECK (length(portal_session_id)=26),
+    portal_session_id TEXT PRIMARY KEY,
     cookie_hash TEXT NOT NULL UNIQUE,
     csrf_hash TEXT NOT NULL,
     login_session_id TEXT REFERENCES auth_login_sessions(login_session_id),
@@ -860,7 +860,7 @@ CREATE INDEX auth_consent_binding
 ON auth_remembered_consent(principal_id, client_id, binding_kind, binding_value, expires_at);
 
 CREATE TABLE auth_oauth_grants (
-    oauth_grant_id TEXT PRIMARY KEY CHECK (length(oauth_grant_id) = 26),
+    oauth_grant_id TEXT PRIMARY KEY,
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
     login_session_id TEXT NOT NULL REFERENCES auth_login_sessions(login_session_id),
     client_id TEXT NOT NULL,
@@ -926,7 +926,7 @@ CREATE TABLE auth_oauth_barriers (
 );
 
 CREATE TABLE auth_authorization_sessions (
-    authorization_session_id TEXT PRIMARY KEY CHECK (length(authorization_session_id) = 26),
+    authorization_session_id TEXT PRIMARY KEY,
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
     binding_kind TEXT NOT NULL CHECK (binding_kind IN ('browser', 'native', 'service', 'device')),
     binding_key TEXT NOT NULL CHECK (length(binding_key) = 43),
@@ -1067,7 +1067,7 @@ CREATE TRIGGER auth_authorization_revocation_retained BEFORE DELETE ON auth_auth
 BEGIN SELECT RAISE(ABORT, 'historical revocation cutoffs are retained'); END;
 
 CREATE TABLE auth_attachments (
-    attachment_id TEXT PRIMARY KEY CHECK (length(attachment_id) = 26),
+    attachment_id TEXT PRIMARY KEY,
     server_id TEXT NOT NULL,
     broker_client_id INTEGER NOT NULL CHECK (broker_client_id >= 1),
     authorization_session_id TEXT NOT NULL REFERENCES auth_authorization_sessions(authorization_session_id),
@@ -1089,7 +1089,7 @@ CREATE INDEX auth_attachments_session ON auth_attachments(authorization_session_
 CREATE INDEX auth_attachments_broker ON auth_attachments(server_id, broker_client_id, state);
 
 CREATE TABLE auth_enforcement_work (
-    work_id TEXT PRIMARY KEY CHECK (length(work_id) = 26),
+    work_id TEXT PRIMARY KEY,
     scope_kind TEXT NOT NULL,
     scope_key TEXT NOT NULL,
     scope_json TEXT NOT NULL CHECK (json_valid(scope_json)),
@@ -1114,7 +1114,7 @@ CREATE INDEX auth_enforcement_work_ready
     ON auth_enforcement_work(state, lane, created_at, work_id);
 
 CREATE TABLE auth_security_audit (
-    audit_id TEXT PRIMARY KEY CHECK (length(audit_id) = 26),
+    audit_id TEXT PRIMARY KEY,
     actor_principal_id TEXT REFERENCES auth_principals(principal_id),
     kind TEXT NOT NULL,
     target_id TEXT NOT NULL,
@@ -1185,7 +1185,7 @@ CREATE TABLE auth_issuer_rotations (
     sequence INTEGER PRIMARY KEY CHECK (sequence >= 1),
     previous_key_id TEXT NOT NULL REFERENCES auth_authorization_issuers(key_id),
     next_key_id TEXT NOT NULL UNIQUE REFERENCES auth_authorization_issuers(key_id),
-    trellis_instance_id TEXT NOT NULL CHECK (length(trellis_instance_id) = 26),
+    trellis_instance_id TEXT NOT NULL,
     audience_nats_account TEXT NOT NULL,
     signed_bytes BLOB NOT NULL,
     activated_at INTEGER NOT NULL

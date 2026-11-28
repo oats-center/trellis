@@ -2095,12 +2095,14 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
         .id
         .as_deref()
         .map(|id| {
-            trellis_protocol::model::Ulid::parse(id.trim()).map_err(|_| {
-                miette::miette!(
-                    "--id {id:?} is not a Trellis user ID: user IDs are 26-character \
-                    ULIDs in capital letters, as `trellis users show` prints them"
-                )
-            })
+            trellis_protocol::model::parse_id(id.trim(), &[trellis_protocol::model::IdKind::User])
+                .map_err(|_| {
+                    miette::miette!(
+                        "--id {id:?} is not a Trellis user ID: a user ID is a ULID in capital \
+                    letters, after `U` unless an earlier Trellis made it, as `trellis users \
+                    show` prints it"
+                    )
+                })
         })
         .transpose()?;
     // An OIDC sign-in is optional, but naming either half asks for the other.
@@ -2387,7 +2389,7 @@ async fn resolve_role(
     let typed = typed.trim();
     // A role ID is definitive: an ID no role has is refused rather than
     // matched against role names.
-    if typed.parse::<Ulid>().is_ok() {
+    if trellis_protocol::model::parse_id(typed, &[trellis_protocol::model::IdKind::Role]).is_ok() {
         return roles
             .into_iter()
             .find(|role| role.role_id.to_string().eq_ignore_ascii_case(typed))
@@ -2434,7 +2436,7 @@ async fn resolve_user(
     let typed = typed.trim();
     // A user ID is definitive: it is looked up by ID only, so neither a
     // missing user nor a failed lookup turns it into a username or email.
-    if typed.parse::<Ulid>().is_ok() {
+    if trellis_protocol::model::parse_id(typed, &[trellis_protocol::model::IdKind::User]).is_ok() {
         return match auth
             .users_get(&auth_types::AuthUserGetRequest {
                 user_id: wire(typed)?,

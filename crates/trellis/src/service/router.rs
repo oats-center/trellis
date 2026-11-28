@@ -925,9 +925,13 @@ impl Router {
                     Box::pin(async move {
                         let schemas = schemas.get()?;
                         let envelope: OperationStartEnvelope = serde_json::from_slice(&payload)?;
-                        envelope.invocation_id.parse::<ulid::Ulid>().map_err(|_| {
+                        trellis_protocol::model::parse_id(
+                            &envelope.invocation_id,
+                            &[trellis_protocol::model::IdKind::Operation],
+                        )
+                        .map_err(|_| {
                             ServerError::Internal(
-                                "operation invocation id must be a ULID".to_owned(),
+                                "operation invocation id must be an operation ID".to_owned(),
                             )
                         })?;
                         schemas.input.validate(&envelope.input)?;

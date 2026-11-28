@@ -96,7 +96,8 @@ export function typeLabel(node: Schema, defs: Record<string, Schema>): string {
     case "string":
       if (node.format === "date-time") return "timestamp";
       if (node.contentEncoding === "base64") return "bytes";
-      if (node.pattern === "^[0-7][0-9A-HJKMNP-TV-Z]{25}$") return "ULID";
+      if (node.pattern === "^(?:[A-Z]{1,2})?[0-7][0-9A-HJKMNP-TV-Z]{25}$")
+        return "ULID";
       return `string${count(node, "minLength", "maxLength", "characters")}`;
     case "integer":
       return node.minimum === 0 ? "uint32" : "int32";

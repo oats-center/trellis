@@ -481,7 +481,7 @@ where
         &self,
         input: &D::Input,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
-        self.start_with_invocation_id(ulid::Ulid::generate().to_string(), input)
+        self.start_with_invocation_id(trellis_protocol::model::IdKind::Operation.generate(), input)
             .await
     }
 
@@ -551,16 +551,18 @@ where
                 "operation is not cancelable".to_owned(),
             ));
         }
-        let parsed_id = invocation_id.parse::<ulid::Ulid>().map_err(|_| {
+        use trellis_protocol::model::{parse_id, IdKind};
+        parse_id(&invocation_id, &[IdKind::Operation]).map_err(|_| {
             TrellisClientError::OperationProtocol(
-                "operation invocation id must be a ULID".to_owned(),
+                "operation invocation id must be an operation ID".to_owned(),
             )
         })?;
         if let Some(deployment_id) = deployment_id {
-            if !deployment_id
-                .parse::<ulid::Ulid>()
-                .is_ok_and(|id| id.to_string() == deployment_id)
-                || parsed_id.to_string() != invocation_id
+            if parse_id(
+                deployment_id,
+                &[IdKind::ServiceDeployment, IdKind::DeviceDeployment],
+            )
+            .is_err()
             {
                 return Err(TrellisClientError::OperationProtocol(
                     "targeted operation requires a canonical deployment identity and \

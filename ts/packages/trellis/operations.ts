@@ -1,8 +1,8 @@
 import { AsyncResult, err, isErr, ok, type Result } from "@oatscenter/result";
-import { ulid } from "ulid";
 
 import { type JsonValue, parseUnknownSchema } from "./codec.ts";
 import type { InferSchemaType } from "./participant.ts";
+import { newId, parseId } from "./values.ts";
 import {
   getBuiltinRpcError,
   OperationAlreadyTerminalError,
@@ -1377,10 +1377,16 @@ function invokeOperation<
       if (
         (targetDeploymentId !== undefined &&
           (typeof targetDeploymentId !== "string" ||
-            !/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/u.test(targetDeploymentId) ||
+            isErr(
+              parseId(
+                targetDeploymentId,
+                "serviceDeployment",
+                "deviceDeployment",
+              ),
+            ) ||
             invocationId === undefined)) ||
         (invocationId !== undefined &&
-          !/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/u.test(invocationId))
+          isErr(parseId(invocationId, "operation")))
       ) {
         return err(
           createTransportError({
@@ -1398,7 +1404,7 @@ function invokeOperation<
             : operationStartSubject(descriptor, targetDeploymentId),
           operationRequestBody(
             encodeOperationInput(descriptor.input, input),
-            invocationId ?? ulid(),
+            invocationId ?? newId("operation"),
             cancellationRequested,
           ),
           targetDeploymentId,

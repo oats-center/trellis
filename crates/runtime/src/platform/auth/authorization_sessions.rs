@@ -1,5 +1,6 @@
 use super::Administration;
 use std::{collections::BTreeMap, sync::Arc};
+use trellis_protocol::model::IdKind;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::SigningKey;
@@ -20,7 +21,7 @@ use super::own_context::admission_registry;
 use super::policy::{evaluate, CapabilitySelection};
 use super::revocation::{enqueue_effect, retire_session};
 use super::sqlite::{
-    decode, digest, id, json, AuthError, Connection, Mutation, SqliteAuthorizationStore,
+    decode, digest, json, AuthError, Connection, Mutation, SqliteAuthorizationStore,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -895,7 +896,7 @@ impl SqliteAuthorizationStore {
         if !current.required_missing.is_empty() {
             return Ok(Err(AuthError::RequiredMissing));
         }
-        let session = session.unwrap_or_else(id);
+        let session = session.unwrap_or_else(|| IdKind::Session.generate());
         let (kind, grant, identity) = match &admission.credential {
             Credential::OAuthGrant(grant) => ("oauthGrant", Some(grant.as_str()), None),
             Credential::ProvisionedIdentity(identity) => {

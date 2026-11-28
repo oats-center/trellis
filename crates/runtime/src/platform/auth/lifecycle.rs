@@ -1,5 +1,6 @@
 use super::Administration;
 use std::collections::{BTreeMap, BTreeSet};
+use trellis_protocol::model::IdKind;
 
 use argon2::{Argon2, PasswordHasher};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -432,7 +433,7 @@ impl SqliteAuthorizationStore {
             [&login.principal_id],
             |row| row.get(0),
         )?;
-        let session = id();
+        let session = IdKind::Session.generate();
         connection.execute(
             "INSERT INTO auth_login_sessions(login_session_id,principal_id,method,\
             provider_id,upstream_issuer,upstream_subject,verified_claims_json,\
@@ -501,7 +502,12 @@ impl SqliteAuthorizationStore {
                 if issuer.query().is_some() || issuer.fragment().is_some() {
                     return invalid("issuer must not contain a query or fragment");
                 }
-                if ulid::Ulid::from_string(&registration.provider_id).is_err() {
+                if trellis_protocol::model::parse_id(
+                    &registration.provider_id,
+                    &[trellis_protocol::model::IdKind::OidcProvider],
+                )
+                .is_err()
+                {
                     return invalid("provider ID is not valid");
                 }
                 if registration.client_id.is_empty() {
@@ -631,7 +637,13 @@ impl SqliteAuthorizationStore {
             "INSERT INTO auth_provider_identities(identity_id,principal_id,\
             provider,provider_subject,linked_at,last_seen_at) \
             VALUES(?1,?2,?3,?4,?5,?5)",
-            params![id(), principal, provider, subject, now],
+            params![
+                IdKind::LinkedSignIn.generate(),
+                principal,
+                provider,
+                subject,
+                now
+            ],
         )?;
         Ok(false)
     }

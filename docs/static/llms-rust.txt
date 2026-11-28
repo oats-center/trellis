@@ -54,6 +54,10 @@ of its own and names `Bytes`, `Int64`, `Timestamp`, `Ulid`, and the other wire
 wrappers through `trellis_rs::protocol`, so they match `trellis-rs` wherever
 Cargo resolved `trellis-protocol` from. Use
 `trellis_rs::protocol::model::<Type>` rather than adding `trellis-protocol`.
+`Ulid` keeps an ID's kind prefix (see IDs in the core guide) and its text as
+given; `IdKind::Job.generate()` makes an ID of a kind, and
+`parse_id(text, &[IdKind::User])` parses one from outside as one of the kinds,
+bare or prefixed, refusing another kind's.
 The binding comes from the exact source the lock names (a path, a git commit,
 or a registry archive with the locked checksum), never from another
 same-version copy. A locked source missing from the local Cargo cache, or a

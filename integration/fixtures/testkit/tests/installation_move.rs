@@ -506,11 +506,29 @@ async fn an_installation_moves_between_releases_without_setup() {
             "trellis.auth.v1:platform.manage",
             "trellis.auth.v1:accounts.manage",
             "trellis.auth.v1:roles.manage",
+            "trellis.auth.v1:users.manage",
         ],
     )
     .await;
     assert_eq!(principal(&admin).await, new_admin);
     assert!(roles_of(&admin, &new_admin).await.contains(&pingers));
+    // Every deployment keeps the exact ID the earlier release made, bare
+    // ULIDs as rc.56 made them included, so its instances, subjects and
+    // stored references still name it.
+    for deployment in [
+        device_deployment.deployment_id.to_string(),
+        sensor_deployment.deployment_id.to_string(),
+        service.deployment_id().to_owned(),
+    ] {
+        let found = admin
+            .deployments_get(&wire(json!({ "deploymentId": deployment })))
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(found).unwrap()["deployment"]["deploymentId"],
+            deployment.as_str()
+        );
+    }
     assert!(admin
         .users_find(&wire(json!({ "userId": old_admin })))
         .await
@@ -637,7 +655,23 @@ async fn an_installation_moves_between_releases_without_setup() {
         .await
         .unwrap();
     let report = &imported["import"];
-    assert_eq!(report["access"]["skipped"], json!([]), "{report}");
+    // Only what the build under test made can stay behind: the role its own
+    // initialization created has an ID with a kind prefix, which 0.100.0-rc.56
+    // does not read. Everything the export carried from the previous release,
+    // with bare IDs, moves.
+    let made_here = |item: &Value| {
+        item["roleId"]
+            .as_str()
+            .is_some_and(|id| id.starts_with(|first: char| first.is_ascii_uppercase()))
+    };
+    assert!(
+        report["access"]["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(made_here),
+        "{report}"
+    );
     assert!(
         listed(report, "created", "user", user.principal_id()),
         "{report}"

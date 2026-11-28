@@ -4,6 +4,7 @@ use super::sqlite::timestamp;
 use super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
+use trellis_protocol::model::IdKind;
 
 use crate::platform::auth::sqlite::Connection;
 use rusqlite::{params, OptionalExtension};
@@ -184,7 +185,7 @@ pub(super) fn put_role(
             .role_id
             .as_ref()
             .map(ToString::to_string)
-            .unwrap_or_else(super::sqlite::id);
+            .unwrap_or_else(|| IdKind::Role.generate());
         let command = PolicyMutation::RolePut {
             role_id: role_id.clone(),
             expected_revision: input.expected_revision.0,

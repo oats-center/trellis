@@ -90,7 +90,7 @@ impl DurableOperationRecord {
             time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339)
                 .map_err(|_| invalid("invalid cancellation timestamp"))?;
         }
-        if self.invocation_id.parse::<ulid::Ulid>().is_err()
+        if crate::model::Ulid::parse(&self.invocation_id).is_err()
             || self.invocation_digest
                 != operation_invocation_digest(
                     &self.api_id,

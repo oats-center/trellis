@@ -347,7 +347,7 @@ pub enum Primitive {
     Bytes,
     /// Canonical UTC RFC3339 timestamp.
     Timestamp,
-    /// Canonical uppercase ULID.
+    /// Canonical uppercase ULID, optionally after a one- or two-letter kind prefix.
     Ulid,
     /// Any JSON value, carried unchecked: object, array, string, number, bool,
     /// or null.

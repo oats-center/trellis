@@ -2397,7 +2397,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         Array.isArray(jsonData) ||
         typeof (jsonData as Record<string, unknown>).invocationId !==
           "string" ||
-        !/^[0-9A-HJKMNP-TV-Z]{26}$/u.test(
+        !/^(?:[A-Z]{1,2})?[0-9A-HJKMNP-TV-Z]{26}$/u.test(
           (jsonData as Record<string, string>).invocationId,
         ) ||
         !("input" in jsonData)

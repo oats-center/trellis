@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use trellis_protocol::model::IdKind;
 
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -899,7 +900,7 @@ fn submit(
                     current.capabilities.iter().map(String::as_str),
                 )
                 .is_err());
-        let update = id();
+        let update = IdKind::ServiceUpdate.generate();
         connection.execute(
             "UPDATE auth_service_updates SET state='superseded',decided_at=?2,revision=revision+1 \
             WHERE deployment_id=?1 AND state='pending'",
@@ -1025,7 +1026,7 @@ fn apply(
                 capability_id,capability_generation,revision,expires_at,created_at) \
                 VALUES(?1,?2,?3,?4,1,?5,?6)",
                 params![
-                    id(),
+                    IdKind::Grant.generate(),
                     principal,
                     added,
                     capability.identity_generation.get(),
@@ -1073,7 +1074,7 @@ pub(super) fn upgrade_builtin(
     let candidate = Candidate::compile(evidence.clone(), participant)?;
     let current = installed(connection, &deployment)?;
     let changes = changes(connection, &deployment, &current, &candidate)?;
-    let update = id();
+    let update = IdKind::ServiceUpdate.generate();
     connection.execute(
         "INSERT INTO auth_service_updates(update_id,deployment_id,instance_id,participant_id,\
         participant_digest,evidence_json,base_binding_revision,changes_json,state,\
@@ -1495,7 +1496,7 @@ fn submit_to_claim(
         WHERE deployment_id=?1 AND state='pending'",
         params![claim, now],
     )?;
-    let update = id();
+    let update = IdKind::ServiceUpdate.generate();
     connection.execute(
         "INSERT INTO auth_service_updates(update_id,deployment_id,instance_id,participant_id,\
         participant_digest,evidence_json,base_binding_revision,changes_json,state,\
@@ -1644,7 +1645,10 @@ pub(super) fn create_claim(
                     "a service with identity key {public_key} is already added"
                 )));
             }
-            let (claim, principal) = (id(), id());
+            let (claim, principal) = (
+                IdKind::ServiceClaim.generate(),
+                IdKind::InstancePrincipal.generate(),
+            );
             connection.execute(
             "INSERT INTO auth_principals(principal_id,kind,state,created_at,updated_at,version) \
             VALUES(?1,'service','active',?2,?2,1)",
@@ -1659,7 +1663,7 @@ pub(super) fn create_claim(
                 "INSERT INTO auth_direct_capabilities(grant_id,principal_id,capability_id,\
             capability_generation,revision,created_at) VALUES(?1,?2,?3,?4,1,?5)",
                 params![
-                    id(),
+                    IdKind::Grant.generate(),
                     principal,
                     super::deployments::SERVICE_UPDATE_CAPABILITY,
                     capability.identity_generation.get(),

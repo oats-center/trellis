@@ -584,13 +584,7 @@ impl OAuthAdmission {
             &self.login_session_id,
             &self.principal_id,
         ] {
-            if ulid::Ulid::from_string(id)
-                .map_err(|_| invalid())?
-                .to_string()
-                != *id
-            {
-                return Err(invalid());
-            }
+            crate::model::Ulid::parse(id).map_err(|_| invalid())?;
         }
         canonical::<32>(&self.issuer_key_id)?;
         canonical::<32>(&self.persistent_dpop_jkt)?;

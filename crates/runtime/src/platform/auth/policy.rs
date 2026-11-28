@@ -1,5 +1,6 @@
 use super::Administration;
 use std::collections::{BTreeMap, BTreeSet};
+use trellis_protocol::model::IdKind;
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -628,7 +629,8 @@ pub(super) fn apply_policy(
             description,
             capabilities,
         } => {
-            if ulid::Ulid::from_string(role_id).is_err()
+            if trellis_protocol::model::parse_id(role_id, &[trellis_protocol::model::IdKind::Role])
+                .is_err()
                 || title.is_empty()
                 || title.len() > 256
                 || description.len() > 4096
@@ -743,7 +745,7 @@ pub(super) fn apply_policy(
                 DO UPDATE SET revision=excluded.revision,\
                 expires_at=excluded.expires_at",
                 params![
-                    super::sqlite::id(),
+                    IdKind::RoleAssignment.generate(),
                     principal_id,
                     role_id,
                     generation,
@@ -847,7 +849,7 @@ pub(super) fn apply_policy(
                 DO UPDATE SET revision=excluded.revision,\
                 expires_at=excluded.expires_at",
                 params![
-                    super::sqlite::id(),
+                    IdKind::Grant.generate(),
                     principal_id,
                     capability_id,
                     cap.identity_generation.get(),
@@ -1051,7 +1053,13 @@ pub(super) fn apply_policy(
             role_ids,
             expected_revision,
         } => {
-            if ulid::Ulid::from_string(mapping_id).is_err() || !claim_name.starts_with('/') {
+            if trellis_protocol::model::parse_id(
+                mapping_id,
+                &[trellis_protocol::model::IdKind::OidcRoleMapping],
+            )
+            .is_err()
+                || !claim_name.starts_with('/')
+            {
                 return Err(AuthError::Invalid("invalid OIDC mapping".into()));
             }
             let current: Option<u64> = connection

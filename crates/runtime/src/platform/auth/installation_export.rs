@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
+use trellis_protocol::model::IdKind;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -962,7 +963,15 @@ fn receive(input: &mut dyn Read, directory: &Path, limit: usize) -> Result<Recei
             continue;
         }
         if let Some(deployment) = bundle {
-            if ulid::Ulid::from_string(deployment).is_err() {
+            if trellis_protocol::model::parse_id(
+                deployment,
+                &[
+                    trellis_protocol::model::IdKind::ServiceDeployment,
+                    trellis_protocol::model::IdKind::DeviceDeployment,
+                ],
+            )
+            .is_err()
+            {
                 return Err(damaged(format!("entry {name}")));
             }
             // Bundle content waits in a spool encrypted with a key held
@@ -1196,8 +1205,9 @@ fn create_user(
     now: i64,
 ) -> Result<Vec<String>, AuthError> {
     let user_id = user["userId"].as_str().unwrap_or_default();
-    if ulid::Ulid::from_string(user_id).is_err() {
-        return Err(damaged("a user ID is not a ULID"));
+    if trellis_protocol::model::parse_id(user_id, &[trellis_protocol::model::IdKind::User]).is_err()
+    {
+        return Err(damaged(format!("{user_id:?} is not a user ID")));
     }
     let taken: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1)",
@@ -1244,7 +1254,7 @@ fn create_user(
             connection.execute(
                 "INSERT INTO auth_provider_identities(identity_id,provider,provider_subject,\
                 principal_id,linked_at,last_seen_at) VALUES(?1,'local',?2,?3,?4,?4)",
-                params![id(), username, user_id, now],
+                params![IdKind::LinkedSignIn.generate(), username, user_id, now],
             )?;
         }
         if let Some(credentials) = user["credentials"].as_object() {
@@ -1294,7 +1304,7 @@ fn create_user(
             "INSERT INTO auth_provider_identities(identity_id,provider,provider_subject,\
             principal_id,linked_at,last_seen_at,profile_json) VALUES(?1,?2,?3,?4,?5,?6,?7)",
             params![
-                id(),
+                IdKind::LinkedSignIn.generate(),
                 provider,
                 subject,
                 user_id,

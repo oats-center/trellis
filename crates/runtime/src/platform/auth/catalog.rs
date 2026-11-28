@@ -1,5 +1,6 @@
 use super::Administration;
 use std::collections::{BTreeMap, BTreeSet};
+use trellis_protocol::model::IdKind;
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ use trellis_protocol::{
 use super::policy::{apply_policy_in_transaction, PolicyMutation};
 use super::revocation::EnforcementScope;
 use super::sqlite::{
-    decode, digest, id, json, AuthError, Connection, Mutation, SqliteAuthorizationStore,
+    decode, digest, json, AuthError, Connection, Mutation, SqliteAuthorizationStore,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -268,7 +269,7 @@ impl SqliteAuthorizationStore {
                 )
                 .optional()?;
             let mut review = ApiReview {
-                review_id: id(),
+                review_id: IdKind::Review.generate(),
                 api_id: api_id.into(),
                 definition_digest,
                 expected_generation: 0,

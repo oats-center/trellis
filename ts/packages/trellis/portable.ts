@@ -78,7 +78,11 @@ export type {
 } from "./own_authority.ts";
 export type { AppRequestDescriptor } from "./generated_support.ts";
 export {
+  ID_PREFIXES,
+  type IdKind,
+  newId,
   newUlid,
+  parseId,
   parseTimestamp,
   parseUlid,
   timestamp,

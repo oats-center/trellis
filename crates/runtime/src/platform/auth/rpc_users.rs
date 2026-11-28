@@ -4,6 +4,7 @@ use super::sqlite::timestamp;
 use super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
+use trellis_protocol::model::IdKind;
 
 use crate::platform::auth::sqlite::Connection;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
@@ -521,7 +522,7 @@ pub(super) fn put_provider(
         .provider_id
         .as_ref()
         .map(ToString::to_string)
-        .unwrap_or_else(id);
+        .unwrap_or_else(|| IdKind::OidcProvider.generate());
     let sealed = input
         .client_secret
         .as_ref()
@@ -1213,7 +1214,13 @@ pub(super) fn insert_user(
             "INSERT INTO auth_role_assignments(assignment_id,principal_id,role_id,\
             role_generation,revision,expires_at,created_at) \
             VALUES(?1,?2,?3,?4,1,NULL,?5)",
-            params![id(), principal, role, generation, now],
+            params![
+                IdKind::RoleAssignment.generate(),
+                principal,
+                role,
+                generation,
+                now
+            ],
         )?;
     }
     Ok(())
@@ -1259,7 +1266,7 @@ pub(super) fn insert_local_account(
         "INSERT INTO auth_provider_identities(identity_id,provider,provider_subject,\
         principal_id,linked_at,last_seen_at) \
         VALUES(?1,'local',?2,?3,?4,?4)",
-        params![id(), username, principal, now],
+        params![IdKind::LinkedSignIn.generate(), username, principal, now],
     )?;
     if let Some(hash) = hash {
         connection.execute(
@@ -1336,6 +1343,9 @@ pub(super) fn create_user(
             // ID any principal ever had is refused, never reused.
             let principal = match &input.user_id {
                 Some(chosen) => {
+                    if !chosen.is_one_of(&[IdKind::User]) {
+                        return Err(AuthError::Invalid(format!("{chosen} is not a user ID")));
+                    }
                     let chosen = chosen.to_string();
                     let taken: bool = connection.query_row(
                         "SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1)",
@@ -1349,7 +1359,7 @@ pub(super) fn create_user(
                     }
                     chosen
                 }
-                None => id(),
+                None => IdKind::User.generate(),
             };
             insert_user(connection, &principal, now)?;
             insert_local_account(

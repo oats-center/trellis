@@ -1006,7 +1006,7 @@ impl SqliteAuthorizationStore {
         now: i64,
         operation: impl FnOnce(&Connection) -> Result<T, AuthError>,
     ) -> Result<T, AuthError> {
-        if ulid::Ulid::from_string(&identity.request_id).is_err() {
+        if trellis_protocol::model::Ulid::parse(&identity.request_id).is_err() {
             return Err(AuthError::Invalid("idempotencyKey must be a ULID".into()));
         }
         if identity.actor.is_empty() {

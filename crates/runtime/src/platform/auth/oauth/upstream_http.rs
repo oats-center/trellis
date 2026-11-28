@@ -20,6 +20,7 @@ use openidconnect::{
 };
 use serde_json::json;
 use std::sync::Arc;
+use trellis_protocol::model::IdKind;
 
 /// What an OIDC provider said when it refused a sign-in.
 pub(super) struct Refusal {
@@ -191,7 +192,12 @@ pub(super) async fn start(
     headers: HeaderMap,
     Query(pairs): Query<Vec<(String, String)>>,
 ) -> Response {
-    if ulid::Ulid::from_string(&provider).is_err() {
+    if trellis_protocol::model::parse_id(
+        &provider,
+        &[trellis_protocol::model::IdKind::OidcProvider],
+    )
+    .is_err()
+    {
         return error(ErrorCode::InvalidRequest);
     }
     let form = match fields(pairs) {
@@ -224,7 +230,9 @@ pub(super) async fn start(
     };
     let review = form.get("review").cloned();
     let (transaction, deadline, client_id, account_token) = if let Some(review) = &review {
-        if ulid::Ulid::from_string(review).is_err() {
+        if trellis_protocol::model::parse_id(review, &[trellis_protocol::model::IdKind::Review])
+            .is_err()
+        {
             return error(ErrorCode::InvalidRequest);
         }
         if authority.portal_login(&cookie, &csrf, now).is_ok() {
@@ -899,7 +907,7 @@ pub(super) async fn callback(
             && store
                 .authorization_sign_up(&flow.authorization_transaction, now)?
                 .providers;
-        let principal = sign_up.then(super::super::sqlite::id);
+        let principal = sign_up.then(|| IdKind::User.generate());
         if let Some(principal) = &principal {
             // A Device Code sign-in learns its app only from the code, so it
             // records the account it may create here for the code step to

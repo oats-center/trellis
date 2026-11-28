@@ -1234,8 +1234,8 @@ model AuthDeploymentImportResult {
   applied: bool;
   /// Whether this run went on with an earlier import of the same deployment that stopped before its data loaded.
   resumed: bool;
-  /// What loading the bundle replaces, or would replace.
-  replaces: list<AuthDeploymentImportReplacement>;
+  /// What loading the bundle replaces, or would replace; absent from Trellis 0.100.0-rc.56 and earlier.
+  replaces?: list<AuthDeploymentImportReplacement>;
   report: AuthServiceBundleReport;
 }
 model AuthDeploymentApplyRequest {

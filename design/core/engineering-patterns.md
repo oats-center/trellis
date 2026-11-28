@@ -57,6 +57,17 @@ matched an ID, and a timed-out ID lookup was retried as a name (022c8dfb3,
 found, and failed. A `match` that folds `Err` into `None`, or a
 `.or_else(|| by_name(..))` after an ID lookup, is the bug.
 
+An ID Trellis makes is a ULID after a one- or two-letter prefix naming its
+kind (`U` user, `S` service deployment, `SI` service instance, `J` job, and
+the rest `trellis_protocol::model::IdKind` lists). An ID made before
+prefixes is a bare ULID and stays one: nothing rewrites a stored ID, since
+services keep user IDs. An ID that comes in from outside (an RPC input, a
+URL, a CLI argument, a bundle or an export) is parsed once with the shared
+parser for its kinds, `parse_id` in Rust and `parseId` in TypeScript, which
+accepts the bare form and the kinds' prefixes, and guarantees only `[0-9A-Z]`
+so the ID is one NATS subject token. Past that boundary it is not checked
+again; storage keeps no length checks on IDs.
+
 ### Tests assert on error codes and types, never on prose
 
 **Rule.** A test checks a failure by its code, declared error type or variant,

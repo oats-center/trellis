@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
-use ulid::Ulid;
 
 use crate::jobs::active_job::ActiveJob;
 use crate::jobs::bindings::{JobQueueWhenFull, JobsBinding, JobsQueueBinding};
@@ -155,7 +154,7 @@ pub struct TrellisJobMetaSource;
 
 impl JobMetaSource for TrellisJobMetaSource {
     fn next_job_id(&self) -> String {
-        Ulid::generate().to_string()
+        trellis_protocol::model::IdKind::Job.generate()
     }
 
     fn now_iso(&self) -> String {

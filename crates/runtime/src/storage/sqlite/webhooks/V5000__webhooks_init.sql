@@ -1,7 +1,7 @@
 -- One record per request to a known webhook endpoint. Records never hold
 -- header values, bodies, secrets, or signatures.
 CREATE TABLE webhook_attempts (
-    attempt_id TEXT PRIMARY KEY CHECK (length(attempt_id) = 26),
+    attempt_id TEXT PRIMARY KEY,
     deployment_id TEXT NOT NULL CHECK (length(deployment_id) > 0),
     endpoint TEXT NOT NULL CHECK (length(endpoint) > 0),
     received_at INTEGER NOT NULL CHECK (received_at >= 0),

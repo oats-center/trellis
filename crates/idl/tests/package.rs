@@ -350,7 +350,7 @@ model Order { id: OrderId; note?: OrderNote; }
     );
     assert_eq!(
         schema["$defs"]["ghcr.io/acme/orders.OrderId"]["properties"]["value"]["pattern"],
-        "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+        "^(?:[A-Z]{1,2})?[0-7][0-9A-HJKMNP-TV-Z]{25}$"
     );
 }
 

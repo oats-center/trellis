@@ -1,5 +1,6 @@
 import { headers as natsHeaders, type MsgHdrs } from "@nats-io/nats-core";
 import { ulid } from "ulid";
+import { newId } from "../../../values.ts";
 import { context, ROOT_CONTEXT, SpanKind, trace } from "@opentelemetry/api";
 
 import {
@@ -154,7 +155,7 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
 
   #meta(): Required<JobMetaSource> {
     return {
-      nextJobId: this.#context.meta?.nextJobId ?? (() => ulid()),
+      nextJobId: this.#context.meta?.nextJobId ?? (() => newId("job")),
       nowIso: this.#context.meta?.nowIso ?? (() => new Date().toISOString()),
     };
   }

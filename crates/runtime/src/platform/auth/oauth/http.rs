@@ -7,6 +7,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+use trellis_protocol::model::IdKind;
 
 use super::super::sqlite::blocking;
 use super::OAuthEngine;
@@ -1885,7 +1886,7 @@ async fn portal_sign_up(
         // A Device Code sign-in learns its app only from the code, so it
         // records the account it is creating before creating it, for the
         // code step to check.
-        let principal = super::super::sqlite::id();
+        let principal = IdKind::User.generate();
         let session = store
             .authority
             .portal_session_identity(&cookie, &login_csrf, now)?;

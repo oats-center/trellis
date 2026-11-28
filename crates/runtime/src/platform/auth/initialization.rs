@@ -3,6 +3,7 @@
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use trellis_protocol::model::IdKind;
 
 use super::{
     sqlite::{digest, id},
@@ -165,7 +166,7 @@ impl SqliteAuthorizationStore {
                     |row| row.get(0),
                 )
                 .optional()?;
-            let principal = principal.unwrap_or_else(id);
+            let principal = principal.unwrap_or_else(|| IdKind::User.generate());
             let input = (username, registrations);
             let identity = Mutation {
                 actor: principal.clone(),
@@ -249,7 +250,7 @@ impl SqliteAuthorizationStore {
                     everything.extend(singles.into_iter().filter(|id| !covered.contains(id)));
                     // The administrator holds it through an ordinary, editable
                     // role; administration itself stays theirs regardless.
-                    let role_id = id();
+                    let role_id = IdKind::Role.generate();
                     for mutation in [
                         super::PolicyMutation::RolePut {
                             role_id: role_id.clone(),

@@ -398,8 +398,9 @@ and earlier read only service bundles of rc.55 and earlier (format 1) and
 have no installation import; 0.100.0-rc.56 reads only files of rc.56 and
 later (it refuses a format-1 bundle), and refuses a record kind, bundle entry
 or other part it does not know, and a new field on an app, OIDC provider,
-user profile or theme record; every later release reads the files of every
-release, older or newer. Check the
+user profile or theme record, and reads only bare IDs, so what a later release
+created (prefixed IDs) does not import into it; every later release reads the
+files of every release, older or newer. Check the
 destination's release before stopping the source. A backup restores only
 into its own release, and migrates forward only between stable (non-rc)
 releases. Releases after rc.56 only add to these files (optional fields,
@@ -1854,6 +1855,18 @@ Declare these dependencies only when the application uses them:
   with the same key and input returns the stored result, the same key with a
   different input is a conflict, and a key that is not a ULID is refused with
   an error naming `idempotencyKey`.
+- IDs: every ID Trellis makes is a ULID after a one- or two-letter prefix
+  naming its kind: `U` user, `S` service deployment, `SI` service instance,
+  `D` device deployment, `DI` device instance, `P` the principal an instance
+  acts as, `R` role, `RA` role assignment, `G` direct grant, `SE` session,
+  `J` job, `O` operation, `E` enrollment or provisioning secret, `C` service
+  claim, `SU` service update, `RV` review, `OP` OIDC provider, `OM` OIDC role
+  mapping, `L` linked sign-in, `X` service export. IDs made by 0.100.0-rc.56
+  and earlier are bare ULIDs and keep working unchanged, so store an ID as the
+  text you were given and never add, strip or rely on a prefix. An ID is only
+  uppercase letters and digits, so it is one NATS subject token. The IDL
+  `ulid` type accepts both forms; parse IDs that come from outside with the
+  SDK's ID parser, which also checks the kind.
 - Auth mutation errors say why, in a message fit to show a person. An unknown
   target is `AuthError` `not_found` naming its kind and ID ("no user <id>"). A
   target in the wrong state is a validation error saying which state ("session

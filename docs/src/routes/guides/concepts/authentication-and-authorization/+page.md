@@ -94,7 +94,7 @@ On the command line:
 
 ```sh
 trellis users create --username ada --provider <provider id> --subject 'auth0|1234'
-trellis users create --username ada --id 01JD8Z3XQ5V7H2N4K6M8P0R2T4 --provider <provider id> --subject 'auth0|1234'
+trellis users create --username ada --id U01JD8Z3XQ5V7H2N4K6M8P0R2T4 --provider <provider id> --subject 'auth0|1234'
 trellis users link ada --provider <provider id> --subject 'auth0|1234'
 trellis users unlink ada --provider <provider id> --subject 'auth0|1234'
 ```

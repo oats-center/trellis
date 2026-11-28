@@ -5,6 +5,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use trellis_protocol::model::IdKind;
 
 use super::super::revocation::{enqueue_scope, EnforcementScope};
 use super::super::sqlite::{digest, id, AuthError, Mutation, SqliteAuthorizationStore};
@@ -464,7 +465,7 @@ impl SqliteAuthorizationStore {
             if !valid {
                 return Err(AuthError::Denied);
             }
-            let login_session_id = id();
+            let login_session_id = IdKind::Session.generate();
             let expires_at = now + i64::from(self.settings.login_lifetime_seconds);
             connection.execute(
                 "INSERT INTO auth_login_sessions(login_session_id,principal_id,method,\

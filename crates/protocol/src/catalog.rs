@@ -513,7 +513,7 @@ impl SignedSessionRevocation {
             instance,
             account,
         )?;
-        if ulid::Ulid::from_string(&self.authorization_session_id).is_err()
+        if crate::model::Ulid::parse(&self.authorization_session_id).is_err()
             || self.effective_cutoff < 0
             || self.issued_at < self.effective_cutoff
             || self.latest_context_expiry < self.effective_cutoff

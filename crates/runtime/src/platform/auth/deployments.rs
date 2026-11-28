@@ -1,5 +1,6 @@
 use super::Administration;
 use std::collections::BTreeMap;
+use trellis_protocol::model::IdKind;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::VerifyingKey;
@@ -720,7 +721,13 @@ impl SqliteAuthorizationStore {
                     ],
                 )?;
             }
-            let deployment_id = existing.map(str::to_owned).unwrap_or_else(id);
+            let deployment_id = existing.map(str::to_owned).unwrap_or_else(|| {
+                if kind == "device" {
+                    IdKind::DeviceDeployment.generate()
+                } else {
+                    IdKind::ServiceDeployment.generate()
+                }
+            });
             if let Some(companion) = participant.companion() {
                 let request = graph
                     .packages()
@@ -920,7 +927,7 @@ impl SqliteAuthorizationStore {
                         capability_id,capability_generation,revision,expires_at,created_at) \
                         VALUES(?1,?2,?3,?4,1,?5,?6)",
                         params![
-                            id(),
+                            IdKind::Grant.generate(),
                             principal,
                             CONSUMER_RUNTIME_CAPABILITY,
                             cap.identity_generation.get(),
@@ -1041,7 +1048,14 @@ impl SqliteAuthorizationStore {
         let optional: Vec<String> = decode(&optional)?;
         let (principal_id, instance_id) = identity
             .map(|(principal, instance)| (principal.to_owned(), instance.to_owned()))
-            .unwrap_or_else(|| (id(), id()));
+            .unwrap_or_else(|| {
+                let instance = if kind == "device" {
+                    IdKind::DeviceInstance
+                } else {
+                    IdKind::ServiceInstance
+                };
+                (IdKind::InstancePrincipal.generate(), instance.generate())
+            });
         let result = ProvisionedDeployment {
             participant_id: participant,
             principal_id,
@@ -1133,7 +1147,7 @@ impl SqliteAuthorizationStore {
                 capability_id,capability_generation,revision,expires_at,created_at) \
                 VALUES(?1,?2,?3,?4,1,?5,?6)",
                 params![
-                    id(),
+                    IdKind::Grant.generate(),
                     result.principal_id,
                     requested,
                     cap.identity_generation.get(),

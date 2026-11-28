@@ -3,6 +3,7 @@
 use super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
+use trellis_protocol::model::IdKind;
 
 use rusqlite::OptionalExtension;
 use trellis_rs::generated::ParticipantDescriptor;
@@ -12,7 +13,7 @@ use super::{
     policy::apply_policy_in_transaction,
     rpc::{mutation, rpc_error},
     rpc_users::read_mapping,
-    sqlite::{decode, id},
+    sqlite::decode,
     AuthError, Mutation, PolicyMutation, SqliteAuthorizationStore,
 };
 
@@ -62,7 +63,7 @@ pub(super) fn put_mapping(
                 .mapping_id
                 .as_ref()
                 .map(ToString::to_string)
-                .unwrap_or_else(id);
+                .unwrap_or_else(|| IdKind::OidcRoleMapping.generate());
             let config: String = connection
                 .query_row(
                     "SELECT config_json FROM auth_oidc_providers \

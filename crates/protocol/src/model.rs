@@ -158,27 +158,78 @@ pub enum TimestampError {
     Range,
 }
 
-/// Validated uppercase canonical ULID.
+/// An IDL `ulid`: a canonical uppercase ULID, optionally after the one- or
+/// two-letter prefix that names its kind, such as `U` for a user.
+///
+/// It reads and writes its text unchanged, so an ID made before prefixes,
+/// a bare ULID, stays bare. Every character is an uppercase letter or a
+/// digit, so an ID is always one NATS subject token.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Ulid(ulid::Ulid);
+pub struct Ulid {
+    /// The prefix's letters, padded with zeros, which no prefix holds.
+    prefix: [u8; 2],
+    value: ulid::Ulid,
+}
 impl Ulid {
-    /// Parse an uppercase canonical ULID.
+    /// Parse a canonical ULID with an optional prefix of one or two
+    /// uppercase letters.
     pub fn parse(value: &str) -> Result<Self, UlidError> {
-        let parsed = value.parse::<ulid::Ulid>().map_err(UlidError::Invalid)?;
-        if parsed.to_string() != value {
+        let split = value.len().saturating_sub(ULID_LENGTH);
+        let (prefix, rest) = value
+            .split_at_checked(split)
+            .ok_or(UlidError::NonCanonical)?;
+        if prefix.len() > 2 || !prefix.bytes().all(|byte| byte.is_ascii_uppercase()) {
+            return Err(UlidError::Prefix);
+        }
+        let parsed = rest.parse::<ulid::Ulid>().map_err(UlidError::Invalid)?;
+        if parsed.to_string() != rest {
             return Err(UlidError::NonCanonical);
         }
-        Ok(Self(parsed))
+        let mut letters = [0; 2];
+        letters[..prefix.len()].copy_from_slice(prefix.as_bytes());
+        Ok(Self {
+            prefix: letters,
+            value: parsed,
+        })
     }
 
-    /// Generate a new ULID from the current time and system randomness.
+    /// Generate a new bare ULID from the current time and system randomness.
     pub fn generate() -> Self {
-        Self(ulid::Ulid::generate())
+        Self {
+            prefix: [0; 2],
+            value: ulid::Ulid::generate(),
+        }
+    }
+
+    /// Generate a new ID of `kind`: its prefix, then a new ULID.
+    pub fn generate_for(kind: IdKind) -> Self {
+        let mut letters = [0; 2];
+        letters[..kind.prefix().len()].copy_from_slice(kind.prefix().as_bytes());
+        Self {
+            prefix: letters,
+            value: ulid::Ulid::generate(),
+        }
+    }
+
+    /// The prefix naming the ID's kind; empty for a bare ULID.
+    pub fn prefix(&self) -> &str {
+        let length = self.prefix.iter().take_while(|byte| **byte != 0).count();
+        std::str::from_utf8(&self.prefix[..length]).unwrap_or_default()
+    }
+
+    /// Whether this is an ID of one of `kinds`: a bare ULID, or one with
+    /// the prefix of one of them.
+    pub fn is_one_of(&self, kinds: &[IdKind]) -> bool {
+        let prefix = self.prefix();
+        prefix.is_empty() || kinds.iter().any(|kind| kind.prefix() == prefix)
     }
 }
+/// The length of a canonical ULID.
+const ULID_LENGTH: usize = 26;
 impl std::fmt::Display for Ulid {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
+        formatter.write_str(self.prefix())?;
+        self.value.fmt(formatter)
     }
 }
 impl std::str::FromStr for Ulid {
@@ -206,6 +257,135 @@ pub enum UlidError {
     /// The value does not use uppercase canonical spelling.
     #[error("ULID must use uppercase canonical spelling")]
     NonCanonical,
+    /// What comes before the ULID is not one or two uppercase letters.
+    #[error("an ID's prefix is one or two uppercase letters")]
+    Prefix,
+    /// The prefix names another kind of ID.
+    #[error("{0} is not {1}")]
+    Kind(String, &'static str),
+}
+
+/// A kind of ID Trellis makes, each with its own prefix.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[non_exhaustive]
+pub enum IdKind {
+    /// A user (`U`).
+    User,
+    /// A service deployment (`S`).
+    ServiceDeployment,
+    /// A service instance (`SI`).
+    ServiceInstance,
+    /// A device deployment (`D`).
+    DeviceDeployment,
+    /// A device instance (`DI`).
+    DeviceInstance,
+    /// An app, an OAuth client (`A`).
+    App,
+    /// A role (`R`).
+    Role,
+    /// A sign-in or authorization session (`SE`).
+    Session,
+    /// A job (`J`).
+    Job,
+    /// An operation (`O`).
+    Operation,
+    /// The principal a service or device instance acts as (`P`).
+    InstancePrincipal,
+    /// An enrollment secret or device provisioning secret (`E`).
+    EnrollmentSecret,
+    /// A service claim (`C`).
+    ServiceClaim,
+    /// A service update waiting for a decision (`SU`).
+    ServiceUpdate,
+    /// A device activation review or API review (`RV`).
+    Review,
+    /// A capability granted directly (`G`).
+    Grant,
+    /// A role given to a user (`RA`).
+    RoleAssignment,
+    /// An OIDC provider (`OP`).
+    OidcProvider,
+    /// A mapping from an OIDC claim to roles (`OM`).
+    OidcRoleMapping,
+    /// A sign-in linked to a user (`L`).
+    LinkedSignIn,
+    /// A service export (`X`).
+    Export,
+}
+impl IdKind {
+    /// The prefix this kind's IDs start with.
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::User => "U",
+            Self::ServiceDeployment => "S",
+            Self::ServiceInstance => "SI",
+            Self::DeviceDeployment => "D",
+            Self::DeviceInstance => "DI",
+            Self::App => "A",
+            Self::Role => "R",
+            Self::Session => "SE",
+            Self::Job => "J",
+            Self::Operation => "O",
+            Self::InstancePrincipal => "P",
+            Self::EnrollmentSecret => "E",
+            Self::ServiceClaim => "C",
+            Self::ServiceUpdate => "SU",
+            Self::Review => "RV",
+            Self::Grant => "G",
+            Self::RoleAssignment => "RA",
+            Self::OidcProvider => "OP",
+            Self::OidcRoleMapping => "OM",
+            Self::LinkedSignIn => "L",
+            Self::Export => "X",
+        }
+    }
+
+    /// The kind's name in words, for an error.
+    pub const fn noun(self) -> &'static str {
+        match self {
+            Self::User => "a user ID",
+            Self::ServiceDeployment => "a service deployment ID",
+            Self::ServiceInstance => "a service instance ID",
+            Self::DeviceDeployment => "a device deployment ID",
+            Self::DeviceInstance => "a device instance ID",
+            Self::App => "an app ID",
+            Self::Role => "a role ID",
+            Self::Session => "a session ID",
+            Self::Job => "a job ID",
+            Self::Operation => "an operation ID",
+            Self::InstancePrincipal => "an instance principal ID",
+            Self::EnrollmentSecret => "an enrollment secret ID",
+            Self::ServiceClaim => "a service claim ID",
+            Self::ServiceUpdate => "a service update ID",
+            Self::Review => "a review ID",
+            Self::Grant => "a grant ID",
+            Self::RoleAssignment => "a role assignment ID",
+            Self::OidcProvider => "an OIDC provider ID",
+            Self::OidcRoleMapping => "an OIDC role mapping ID",
+            Self::LinkedSignIn => "a linked sign-in ID",
+            Self::Export => "an export ID",
+        }
+    }
+
+    /// A new ID of this kind, as text.
+    pub fn generate(self) -> String {
+        Ulid::generate_for(self).to_string()
+    }
+}
+
+/// Parse `text`, an ID that came from outside, as an ID of one of `kinds`:
+/// a bare ULID, as IDs made before prefixes are, or one with a prefix of one
+/// of them. It is refused when it is anything else, so what it returns is
+/// made only of uppercase letters and digits.
+pub fn parse_id(text: &str, kinds: &[IdKind]) -> Result<Ulid, UlidError> {
+    let id = Ulid::parse(text)?;
+    if !id.is_one_of(kinds) {
+        return Err(UlidError::Kind(
+            text.to_owned(),
+            kinds.first().map_or("an ID", |kind| kind.noun()),
+        ));
+    }
+    Ok(id)
 }
 
 /// Standard serializable fields carried by declared errors.
@@ -323,5 +503,48 @@ pub mod serde_base64 {
             ));
         }
         Ok(decoded)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_id, IdKind, Ulid};
+
+    /// An ID from outside parses as the kinds it may be: bare, as rc.56
+    /// and earlier made them, or with one of their prefixes, and its text
+    /// comes back unchanged. Anything that could change a NATS subject, a
+    /// lowercase spelling, or another kind's prefix is refused.
+    #[test]
+    fn an_id_parses_bare_or_with_its_kinds_prefix_only() {
+        let bare = "01KQ8Z9Y2C3D4E5F6G7H8J9K0M";
+        let deployments = [IdKind::ServiceDeployment, IdKind::DeviceDeployment];
+        for text in [bare.to_owned(), format!("S{bare}"), format!("D{bare}")] {
+            let parsed = parse_id(&text, &deployments).unwrap();
+            assert_eq!(parsed.to_string(), text);
+            assert_eq!(
+                serde_json::to_value(parsed).unwrap(),
+                serde_json::Value::String(text)
+            );
+        }
+        for text in [
+            format!("U{bare}"),
+            format!("SI{bare}"),
+            format!("s{bare}"),
+            bare.to_ascii_lowercase(),
+            format!("S{bare}.>"),
+            format!("S*{bare}"),
+            format!("S {bare}"),
+            format!("SXY{bare}"),
+            format!("S{}", &bare[1..]),
+            String::new(),
+        ] {
+            assert!(parse_id(&text, &deployments).is_err(), "{text:?} parsed");
+        }
+        // The IDL type takes any kind's prefix, and a new ID carries its own.
+        let made = IdKind::ServiceInstance.generate();
+        assert!(made.starts_with("SI") && made.len() == 28, "{made}");
+        assert_eq!(Ulid::parse(&made).unwrap().prefix(), "SI");
+        assert!(parse_id(&made, &[IdKind::ServiceInstance]).is_ok());
+        assert!(parse_id(&made, &[IdKind::ServiceDeployment]).is_err());
     }
 }

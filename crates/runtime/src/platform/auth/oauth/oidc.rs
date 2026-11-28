@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
+use trellis_protocol::model::IdKind;
 use trellis_runtime_apis::__types::trellis::{
     AuthOIDCAuthorizationParameter, AuthOIDCSignOutPrompt,
 };
@@ -684,7 +685,7 @@ impl super::super::SqliteAuthorizationStore {
                     provider_subject,principal_id,linked_at,last_seen_at) \
                     VALUES(?1,?2,?3,?4,?5,?5)",
                     params![
-                        super::super::sqlite::id(),
+                        IdKind::LinkedSignIn.generate(),
                         flow.provider.provider_id,
                         identity.subject,
                         principal,
