@@ -586,5 +586,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         name: SubsystemName::Events,
         stop,
         join,
+        serving: None,
     })
 }

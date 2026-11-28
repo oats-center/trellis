@@ -1640,7 +1640,10 @@ reason as a plain-text body when it has one. `/readyz` carries every standing
 role's reason under `standingBy`, keyed by role, so an operator can learn why
 without the log; `trellis doctor` reads it when it cannot reach Auth. `/readyz` is
 ready once every role has first started or stood by, while some role runs and,
-when the process includes the platform, the platform runs. A role other than
+when the process includes the platform, the platform runs. The platform runs
+once its built-in service serves the platform's APIs, State among them, so a
+caller that waited for `/readyz` finds them answering and State's bucket on the
+broker. A role other than
 the platform restarting on its own leaves readiness unchanged. When the
 platform runs elsewhere, a non-platform role trusts the configured Auth origin
 and has that Auth prepare its built-in provider, as a split role does. When

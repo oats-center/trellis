@@ -474,7 +474,7 @@ async fn state_moves_only_from_and_into_a_bucket_that_keeps_it() {
     target_jetstream
         .delete_stream("KV_trellis_state")
         .await
-        .unwrap();
+        .expect("a server that answered ready made State's bucket");
     let expiring = target_jetstream
         .create_key_value(async_nats::jetstream::kv::Config {
             bucket: "trellis_state".into(),

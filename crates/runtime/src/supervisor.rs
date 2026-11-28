@@ -860,6 +860,9 @@ pub(crate) struct SubsystemHandle {
     pub(crate) stop: StopHandle,
     /// Join handle for the subsystem task.
     pub(crate) join: AbortOnDropHandle<Result<(), RuntimeError>>,
+    /// Answers once the subsystem serves, for one that is still connecting
+    /// when its start returns. Without it, starting is serving.
+    pub(crate) serving: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl Drop for SubsystemHandle {
@@ -1301,7 +1304,7 @@ async fn run_owned_group(
         }
     };
     let started = start().await;
-    let handle = match started {
+    let mut handle = match started {
         Ok(handle) => handle,
         // A stop during startup, as while it waits for a locked database,
         // ends the work like a stop after it.
@@ -1323,16 +1326,26 @@ async fn run_owned_group(
     if group == OwnerGroup::Platform {
         context.serve_platform_routes(Some(context.take_http_router()?));
     }
+    let serving = handle.serving.take();
     let mut handles = vec![handle];
     // A role other than the platform waits out Auth that cannot admit its
     // built-in provider, as when Auth stops serving or moves to another
     // server, and stands by until it can. Any other bootstrap failure fails the
     // group, never a dispatch-time fallback. The platform connects no live
-    // provider of its own: its service runtime, which the subsystem started,
-    // already serves the platform's APIs, and nothing would hold a second
-    // connection, whose session would only linger in Auth.
+    // provider of its own: nothing would hold a second connection, whose
+    // session would only linger in Auth. Its service runtime, which the
+    // subsystem started, serves the platform's APIs, State among them. The
+    // platform runs once that runtime serves, so the server is never ready
+    // while they do not answer.
     let bootstrap = async {
         if group == OwnerGroup::Platform {
+            if let Some(serving) = serving {
+                // A runtime that ends before it serves ends the subsystem,
+                // which the select reports.
+                if serving.await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
             return Ok(());
         }
         let mut backoff =
@@ -1825,6 +1838,7 @@ mod tests {
             name: SubsystemName::Jobs,
             stop: StopHandle::new(),
             join: AbortOnDropHandle::new(tokio::spawn(async { Ok(()) })),
+            serving: None,
         }];
 
         let readiness = crate::telemetry::snapshots::ComponentReadiness::default();
@@ -1878,6 +1892,7 @@ mod tests {
                 name: SubsystemName::Jobs,
                 stop: StopHandle::new(),
                 join: AbortOnDropHandle::new(join),
+                serving: None,
             }],
             Duration::from_millis(20),
         )
@@ -1908,6 +1923,7 @@ mod tests {
                 name: SubsystemName::Jobs,
                 stop: StopHandle::new(),
                 join: AbortOnDropHandle::new(join),
+                serving: None,
             }]),
         )
         .await
@@ -1935,6 +1951,7 @@ mod tests {
                 name: SubsystemName::Jobs,
                 stop,
                 join: AbortOnDropHandle::new(join),
+                serving: None,
             }],
             // The bound only has to outlast the task's own finish; a tight one
             // flakes on a loaded machine.

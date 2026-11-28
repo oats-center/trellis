@@ -184,6 +184,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         name: SubsystemName::Health,
         stop,
         join,
+        serving: None,
     })
 }
 

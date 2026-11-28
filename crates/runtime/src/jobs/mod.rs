@@ -205,6 +205,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         name: SubsystemName::Jobs,
         stop,
         join,
+        serving: None,
     })
 }
 mod history;

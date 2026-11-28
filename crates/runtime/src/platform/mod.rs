@@ -274,6 +274,9 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     )?;
     let stop = StopHandle::new();
     let task_stop = stop.clone();
+    // The platform serves once its service runtime does: until then nothing
+    // answers its APIs, and State has no bucket on a new broker.
+    let (serving, served) = tokio::sync::oneshot::channel();
     let provider_store = store.clone();
     let provider_operational = context.trellis_nats.clone();
     let provider_roots: Vec<_> = nats.ca_certificate.iter().cloned().collect();
@@ -437,6 +440,13 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             };
             // Webhook intake publishes `Received` events as the platform.
             publisher.send_replace(Some(provider.event_publisher()));
+            let lifecycle = provider.lifecycle();
+            let announced = async move {
+                if lifecycle.ready().await {
+                    let _ = serving.send(());
+                }
+                std::future::pending::<Result<(), RuntimeError>>().await
+            };
             let owner = provider.runtime_native_owner();
             let publisher = provider.event_publisher();
             let publications = Box::pin(async {
@@ -574,6 +584,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 result = Box::pin(provider.run()) =>
                     result.map_err(|error| RuntimeError::Platform(error.to_string())),
                 result = publications => result,
+                result = announced => result,
             };
             // Cancelling intake is not logical shutdown: retained callbacks and
             // publishers may still hold this separate Platform RPC connection.
@@ -610,6 +621,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         name: SubsystemName::Platform,
         stop,
         join,
+        serving: Some(served),
     })
 }
 
