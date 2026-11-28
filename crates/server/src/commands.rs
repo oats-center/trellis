@@ -752,6 +752,16 @@ pub(crate) async fn import(args: ImportArgs) -> miette::Result<()> {
     for item in report["notCarried"].as_array().into_iter().flatten() {
         println!("  {}", item.as_str().unwrap_or_default());
     }
+    let unread = report["notUnderstood"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if !unread.is_empty() {
+        println!("Not understood, left out:");
+        for item in unread {
+            println!("  {}", item.as_str().unwrap_or_default());
+        }
+    }
     Ok(())
 }
 

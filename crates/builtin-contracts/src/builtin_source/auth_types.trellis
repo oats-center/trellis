@@ -1194,6 +1194,9 @@ model AuthServiceBundleReport {
   access?: AuthAccessReport;
   /// What stayed in the exporting installation, in plain words.
   leftBehind: list<string>;
+  /// Parts of the bundle a newer Trellis wrote that this one does not read,
+  /// in plain words; an import leaves them out. Absent from an export's report.
+  notUnderstood?: list<string>;
 }
 /// A finished export, ready to download until it expires.
 model AuthDeploymentExportResult {

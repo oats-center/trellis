@@ -34,7 +34,10 @@ use super::{AuthError, Mutation, OAuthStorage, SqliteAuthorizationStore};
 
 /// The first bytes of the content, before the container's format number.
 const MAGIC: &[u8; 16] = b"TRELLIS-INSTALL\n";
-/// The container format this build writes and reads.
+/// The container format this build writes: how entries are framed. A newer
+/// Trellis keeps writing it and adds only record kinds, entries and fields,
+/// which this one reads past and reports, so an export of any release
+/// imports into any other. See `design/auth/installation-export.md`.
 const FORMAT: u32 = 1;
 /// The largest content chunk accepted, and the size this build writes.
 const MAX_CHUNK: usize = 1 << 20;
@@ -46,8 +49,11 @@ const MAX_RECORDS: usize = 256 << 20;
 /// settings move.
 const BUILTIN_CLIENTS: [&str; 2] = ["trellis.console", "trellis.cli"];
 
-/// Every record kind with the format this build writes. An import converts
-/// an older format of a kind to this one before it reads the records.
+/// Every record kind with the format this build writes. A kind grows only
+/// by new fields, which keep its format; a change an earlier release could
+/// not read adds a new kind beside it. An import converts an older format
+/// of a kind to this one before it reads the records, and reads past a
+/// kind, or a newer format of one, that it does not know.
 const KINDS: [(&str, u32); 11] = [
     ("signInSettings", 1),
     ("oidcProviders", 1),
@@ -61,6 +67,73 @@ const KINDS: [(&str, u32); 11] = [
     ("portalThemes", 1),
     ("state", 1),
 ];
+
+/// The columns an OIDC provider record carries, besides its client secret.
+const OIDC_PROVIDER_FIELDS: &str = "provider_id,issuer,display_name,client_id,\
+    issuer_certificate,config_json,claim_freshness_seconds,state,revision,created_at,updated_at";
+/// The columns an app record carries.
+const OAUTH_CLIENT_FIELDS: &str = "client_id,kind,display_name,redirect_uris_json,development,\
+    implied_capabilities_json,metadata_json,state,revision,created_at,updated_at";
+/// The columns a user's profile carries.
+const PROFILE_FIELDS: &str = "display_name,given_name,family_name,display_name_source,\
+    given_name_source,family_name_source,email,email_verified,email_source,email_provider_id,\
+    oidc_picture_url,picture_provider_id,created_at,updated_at,version";
+/// The columns a Portal theme record carries.
+const THEME_FIELDS: &str = "client_id,theme_json,logo_format,logo,stylesheet";
+
+/// The fields this build reads in a record of `kind`, as
+/// [`service_bundles::unread_fields`] takes a shape. Every field an export
+/// writes is here, so that an import of it reads all of it.
+fn shape(kind: &str) -> Value {
+    let fields = |list: &str| {
+        Value::Object(
+            list.split(',')
+                .map(|field| (field.to_owned(), Value::Null))
+                .collect(),
+        )
+    };
+    match kind {
+        "signInSettings" => fields("local_users,local_sign_up,password_min_length"),
+        "oidcProviders" => fields(&format!("{OIDC_PROVIDER_FIELDS},client_secret")),
+        "packageRegistries" => fields("name,prefix,username,secret"),
+        "users" => {
+            let mut user =
+                fields("userId,state,createdAt,defaultAdministrator,username,localSignIn");
+            user["credentials"] = fields("password_hash,hash_profile,password_changed_at");
+            user["identities"] = json!([fields(
+                "provider,issuer,provider_subject,linked_at,last_seen_at,profile_json"
+            )]);
+            user["profile"] = fields(PROFILE_FIELDS);
+            user
+        }
+        "roles" => {
+            let mut role = fields("roleId,title,description,newUsers,capabilities");
+            role["members"] = json!([fields("userId,expiresAt")]);
+            role
+        }
+        "grants" => fields("userId,capability,expiresAt"),
+        "oidcRoleMappings" => fields("mapping_id,provider_id,claim_name,claim_value,roles"),
+        "oauthClients" => fields(OAUTH_CLIENT_FIELDS),
+        "consents" => fields(
+            "principal_id,client_id,binding_kind,binding_value,capability_id,decision,\
+            expires_at,grants",
+        ),
+        "portalThemes" => fields(THEME_FIELDS),
+        "state" => {
+            let mut state = fields(
+                "owner,userId,deploymentId,participantId,namespace,name,declaration,revision,\
+                createdAt,updatedAt,value",
+            );
+            state["history"] = json!([fields("revision,commitment_json,state,changed_at")]);
+            state["values"] = json!([fields("principalId,value")]);
+            state
+        }
+        "meta" => {
+            fields("format,trellisVersion,exportedAt,sourceInstallationId,sourceOrigin,kinds")
+        }
+        _ => Value::Null,
+    }
+}
 
 /// What an installation export leaves out, in plain words.
 const NOT_CARRIED: [&str; 10] = [
@@ -309,7 +382,10 @@ pub(super) fn read_records(
     let mut providers = Vec::new();
     for mut provider in rows(
         connection,
-        "SELECT * FROM auth_oidc_providers WHERE state!='deleted' ORDER BY provider_id",
+        &format!(
+            "SELECT {OIDC_PROVIDER_FIELDS} FROM auth_oidc_providers WHERE state!='deleted' \
+            ORDER BY provider_id"
+        ),
         [],
     )? {
         let sealed: Option<Vec<u8>> = connection.query_row(
@@ -317,7 +393,6 @@ pub(super) fn read_records(
             [text(&provider, "provider_id")],
             |row| row.get(0),
         )?;
-        provider.remove("sealed_client_secret");
         let secret = sealed
             .map(|sealed| {
                 storage
@@ -396,14 +471,11 @@ pub(super) fn read_records(
             WHERE i.principal_id=?1 AND i.provider!='local' ORDER BY i.provider,i.provider_subject",
             [&user_id],
         )?;
-        let mut profile = rows(
+        let profile = rows(
             connection,
-            "SELECT * FROM auth_user_profiles WHERE principal_id=?1",
+            &format!("SELECT {PROFILE_FIELDS} FROM auth_user_profiles WHERE principal_id=?1"),
             [&user_id],
         )?;
-        if let Some(profile) = profile.first_mut() {
-            profile.remove("principal_id");
-        }
         users.push(json!({
             "userId": user_id,
             "state": principal["state"],
@@ -462,7 +534,10 @@ pub(super) fn read_records(
         "oauthClients",
         wrap(rows(
             connection,
-            "SELECT * FROM auth_oauth_clients WHERE state!='deleted' ORDER BY client_id",
+            &format!(
+                "SELECT {OAUTH_CLIENT_FIELDS} FROM auth_oauth_clients WHERE state!='deleted' \
+                ORDER BY client_id"
+            ),
             [],
         )?),
     );
@@ -487,8 +562,7 @@ pub(super) fn read_records(
         "portalThemes",
         wrap(rows(
             connection,
-            "SELECT client_id,theme_json,logo_format,logo,stylesheet FROM auth_portal_themes \
-            ORDER BY client_id",
+            &format!("SELECT {THEME_FIELDS} FROM auth_portal_themes ORDER BY client_id"),
             [],
         )?),
     );
@@ -778,30 +852,33 @@ pub(crate) async fn export(
 // ---------------------------------------------------------------------------
 // Import.
 
-/// The records of one kind in the format this build reads. Every kind is at
-/// its first format, so there is nothing older to convert yet; a later
-/// format adds the conversion from each earlier one here.
-fn current_records(kind: &str, format: u64, records: Vec<Value>) -> Result<Vec<Value>, AuthError> {
-    let current = KINDS
-        .iter()
-        .find(|(name, _)| *name == kind)
-        .map(|(_, format)| u64::from(*format))
-        .ok_or_else(|| damaged(format!("it has records of an unknown kind {kind}")))?;
-    match format {
-        format if format == current => Ok(records),
-        format => Err(AuthError::Invalid(format!(
-            "its {kind} records have format {format}, which this Trellis does not read; \
-            import it with a release that does"
-        ))),
+/// The records of one kind, in format `format`, as this build's format
+/// `current` of the kind has them. Every kind is at its first format, so
+/// there is nothing older to convert yet; a later format adds the
+/// conversion from each earlier one here.
+fn current_records(
+    kind: &str,
+    format: u64,
+    current: u64,
+    records: Vec<Value>,
+) -> Result<Vec<Value>, AuthError> {
+    if format == current {
+        Ok(records)
+    } else {
+        Err(damaged(format!(
+            "its {kind} records have format {format}, which no Trellis wrote"
+        )))
     }
 }
 
-/// What a read installation export holds: records by kind, and each
-/// deployment's bundle content in a file of its own.
+/// What a read installation export holds: records by kind, each
+/// deployment's bundle content in a file of its own, and what a newer
+/// Trellis wrote that this build does not read.
 pub(super) struct Received {
     pub(super) meta: Value,
     pub(super) records: BTreeMap<String, Vec<Value>>,
     pub(super) bundles: Vec<(String, Arc<service_bundles::Spool>)>,
+    pub(super) not_understood: Vec<String>,
 }
 
 /// Read the content `input` holds, refusing a record entry larger than
@@ -813,21 +890,36 @@ fn receive(input: &mut dyn Read, directory: &Path, limit: usize) -> Result<Recei
         return Err(damaged("it is not a Trellis installation export"));
     }
     let format = u32::from_be_bytes([header[16], header[17], header[18], header[19]]);
-    if format != FORMAT {
+    if format == 0 || format > FORMAT {
         return Err(AuthError::Invalid(format!(
-            "the export has container format {format}, and this Trellis reads format {FORMAT}"
+            "the export has container format {format}, and this Trellis reads formats 1 to \
+            {FORMAT}; import it with a Trellis release that reads format {format}"
         )));
     }
     let mut received = Received {
         meta: Value::Null,
         records: BTreeMap::new(),
         bundles: Vec::new(),
+        not_understood: Vec::new(),
     };
+    // What a newer Trellis wrote: entries, records of kinds or formats this
+    // build does not know with how many there are, and fields.
+    let mut entries = Vec::new();
+    let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+    let mut fields = BTreeSet::new();
     while let Some(name) = read_name(input)? {
-        if let Some(deployment) = name
+        let kind = name
+            .strip_prefix("records/")
+            .and_then(|rest| rest.strip_suffix(".json"));
+        let bundle = name
             .strip_prefix("deployments/")
-            .and_then(|rest| rest.strip_suffix(".bundle"))
-        {
+            .and_then(|rest| rest.strip_suffix(".bundle"));
+        if name != "meta.json" && kind.is_none() && bundle.is_none() {
+            read_entry(input, &mut std::io::sink(), usize::MAX)?;
+            entries.push(format!("entry {name}"));
+            continue;
+        }
+        if let Some(deployment) = bundle {
             if ulid::Ulid::from_string(deployment).is_err() {
                 return Err(damaged(format!("entry {name}")));
             }
@@ -841,34 +933,76 @@ fn receive(input: &mut dyn Read, directory: &Path, limit: usize) -> Result<Recei
         }
         let mut bytes = Vec::new();
         read_entry(input, &mut bytes, limit)?;
-        let document: Value =
+        let mut document: Value =
             serde_json::from_slice(&bytes).map_err(|error| damaged(format!("{name}: {error}")))?;
-        if name == "meta.json" {
+        let Some(kind) = kind else {
+            let mut found = BTreeSet::new();
+            service_bundles::unread_fields(&mut document, &shape("meta"), "", &mut found);
+            fields.extend(
+                found
+                    .into_iter()
+                    .map(|field| format!("field {field} of meta.json")),
+            );
             received.meta = document;
-        } else if let Some(kind) = name
-            .strip_prefix("records/")
-            .and_then(|rest| rest.strip_suffix(".json"))
-        {
-            let records = document["records"]
-                .as_array()
-                .cloned()
-                .ok_or_else(|| damaged(format!("{name} has no records")))?;
-            let format = document["format"]
-                .as_u64()
-                .ok_or_else(|| damaged(format!("{name} has no format")))?;
-            // A kind's records may come in several entries.
-            received
-                .records
-                .entry(kind.to_owned())
-                .or_default()
-                .extend(current_records(kind, format, records)?);
-        } else {
-            return Err(damaged(format!("entry {name:?}")));
+            continue;
+        };
+        let Value::Array(records) = document["records"].take() else {
+            return Err(damaged(format!("{name} has no records")));
+        };
+        let format = document["format"]
+            .as_u64()
+            .ok_or_else(|| damaged(format!("{name} has no format")))?;
+        let current = KINDS
+            .iter()
+            .find(|(known, _)| *known == kind)
+            .map(|(_, current)| u64::from(*current));
+        let mut records = match current {
+            None => {
+                *kinds.entry(format!("{kind} records")).or_default() += records.len();
+                continue;
+            }
+            Some(current) if format > current => {
+                *kinds
+                    .entry(format!("{kind} records in format {format}"))
+                    .or_default() += records.len();
+                continue;
+            }
+            Some(current) => current_records(kind, format, current, records)?,
+        };
+        let known = shape(kind);
+        let mut found = BTreeSet::new();
+        for record in &mut records {
+            service_bundles::unread_fields(record, &known, "", &mut found);
         }
+        fields.extend(
+            found
+                .into_iter()
+                .map(|field| format!("field {field} of {kind} records")),
+        );
+        // A kind's records may come in several entries.
+        received
+            .records
+            .entry(kind.to_owned())
+            .or_default()
+            .extend(records);
     }
     if received.meta.is_null() {
         return Err(damaged("it has no meta.json"));
     }
+    let version = received.meta["trellisVersion"]
+        .as_str()
+        .unwrap_or("version not given")
+        .to_owned();
+    received.not_understood = entries
+        .into_iter()
+        .chain(
+            kinds
+                .into_iter()
+                .map(|(kind, count)| format!("{count} {kind}")),
+        )
+        .chain(fields)
+        .map(|part| format!("{part}: made by a newer Trellis ({version}), not read by this one"))
+        .collect();
     Ok(received)
 }
 
@@ -1880,8 +2014,7 @@ pub(super) fn apply(
         }
         let here = rows(
             connection,
-            "SELECT client_id,theme_json,logo_format,logo,stylesheet FROM auth_portal_themes \
-            WHERE client_id=?1",
+            &format!("SELECT {THEME_FIELDS} FROM auth_portal_themes WHERE client_id=?1"),
             [&client_id],
         )?;
         if here.first() == Some(record) {
@@ -2058,10 +2191,16 @@ pub(crate) async fn import(
     // whose data loads afterwards. A bundle refused here can be one an
     // earlier run recorded, whose data still waits.
     let mut digests = Vec::new();
+    let mut not_understood = received.not_understood.clone();
     for (deployment_id, spool) in &received.bundles {
         let reader = service_bundles::spool_reader(Arc::clone(spool));
         match service_bundles::prepare_import(nats, directory, reader).await {
             Ok(bundle) => {
+                not_understood.extend(
+                    bundle
+                        .not_understood()
+                        .map(|item| format!("deployment {deployment_id}: {item}")),
+                );
                 if check {
                     digests.push((deployment_id.clone(), bundle.digest().to_owned()));
                 }
@@ -2277,6 +2416,7 @@ pub(crate) async fn import(
         "access": outcome.access,
         "deployments": deployments,
         "notCarried": NOT_CARRIED,
+        "notUnderstood": not_understood,
     }))
 }
 

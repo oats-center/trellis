@@ -419,5 +419,11 @@ fn print_report(report: &Value) {
             .filter_map(Value::as_str)
             .map(str::to_owned),
     );
+    let unread = output::list(report, "notUnderstood");
+    if !unread.is_empty() {
+        details = details
+            .section("Not understood, left out")
+            .items(unread.iter().filter_map(Value::as_str).map(str::to_owned));
+    }
     details.print();
 }

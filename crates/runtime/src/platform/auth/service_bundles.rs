@@ -56,7 +56,12 @@ use crate::backup::{restore_stream_from, snapshot_stream_into};
 /// The stream metadata key that names the import which restored a stream.
 const IMPORT_MARKER: &str = "trellis.import";
 
-/// The content format this build writes and reads.
+/// The container format this build writes: how entries and the manifest
+/// are framed. A newer Trellis keeps writing it and adds only entries and
+/// fields, which this one reads past and reports, so a bundle of any release
+/// imports into any other. An import reads every earlier format too: format
+/// 1, which Trellis 0.100.0-rc.55 and earlier wrote, has no `access.json`
+/// and no deployment state. See `design/auth/service-export.md`.
 const FORMAT: u32 = 2;
 /// The first bytes of the content, before the format number.
 const MAGIC: &[u8; 16] = b"TRELLIS-SERVICE\n";
@@ -1575,9 +1580,13 @@ async fn copy_unfinished_jobs(
 
 /// A bundle's content, received and checked against its manifest.
 struct Received {
+    /// The container format, from 1 to [`FORMAT`].
+    format: u32,
     manifest: Manifest,
     documents: BTreeMap<String, Vec<u8>>,
     spools: BTreeMap<String, Arc<Spool>>,
+    /// Entries a newer Trellis wrote that this build does not read.
+    unknown: Vec<String>,
     digest: String,
     size: u64,
 }
@@ -1619,15 +1628,17 @@ async fn receive(
         return Err(damaged("it is not a Trellis service bundle"));
     }
     let format = u32::from_be_bytes([header[16], header[17], header[18], header[19]]);
-    if format != FORMAT {
+    if format == 0 || format > FORMAT {
         return Err(AuthError::Invalid(format!(
-            "the bundle has format {format}, and this Trellis reads format {FORMAT}"
+            "the bundle has container format {format}, and this Trellis reads formats 1 to \
+            {FORMAT}; import it with a Trellis release that reads format {format}"
         )));
     }
     size += 20;
     let mut documents = BTreeMap::new();
     let mut spools = BTreeMap::new();
     let mut received: Vec<ManifestEntry> = Vec::new();
+    let mut unknown = Vec::new();
     let mut manifest = None;
     loop {
         let mut length = [0; 2];
@@ -1640,32 +1651,35 @@ async fn receive(
         let mut name = vec![0; usize::from(u16::from_be_bytes(length))];
         read_part(stream, &mut hash, &mut name, false).await?;
         let name = String::from_utf8(name).map_err(|_| damaged("an entry name is not text"))?;
-        // Only the entries an export writes: each document once, the jobs,
-        // and a snapshot named after a resource ID.
+        // The entries this build reads: each document once, the jobs, and a
+        // snapshot named after a resource ID. Any other entry is one a newer
+        // Trellis added; it is checked against the manifest, then left out.
         let snapshot = name
             .strip_prefix("resources/")
-            .and_then(|rest| rest.strip_suffix(".snapshot"))
-            .is_some_and(|resource| {
-                resource.len() == 43
-                    && resource
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-            });
+            .and_then(|rest| rest.strip_suffix(".snapshot"));
+        if snapshot.is_some_and(|resource| {
+            resource.len() != 43
+                || !resource
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        }) || received.iter().any(|entry| entry.name == name)
+        {
+            return Err(damaged(format!("entry name {name:?}")));
+        }
         let document = [
             DEPLOYMENT, EVIDENCE, INSTANCES, SETTINGS, RESOURCES, ACCESS, REPORT, MANIFEST,
         ]
         .contains(&name.as_str());
-        if !(document || snapshot || name == JOBS)
-            || received.iter().any(|entry| entry.name == name)
-        {
-            return Err(damaged(format!("entry name {name:?}")));
+        let read = document || snapshot.is_some() || name == JOBS;
+        if !read {
+            unknown.push(name.clone());
         }
         if received.len() == MAX_ENTRIES {
             return Err(damaged(format!("it has more than {MAX_ENTRIES} entries")));
         }
         size += 2 + name.len() as u64;
         let mut kept = Vec::new();
-        let mut spooled = if document {
+        let mut spooled = if document || !read {
             None
         } else {
             Some(Spool::create(directory)?)
@@ -1690,6 +1704,7 @@ async fn receive(
             entry_size += length as u64;
             match &mut spooled {
                 Some((_, writer)) => writer.write_all(&chunk).map_err(io)?,
+                None if !read => {}
                 None => {
                     if kept.len() + chunk.len() > MAX_DOCUMENT {
                         return Err(damaged(format!("{name} is too large")));
@@ -1704,6 +1719,8 @@ async fn receive(
                 serde_json::from_slice::<Manifest>(&kept)
                     .map_err(|error| damaged(format!("its manifest: {error}")))?,
             );
+            // Kept with the documents so that its fields are read like theirs.
+            documents.insert(name, kept);
             continue;
         }
         match spooled {
@@ -1711,6 +1728,7 @@ async fn receive(
                 writer.finish()?;
                 spools.insert(name.clone(), spool);
             }
+            None if !read => {}
             None => {
                 documents.insert(name.clone(), kept);
             }
@@ -1722,7 +1740,7 @@ async fn receive(
         });
     }
     let manifest = manifest.ok_or_else(|| damaged("it has no manifest"))?;
-    if manifest.format != FORMAT {
+    if manifest.format != format {
         return Err(damaged("its manifest names another format"));
     }
     let mut listed = manifest.entries.clone();
@@ -1739,9 +1757,11 @@ async fn receive(
         )));
     }
     Ok(Received {
+        format,
         manifest,
         documents,
         spools,
+        unknown,
         digest: URL_SAFE_NO_PAD.encode(hash.finalize()),
         size,
     })
@@ -1764,31 +1784,178 @@ impl Bundle {
     pub(super) fn digest(&self) -> &str {
         &self.received.digest
     }
+
+    /// What a newer Trellis wrote into the bundle that this build does not
+    /// read, as its report says it.
+    pub(super) fn not_understood(&self) -> impl Iterator<Item = &str> {
+        self.report["notUnderstood"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+    }
 }
 
-fn document<T: serde::de::DeserializeOwned>(
+/// Remove from `value` each field that `known` does not have, adding the
+/// path of each one that holds something, under `at`, to `found`.
+///
+/// `known` is the shape this build reads: an object names its fields, a
+/// list of one element is the shape of every element and a longer list that
+/// of each element in turn, and anything else is a value read whole.
+pub(super) fn unread_fields(
+    value: &mut Value,
+    known: &Value,
+    at: &str,
+    found: &mut BTreeSet<String>,
+) {
+    match (value, known) {
+        (Value::Object(fields), Value::Object(shape)) => fields.retain(|name, field| {
+            let path = if at.is_empty() {
+                name.clone()
+            } else {
+                format!("{at}.{name}")
+            };
+            match shape.get(name) {
+                Some(shape) => {
+                    unread_fields(field, shape, &path, found);
+                    true
+                }
+                None => {
+                    if !field.is_null() {
+                        found.insert(path);
+                    }
+                    false
+                }
+            }
+        }),
+        (Value::Array(items), Value::Array(shape)) => {
+            for (index, item) in items.iter_mut().enumerate() {
+                let shape = if shape.len() == 1 {
+                    shape.first()
+                } else {
+                    shape.get(index)
+                };
+                if let Some(shape) = shape {
+                    unread_fields(item, shape, &format!("{at}[]"), found);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The JSON document `name`, as an older format's is converted by `convert`.
+fn document_value(
     received: &Received,
     name: &str,
-) -> Result<T, AuthError> {
+    convert: impl FnOnce(&mut Value),
+) -> Result<Value, AuthError> {
     let bytes = received
         .documents
         .get(name)
         .ok_or_else(|| damaged(format!("it has no {name}")))?;
-    serde_json::from_slice(bytes).map_err(|error| damaged(format!("{name}: {error}")))
+    let mut value =
+        serde_json::from_slice(bytes).map_err(|error| damaged(format!("{name}: {error}")))?;
+    convert(&mut value);
+    Ok(value)
+}
+
+/// The document `name` as this build reads it, after `convert` brings an
+/// older format's to this one. Each field it holds that this build does not
+/// read, which a newer Trellis added, is added to `unread`.
+fn document<T: serde::de::DeserializeOwned + Serialize>(
+    received: &Received,
+    name: &str,
+    unread: &mut Vec<String>,
+    convert: impl FnOnce(&mut Value),
+) -> Result<T, AuthError> {
+    let mut value = document_value(received, name, convert)?;
+    let read: T = serde_json::from_value(value.clone())
+        .map_err(|error| damaged(format!("{name}: {error}")))?;
+    let mut fields = BTreeSet::new();
+    unread_fields(&mut value, &serde_json::to_value(&read)?, "", &mut fields);
+    unread.extend(
+        fields
+            .into_iter()
+            .map(|field| format!("field {field} of {name}")),
+    );
+    Ok(read)
 }
 
 fn parse(received: Received) -> Result<Bundle, AuthError> {
-    let deployment: DeploymentDocument = document(&received, DEPLOYMENT)?;
+    let format = received.format;
+    let mut unread: Vec<String> = received
+        .unknown
+        .iter()
+        .map(|name| format!("entry {name}"))
+        .collect();
+    let _: Manifest = document(&received, MANIFEST, &mut unread, |_| {})?;
+    let deployment: DeploymentDocument = document(&received, DEPLOYMENT, &mut unread, |value| {
+        // Format 1 does not say whether the deployment was disabled; the
+        // releases that wrote it imported every deployment enabled.
+        if format == 1 {
+            value["state"] = json!("active");
+        }
+    })?;
     if deployment.deployment_id != received.manifest.deployment_id {
         return Err(damaged("its manifest names another deployment"));
     }
+    let mut report = document_value(&received, REPORT, |_| {})?;
+    let access = if format == 1 {
+        // Format 1 counted the roles and grants of the service's APIs and
+        // carried none of them.
+        let roles: Vec<&str> = report["roles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|role| role["name"].as_str())
+            .collect();
+        let version = &received.manifest.trellis_version;
+        let left = [
+            format!(
+                "roles and direct grants of the service's APIs: Trellis {version} made this \
+                bundle before bundles carried them{}",
+                if roles.is_empty() {
+                    String::new()
+                } else {
+                    format!("; recreate the roles {} by hand", roles.join(", "))
+                }
+            ),
+            format!(
+                "whether the deployment was disabled: Trellis {version} did not record it, so \
+                it arrives enabled"
+            ),
+        ];
+        report["roles"] = json!([]);
+        report["grants"] = json!([]);
+        match report["leftBehind"].as_array_mut() {
+            Some(behind) => behind.extend(left.into_iter().map(Value::String)),
+            None => report["leftBehind"] = json!(left),
+        }
+        AccessDocument::default()
+    } else {
+        document(&received, ACCESS, &mut unread, |_| {})?
+    };
+    let evidence = document(&received, EVIDENCE, &mut unread, |_| {})?;
+    let instances = document(&received, INSTANCES, &mut unread, |_| {})?;
+    let settings = document(&received, SETTINGS, &mut unread, |_| {})?;
+    let resources = document(&received, RESOURCES, &mut unread, |_| {})?;
+    let version = &received.manifest.trellis_version;
+    report["notUnderstood"] = unread
+        .into_iter()
+        .map(|part| {
+            Value::String(format!(
+                "{part}: made by a newer Trellis ({version}), not read by this one"
+            ))
+        })
+        .collect();
     Ok(Bundle {
-        evidence: document(&received, EVIDENCE)?,
-        instances: document(&received, INSTANCES)?,
-        settings: document(&received, SETTINGS)?,
-        resources: document(&received, RESOURCES)?,
-        access: document(&received, ACCESS)?,
-        report: document(&received, REPORT)?,
+        evidence,
+        instances,
+        settings,
+        resources,
+        access,
+        report,
         deployment,
         received,
     })

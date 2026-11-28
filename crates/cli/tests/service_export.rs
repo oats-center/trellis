@@ -8,7 +8,8 @@
 //! An export holds only unfinished jobs.
 //! An import that waited for an instance finishes once one exists.
 //! An import never reaches past the deployment it creates, and running it
-//! again replaces only a stream it can show it restored itself.
+//! again replaces only a stream it can show it restored itself. What a newer
+//! Trellis added to a bundle is left out and named.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -1358,6 +1359,8 @@ async fn two_exports_to_one_file_never_replace_each_other() {
 /// stream, a stream that reads another deployment's, or a subject outside the
 /// service's queues are refused with nothing changed, and an import that
 /// failed partway is resumed without touching another deployment's stream.
+/// What a newer Trellis adds to a bundle is left out and named, and a
+/// container format this Trellis cannot frame is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_import_touches_nothing_outside_its_own_deployment() {
     use runtime_trellis::participants::runtime_trellis_resource_provider as keeper;
@@ -1503,13 +1506,38 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
     assert!(!new_cli.has_deployment(&moving_id).await);
     assert_eq!(streams().await, before);
 
-    // `keeper` moves, then the same crafted bundle runs again, as a retry of
+    // `keeper` moves in a bundle as a newer Trellis may write it: with an
+    // entry and a field this one does not read, which the import leaves
+    // out and names. Then the same crafted bundle runs again, as a retry of
     // an interrupted import does: `keeper`'s stream and record are intact.
-    let moved_keeper = import(&new_cli, &keeper_file, &passphrase).await;
+    let newer = {
+        let mut entries = read_bundle(&keeper_file, &passphrase);
+        let mut deployment = bundle::document(&entries, "deployment.json");
+        deployment["futureField"] = json!({ "added": "later" });
+        bundle::set_document(&mut entries, "deployment.json", &deployment);
+        let mut manifest = bundle::document(&entries, "manifest.json");
+        manifest["trellisVersion"] = json!("999.0.0");
+        bundle::set_document(&mut entries, "manifest.json", &manifest);
+        entries.insert(0, ("future/notes.json".into(), b"{}".to_vec()));
+        let file = work.join("keeper-newer.trellis-service");
+        write_bundle(entries, &passphrase, &file);
+        file
+    };
+    let moved_keeper = import(&new_cli, &newer, &passphrase).await;
     assert!(
         moved_keeper.status.success(),
         "{}",
         String::from_utf8_lossy(&moved_keeper.stderr)
+    );
+    let moved_report: Value = serde_json::from_slice(&moved_keeper.stdout).unwrap();
+    assert_eq!(
+        moved_report["import"]["report"]["notUnderstood"],
+        json!([
+            "entry future/notes.json: made by a newer Trellis (999.0.0), not read by this one",
+            "field futureField of deployment.json: made by a newer Trellis (999.0.0), not read \
+            by this one",
+        ]),
+        "{moved_report}"
     );
     let kept_messages = jetstream
         .get_stream(&kept_stream)
@@ -1576,15 +1604,30 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         write_bundle(entries, &passphrase, &file);
         file
     };
-    let unknown = {
-        let mut entries = moving_entries.clone();
-        entries.insert(0, ("resources/../escape".into(), b"elsewhere".to_vec()));
-        let file = work.join("unknown-entry.trellis-service");
-        write_bundle(entries, &passphrase, &file);
+    // A container format no Trellis writes, which this one cannot frame.
+    let later_format = {
+        let mut content = bundle::content(moving_entries.clone());
+        content[16..20].copy_from_slice(&3u32.to_be_bytes());
+        let passphrase = std::fs::read_to_string(&passphrase).unwrap();
+        let file = work.join("later-format.trellis-service");
+        std::fs::write(&file, bundle::seal(&content, passphrase.trim_end())).unwrap();
         file
     };
+    assert!(
+        new_cli
+            .refusal(&[
+                "svc",
+                "import",
+                path(&later_format),
+                "--passphrase-file",
+                path(&passphrase),
+            ])
+            .await
+            .contains("containerformat3,andthisTrellisreadsformats1to2"),
+        "the refusal names the formats this Trellis reads"
+    );
     let before = streams().await;
-    for file in [platform, copies, deletes, undecodable, unknown] {
+    for file in [platform, copies, deletes, undecodable, later_format] {
         let checked = new_cli
             .run(&[
                 "svc",

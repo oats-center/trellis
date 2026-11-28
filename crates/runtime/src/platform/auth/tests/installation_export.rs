@@ -242,6 +242,128 @@ async fn an_import_preview_writes_nothing_to_the_database() {
     assert!(!has_user(&target, &person).await);
 }
 
+/// The named entries of export content, in order, framed as
+/// `design/auth/installation-export.md` describes.
+fn export_entries(content: &[u8]) -> Vec<(String, Vec<u8>)> {
+    assert_eq!(&content[..16], b"TRELLIS-INSTALL\n");
+    fn take<'a>(content: &'a [u8], at: &mut usize, count: usize) -> &'a [u8] {
+        *at += count;
+        &content[*at - count..*at]
+    }
+    let mut at = 20;
+    let mut entries = Vec::new();
+    while at < content.len() {
+        let length = u16::from_be_bytes(take(content, &mut at, 2).try_into().unwrap());
+        let name = String::from_utf8(take(content, &mut at, length.into()).to_vec()).unwrap();
+        let mut bytes = Vec::new();
+        loop {
+            let length = u32::from_be_bytes(take(content, &mut at, 4).try_into().unwrap());
+            if length == 0 {
+                break;
+            }
+            bytes.extend_from_slice(take(content, &mut at, length as usize));
+        }
+        entries.push((name, bytes));
+    }
+    entries
+}
+
+/// Export content of `entries`, in container format 1.
+fn export_content(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut content = b"TRELLIS-INSTALL\n".to_vec();
+    content.extend_from_slice(&1u32.to_be_bytes());
+    for (name, bytes) in entries {
+        content.extend_from_slice(&u16::try_from(name.len()).unwrap().to_be_bytes());
+        content.extend_from_slice(name.as_bytes());
+        for chunk in bytes.chunks(64 * 1024) {
+            content.extend_from_slice(&u32::try_from(chunk.len()).unwrap().to_be_bytes());
+            content.extend_from_slice(chunk);
+        }
+        content.extend_from_slice(&0u32.to_be_bytes());
+    }
+    content
+}
+
+/// An export a newer Trellis wrote imports here: what this Trellis reads
+/// arrives, and the entries, record kinds and fields the newer one added,
+/// and records of a kind in a newer format, are left out and named. This
+/// Trellis's own export has nothing it leaves out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_export_a_newer_trellis_wrote_imports_without_what_it_added() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let directory = tempfile::tempdir().unwrap();
+    let ports = reserve(2);
+    let (source, _source_broker) =
+        started_installation(&directory.path().join("source"), &ports[..4]).await;
+    let (target, _target_broker) =
+        started_installation(&directory.path().join("target"), &ports[4..]).await;
+    let person = with_store(&source, |store| {
+        create_user(store, &administrator_of(store), crate::clock::unix_now())
+    })
+    .await;
+    let content = exported(&source).await;
+    let own =
+        crate::platform::import_installation(&target, &mut std::io::Cursor::new(&content), true)
+            .await
+            .unwrap();
+    assert_eq!(own["notUnderstood"], serde_json::json!([]), "{own}");
+
+    let mut entries = export_entries(&content);
+    for (name, bytes) in &mut entries {
+        let mut document: serde_json::Value = match name.as_str() {
+            "meta.json" | "records/users.json" => serde_json::from_slice(bytes).unwrap(),
+            _ => continue,
+        };
+        if name == "meta.json" {
+            document["trellisVersion"] = serde_json::json!("999.0.0");
+        }
+        for user in document["records"].as_array_mut().into_iter().flatten() {
+            user["futureField"] = serde_json::json!(1);
+            if user["profile"].is_object() {
+                user["profile"]["future_column"] = serde_json::json!("later");
+            }
+        }
+        *bytes = serde_json::to_vec(&document).unwrap();
+    }
+    let record = |kind: &str, format: u32, records: serde_json::Value| {
+        (
+            format!("records/{kind}.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "kind": kind, "format": format, "records": records
+            }))
+            .unwrap(),
+        )
+    };
+    entries.push(record("futureThings", 1, serde_json::json!([{}, {}])));
+    entries.push(record(
+        "grants",
+        2,
+        serde_json::json!([{ "userId": person, "capability": "later" }]),
+    ));
+    entries.push(("notes/readme.txt".into(), b"later".to_vec()));
+    let report = crate::platform::import_installation(
+        &target,
+        &mut std::io::Cursor::new(export_content(&entries)),
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(has_user(&target, &person).await);
+    let newer =
+        |part: &str| format!("{part}: made by a newer Trellis (999.0.0), not read by this one");
+    assert_eq!(
+        report["notUnderstood"],
+        serde_json::json!([
+            newer("entry notes/readme.txt"),
+            newer("2 futureThings records"),
+            newer("1 grants records in format 2"),
+            newer("field futureField of users records"),
+            newer("field profile.future_column of users records"),
+        ]),
+        "{report}"
+    );
+}
+
 /// JetStream of the installation `config`'s broker, as Trellis's own user.
 async fn jetstream_of(config: &crate::RuntimeConfig) -> async_nats::jetstream::Context {
     async_nats::jetstream::new(crate::backup::connect(config).await.unwrap())
@@ -433,6 +555,7 @@ fn exported_records(source: &OAuthStorage, now: i64) -> Received {
             .map(|(kind, records)| (kind.to_owned(), records))
             .collect(),
         bundles: Vec::new(),
+        not_understood: Vec::new(),
     }
 }
 
