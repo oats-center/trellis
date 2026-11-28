@@ -1,6 +1,6 @@
 ---
 title: "Moving an installation"
-description: "Export a whole Trellis installation, with its users, roles, apps, sign-in setup, themes, services and devices, and import it into another installation or a newer release."
+description: "Export a whole Trellis installation, with its users, roles, apps, sign-in setup, themes, services and devices, and import it into another installation on any release."
 ---
 
 # Moving an installation
@@ -10,8 +10,8 @@ file, and `trellis-server import` adds that file to another installation.
 Users keep their Trellis user IDs, so services that stored them need no
 change, and services and devices keep their keys, so they reconnect with the
 seeds they have. The file holds plain records rather than database files, so
-it also moves an installation to a newer release, including from one release
-candidate to the next, which a backup cannot do.
+an export of any release imports into any other, older or newer, release
+candidates included, which a backup cannot do.
 
 The file carries:
 
@@ -144,10 +144,18 @@ Records already imported are skipped, and the data loads where it stopped.
 same step. It does not load data, so a load that stops partway shows only
 when you run the import.
 
-## Backups and releases
+## Exports, backups and releases
 
-A backup restores the same installation on the same release. Once Trellis has
-stable releases, a backup an earlier stable release took restores onto a
-newer one and is migrated forward. Before then, `trellis-server restore`
-refuses a backup from another release candidate: restore it with the release
-that took it, then move the installation with an export and import.
+An export of any Trellis release imports into any other, older or newer. A
+newer Trellis only adds to exports, and an older one reads past what it
+added: the report lists each part under "Not understood, left out".
+Trellis 0.100.0-rc.56, the first release with exports, is stricter: it
+refuses an export with a record kind or other part it does not know, or with
+a new field on an app, OIDC provider, user profile or theme, so an export
+from a later release that adds one does not import into rc.56.
+
+A backup is for the same release. `trellis-server restore` puts back a backup
+of its own release, and once Trellis has stable releases, one an earlier
+stable release took, which it migrates forward. Before then it refuses a
+backup from another release candidate: restore it with the release that took
+it, then move the installation with an export and import.

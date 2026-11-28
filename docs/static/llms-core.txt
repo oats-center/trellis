@@ -332,8 +332,7 @@ deployment with no instance that can run, device State) is listed under
 update times; its revision tokens are new. An export with registered State
 fails when the broker has no State bucket, and neither command uses a bucket
 that expires values. Running the import again finishes
-a deployment whose data did not load. It moves an installation between
-releases, release candidates included. Export and import refuse, before
+a deployment whose data did not load. Export and import refuse, before
 reading or changing anything, a broker that is not bound to this
 installation and its platform database, as backup does.
 `trellis-server restore <dir> [--config <dir>] [--force]` checks it and writes
@@ -385,6 +384,19 @@ events, Operations, remembered consent). Both need `users.manage` and `config.ma
 (`platform.manage` for an administrative service) and are audited. Processes
 reconnect with their existing seed once their Trellis URL points at the new
 installation; restart each one.
+
+An installation export or service bundle of any Trellis release imports into
+any other release, older or newer, release candidates included; a backup
+restores only into its own release, and migrates forward only between stable
+(non-rc) releases. Releases only add to these files (optional fields, record
+kinds, bundle entries) and never change the passphrase envelope or framing
+incompatibly; an import reads past what it does not know, never writing it,
+and lists each part under `notUnderstood` ("Not understood, left out" in
+text) as made by a newer Trellis. A bundle from 0.100.0-rc.55 or earlier
+carries no roles or grants: its `leftBehind` says so and names the roles to
+recreate, and the deployment arrives enabled. 0.100.0-rc.56 is stricter: it
+refuses a record kind, bundle entry or other part it does not know, and a new
+field on an app, OIDC provider, user profile or theme record.
 
 `trellis-server --dev` runs a development installation in
 `<user data>/trellis/dev` (or `--config <dir>`), creating it the first time:

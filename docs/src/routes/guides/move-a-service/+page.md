@@ -128,7 +128,9 @@ It ends with a report:
   the same ID under another username, which gets nothing; or a role this
   installation already has under the same ID with another name or other
   capabilities, which it leaves as it is;
-- what stayed behind, such as events a consumer had not processed yet.
+- what stayed behind, such as events a consumer had not processed yet;
+- under "Not understood, left out", any part a newer Trellis added to the
+  bundle that this one does not read.
 
 A role or grant the import skips changes nothing, and the rest still applies.
 To recreate a skipped member later, create their account and give them the
@@ -152,6 +154,20 @@ to finish it:
 trellis --profile new svc orders provision
 trellis --profile new svc import orders.trellis-service
 ```
+
+## Between releases
+
+A bundle from any Trellis release imports into any other, older or newer,
+release candidates included, so the two installations need not run the same
+release. A newer Trellis only adds to bundles, and an older one reads past
+what it added and lists it in the report.
+
+A bundle from Trellis 0.100.0-rc.55 or earlier carries no roles or grants.
+Its report says so under what stayed behind and names the roles to recreate
+by hand, and the deployment arrives enabled even if it was disabled.
+
+Trellis 0.100.0-rc.56 refuses a bundle with a part it does not know, so a
+bundle from a later release that adds one does not import into rc.56.
 
 ## Point the processes at the new installation
 

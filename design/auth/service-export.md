@@ -327,8 +327,8 @@ installation import, `administrator`), and for a skipped one the reason. `--chec
 ## The bundle
 
 The bundle's **content** is a sequence of named entries. It starts with the
-16 bytes `TRELLIS-SERVICE\n` and a 4-byte format number, currently 2.
-Format 2 added `access.json`. Each
+16 bytes `TRELLIS-SERVICE\n` and a 4-byte container format number, currently
+2 (see [between releases](#between-releases)). Each
 entry is a 2-byte name length, the name, and the entry's bytes as chunks of a
 4-byte length and that many bytes, ended by a zero length. Chunks let a
 stream snapshot of unknown size be written as JetStream sends it.
@@ -352,10 +352,12 @@ size and SHA-256 the manifest gives, and nothing else is. The SHA-256 of the
 whole content, the **content digest**, is recorded in both installations'
 audit entries and printed in the report.
 
-Import accepts only the entry names above, each once, with a snapshot named
-after a resource ID, and at most 1024 entries. It holds a JSON document of
-up to 16 MiB in memory and spools everything else to disk; a content chunk
-is at most 1 MiB and a line of `jobs.jsonl` at most 8 MiB.
+Import reads the entries above, each once, with a snapshot named after a
+resource ID, and at most 1024 entries in all. An entry with another name is
+one a newer Trellis added: it is checked against the manifest like the rest,
+then left out, and the report names it. Import holds a JSON document of up
+to 16 MiB in memory and spools the snapshots and jobs to disk; a content
+chunk is at most 1 MiB and a line of `jobs.jsonl` at most 8 MiB.
 
 **Encryption.** The CLI encrypts the content with the operator's passphrase
 as it arrives from Auth, and decrypts it as it sends it to Auth. The bundle
@@ -392,10 +394,49 @@ Import decrypts the file as it reads it and sends the content to Auth, which
 checks every entry against the manifest. There is no separate digest to
 confirm: it would prove nothing the passphrase does not.
 
-**Versioning.** The header line and the content's format number both carry a
-version. Import refuses a format it does not know. From the first stable
-release, every release imports bundles that any earlier stable release
-wrote, the same promise Trellis makes for upgrades.
+### Between releases
+
+A bundle any Trellis release exports imports into any other release, older
+or newer, release candidates included. Release candidates edit database
+baselines in place, so a bundle, not a backup, is how a service crosses
+them. Bundles stay readable in both directions by these rules, which every
+change to the format follows:
+
+- **The envelope stays readable.** The passphrase envelope (its
+  `trellis-service-bundle v1` header) and the container framing never change
+  in a way an earlier release cannot read. The container format number marks
+  only such a change. An import reads every format up to the highest it
+  knows and refuses a higher one, naming both; a release that needed one
+  would keep writing the old format where it could.
+- **Content grows by addition.** A release adds optional fields and new
+  entries. It never removes, renames or retypes what an earlier release
+  reads.
+- **Readers skip what they do not know.** An import reads past an entry or a
+  field it does not read and lists each in the report's `notUnderstood`, as
+  made by a newer Trellis, with the version the manifest names. A null field
+  it does not know holds nothing and is not listed.
+- **An incompatible change is a new entry.** When a document must change in
+  a way earlier releases cannot read, the new shape goes in a new entry
+  beside the old one, and the exporter keeps writing the old one where it
+  can.
+
+`evidence.json` is the build's package evidence as the IDL defines it. A
+service built with an IDL newer than the importing Trellis knows is refused
+there, as deploying that build would be.
+
+An import converts every earlier container format:
+
+| Format | Written by                        | Read as                                                                                                                                                                                                          |
+| ------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1      | Trellis 0.100.0-rc.55 and earlier | No `access.json`: the bundle carries no roles or grants. The report's `roles` and `grants` are empty, and `leftBehind` says so and names the roles to recreate by hand. No deployment state: it arrives enabled. |
+| 2      | every later release               | As described here.                                                                                                                                                                                               |
+
+**Trellis 0.100.0-rc.56** reads bundles more strictly than these rules: it
+refuses a container format other than 2 and an entry it does not know. It
+reads past an added field in every document but `evidence.json`, and
+returns `report.json` as it finds it. A bundle of a later release imports
+into rc.56 as long as it adds only such fields; one that adds an entry does
+not.
 
 ## Commands
 

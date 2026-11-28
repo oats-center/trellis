@@ -1,6 +1,6 @@
 ---
 title: Moving an Installation
-description: Export a whole installation's configuration as plain, versioned records with every service and device, and import it into another installation or a newer release.
+description: Export a whole installation's configuration as plain, versioned records with every service and device, and import it into another installation on any release, older or newer.
 ---
 
 # Design: Moving an Installation
@@ -9,13 +9,15 @@ description: Export a whole installation's configuration as plain, versioned rec
 > are commands beside the server, like `backup` and `restore`.
 
 `trellis-server backup` and `restore` copy database files and stream
-snapshots. They bring back the same installation on the same release, and
-before the first stable release a backup restores only into the release
-candidate that took it, because each candidate may edit its schema's baseline
-in place. An installation export carries the configuration as plain records
-instead, so it moves between installations and across releases, release
-candidates included, without setting anything up again and without re-keying
-the user IDs services stored.
+snapshots. A backup restores into the release that took it, and from the
+first stable release into a later stable release, which migrates it
+forward; before the first stable release a backup restores only into the
+release candidate that took it, because each candidate may edit its schema's
+baseline in place. An installation export carries the configuration as
+plain records instead: an export of any Trellis release imports into any
+other release, older or newer, release candidates included (see
+[between releases](#between-releases)), without setting anything up again
+and without re-keying the user IDs services stored.
 
 ## Prerequisites
 
@@ -35,8 +37,7 @@ trellis-server import <file> [--passphrase-file <path|->] [--check] [--config <p
 
 Both take the installation the way `backup` does. Export runs while the
 installation runs or is stopped, as long as its NATS is reachable; it only
-reads the platform database and never migrates it, so the build under test
-can export a database an earlier release made and still runs. Import runs
+reads the platform database and never migrates it. Import runs
 against an installation that has started once (so its `secrets.toml` and
 database exist) and is stopped, with its NATS running; it migrates the
 database first, as a start would (a preview migrates a copy instead). Before either reads data from NATS or
@@ -76,15 +77,54 @@ split across several `records/<kind>.json` entries, which the import joins
 in order, and a single record larger than that fails the export before the
 file is placed.
 
-**Versioning.** Each record kind carries its own format number. An import
-reads a kind's records through a conversion from that format to the one it
-reads; every kind is at format 1 today, so there is nothing to convert yet,
-and a later format adds the conversion from each earlier one. A kind or format
-the build does not know is refused by name. The records are rows of the
-platform database written as JSON objects of their columns (blobs as
-`{"base64": ...}`), less what belongs to the installation: secrets are opened
-and carried in the clear inside the envelope, and installation-local columns
-such as revisions are set again on import.
+The records are rows of the platform database written as JSON objects of
+named columns (blobs as `{"base64": ...}`), less what belongs to the
+installation: secrets are opened and carried in the clear inside the
+envelope, and installation-local columns such as revisions are set again on
+import. Each kind lists the fields it carries, and an export writes exactly
+those, not every column its table has, so a change to a database baseline
+changes the export only when a kind's list does.
+
+## Between releases
+
+An export of any Trellis release imports into any other release, older or
+newer, release candidates included. Exports stay readable in both directions
+by these rules, which every change to the format follows:
+
+- **The envelope stays readable.** The passphrase envelope and the container
+  framing never change in a way an earlier release cannot read. The
+  container format number, 1 so far, marks only such a change. An import
+  reads every format up to the highest it knows and refuses a higher one,
+  naming both; a release that needed one would keep writing the old format
+  where it could.
+- **Content grows by addition.** A release adds optional fields, record
+  kinds and entries. It never removes, renames or retypes what an earlier
+  release reads, so a kind keeps its format number as it grows.
+- **Readers skip what they do not know.** An import reads past a field, a
+  record kind or an entry it does not read, and a kind's records in a format
+  newer than it knows, and lists each in the report's `notUnderstood`, as
+  made by a newer Trellis, with the version `meta.json` names. A field it
+  does not know is dropped before a record is written, so it never reaches a
+  table. A null field holds nothing and is not listed.
+- **An incompatible change is a new kind.** When a kind must change in a way
+  earlier releases cannot read, the new shape is a new kind beside the old
+  one, and the exporter keeps writing the old one where it can. An import
+  converts each older format of a kind it ever wrote to the current one;
+  every kind is at format 1, so there is nothing to convert yet.
+
+The service bundles inside follow the rules of
+[service-export.md](./service-export.md#between-releases), and the report
+names what each one's import did not read under its deployment.
+
+**Trellis 0.100.0-rc.56**, the first release with installation exports, reads
+them more strictly than these rules. It refuses a container format other
+than 1, a record kind, an entry or a kind format it does not know, and it
+writes the fields of `oidcProviders` and `oauthClients` records, users'
+`profile` and `portalThemes` records straight into its tables, so it refuses
+a field of those that it lacks. It reads past a field added anywhere else.
+An export of a later release imports into rc.56 as long as it adds only such
+fields; one that adds a record kind or an entry, or a field of those four
+records, does not.
 
 ## Record kinds
 
@@ -282,6 +322,7 @@ administrator  the exported administrator's ID, this installation's, and what it
 access         recreated and skipped roles, members and grants, as a service import reports them
 deployments    each deployment's service import report, or the error that stopped its data loading
 notCarried     what an installation export leaves out
+notUnderstood  each entry, record kind, kind format and field a newer Trellis wrote that the import left out
 ```
 
 ## What is not carried

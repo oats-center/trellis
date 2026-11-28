@@ -491,7 +491,10 @@ stopped; `restart_with_server(source)` starts another `trellis-server` build
 on the same installation and broker, and `server_version()` names the running
 one, so an upgrade test starts from
 `NativeSource::PreviousRelease(version)` (the newest published release no
-newer than `version`) and restarts with the build under test;
+newer than `version`) and restarts with the build under test; `cli()` is the
+`trellis` CLI of the running server's release (that release's published,
+checksum-verified CLI, or `TRELLIS_TEST_CLI_BIN` for a server given by path),
+for driving each installation with its own release's commands;
 shutdown/cancellation reaps owned children before sandbox cleanup.
 
 Live user tests use `TrellisTestRuntime::create_user` (or
