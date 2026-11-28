@@ -8,6 +8,14 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Any release's installation export or service bundle imports into any other
+  release, older or newer. Importers read every earlier format, and leave out
+  and report under `notUnderstood` what a newer Trellis wrote that they don't
+  know. A service bundle from rc.55 or earlier imports without its roles and
+  grants and names them. A backup still restores only into its own release.
+
 ## [0.100.0-rc.56] - 2026-11-27
 
 ### Added
