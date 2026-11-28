@@ -54,9 +54,15 @@ drops its attempt. Hosts still starting are cancelled instead of drained.
 Progress ACK maintenance is automatic for accepted keyed and unkeyed deliveries
 at one third of the effective broker acknowledgement wait. It covers preflight,
 handler execution, confirmed lifecycle publication, and source disposition on
-the receiving transport. Keyed lease renewal is a separate fence; failure
-cancels local work and prevents stale completion. Job execution and side effects
-are at least once.
+the receiving transport. The broker still redelivers when progress lapses for an
+ack wait, as it does when the whole process stalls. A redelivery that reaches a
+host whose attempt still holds that work message goes no further there: the
+broker acknowledges by stream sequence, so the running attempt's progress ACKs
+and disposition cover the redelivery too, and the host neither runs the handler
+again nor hands the message back. The TypeScript runtime does this; the Rust
+runtime does not yet, and runs such a redelivery in its spare slot. Keyed lease
+renewal is a separate fence; failure cancels local work and prevents stale
+completion. Job execution and side effects are at least once.
 
 Ordinary service workers and job references reconstruct lifecycle history through
 the native `Jobs.History` RPC. The runtime derives the deployment from verified

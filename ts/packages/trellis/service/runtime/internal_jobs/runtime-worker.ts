@@ -376,6 +376,7 @@ export function startQueueWorkerLoop<TResult>(
       const token = new JobCancellationToken();
       const physicalLossHandler = () => token.cancelForLeaseLoss();
       let guard: ReturnType<typeof registry.register> | undefined;
+      let releaseReceipt: (() => void) | undefined;
       let stopProgressAcks: (() => void) | undefined;
       try {
         if (stopping) continue;
@@ -383,6 +384,22 @@ export function startQueueWorkerLoop<TResult>(
         // is accounted for. Never cancel the outstanding receive on shutdown.
         const msg = await session.consumer.next();
         if (!msg) continue;
+        const event = parseWorkPayloadEvent(msg.data);
+        const job = event
+          ? (jobFromWorkEvent(event) as Job<unknown, TResult> | undefined)
+          : undefined;
+        const sequence = msg.info?.lifecycleSequence;
+        if (job && sequence !== undefined) {
+          releaseReceipt = registry.claimReceipt(
+            `${job.service}.${job.type}.${job.id}@${sequence}`,
+          );
+          // The broker redelivers a message whose progress ACKs lapsed for an
+          // ack wait, as when this process stalls, even while an attempt here
+          // still holds it. That attempt acknowledges by stream sequence, so
+          // its progress ACKs and disposition cover this delivery too. Running
+          // the handler again, or handing the message back, would duplicate it.
+          if (!releaseReceipt) continue;
+        }
         session.physicalLoss?.addEventListener("abort", physicalLossHandler);
         if (session.physicalLoss?.aborted) physicalLossHandler();
         if (stopping) token.cancelForShutdown();
@@ -416,14 +433,7 @@ export function startQueueWorkerLoop<TResult>(
             await disposition("nak");
             continue;
           }
-          const event = parseWorkPayloadEvent(msg.data);
-          if (!event) {
-            await disposition("ack");
-            continue;
-          }
-          const job = jobFromWorkEvent(event) as
-            Job<unknown, TResult> | undefined;
-          if (!job) {
+          if (!event || !job) {
             await disposition("ack");
             continue;
           }
@@ -631,6 +641,7 @@ export function startQueueWorkerLoop<TResult>(
           // before release can dispose a drained, replaced receiving source.
           stopProgressAcks?.();
           guard?.dispose();
+          releaseReceipt?.();
           activeTokens.delete(token);
           session.physicalLoss?.removeEventListener(
             "abort",
