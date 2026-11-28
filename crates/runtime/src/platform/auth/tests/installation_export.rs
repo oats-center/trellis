@@ -935,10 +935,11 @@ async fn a_misshapen_export_is_refused_naming_where() {
                 false,
             )
             .await;
-            assert!(
-                matches!(&refused, Err(crate::RuntimeError::Platform(error)) if error.contains(names)),
-                "{refused:?}"
+            let named = matches!(
+                &refused,
+                Err(crate::RuntimeError::Platform(error)) if error.contains(names)
             );
+            assert!(named, "{refused:?}");
         }
         assert!(!has_user(&target, &person).await);
     }
