@@ -567,11 +567,25 @@ test("latest durable lifecycle wins over a stale terminal projection", () =>
     assert.deepEqual((await f.completed(job)).result, { refreshed: true });
   }));
 
-test("progress acknowledgements prevent redelivery during a held handler", () =>
+test("progress acknowledgements keep a held handler's job reserved", () =>
   withBroker(async (f) => {
+    // Exhausted deliveries also leave the broker's pending list, so only an
+    // unlimited budget makes settlement prove the attempt's ACK.
+    await f.jsm.consumers.update("ADAPTER_JOBS", "worker", { max_deliver: -1 });
     const job = await f.manager.create("refresh", {});
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
+    const acks: Array<{ subject: string; body: string; at: number }> = [];
+    const observer = f.nc.subscribe("$JS.ACK.ADAPTER_JOBS.worker.>", {
+      callback: (_error, message) => {
+        acks.push({
+          subject: message.subject,
+          body: message.string(),
+          at: performance.now(),
+        });
+      },
+    });
+    await f.nc.flush();
     try {
       await f.host(async () => {
         entered.resolve();
@@ -579,25 +593,42 @@ test("progress acknowledgements prevent redelivery during a held handler", () =>
         return { held: true };
       });
       await deadline(entered.promise, 5_000);
-      const competitor = await f.js.consumers.get("ADAPTER_JOBS", "worker");
-      const receive = competitor.next({ expires: 1_000 });
-      const since = performance.now();
-      await waitFor(() => Promise.resolve(performance.now() - since > 350));
+      // The broker redelivers whenever progress lapses for an ack wait, and a
+      // loaded runner can deschedule this process for that long, so nothing
+      // here depends on the broker not redelivering. The runtime owns the
+      // progress ACKs: while the handler is held past several ack waits, the
+      // receipt keeps sending them and nothing settles or hands back the job.
+      const ackWaitMs = f.binding.jobs.queues.refresh.ackWaitMs;
+      await waitFor(() => {
+        const progress = acks.filter((ack) => ack.body === "+WPI");
+        return Promise.resolve(
+          progress.length >= 4 &&
+            progress.at(-1)!.at - progress[0]!.at > 3 * ackWaitMs,
+        );
+      });
+      const receipt = acks[0]!.subject;
       assert.deepEqual(
-        (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
-          .consumer_seq,
+        acks.filter((ack) => ack.subject !== receipt || ack.body !== "+WPI"),
+        [],
+        "only the held receipt's progress ACKs leave before it finishes",
+      );
+      assert.deepEqual(
+        (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).num_ack_pending,
         1,
-        "held job must not be redelivered across multiple ack waits",
       );
       release.resolve();
-      assert.deepEqual(
-        await receive,
-        null,
-        "competing pull must not receive the held job",
-      );
       await f.settled();
+      await f.nc.flush();
+      assert.deepEqual(
+        acks
+          .filter((ack) => ack.body !== "+WPI")
+          .map(({ subject, body }) => ({ subject, body })),
+        [{ subject: receipt, body: "+ACK" }],
+        "the held receipt's ACK settles the job",
+      );
       assert.deepEqual((await f.completed(job)).tries, 1);
     } finally {
+      observer.unsubscribe();
       release.resolve();
     }
   }));

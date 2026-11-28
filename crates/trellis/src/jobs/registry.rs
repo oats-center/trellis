@@ -82,6 +82,24 @@ pub struct ActiveJobCancellationRegistry {
 struct ActiveJobCancellationRegistryInner {
     tokens: HashMap<String, Vec<JobCancellationToken>>,
     pending: HashSet<String>,
+    receipts: HashSet<String>,
+}
+
+/// One work message held by an attempt in this host, released on drop.
+pub(crate) struct ActiveJobReceipt {
+    receipt: String,
+    registry: ActiveJobCancellationRegistry,
+}
+
+impl Drop for ActiveJobReceipt {
+    fn drop(&mut self) {
+        let mut inner = self
+            .registry
+            .inner
+            .lock()
+            .expect("lock cancellation registry");
+        inner.receipts.remove(&self.receipt);
+    }
 }
 
 #[doc = concat!("Public Trellis data type `", stringify!(ActiveJobCancellationGuard), "`.")]
@@ -134,6 +152,19 @@ impl ActiveJobCancellationRegistry {
             inner.pending.insert(key.to_string());
         }
         found
+    }
+
+    /// Claim one work message for an attempt in this host. Returns `None` while
+    /// another attempt here still holds the message.
+    pub(crate) fn claim_receipt(&self, receipt: String) -> Option<ActiveJobReceipt> {
+        let mut inner = self.inner.lock().expect("lock cancellation registry");
+        inner
+            .receipts
+            .insert(receipt.clone())
+            .then(|| ActiveJobReceipt {
+                receipt,
+                registry: self.clone(),
+            })
     }
 
     /// Forget a pending cancel for work that will never register a live token.

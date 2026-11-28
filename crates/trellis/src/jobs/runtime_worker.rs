@@ -815,6 +815,35 @@ where
                 });
             }
         };
+        let payload = message.payload.clone();
+        let parsed_job = parse_work_payload_job(&payload);
+        let source_sequence = message
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get("Nats-Stream-Source"))
+            .and_then(|source| source.as_str().split_whitespace().nth(1))
+            .and_then(|sequence| sequence.parse::<u64>().ok());
+        // The broker redelivers a message whose progress ACKs lapsed for an ack
+        // wait, as when this process stalls, even while an attempt here still
+        // holds it. That attempt acknowledges by stream sequence, so its
+        // progress ACKs and disposition cover this delivery too. Running the
+        // handler again, or handing the message back, would duplicate it.
+        let _receipt = match (
+            parsed_job.as_ref(),
+            source_sequence.or_else(|| message.info().ok().map(|info| info.stream_sequence)),
+        ) {
+            (Some(job), Some(sequence)) => {
+                let receipt = format!(
+                    "{}@{sequence}",
+                    job_key(&job.service, &job.job_type, &job.id)
+                );
+                let Some(receipt) = cancellation_registry.claim_receipt(receipt) else {
+                    continue;
+                };
+                Some(receipt)
+            }
+            _ => None,
+        };
         // A pull already issued when the host began to stop can still return a
         // job; hand it straight back for another instance rather than run it.
         if stopping
@@ -827,13 +856,14 @@ where
                 .map_err(map_ack_error)?;
             break;
         }
-        let _delivery_attempt = match message.info() {
-            Ok(info) => u64::try_from(info.delivered)
-                .map_err(|error| RuntimeWorkerError::Messages {
+        let stream_sequence = match message.info() {
+            Ok(info) => {
+                u64::try_from(info.delivered).map_err(|error| RuntimeWorkerError::Messages {
                     consumer: queue.consumer_name.clone(),
                     details: format!("invalid delivery attempt metadata: {error}"),
-                })?
-                .max(1),
+                })?;
+                info.stream_sequence
+            }
             Err(error) => {
                 tracing::warn!(%error, subject = %message.subject, "retrying job with unavailable delivery metadata");
                 message
@@ -843,8 +873,7 @@ where
                 continue;
             }
         };
-        let payload = message.payload.clone();
-        let Some(mut parsed_job) = parse_work_payload_job(&payload) else {
+        let Some(mut parsed_job) = parsed_job else {
             message.ack().await.map_err(map_ack_error)?;
             continue;
         };
@@ -887,21 +916,7 @@ where
             })))
         };
         let job_key = job_key(&parsed_job.service, &parsed_job.job_type, &parsed_job.id);
-        let work_sequence = message
-            .headers
-            .as_ref()
-            .and_then(|headers| headers.get("Nats-Stream-Source"))
-            .and_then(|source| source.as_str().split_whitespace().nth(1))
-            .and_then(|sequence| sequence.parse::<u64>().ok())
-            .unwrap_or(
-                message
-                    .info()
-                    .map_err(|error| RuntimeWorkerError::Messages {
-                        consumer: queue.consumer_name.clone(),
-                        details: error.to_string(),
-                    })?
-                    .stream_sequence,
-            );
+        let work_sequence = source_sequence.unwrap_or(stream_sequence);
         let work_event = serde_json::from_slice::<JobEvent>(&payload).map_err(|error| {
             RuntimeWorkerError::LifecycleDecode {
                 stream: JOBS_STREAM.to_owned(),
@@ -2925,6 +2940,186 @@ mod tests {
         for task in tasks {
             task.abort();
         }
+        nats.stop().unwrap();
+    }
+
+    // One runtime thread, so a blocking handler stalls the whole host, as a
+    // descheduled or paused process does: no progress ACK leaves it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_redelivery_of_a_job_its_host_still_runs_is_left_to_the_running_attempt() {
+        use crate::jobs::bindings::{JobsBinding, JobsRuntimeBinding};
+        use crate::jobs::types::{JobEvent, JobEventType};
+        use crate::jobs::{TrellisJobEventPublisher, TrellisJobMetaSource};
+        use async_nats::jetstream::{consumer, stream};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let source = tempfile::tempdir().unwrap();
+        trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
+            source.path(),
+        ))
+        .unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let mut nats = trellis_local_nats::LocalNats::builder()
+            .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
+            .cache_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/trellis-test-cache"),
+            )
+            .source(source.path())
+            .temporary_state()
+            .ephemeral_ports()
+            .output(trellis_local_nats::NatsOutput::Log {
+                path: state.path().join("nats.log"),
+                mirror: false,
+            })
+            .start()
+            .unwrap();
+        let client = async_nats::ConnectOptions::new()
+            .credentials_file(source.path().join("creds/trellis-auth.creds"))
+            .await
+            .unwrap()
+            .connect(nats.nats_url())
+            .await
+            .unwrap();
+        let js = async_nats::jetstream::new(client.clone());
+        let lifecycle = js
+            .create_stream(stream::Config {
+                name: "JOBS".into(),
+                subjects: vec!["jobs.>".into()],
+                allow_direct: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let ack_wait = Duration::from_millis(200);
+        let queue = JobsQueueBinding {
+            queue_type: "work".into(),
+            publish_prefix: "jobs.work".into(),
+            updates_prefix: None,
+            work_subject: "jobs.work.*.created".into(),
+            consumer_name: "work".into(),
+            max_deliver: 2,
+            backoff_ms: Vec::new(),
+            ack_wait_ms: 200,
+            default_deadline_ms: None,
+            update: None,
+            key_concurrency: None,
+            queue: None,
+        };
+        // Exhausted deliveries also leave the broker's pending list, so only an
+        // unlimited budget makes settlement prove the running attempt's ACK.
+        let mut work = lifecycle
+            .create_consumer(consumer::pull::Config {
+                durable_name: Some("work".into()),
+                filter_subject: queue.work_subject.clone(),
+                ack_policy: consumer::AckPolicy::Explicit,
+                ack_wait,
+                max_deliver: -1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let jobs = JobsBinding {
+            service_name: "documents".into(),
+            namespace: "documents".into(),
+            queues: [("work".into(), queue)].into(),
+        };
+        let manager = crate::jobs::manager::JobManager::new(
+            TrellisJobEventPublisher::new(client.clone()),
+            jobs.clone(),
+            TrellisJobMetaSource,
+        );
+        let job = manager.create("work", serde_json::json!({})).await.unwrap();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let host = {
+            let publisher_client = client.clone();
+            let (runs, entered, release) = (runs.clone(), entered.clone(), release.clone());
+            super::start_worker_host_from_binding(
+                client.clone(),
+                JobsRuntimeBinding {
+                    jobs,
+                    work_stream: "JOBS".into(),
+                },
+                "host".into(),
+                move || TrellisJobEventPublisher::new(publisher_client.clone()),
+                |_, _| TrellisJobMetaSource,
+                move |_active| {
+                    let (runs, entered, release) = (runs.clone(), entered.clone(), release.clone());
+                    async move {
+                        if runs.fetch_add(1, Ordering::SeqCst) == 0 {
+                            entered.notify_one();
+                            // Stall the host past several ack waits. The broker
+                            // redelivers the running job into the spare slot's
+                            // waiting pull.
+                            std::thread::sleep(4 * ack_wait);
+                        }
+                        release.notified().await;
+                        Ok::<_, crate::jobs::manager::JobProcessError<String>>(
+                            serde_json::json!({"once": true}),
+                        )
+                    }
+                },
+                super::WorkerHostOptions {
+                    queue_concurrency: [("work".to_owned(), 2)].into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+        };
+        tokio::time::timeout(Duration::from_secs(10), entered.notified())
+            .await
+            .unwrap();
+        // A spare slot that leaves the redelivery alone pulls again; one that
+        // runs the job does not.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let info = work.info().await.unwrap();
+                if runs.load(Ordering::SeqCst) > 1
+                    || (info.delivered.consumer_sequence >= 2 && info.num_waiting == 1)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "the redelivery must not run the job again"
+        );
+        release.notify_waiters();
+        // The running attempt's ACK settles the redelivered message too.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let info = work.info().await.unwrap();
+                if info.num_ack_pending == 0 && info.num_pending == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let finished = super::latest_lifecycle_message(
+            &js.get_stream_no_info("JOBS").await.unwrap(),
+            &format!("jobs.work.{}.>", job.id),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let finished = serde_json::from_slice::<JobEvent>(&finished.payload).unwrap();
+        assert_eq!(finished.event_type, JobEventType::Completed);
+        assert_eq!(finished.result, Some(serde_json::json!({"once": true})));
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        host.stop().await.unwrap();
         nats.stop().unwrap();
     }
 
