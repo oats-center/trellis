@@ -285,7 +285,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
                 error => rpc_error(error),
             })?;
             if active {
-                super::resources::materialize_native_kv(&store, &operational, &deployment, now)
+                super::resources::prepare_for_instance(&store, &operational, &deployment, now)
                     .await
                     .map_err(rpc_error)?;
             }
@@ -578,7 +578,7 @@ pub(super) async fn provision_service_instance(
         provision_instance(&saved_store, &saved_identity, &saved_input, "service", now)
     })
     .await?;
-    super::resources::materialize_native_kv(
+    super::resources::prepare_for_instance(
         store,
         operational,
         &input.deployment_id.to_string(),
@@ -1562,9 +1562,7 @@ pub(super) fn read_deployment(
         .query_row(
             "SELECT d.participant_id,d.participant_kind,d.state,b.revision,\
             b.implementation_digest,b.required_capabilities_json,\
-            b.optional_capabilities_json,d.title,\
-            (SELECT imported_at FROM auth_service_imports i \
-            WHERE i.deployment_id=d.deployment_id) \
+            b.optional_capabilities_json,d.title,d.imported_at \
             FROM auth_deployments d \
             JOIN auth_deployment_bindings b USING(deployment_id) \
             WHERE deployment_id=?1",

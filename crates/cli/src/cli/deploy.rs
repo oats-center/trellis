@@ -48,6 +48,11 @@ pub struct SvcImportArgs {
     /// Import webhook endpoints that check nothing (`verify none`).
     #[arg(long)]
     pub acknowledge_unauthenticated_webhooks: bool,
+    /// Replace what this installation's NATS already holds under the
+    /// deployment's own names, such as the streams an interrupted import of
+    /// it left, with the bundle's data. Without it, a terminal asks.
+    #[arg(long)]
+    pub replace_existing: bool,
 }
 
 /// Export a service for another installation.

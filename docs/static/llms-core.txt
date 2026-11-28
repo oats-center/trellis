@@ -332,7 +332,10 @@ deployment with no instance that can run, device State) is listed under
 update times; its revision tokens are new. An export with registered State
 fails when the broker has no State bucket, and neither command uses a bucket
 that expires values. Running the import again finishes
-a deployment whose data did not load. Export and import refuse, before
+a deployment whose data did not load; a deployment whose data would replace
+what NATS already holds under its own names (an interrupted load's streams)
+loads nothing and is listed with `replaces` until the import runs with
+`--replace-existing`, or the terminal's question is answered yes. Export and import refuse, before
 reading or changing anything, a broker that is not bound to this
 installation and its platform database, as backup does.
 `trellis-server restore <dir> [--config <dir>] [--force]` checks it and writes
@@ -366,7 +369,12 @@ deployment ID or participant already deployed, or an instance key,
 enrollment secret or webhook URL already in use; it keeps the deployment,
 instance and resource IDs, so KV revisions, job subjects and webhook paths
 are unchanged, and a run that stopped while loading data, or for want of an
-active instance, finishes when run again. It refuses a bundle naming any
+active instance, finishes when run again, loading all of the data again. It
+first lists in `replaces` what that would replace in NATS (the deployment's
+own streams, and its queues' waiting-job messages), shown by `--check` too,
+and changes nothing until approved: a terminal asks for the deployment ID,
+and a script passes `--replace-existing`. The service cannot connect until
+the data has loaded. It refuses a bundle naming any
 stream, bucket, job subject or entry outside the deployment it creates. It
 recreates the roles (same role ID), role members, direct grants and app
 implied consent that give the service's API capabilities, for users it
@@ -385,18 +393,23 @@ events, Operations, remembered consent). Both need `users.manage` and `config.ma
 reconnect with their existing seed once their Trellis URL points at the new
 installation; restart each one.
 
-An installation export or service bundle of any Trellis release imports into
-any other release, older or newer, release candidates included; a backup
-restores only into its own release, and migrates forward only between stable
-(non-rc) releases. Releases only add to these files (optional fields, record
-kinds, bundle entries) and never change the passphrase envelope or framing
-incompatibly; an import reads past what it does not know, never writing it,
-and lists each part under `notUnderstood` ("Not understood, left out" in
-text) as made by a newer Trellis. A bundle from 0.100.0-rc.55 or earlier
-carries no roles or grants: its `leftBehind` says so and names the roles to
-recreate, and the deployment arrives enabled. 0.100.0-rc.56 is stricter: it
-refuses a record kind, bundle entry or other part it does not know, and a new
-field on an app, OIDC provider, user profile or theme record.
+Which release reads an installation export or service bundle: 0.100.0-rc.55
+and earlier read only service bundles of rc.55 and earlier (format 1) and
+have no installation import; 0.100.0-rc.56 reads only files of rc.56 and
+later (it refuses a format-1 bundle), and refuses a record kind, bundle entry
+or other part it does not know, and a new field on an app, OIDC provider,
+user profile or theme record; every later release reads the files of every
+release, older or newer. Check the
+destination's release before stopping the source. A backup restores only
+into its own release, and migrates forward only between stable (non-rc)
+releases. Releases after rc.56 only add to these files (optional fields,
+record kinds, bundle entries) and never change the passphrase envelope or
+framing incompatibly; an import reads past what it does not know, never
+writing it, and lists each part under `notUnderstood` ("Not understood, left
+out" in text) as made by a newer Trellis. A bundle from 0.100.0-rc.55 or
+earlier carries no roles or grants: its `leftBehind` says so and names the
+roles, and each directly granted capability with how many held it, to
+recreate, and the deployment arrives enabled.
 
 `trellis-server --dev` runs a development installation in
 `<user data>/trellis/dev` (or `--config <dir>`), creating it the first time:

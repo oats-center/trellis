@@ -819,28 +819,13 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     assert!(new_url.starts_with(new.trellis_url()), "{new_url}");
     assert_eq!(report["webhooks"][0]["url"], new_url.as_str());
 
-    // The same bundle again, or a later export of the same deployment, is
-    // refused, naming the deployment that exists.
+    // The same bundle again is refused once its import finished, naming the
+    // deployment that exists.
     let refused = new_cli
         .refusal(&[
             "svc",
             "import",
             path(&bundle),
-            "--passphrase-file",
-            path(&passphrase),
-        ])
-        .await;
-    assert!(
-        refused.contains(&format!("alreadyimportedasdeployment{deployment}")),
-        "{refused}"
-    );
-    let second = work.join("again.trellis-service");
-    export(&old_cli, &deployment, &second, &passphrase).await;
-    let refused = new_cli
-        .refusal(&[
-            "svc",
-            "import",
-            path(&second),
             "--passphrase-file",
             path(&passphrase),
         ])
@@ -1023,10 +1008,11 @@ async fn an_exported_service_runs_in_another_installation_with_everything_trelli
     old.shutdown().await.unwrap();
 }
 
-/// A bundle whose deployment has no instance that can run stops before it
-/// prepares the resources and queues the waiting jobs. Once an instance is
-/// provisioned in the new installation, running the same bundle again
-/// finishes: the waiting job runs on the new instance.
+/// A bundle whose deployment has no instance that can run records the
+/// deployment and leaves its data and waiting jobs in the bundle. Once an
+/// instance is provisioned in the new installation, running the same bundle
+/// again loads them, with nothing to replace: the waiting job runs on the
+/// new instance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_import_waiting_for_an_instance_finishes_once_one_is_provisioned() {
     let mut old = TrellisTestRuntime::builder().start().await.unwrap();
@@ -1626,8 +1612,45 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
             .contains("containerformat3,andthisTrellisreadsformats1to2"),
         "the refusal names the formats this Trellis reads"
     );
+    // A report that is not a JSON object, and one whose field has the
+    // wrong type, which the import's answer could not carry.
+    let report_as = |name: &str, report: Value| {
+        let mut entries = moving_entries.clone();
+        bundle::set_document(&mut entries, "report.json", &report);
+        let file = work.join(name);
+        write_bundle(entries, &passphrase, &file);
+        file
+    };
+    let listed_report = report_as("listed-report.trellis-service", json!([]));
+    let mut wrong = bundle::document(&moving_entries, "report.json");
+    wrong["instances"] = json!("several");
+    let wrong_report = report_as("wrong-report.trellis-service", wrong);
+    for (file, names) in [
+        (&listed_report, "report.jsonisnotaJSONobject"),
+        (&wrong_report, "report.json:fieldinstances:"),
+    ] {
+        let refusal = new_cli
+            .refusal(&[
+                "svc",
+                "import",
+                path(file),
+                "--passphrase-file",
+                path(&passphrase),
+                "--check",
+            ])
+            .await;
+        assert!(refusal.contains(names), "{refusal}");
+    }
     let before = streams().await;
-    for file in [platform, copies, deletes, undecodable, later_format] {
+    for file in [
+        platform,
+        copies,
+        deletes,
+        undecodable,
+        later_format,
+        listed_report,
+        wrong_report,
+    ] {
         let checked = new_cli
             .run(&[
                 "svc",
@@ -1647,7 +1670,7 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         assert!(!new_cli.has_deployment(&moving_id).await);
         let rows: i64 = records
             .query_row(
-                "SELECT (SELECT count(*) FROM auth_service_imports WHERE deployment_id=?1) \
+                "SELECT (SELECT count(*) FROM auth_deployments WHERE deployment_id=?1) \
                 + (SELECT count(*) FROM auth_resources WHERE owner_id=?1) \
                 + (SELECT count(*) FROM auth_instances WHERE deployment_id=?1)",
                 [&moving_id],
@@ -1658,10 +1681,9 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         assert_eq!(streams().await, before);
     }
 
-    // An import that stops after restoring a stream, before it records
-    // anything about it, resumes when run again: it restores again only a
-    // stream it made itself. A trigger refuses the record of the store
-    // loaded, as a stop just after the broker made the stream would leave it.
+    // An import that stops after loading its data, before it ends, leaves
+    // the deployment importing. A trigger refuses the end, as a stop just
+    // before Auth committed it would.
     let store = bundle::document(&moving_entries, "resources.json")
         .as_array()
         .unwrap()
@@ -1669,12 +1691,29 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         .find(|resource| resource["kind"] == "store")
         .unwrap()
         .clone();
-    let store_id = store["resourceId"].as_str().unwrap().to_owned();
     let store_stream = store["stream"].as_str().unwrap().to_owned();
+    // The queue the waiting job is on, from its messages' subjects, and how
+    // many messages it has.
+    let (queue, waiting) = {
+        let (_, jobs) = moving_entries
+            .iter()
+            .find(|(name, _)| name == "jobs.jsonl")
+            .unwrap();
+        let lines: Vec<&[u8]> = jobs
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .collect();
+        let message: Value = serde_json::from_slice(lines[0]).unwrap();
+        let subject = message["subject"].as_str().unwrap();
+        (
+            format!("{}.>", subject.rsplitn(3, '.').nth(2).unwrap()),
+            lines.len(),
+        )
+    };
     records
         .execute_batch(&format!(
-            "CREATE TRIGGER stop_before_store_loaded BEFORE UPDATE OF loaded_json \
-            ON auth_service_imports WHEN NEW.loaded_json LIKE '%{store_id}%' \
+            "CREATE TRIGGER stop_before_import_ends BEFORE UPDATE OF importing \
+            ON auth_deployments WHEN OLD.deployment_id='{moving_id}' AND NEW.importing=0 \
             BEGIN SELECT RAISE(ABORT, 'stopped'); END"
         ))
         .unwrap();
@@ -1683,136 +1722,111 @@ async fn an_import_touches_nothing_outside_its_own_deployment() {
         async move {
             let mut stream = jetstream.get_stream(&name).await.unwrap();
             let info = stream.info().await.unwrap();
-            (
-                info.created,
-                info.state.messages,
-                info.config.metadata.clone(),
-            )
+            (info.created, info.state.messages)
         }
     };
+    let queued = || {
+        let (jetstream, queue) = (jetstream.clone(), queue.clone());
+        async move {
+            let jobs = jetstream.get_stream("JOBS").await.unwrap();
+            let mut held = jobs.info_with_subjects(&queue).await.unwrap();
+            let mut total = 0;
+            while let Some(found) = held.next().await {
+                total += found.unwrap().1;
+            }
+            total
+        }
+    };
+    let kept_now = || {
+        let (jetstream, kept_stream) = (jetstream.clone(), kept_stream.clone());
+        async move {
+            let mut stream = jetstream
+                .get_stream(&kept_stream)
+                .await
+                .expect("keeper's stream stays");
+            let info = stream.info().await.unwrap();
+            (info.created, info.state.messages)
+        }
+    };
+    let keeper_before = kept_now().await;
     assert!(!import(&new_cli, &moving_file, &passphrase)
         .await
         .status
         .success());
     assert!(new_cli.has_deployment(&moving_id).await);
-    let (made, _, _) = created(store_stream.clone()).await;
+    let stopped = created(store_stream.clone()).await;
+    assert_eq!(queued().await, waiting);
 
-    // Someone else's stream under the store's name, configured as the
-    // store is: one without the import's mark, then one with another
-    // import's.
-    jetstream.delete_stream(&store_stream).await.unwrap();
-    let mut foreign_config: async_nats::jetstream::stream::Config =
-        serde_json::from_value(store["config"].clone()).unwrap();
-    foreign_config.metadata.clear();
-    let foreign = jetstream.create_stream(foreign_config).await.unwrap();
-    let foreign_subject = store["config"]["subjects"][0]
-        .as_str()
-        .unwrap()
-        .replace('>', "foreign");
-    jetstream
-        .publish(foreign_subject, "someone else's".into())
-        .await
-        .unwrap()
-        .await
-        .unwrap();
-    let foreign_created = foreign.cached_info().created;
-    let refused = import(&new_cli, &moving_file, &passphrase).await;
+    // Run again without approval, the import changes nothing and names what
+    // it would replace; a script cannot approve but with the flag.
+    let refusal = new_cli
+        .refusal(&[
+            "svc",
+            "import",
+            path(&moving_file),
+            "--passphrase-file",
+            path(&passphrase),
+        ])
+        .await;
     assert!(
-        // The report wraps where a stream name has a hyphen.
-        String::from_utf8_lossy(&refused.stderr)
-            .chars()
-            .filter(|c| !c.is_whitespace() && *c != '│')
-            .collect::<String>()
-            .contains("didnotcreate"),
-        "{}",
-        String::from_utf8_lossy(&refused.stderr)
+        refusal.contains(&store_stream) && refusal.contains("--replace-existing"),
+        "{refusal}"
     );
-    let (kept_created, kept_messages_now, kept_metadata) = created(store_stream.clone()).await;
-    assert_eq!(
-        (
-            kept_created,
-            kept_messages_now,
-            kept_metadata.get("trellis.import")
-        ),
-        (foreign_created, 1, None),
-        "a stream without the import's mark stays as it is"
-    );
-    let marked = std::collections::HashMap::from([(
-        "trellis.import".to_owned(),
-        ulid::Ulid::generate().to_string(),
-    )]);
-    let mut config = foreign.cached_info().config.clone();
-    config.metadata = marked.clone();
-    jetstream.update_stream(config).await.unwrap();
-    let refused = import(&new_cli, &moving_file, &passphrase).await;
-    assert!(
-        // The report wraps where a stream name has a hyphen.
-        String::from_utf8_lossy(&refused.stderr)
-            .chars()
-            .filter(|c| !c.is_whitespace() && *c != '│')
-            .collect::<String>()
-            .contains("didnotcreate"),
-        "{}",
-        String::from_utf8_lossy(&refused.stderr)
-    );
-    let (kept_created, kept_messages_now, kept_metadata) = created(store_stream.clone()).await;
-    assert_eq!(
-        (kept_created, kept_messages_now),
-        (foreign_created, 1),
-        "a stream another import marked stays as it is"
-    );
-    assert_eq!(
-        kept_metadata.get("trellis.import"),
-        marked.get("trellis.import")
-    );
+    assert_eq!(created(store_stream.clone()).await, stopped);
+    assert_eq!(queued().await, waiting);
+    assert_eq!(kept_now().await, keeper_before);
 
-    // Without the stranger's stream the store is restored, and the record
-    // refused again; once the record goes through, the store this import
-    // made and never recorded is restored again and the import finishes.
-    jetstream.delete_stream(&store_stream).await.unwrap();
-    assert!(!import(&new_cli, &moving_file, &passphrase)
-        .await
-        .status
-        .success());
-    let (made_again, _, _) = created(store_stream.clone()).await;
-    assert_ne!(made_again, made);
+    // `--check` lists the same, and changes nothing either.
+    let checked = new_cli
+        .json(&[
+            "svc",
+            "import",
+            path(&moving_file),
+            "--passphrase-file",
+            path(&passphrase),
+            "--check",
+        ])
+        .await;
+    let replaces = &checked["import"]["replaces"];
+    assert_eq!(checked["import"]["applied"], false);
+    assert_eq!(checked["import"]["resumed"], true);
+    for expected in [
+        json!({ "stream": store_stream }),
+        json!({ "stream": moving_stream }),
+        json!({ "stream": "JOBS", "subjects": queue }),
+    ] {
+        assert!(
+            replaces.as_array().unwrap().contains(&expected),
+            "{expected} in {replaces}"
+        );
+    }
+    assert!(!replaces.to_string().contains(&kept_stream), "{replaces}");
+    assert_eq!(created(store_stream.clone()).await, stopped);
+
+    // With approval, the import loads everything again and ends: the store
+    // is restored anew, the waiting job is queued once, and `keeper` is as
+    // it was.
     records
-        .execute_batch("DROP TRIGGER stop_before_store_loaded")
+        .execute_batch("DROP TRIGGER stop_before_import_ends")
         .unwrap();
-    let finished = import(&new_cli, &moving_file, &passphrase).await;
-    assert!(
-        finished.status.success(),
-        "{}",
-        String::from_utf8_lossy(&finished.stderr)
-    );
-    let finished: Value = serde_json::from_slice(&finished.stdout).unwrap();
+    let finished = new_cli
+        .json(&[
+            "svc",
+            "import",
+            path(&moving_file),
+            "--passphrase-file",
+            path(&passphrase),
+            "--replace-existing",
+        ])
+        .await;
+    assert_eq!(finished["import"]["applied"], true);
     assert_eq!(finished["import"]["resumed"], true);
-    let (restored, messages, _) = created(store_stream.clone()).await;
-    assert_ne!(
-        restored, made_again,
-        "the store's stream was restored again"
-    );
+    let (restored, messages) = created(store_stream.clone()).await;
+    assert_ne!(restored, stopped.0, "the store's stream was restored again");
     assert_eq!(messages, store["messages"].as_u64().unwrap());
-    let loaded = jetstream
-        .get_stream(&moving_stream)
-        .await
-        .unwrap()
-        .info()
-        .await
-        .unwrap()
-        .state
-        .messages;
-    assert_eq!(loaded, 1);
-    let kept = jetstream
-        .get_stream(&kept_stream)
-        .await
-        .expect("keeper's stream stays")
-        .info()
-        .await
-        .unwrap()
-        .state
-        .messages;
-    assert_eq!(kept, kept_messages);
+    assert_eq!(created(moving_stream.clone()).await.1, 1);
+    assert_eq!(queued().await, waiting);
+    assert_eq!(kept_now().await, keeper_before);
     new.shutdown().await.unwrap();
     old.shutdown().await.unwrap();
 }

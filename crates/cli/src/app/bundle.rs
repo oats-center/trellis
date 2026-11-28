@@ -221,13 +221,95 @@ pub(super) async fn export(
 
 /// Import a bundle written by `trellis svc <ID> export`.
 pub(super) async fn import(format: OutputFormat, args: &SvcImportArgs) -> miette::Result<()> {
+    let passphrase = passphrase(args.passphrase_file.as_deref(), false)?;
+    let (selection, connected) = connect_authenticated_cli_client().await?;
+    let mut result = send(&connected, args, &passphrase, args.replace_existing).await?;
+    let replaces = output::list(&result, "replaces");
+    // Data under the deployment's own names that loading the bundle
+    // replaces, such as the streams an interrupted import of it left. Auth
+    // changed nothing; with the operator's approval the import runs again
+    // and replaces it.
+    if !args.check && result["applied"] == Value::Bool(false) && !replaces.is_empty() {
+        let deployment = output::field(&result["report"], "deploymentId");
+        let listed = replaces.iter().map(replacement).collect::<Vec<_>>();
+        output::warning(format!(
+            "{} already holds this under deployment {deployment}'s own names, and importing \
+            replaces it with the bundle's data: {}",
+            selection.scope.issuer,
+            listed.join(", ")
+        ));
+        output::confirm_typed(
+            &format!(
+                "what {} holds for deployment {deployment}",
+                selection.scope.issuer
+            ),
+            &deployment,
+            "replace",
+            "--replace-existing",
+        )?;
+        result = send(&connected, args, &passphrase, true).await?;
+    }
+    if output::is_json(format) {
+        return output::print_json(&json!({ "import": result }));
+    }
+    let report = &result["report"];
+    let deployment = output::field(report, "deploymentId");
+    if result["applied"] == Value::Bool(false) {
+        output::success(format!(
+            "The bundle checks out; importing it {} deployment {deployment}",
+            if result["resumed"] == Value::Bool(true) {
+                "finishes"
+            } else {
+                "adds"
+            }
+        ));
+    } else if result["resumed"] == Value::Bool(true) {
+        output::success(format!("Finished importing deployment {deployment}"));
+    } else {
+        output::success(format!("Imported deployment {deployment}"));
+    }
+    let replaces = output::list(&result, "replaces");
+    if !replaces.is_empty() {
+        output::Details::untitled()
+            .section(if result["applied"] == Value::Bool(false) {
+                "Already here, which importing replaces"
+            } else {
+                "Replaced with the bundle's data"
+            })
+            .items(replaces.iter().map(replacement))
+            .print();
+    }
+    print_report(report);
+    if result["applied"] != Value::Bool(false) {
+        output::note(
+            "Point each of the service's processes at this installation's URL and restart \
+            it with the identity seed it already has.",
+        );
+    }
+    Ok(())
+}
+
+/// One item of an import's `replaces`, in words.
+fn replacement(item: &Value) -> String {
+    match item["subjects"].as_str() {
+        Some(subjects) => format!("{subjects} in stream {}", output::field(item, "stream")),
+        None => format!("stream {}", output::field(item, "stream")),
+    }
+}
+
+/// Send the bundle `args` names to Auth's import, decrypting it as it goes,
+/// and return the import's result; `replace` approves replacing what it
+/// lists.
+async fn send(
+    connected: &trellis_rs::generated::Client,
+    args: &SvcImportArgs,
+    passphrase: &str,
+    replace: bool,
+) -> miette::Result<Value> {
     let file = std::fs::File::open(&args.file)
         .map_err(|error| miette::miette!("cannot read {}: {error}", args.file.display()))?;
-    let passphrase = passphrase(args.passphrase_file.as_deref(), false)?;
     // A wrong passphrase is refused here, before anything is sent.
-    let mut decryptor =
-        Decryptor::open(std::io::BufReader::new(file), SERVICE_BUNDLE, &passphrase)?;
-    let (_, connected) = connect_authenticated_cli_client().await?;
+    let mut decryptor = Decryptor::open(std::io::BufReader::new(file), SERVICE_BUNDLE, passphrase)?;
     let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected.clone())
         .trellis_auth_v1();
     let operation = auth
@@ -236,6 +318,7 @@ pub(super) async fn import(format: OutputFormat, args: &SvcImportArgs) -> miette
             "check": args.check,
             "acknowledgeSharedApis": args.acknowledge_shared_apis,
             "acknowledgeUnauthenticatedWebhooks": args.acknowledge_unauthenticated_webhooks,
+            "replaceExisting": replace,
         }))?)
         .await
         .into_diagnostic()?;
@@ -284,28 +367,7 @@ pub(super) async fn import(format: OutputFormat, args: &SvcImportArgs) -> miette
         }
     };
     sent.map_err(|(_, error)| error)?;
-    if output::is_json(format) {
-        return output::print_json(&json!({ "import": result }));
-    }
-    let report = &result["report"];
-    let deployment = output::field(report, "deploymentId");
-    if result["applied"] == Value::Bool(false) {
-        output::success(format!(
-            "The bundle checks out; importing it adds deployment {deployment}"
-        ));
-    } else if result["resumed"] == Value::Bool(true) {
-        output::success(format!("Finished importing deployment {deployment}"));
-    } else {
-        output::success(format!("Imported deployment {deployment}"));
-    }
-    print_report(report);
-    if result["applied"] != Value::Bool(false) {
-        output::note(
-            "Point each of the service's processes at this installation's URL and restart \
-            it with the identity seed it already has.",
-        );
-    }
-    Ok(())
+    Ok(result)
 }
 
 /// What a bundle holds and what the administrator recreates by hand.

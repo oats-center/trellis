@@ -115,7 +115,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
             .await
             .map_err(rpc_error)?;
             if response.review.state == AuthDeviceReviewState::Approved {
-                super::super::resources::materialize_native_kv(
+                super::super::resources::prepare_for_instance(
                     &store,
                     &operational,
                     &response.review.deployment_id.to_string(),
@@ -1231,7 +1231,7 @@ pub(super) async fn portal_decide(
             );
             return back("unavailable");
         };
-        if let Err(cause) = super::super::resources::materialize_native_kv(
+        if let Err(cause) = super::super::resources::prepare_for_instance(
             &engine.server.store().authority,
             operational,
             &response.review.deployment_id.to_string(),

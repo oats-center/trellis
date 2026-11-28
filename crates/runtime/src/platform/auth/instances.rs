@@ -860,7 +860,7 @@ pub(super) async fn http_enroll(
             &"Trellis is not connected to NATS",
         );
     };
-    if let Err(error) = super::resources::materialize_native_kv(
+    if let Err(error) = super::resources::prepare_for_instance(
         &store,
         operational,
         &response.deployment_id.to_string(),

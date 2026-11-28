@@ -870,7 +870,8 @@ pub async fn export_installation(
 /// `config` names, which must be stopped while its NATS runs. Records that
 /// existing data is in the way of are skipped and reported, and the rest is
 /// imported. With `check`, nothing changes and the report says what the
-/// import would do.
+/// import would do. A deployment's data replaces what NATS already holds
+/// under the deployment's names only with `replace_existing`.
 ///
 /// # Errors
 /// Returns an error when the content is damaged or of a format this build
@@ -879,6 +880,7 @@ pub async fn import_installation(
     config: &RuntimeConfig,
     input: &mut (dyn std::io::Read + Send),
     check: bool,
+    replace_existing: bool,
 ) -> Result<serde_json::Value, RuntimeError> {
     // Nothing changes, the database's migration included, until the broker
     // is known to be this installation's.
@@ -912,9 +914,16 @@ pub async fn import_installation(
         })
         .await?
     };
-    auth::import_installation(&storage, &nats, scratch.path(), input, check)
-        .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))
+    auth::import_installation(
+        &storage,
+        &nats,
+        scratch.path(),
+        input,
+        check,
+        replace_existing,
+    )
+    .await
+    .map_err(|error| RuntimeError::Platform(error.to_string()))
 }
 
 /// A directory of this run's own beside `beside`, the platform database or

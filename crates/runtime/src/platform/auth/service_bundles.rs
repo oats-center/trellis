@@ -14,8 +14,9 @@
 //! before it changes anything. It then commits the deployment under its own
 //! ID, with its instances' public keys, its settings sealed with this
 //! installation's storage key, and its resources recorded as pending, and
-//! afterwards loads their data. Running the same bundle again finishes an
-//! import that stopped while loading.
+//! afterwards loads their data. Running the bundle again finishes an import
+//! that stopped while loading, loading all of its data again; what that
+//! replaces in NATS is listed first and replaced only with approval.
 //!
 //! The content is a sequence of named entries, each sent as length-prefixed
 //! chunks so that a stream snapshot of unknown size can be written as it is
@@ -46,15 +47,12 @@ use trellis_runtime_apis::apis::trellis_auth_v1::{errors, operations, rpc, Provi
 use super::access_records::{AccessDocument, AccessOutcome};
 use super::config::BundledSettings;
 use super::rpc::{caller, rpc_error};
-use super::sqlite::{decode, digest, id, json, Connection};
+use super::sqlite::{decode, digest, id, Connection};
 use super::{
     blocking, Administration, AuthError, Mutation, OAuthEngine, OAuthStorage,
     SqliteAuthorizationStore,
 };
 use crate::backup::{restore_stream_from, snapshot_stream_into};
-
-/// The stream metadata key that names the import which restored a stream.
-const IMPORT_MARKER: &str = "trellis.import";
 
 /// The container format this build writes: how entries and the manifest
 /// are framed. A newer Trellis keeps writing it and adds only entries and
@@ -1780,11 +1778,6 @@ pub(super) struct Bundle {
 }
 
 impl Bundle {
-    /// The bundle's content digest, which names its import.
-    pub(super) fn digest(&self) -> &str {
-        &self.received.digest
-    }
-
     /// What a newer Trellis wrote into the bundle that this build does not
     /// read, as its report says it.
     pub(super) fn not_understood(&self) -> impl Iterator<Item = &str> {
@@ -1860,6 +1853,22 @@ fn document_value(
     Ok(value)
 }
 
+/// `value` read as `T`, refused as damaged naming the field of document
+/// `name` that does not fit.
+pub(super) fn decoded<T: serde::de::DeserializeOwned>(
+    value: Value,
+    name: &str,
+) -> Result<T, AuthError> {
+    serde_path_to_error::deserialize(value).map_err(|error| {
+        let path = error.path().to_string();
+        if path == "." {
+            damaged(format!("{name}: {}", error.inner()))
+        } else {
+            damaged(format!("{name}: field {path}: {}", error.inner()))
+        }
+    })
+}
+
 /// The document `name` as this build reads it, after `convert` brings an
 /// older format's to this one. Each field it holds that this build does not
 /// read, which a newer Trellis added, is added to `unread`.
@@ -1870,8 +1879,7 @@ fn document<T: serde::de::DeserializeOwned + Serialize>(
     convert: impl FnOnce(&mut Value),
 ) -> Result<T, AuthError> {
     let mut value = document_value(received, name, convert)?;
-    let read: T = serde_json::from_value(value.clone())
-        .map_err(|error| damaged(format!("{name}: {error}")))?;
+    let read: T = decoded(value.clone(), name)?;
     let mut fields = BTreeSet::new();
     unread_fields(&mut value, &serde_json::to_value(&read)?, "", &mut fields);
     unread.extend(
@@ -1893,14 +1901,17 @@ fn parse(received: Received) -> Result<Bundle, AuthError> {
     let deployment: DeploymentDocument = document(&received, DEPLOYMENT, &mut unread, |value| {
         // Format 1 does not say whether the deployment was disabled; the
         // releases that wrote it imported every deployment enabled.
-        if format == 1 {
-            value["state"] = json!("active");
+        if let (1, Some(fields)) = (format, value.as_object_mut()) {
+            fields.insert("state".into(), json!("active"));
         }
     })?;
     if deployment.deployment_id != received.manifest.deployment_id {
         return Err(damaged("its manifest names another deployment"));
     }
     let mut report = document_value(&received, REPORT, |_| {})?;
+    if !report.is_object() {
+        return Err(damaged(format!("{REPORT} is not a JSON object")));
+    }
     let access = if format == 1 {
         // Format 1 counted the roles and grants of the service's APIs and
         // carried none of them.
@@ -1910,15 +1921,37 @@ fn parse(received: Received) -> Result<Bundle, AuthError> {
             .flatten()
             .filter_map(|role| role["name"].as_str())
             .collect();
+        let grants: Vec<String> = report["grants"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|grant| {
+                let capability = grant["capability"].as_str()?;
+                Some(match grant["principals"].as_str() {
+                    Some(count) => format!("{capability} ({count} held it)"),
+                    None => capability.to_owned(),
+                })
+            })
+            .collect();
         let version = &received.manifest.trellis_version;
+        let mut recreate = Vec::new();
+        if !roles.is_empty() {
+            recreate.push(format!("the roles {}", roles.join(", ")));
+        }
+        if !grants.is_empty() {
+            recreate.push(format!(
+                "the capabilities granted directly {}",
+                grants.join(", ")
+            ));
+        }
         let left = [
             format!(
                 "roles and direct grants of the service's APIs: Trellis {version} made this \
                 bundle before bundles carried them{}",
-                if roles.is_empty() {
+                if recreate.is_empty() {
                     String::new()
                 } else {
-                    format!("; recreate the roles {} by hand", roles.join(", "))
+                    format!("; recreate {} by hand", recreate.join(", and "))
                 }
             ),
             format!(
@@ -2358,7 +2391,6 @@ fn apply(
     storage: &OAuthStorage,
     bundle: &Bundle,
     input: &operations::DeploymentsImportInput,
-    import_id: &str,
     actor: &str,
     now: i64,
     installation: bool,
@@ -2416,13 +2448,14 @@ fn apply(
     )?;
     connection.execute(
         "INSERT INTO auth_deployments(deployment_id,participant_id,participant_kind,state,\
-        expires_at,title) VALUES(?1,?2,?5,'active',?3,?4)",
+        expires_at,title,imported_at,importing) VALUES(?1,?2,?5,'active',?3,?4,?6,1)",
         params![
             deployment_id,
             participant_id,
             deployment.expires_at,
             deployment.title,
-            kind
+            kind,
+            now
         ],
     )?;
     SqliteAuthorizationStore::install_deployment_in_transaction(
@@ -2611,30 +2644,6 @@ fn apply(
     } else {
         AccessOutcome::default()
     };
-    let restores: BTreeSet<&str> = bundle
-        .resources
-        .iter()
-        .filter(|resource| resource.stream.is_some())
-        .map(|resource| resource.resource_id.as_str())
-        .collect();
-    connection.execute(
-        "INSERT INTO auth_service_imports(deployment_id,import_id,content_digest,state,\
-        restores_json,loaded_json,report_json,imported_by,imported_at) \
-        VALUES(?1,?7,?2,'loading',?3,'[]',?4,?5,?6)",
-        params![
-            deployment_id,
-            bundle.received.digest,
-            json(&restores)?,
-            {
-                let mut report = bundle.report.clone();
-                report["access"] = serde_json::to_value(&access)?;
-                report.to_string()
-            },
-            actor,
-            now,
-            import_id
-        ],
-    )?;
     connection.execute(
         "INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,target_id,data_json,\
         created_at) VALUES(?1,?2,'deployment.imported',?3,?4,?5)",
@@ -2704,66 +2713,37 @@ async fn import(
     let mut report = bundle.report.clone();
     report["contentDigest"] = Value::String(bundle.received.digest.clone());
     report["webhooks"] = Value::Array(webhook_urls(&bundle.deployment, &origin));
-    let output = |applied: bool, resumed: bool, report: &Value| {
+    let output = |applied: bool, resumed: bool, replaces: &[Value], report: &Value| {
         serde_json::from_value(json!({
             "applied": applied,
             "resumed": resumed,
+            "replaces": replaces,
             "report": report,
         }))
         .map_err(AuthError::from)
     };
     let deployment_id = bundle.deployment.deployment_id.clone();
+    // The report goes back as the Operation's output, so a bundle whose
+    // report could not is refused before anything changes.
+    if let Err(error) =
+        decoded::<trellis_runtime_apis::types::AuthServiceBundleReport>(report.clone(), REPORT)
+    {
+        return Err(refused(&store, &actor, &deployment_id, error).await);
+    }
     let bundle = Arc::new(bundle);
-    // Before anything changes, and again for an attempt that resumes.
+    // Before anything changes, and again for an attempt that goes on with an
+    // earlier one.
     let checked = Arc::clone(&bundle);
     if let Err(error) = blocking(move || validate(&checked, false)).await {
         return Err(refused(&store, &actor, &deployment_id, error).await);
     }
-    // An import of this same bundle that stopped while loading resumes.
-    let earlier: Option<(String, String, String, String, String)> = {
+    // An import of this deployment that stopped before its data loaded goes
+    // on: its records are here, and its data loads again from the bundle.
+    let resuming = {
         let deployment_id = deployment_id.clone();
         store
-            .transaction_blocking(move |connection| {
-                Ok(connection
-                    .query_row(
-                        "SELECT content_digest,state,import_id,loaded_json,report_json \
-                        FROM auth_service_imports WHERE deployment_id=?1",
-                        [deployment_id],
-                        |row| {
-                            Ok((
-                                row.get(0)?,
-                                row.get(1)?,
-                                row.get(2)?,
-                                row.get(3)?,
-                                row.get(4)?,
-                            ))
-                        },
-                    )
-                    .optional()?)
-            })
+            .transaction_blocking(move |connection| importing(connection, &deployment_id))
             .await?
-    };
-    let resuming = match &earlier {
-        Some((digest, state, ..)) if *digest == bundle.received.digest && state == "loading" => {
-            true
-        }
-        Some((digest, state, ..)) if *digest == bundle.received.digest && state == "complete" => {
-            return Err(refused(
-                &store,
-                &actor,
-                &deployment_id,
-                AuthError::Conflict(format!(
-                    "this bundle was already imported as deployment {deployment_id}"
-                )),
-            )
-            .await);
-        }
-        _ => false,
-    };
-    let jetstream = async_nats::jetstream::new(nats.clone());
-    let import_id = match &earlier {
-        Some((_, _, import_id, ..)) if resuming => import_id.clone(),
-        _ => id(),
     };
     if !resuming {
         // What the Auth database names is reported before what NATS holds,
@@ -2775,37 +2755,25 @@ async fn import(
         {
             return Err(refused(&store, &actor, &deployment_id, error).await);
         }
-        for resource in &bundle.resources {
-            if let Some(stream) = &resource.stream {
-                if jetstream.get_stream(stream).await.is_ok() {
-                    return Err(refused(
-                        &store,
-                        &actor,
-                        &deployment_id,
-                        AuthError::Conflict(format!(
-                            "stream {stream} of {} {} already exists in this installation's NATS",
-                            resource.kind, resource.name
-                        )),
-                    )
-                    .await);
-                }
-            }
-        }
+    }
+    let replaces = existing(nats, &bundle).await?;
+    let check = input.check == Some(true);
+    let approved = input.replace_existing == Some(true);
+    if !check && !approved && !replaces.is_empty() {
+        return output(false, resuming, &replaces, &report);
+    }
+    if !resuming {
         let now = crate::clock::unix_now();
         let attempt = {
-            let (storage, bundle, input, import_id, actor, check) = (
+            let (storage, bundle, input, actor) = (
                 storage.clone(),
                 Arc::clone(&bundle),
                 input.clone(),
-                import_id.clone(),
                 actor.clone(),
-                input.check == Some(true),
             );
             blocking(move || {
                 let run = |connection: &Connection| {
-                    apply(
-                        connection, &storage, &bundle, &input, &import_id, &actor, now, false,
-                    )
+                    apply(connection, &storage, &bundle, &input, &actor, now, false)
                 };
                 if check {
                     storage.authority.rehearse(run)
@@ -2817,52 +2785,102 @@ async fn import(
         };
         match attempt {
             Ok(access) => report["access"] = serde_json::to_value(&access)?,
-            Err(error) => {
-                return Err(if input.check == Some(true) {
-                    error
-                } else {
-                    refused(&store, &actor, &deployment_id, error).await
-                });
-            }
-        }
-        if input.check == Some(true) {
-            return output(false, false, &report);
-        }
-    } else {
-        // What the first attempt recreated, as it recorded it.
-        if let Some((.., stored)) = &earlier {
-            report["access"] = decode::<Value>(stored)?["access"].clone();
-        }
-        if input.check == Some(true) {
-            return output(false, true, &report);
+            Err(error) if check => return Err(error),
+            Err(error) => return Err(refused(&store, &actor, &deployment_id, error).await),
         }
     }
-    let loaded: BTreeSet<String> = match &earlier {
-        Some((_, _, _, loaded, _)) if resuming => decode(loaded)?,
-        _ => BTreeSet::new(),
-    };
-    load(
-        &store,
-        nats,
-        &bundle,
-        &import_id,
-        loaded,
-        &mut report,
-        &progress,
-    )
-    .await?;
-    output(true, resuming, &report)
+    if check {
+        return output(false, resuming, &replaces, &report);
+    }
+    load(&store, nats, &bundle, approved, &mut report, &progress).await?;
+    output(true, resuming, &replaces, &report)
 }
 
-/// Load the data of `bundle`, whose records an import committed as
-/// `import_id`: each stream not yet in `loaded`, then, once an instance can
-/// run, its resources and waiting jobs. `report` gains what stayed behind.
+/// Whether `deployment_id` is a deployment whose import has not loaded its
+/// data yet.
+fn importing(connection: &Connection, deployment_id: &str) -> Result<bool, AuthError> {
+    Ok(connection
+        .query_row(
+            "SELECT importing FROM auth_deployments WHERE deployment_id=?1",
+            [deployment_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
+/// Whether the stream `name` exists.
+async fn stream_exists(
+    jetstream: &async_nats::jetstream::Context,
+    name: &str,
+) -> Result<bool, AuthError> {
+    match jetstream.get_stream(name).await {
+        Ok(_) => Ok(true),
+        Err(error)
+            if matches!(
+                error.kind(),
+                GetStreamErrorKind::JetStream(error)
+                    if error.error_code() == ErrorCode::STREAM_NOT_FOUND
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(broker(error)),
+    }
+}
+
+/// What loading `bundle` would replace: each KV or store stream it restores
+/// that exists, and each of its queues with messages in the Jobs stream when
+/// it carries waiting jobs. Every one is named from the deployment's own
+/// resource and allocation IDs, which `validate` checked, so whatever is
+/// there belongs to this deployment: an earlier attempt of the import left
+/// it, or the deployment's earlier life here did.
+async fn existing(nats: &async_nats::Client, bundle: &Bundle) -> Result<Vec<Value>, AuthError> {
+    let jetstream = async_nats::jetstream::new(nats.clone());
+    let mut found = Vec::new();
+    for resource in &bundle.resources {
+        if let Some(stream) = &resource.stream {
+            if stream_exists(&jetstream, stream).await? {
+                found.push(json!({ "stream": stream }));
+            }
+        }
+    }
+    if bundle.received.spools.contains_key(JOBS) {
+        let jobs = jetstream
+            .get_stream(crate::resources::JOBS_STREAM)
+            .await
+            .map_err(broker)?;
+        for resource in bundle
+            .resources
+            .iter()
+            .filter(|resource| resource.kind == "job")
+        {
+            let subjects = format!(
+                "{}.>",
+                job_prefix(&bundle.deployment.deployment_id, resource)?
+            );
+            let mut held = jobs.info_with_subjects(&subjects).await.map_err(broker)?;
+            if held.next().await.transpose().map_err(broker)?.is_some() {
+                found.push(json!({
+                    "stream": crate::resources::JOBS_STREAM,
+                    "subjects": subjects,
+                }));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Load the data of `bundle`, whose records an import committed, once an
+/// instance can run it: each KV and store stream, then its waiting jobs,
+/// then the resources prepared and the import ended in one transaction.
+/// What [`existing`] finds is replaced only with `replace`. Every attempt
+/// loads everything again. `report` gains what is left to do.
 async fn load<F, Fut>(
     store: &Arc<SqliteAuthorizationStore>,
     nats: &async_nats::Client,
     bundle: &Bundle,
-    import_id: &str,
-    mut loaded: BTreeSet<String>,
+    replace: bool,
     report: &mut Value,
     progress: &F,
 ) -> Result<(), AuthError>
@@ -2871,63 +2889,50 @@ where
     Fut: std::future::Future<Output = Result<(), AuthError>>,
 {
     let deployment_id = bundle.deployment.deployment_id.clone();
-    let jetstream = async_nats::jetstream::new(nats.clone());
-    let import_id = import_id.to_owned();
-    // Each loaded resource is recorded before the next begins, so a later
-    // attempt skips it.
-    let record = |names: Result<String, AuthError>| {
+    // The data is loaded for an instance that can run now, as this
+    // installation has it: one provisioned or enabled after an earlier
+    // attempt counts, so running the bundle again finishes the import.
+    let active: bool = {
         let deployment_id = deployment_id.clone();
-        let store = Arc::clone(store);
-        async move {
-            let names = names?;
-            store
-                .transaction_blocking(move |connection| {
-                    connection.execute(
-                        "UPDATE auth_service_imports SET loaded_json=?2 WHERE deployment_id=?1",
-                        params![deployment_id, names],
-                    )?;
-                    Ok(())
-                })
-                .await
+        store
+            .transaction_blocking(move |connection| can_run(connection, &deployment_id))
+            .await?
+    };
+    // Whether everything the bundle carries is here now; until then running
+    // the same import again goes on with it.
+    report["complete"] = Value::Bool(active);
+    if !active {
+        if let Some(left_behind) = report["leftBehind"].as_array_mut() {
+            left_behind.push(Value::String(
+                "the deployment has no instance that can run here yet, so its data and \
+                waiting jobs wait in the bundle; once an instance is provisioned or enabled, \
+                run the import again"
+                    .to_owned(),
+            ));
         }
+        return Ok(());
+    }
+    let jetstream = async_nats::jetstream::new(nats.clone());
+    let in_the_way = |what: String| {
+        AuthError::Conflict(format!(
+            "{what} already exists in this installation's NATS; run the import again with \
+            approval to replace it with the bundle's data"
+        ))
     };
     for resource in &bundle.resources {
         let (Some(stream), Some(entry)) = (&resource.stream, &resource.entry) else {
             continue;
         };
-        if loaded.contains(&resource.resource_id) {
-            continue;
-        }
         progress(
             &format!("loading {} {}", resource.kind, resource.name),
             bundle.received.size,
         )
         .await?;
-        match jetstream.get_stream(stream).await {
-            // A stream an earlier attempt of this import restored and did not
-            // record loaded is deleted and restored again: one whose metadata
-            // carries this import's ID and whose configuration is the
-            // resource's. Any other stream under the name stays as it is.
-            Ok(existing) => {
-                let info = existing.cached_info();
-                let ours = info.config.metadata.get(IMPORT_MARKER) == Some(&import_id)
-                    && owned_stream(&serde_json::to_value(&info.config)?, resource);
-                if !ours {
-                    return Err(AuthError::Conflict(format!(
-                        "stream {stream} of {} {} exists, and this import did not create it; \
-                        it was left as it is",
-                        resource.kind, resource.name
-                    )));
-                }
-                jetstream.delete_stream(stream).await.map_err(broker)?;
+        if stream_exists(&jetstream, stream).await? {
+            if !replace {
+                return Err(in_the_way(format!("stream {stream}")));
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    GetStreamErrorKind::JetStream(error)
-                        if error.error_code() == ErrorCode::STREAM_NOT_FOUND
-                ) => {}
-            Err(error) => return Err(broker(error)),
+            jetstream.delete_stream(stream).await.map_err(broker)?;
         }
         let spool = bundle
             .received
@@ -2935,13 +2940,15 @@ where
             .get(entry)
             .ok_or_else(|| damaged(format!("it has no {entry}")))?;
         let mut snapshot = spool.reader()?;
-        // The broker gives the restored stream this configuration, and with
-        // it the import's ID.
-        let mut config = resource.config.clone();
-        config["metadata"][IMPORT_MARKER] = Value::String(import_id.clone());
-        restore_stream_from(nats, stream, &config, &resource.state, &mut snapshot)
-            .await
-            .map_err(broker)?;
+        restore_stream_from(
+            nats,
+            stream,
+            &resource.config,
+            &resource.state,
+            &mut snapshot,
+        )
+        .await
+        .map_err(broker)?;
         // The broker refuses to restore over an existing stream, so the one
         // there now is this import's. Its configuration has to be the
         // resource's.
@@ -2958,92 +2965,81 @@ where
                 resource.kind, resource.name
             )));
         }
-        loaded.insert(resource.resource_id.clone());
-        record(json(&loaded)).await?;
     }
-    let now = crate::clock::unix_now();
-    // The resources are prepared for an instance that can run now, as this
-    // installation has it: one provisioned after an earlier attempt of this
-    // bundle counts, so running the bundle again finishes the import.
-    let active: bool = {
-        let deployment_id = deployment_id.clone();
-        store
-            .transaction_blocking(move |connection| can_run(connection, &deployment_id))
-            .await?
-    };
-    let mut left = Vec::new();
-    if active {
-        progress("preparing the service's resources", bundle.received.size).await?;
-        super::resources::materialize_native_kv(store, nats, &deployment_id, now).await?;
-        if !loaded.contains(JOBS) {
-            if let Some(spool) = bundle.received.spools.get(JOBS) {
-                progress("queueing waiting jobs", bundle.received.size).await?;
-                let lines = std::io::BufReader::new(spool.reader()?);
-                for line in std::io::BufRead::lines(lines) {
-                    let (message, headers, payload) = job_message(line.map_err(io)?.as_bytes())?;
-                    jetstream
-                        .publish_with_headers(message.subject, headers, payload.into())
-                        .await
-                        .map_err(broker)?
-                        .await
-                        .map_err(broker)?;
-                }
-            }
-            loaded.insert(JOBS.to_owned());
-            record(json(&loaded)).await?;
-        }
-    } else {
-        left.push(
-            "the deployment has no active instance here yet, so its resources become ready, \
-            and its waiting jobs move, once an instance is provisioned or enabled and the \
-            import is run again"
-                .to_owned(),
+    // Waiting jobs go in before the resources are prepared, so no instance
+    // runs while they are queued. The queues' messages an earlier attempt
+    // published go first, and the work the Jobs stream gave them.
+    if let Some(spool) = bundle.received.spools.get(JOBS) {
+        progress("queueing waiting jobs", bundle.received.size).await?;
+        let (jobs, work) = (
+            jetstream
+                .get_stream(crate::resources::JOBS_STREAM)
+                .await
+                .map_err(broker)?,
+            jetstream
+                .get_stream(crate::resources::JOBS_WORK_STREAM)
+                .await
+                .map_err(broker)?,
         );
+        for resource in bundle
+            .resources
+            .iter()
+            .filter(|resource| resource.kind == "job")
+        {
+            let prefix = job_prefix(&deployment_id, resource)?;
+            let subjects = format!("{prefix}.>");
+            let mut held = jobs.info_with_subjects(&subjects).await.map_err(broker)?;
+            if held.next().await.transpose().map_err(broker)?.is_some() {
+                if !replace {
+                    return Err(in_the_way(format!(
+                        "{subjects} in stream {}",
+                        crate::resources::JOBS_STREAM
+                    )));
+                }
+                jobs.purge().filter(&subjects).await.map_err(broker)?;
+            }
+            if replace {
+                let queue = prefix.replacen("trellis.jobs.", "trellis.work.", 1);
+                work.purge().filter(queue).await.map_err(broker)?;
+            }
+        }
+        let lines = std::io::BufReader::new(spool.reader()?);
+        for line in std::io::BufRead::lines(lines) {
+            let (message, headers, payload) = job_message(line.map_err(io)?.as_bytes())?;
+            jetstream
+                .publish_with_headers(message.subject, headers, payload.into())
+                .await
+                .map_err(broker)?
+                .await
+                .map_err(broker)?;
+        }
     }
-    if let Some(left_behind) = report["leftBehind"].as_array_mut() {
-        left_behind.extend(left.into_iter().map(Value::String));
-    }
-    // Whether everything the bundle carries is here now; until then running
-    // the same import again goes on with it.
-    report["complete"] = Value::Bool(active);
-    if active {
-        let (deployment_id, report_json) = (deployment_id.clone(), report.to_string());
-        store
-            .transaction_blocking(move |connection| {
-                connection.execute(
-                    "UPDATE auth_service_imports SET state='complete',completed_at=?2,\
-                    report_json=?3 WHERE deployment_id=?1",
-                    params![deployment_id, now, report_json],
-                )?;
-                Ok(())
-            })
-            .await?;
-    }
+    progress("preparing the service's resources", bundle.received.size).await?;
+    super::resources::materialize(
+        store,
+        nats,
+        &deployment_id,
+        crate::clock::unix_now(),
+        super::resources::WhileImporting::Finish,
+    )
+    .await?;
     Ok(())
 }
 
 /// Read and verify a bundle an installation import carries, as a service
-/// import does before it changes anything. Device deployments are allowed.
+/// import does before it changes anything, with what loading it would
+/// replace. Device deployments are allowed.
 pub(super) async fn prepare_import(
     nats: &async_nats::Client,
     directory: &Path,
     mut reader: impl AsyncRead + Unpin,
-) -> Result<Bundle, AuthError> {
+) -> Result<(Bundle, Vec<Value>), AuthError> {
     let bundle = Arc::new(parse(receive(&mut reader, directory).await?)?);
     let checked = Arc::clone(&bundle);
     blocking(move || validate(&checked, true)).await?;
-    let jetstream = async_nats::jetstream::new(nats.clone());
-    for resource in &bundle.resources {
-        if let Some(stream) = &resource.stream {
-            if jetstream.get_stream(stream).await.is_ok() {
-                return Err(AuthError::Conflict(format!(
-                    "stream {stream} of {} {} already exists in this installation's NATS",
-                    resource.kind, resource.name
-                )));
-            }
-        }
-    }
-    Arc::try_unwrap(bundle).map_err(|_| AuthError::Unavailable)
+    let replaces = existing(nats, &bundle).await?;
+    let bundle = Arc::try_unwrap(bundle).map_err(|_| AuthError::Unavailable)?;
+    Ok((bundle, replaces))
 }
 
 /// Record a prepared bundle's deployment in the caller's transaction, as
@@ -3061,63 +3057,49 @@ pub(super) fn apply_import(
         "acknowledgeSharedApis": true,
         "acknowledgeUnauthenticatedWebhooks": true,
     }))?;
-    apply(connection, storage, bundle, &input, &id(), actor, now, true).map(|_| ())
+    apply(connection, storage, bundle, &input, actor, now, true).map(|_| ())
 }
 
-/// Load the data of the bundle `reader` sends when its records are
-/// committed and its data is not loaded yet, and return its report; `None`
-/// when there is nothing to load.
+/// Load the data of the bundle `reader` sends when its deployment's import
+/// has not loaded it yet, and return its report; `None` when there is
+/// nothing to load. With anything to replace and no `replace`, nothing
+/// changes, and the report's `replaces` names it with `complete` false.
 pub(super) async fn finish_import(
     storage: &OAuthStorage,
     nats: &async_nats::Client,
     directory: &Path,
     mut reader: impl AsyncRead + Unpin,
+    replace: bool,
 ) -> Result<Option<Value>, AuthError> {
     let bundle = parse(receive(&mut reader, directory).await?)?;
     let store = Arc::clone(&storage.authority);
-    let (deployment_id, digest) = (
-        bundle.deployment.deployment_id.clone(),
-        bundle.received.digest.clone(),
-    );
-    let earlier: Option<(String, String, String)> = store
-        .transaction_blocking(move |connection| {
-            Ok(connection
-                .query_row(
-                    "SELECT import_id,loaded_json,report_json FROM auth_service_imports \
-                    WHERE deployment_id=?1 AND content_digest=?2 AND state='loading'",
-                    params![deployment_id, digest],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .optional()?)
-        })
-        .await?;
-    let Some((import_id, loaded, stored)) = earlier else {
+    let deployment_id = bundle.deployment.deployment_id.clone();
+    if !store
+        .transaction_blocking(move |connection| importing(connection, &deployment_id))
+        .await?
+    {
         return Ok(None);
-    };
-    let mut report: Value = decode(&stored)?;
+    }
+    let mut report = bundle.report.clone();
     report["contentDigest"] = Value::String(bundle.received.digest.clone());
     report["webhooks"] = Value::Array(webhook_urls(
         &bundle.deployment,
         &store.settings.oauth_origin(),
     ));
+    let replaces = existing(nats, &bundle).await?;
+    report["replaces"] = Value::Array(replaces.clone());
+    if !replace && !replaces.is_empty() {
+        report["complete"] = Value::Bool(false);
+        return Ok(Some(report));
+    }
     let quiet = |_: &str, _: u64| std::future::ready(Ok::<(), AuthError>(()));
-    load(
-        &store,
-        nats,
-        &bundle,
-        &import_id,
-        decode(&loaded)?,
-        &mut report,
-        &quiet,
-    )
-    .await?;
+    load(&store, nats, &bundle, replace, &mut report, &quiet).await?;
     Ok(Some(report))
 }
 
 /// Whether `deployment_id` has an instance that can run here now: the
 /// deployment, one of its instances and that instance's principal are all
-/// active. Loading a bundle prepares the resources only for such a
-/// deployment.
+/// active. An import loads the data only for such a deployment.
 fn can_run(connection: &Connection, deployment_id: &str) -> Result<bool, AuthError> {
     Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM auth_deployments d \
@@ -3130,32 +3112,16 @@ fn can_run(connection: &Connection, deployment_id: &str) -> Result<bool, AuthErr
     )?)
 }
 
-/// The content digest of the bundle `reader` sends, which names its import
-/// as [`finish_import`] looks it up.
-pub(super) async fn content_digest(
-    directory: &Path,
-    mut reader: impl AsyncRead + Unpin,
-) -> Result<String, AuthError> {
-    Ok(receive(&mut reader, directory).await?.digest)
-}
-
-/// Whether [`finish_import`] of the bundle with `digest`, as the caller's
-/// transaction leaves this installation, would stop short because
-/// `deployment_id` has no instance that can run: the bundle's data waits to
-/// load and [`can_run`] is false. Reads only the database, so a preview can
-/// tell without touching the broker.
+/// Whether [`finish_import`], as the caller's transaction leaves this
+/// installation, would stop short because `deployment_id` has no instance
+/// that can run: its import has not loaded its data and [`can_run`] is
+/// false. Reads only the database, so a preview can tell without touching
+/// the broker.
 pub(super) fn waits_for_an_instance(
     connection: &Connection,
     deployment_id: &str,
-    digest: &str,
 ) -> Result<bool, AuthError> {
-    let loading: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM auth_service_imports \
-        WHERE deployment_id=?1 AND content_digest=?2 AND state='loading')",
-        params![deployment_id, digest],
-        |row| row.get(0),
-    )?;
-    Ok(loading && !can_run(connection, deployment_id)?)
+    Ok(importing(connection, deployment_id)? && !can_run(connection, deployment_id)?)
 }
 
 /// Record a refused import in the audit and return why.

@@ -352,6 +352,11 @@ async fn a_bundle_from_before_roles_moved_imports_into_this_build() {
     assert_eq!(old.server_version(), FORMAT_ONE);
     let old_cli = Cli::login(&mut old).await;
     let service = moving_service(&mut old, &old_cli).await;
+    // Someone given the service's API directly, not through a role.
+    let person = old.create_user("Pat").await.unwrap();
+    old.grant_user_capabilities(&person, &[Ping::CALLER_CAPABILITIES[0]])
+        .await
+        .unwrap();
     let (file, passphrase) = export(&old, &old_cli, &service).await;
 
     let mut new = TrellisTestRuntime::builder()
@@ -371,18 +376,22 @@ async fn a_bundle_from_before_roles_moved_imports_into_this_build() {
         .await;
     let report = &imported["import"]["report"];
     assert_eq!(report["deploymentId"], service.deployment_id(), "{report}");
-    // The role stayed behind, and the report says so and names it.
+    // The role and the direct grant stayed behind, and the report says so
+    // and names them to recreate, the grant with how many held it.
     assert_eq!(report["roles"], json!([]), "{report}");
+    assert_eq!(report["grants"], json!([]), "{report}");
     assert_eq!(report["access"]["recreated"], json!([]), "{report}");
+    let hint = format!(
+        "before bundles carried them; recreate the roles Pingers, and the capabilities \
+        granted directly {} (1 held it) by hand",
+        Ping::CALLER_CAPABILITIES[0]
+    );
     assert!(
         report["leftBehind"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item
-                .as_str()
-                .unwrap()
-                .ends_with("before bundles carried them; recreate the roles Pingers by hand")),
+            .any(|item| item.as_str().unwrap().ends_with(&hint)),
         "{report}"
     );
     assert_eq!(report["notUnderstood"], json!([]), "{report}");

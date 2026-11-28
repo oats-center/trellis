@@ -193,9 +193,8 @@ disabled deployment refuses enrollment.
 
 A deployment that was disabled when it was exported is imported disabled,
 with its instances as they were, and nothing of it connects until an
-administrator enables it in the new installation. Its resources are
-prepared, and its waiting jobs move, when the bundle is imported again
-after that.
+administrator enables it in the new installation. Its data loads, and its
+waiting jobs move, when the bundle is imported again after that.
 
 ### Settings and secrets
 
@@ -396,8 +395,9 @@ confirm: it would prove nothing the passphrase does not.
 
 ### Between releases
 
-A bundle any Trellis release exports imports into any other release, older
-or newer, release candidates included. Release candidates edit database
+A bundle any Trellis release exports imports into every release after
+0.100.0-rc.56, older or newer, release candidates included; the releases up
+to rc.56 are stricter, as below. Release candidates edit database
 baselines in place, so a bundle, not a backup, is how a service crosses
 them. Bundles stay readable in both directions by these rules, which every
 change to the format follows:
@@ -426,17 +426,21 @@ there, as deploying that build would be.
 
 An import converts every earlier container format:
 
-| Format | Written by                        | Read as                                                                                                                                                                                                          |
-| ------ | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1      | Trellis 0.100.0-rc.55 and earlier | No `access.json`: the bundle carries no roles or grants. The report's `roles` and `grants` are empty, and `leftBehind` says so and names the roles to recreate by hand. No deployment state: it arrives enabled. |
-| 2      | every later release               | As described here.                                                                                                                                                                                               |
+| Format | Written by                        | Read as                                                                                                                                                                                                                                                                          |
+| ------ | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1      | Trellis 0.100.0-rc.55 and earlier | No `access.json`: the bundle carries no roles or grants. The report's `roles` and `grants` are empty, and `leftBehind` says so and names the roles, and the capabilities granted directly with how many held each, to recreate by hand. No deployment state: it arrives enabled. |
+| 2      | every later release               | As described here.                                                                                                                                                                                                                                                               |
 
 **Trellis 0.100.0-rc.56** reads bundles more strictly than these rules: it
-refuses a container format other than 2 and an entry it does not know. It
-reads past an added field in every document but `evidence.json`, and
-returns `report.json` as it finds it. A bundle of a later release imports
-into rc.56 as long as it adds only such fields; one that adds an entry does
-not.
+refuses a container format other than 2, so a bundle of rc.55 or earlier,
+and an entry it does not know. It reads past an added field in every
+document but `evidence.json`, and returns `report.json` as it finds it. A
+bundle of a later release imports into rc.56 as long as it adds only such
+fields; one that adds an entry does not.
+
+**Trellis 0.100.0-rc.55 and earlier** read format 1 only, and refuse any
+other container format before reading an entry. No bundle of rc.56 or later
+imports into them, so a service cannot move back to them.
 
 ## Commands
 
@@ -444,6 +448,7 @@ not.
 trellis svc <id> export [--out <file>] [--passphrase-file <path>]
 trellis svc import <file> [--passphrase-file <path>] [--check]
                    [--acknowledge-shared-apis] [--acknowledge-unauthenticated-webhooks]
+                   [--replace-existing]
 ```
 
 Export writes `<id>.trellis-service` by default and refuses to overwrite a
@@ -551,10 +556,20 @@ ID>_<allocation ID>`, and a stream configuration with exactly that name,
    - an instance ID, principal ID, or identity key in the bundle is already
      registered, or a key was registered once and removed or retired;
    - an enrollment secret's ID or hash, or a webhook URL ID, is already in
-     use; or
-   - a KV or store stream with the same physical name exists.
+     use.
 
    An import never replaces a deployment, and never gives one a new ID.
+   It then lists what loading the data would replace: each KV or store
+   stream of the bundle that already exists, and, for a bundle with waiting
+   jobs, each of its queues that already has messages in the Jobs stream.
+   Every one is named from the deployment's own resource and allocation
+   IDs, so whatever is there belongs to this deployment: an earlier attempt
+   of the import left it, or the deployment's earlier life here did. The
+   request approves replacing it with `replaceExisting`; without approval
+   the import changes nothing and answers with the list. The CLI shows the
+   list, warns, and asks the operator to type the deployment ID before it
+   runs the import again with approval; without a terminal it refuses unless
+   `--replace-existing` is given. `--check` reports the same list.
 
 3. **Compile.** Auth compiles the package evidence and checks the
    acknowledgements `Deployments.Create` asks for: `--acknowledge-shared-apis`
@@ -567,44 +582,41 @@ ID>_<allocation ID>`, and a stream configuration with exactly that name,
    with their secrets sealed, and the webhook endpoints, recreates the
    access the bundle carries (see [access](#access-roles-grants-and-consent)),
    records the resources as `pending` under their own resource and
-   allocation IDs, and records the import with its content digest, the
-   streams it will restore, the access report, and a random import ID. The
-   deployment starts enabled.
-5. **Load the data.** Auth restores each KV and store snapshot with the
-   stream configuration from the bundle, adding the import ID to the
-   stream's metadata under `trellis.import`. The broker refuses to restore
-   over an existing stream, so the stream that exists afterwards is the one
-   the import made. Auth checks it against the same rules as step 1 and for
-   the import ID, and deletes it and stops if it differs. It then records
-   the resource loaded. Auth then prepares the resources as it does for a
-   new instance, which finds the restored streams and makes them `ready`, and publishes the waiting jobs. Whether there is
-   an instance to prepare them for is read from this installation: a
-   deployment with no active instance stops before preparing the resources,
-   and the report says so.
+   allocation IDs, and marks the deployment imported now and still
+   importing. The deployment starts enabled.
+5. **Load the data.** Whether there is an instance to load it for is read
+   from this installation: a deployment with no active instance stops here,
+   with its data and waiting jobs still in the bundle, and the report says
+   so. Otherwise Auth deletes what step 2 listed, which it does only with
+   approval, and restores each KV and store snapshot with the stream
+   configuration from the bundle. The broker refuses to restore over an
+   existing stream, so the stream that exists afterwards is the one the
+   import made. Auth checks it against the same rules as step 1, and deletes
+   it and stops if it differs. It then publishes the waiting jobs, after
+   purging the queues' earlier messages and the work the Jobs stream gave
+   them, and prepares the resources as it does for a new instance, which
+   finds the restored streams and makes them `ready`. The transaction that
+   commits the resources ends the import.
 6. **Report.** Import returns the report with the webhook URLs at the new
    origin.
 
-Until every stream is loaded, nothing else prepares the deployment's
-resources: an instance that connects meanwhile is refused, since preparing
-would create the missing streams empty.
-
-If step 5 fails, or stops for want of an instance, running the same import
-again resumes it: Auth finds the import record for the deployment with the
-same content digest, deletes a stream it restored and did not record
-loaded, restores it again, and loads the rest. It deletes a stream only
-when the stream's metadata carries the import ID and its configuration
-passes the same rules as step 1. That covers a stream the import restored
-just before it stopped, before it recorded anything about it. Any other
-stream under that name, whether it has no import ID or another import's, is
-left as it is, and the import stops with a conflict naming it. The import
-ID tells Auth's own work apart from a stream someone else made by mistake;
-it is not meant to stop the installation's operator, who controls the
-broker anyway. Readiness is read again, so an
-instance provisioned or enabled since the last attempt lets the import
-finish. A resource does not become `ready` empty, following the existing
-rule that a missing stream after materialization is storage loss, not
-something to recreate. Running a bundle again after its import finished is
+Until the import ends, nothing else prepares the deployment's resources,
+so no instance gets a stream the import has yet to restore: provisioning,
+enrolling or approving an instance meanwhile succeeds and leaves the
+resources to the import, and anything else that would prepare them is
 refused.
+
+If step 5 fails, or stops for want of an instance, running the import
+again goes on with it: the deployment is still importing, so Auth skips
+steps 2 to 4 for its records and loads all of its data again from the
+bundle it is given. What the earlier attempt restored or queued is in the
+list of step 2, so a retry after a failure in the middle of step 5 asks
+for approval. Readiness is read again, so an instance provisioned or
+enabled since the last attempt lets the import finish. A resource does
+not become `ready` empty, following the existing rule that a missing
+stream after materialization is storage loss, not something to recreate.
+Running a bundle again after its import finished is refused, since the
+deployment exists.
 
 ## Consistency
 

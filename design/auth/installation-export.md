@@ -1,6 +1,6 @@
 ---
 title: Moving an Installation
-description: Export a whole installation's configuration as plain, versioned records with every service and device, and import it into another installation on any release, older or newer.
+description: Export a whole installation's configuration as plain, versioned records with every service and device, and import it into another installation on a release older or newer than the one that wrote it.
 ---
 
 # Design: Moving an Installation
@@ -14,10 +14,11 @@ first stable release into a later stable release, which migrates it
 forward; before the first stable release a backup restores only into the
 release candidate that took it, because each candidate may edit its schema's
 baseline in place. An installation export carries the configuration as
-plain records instead: an export of any Trellis release imports into any
-other release, older or newer, release candidates included (see
-[between releases](#between-releases)), without setting anything up again
-and without re-keying the user IDs services stored.
+plain records instead: from the release after 0.100.0-rc.56 on, an export
+of any Trellis release imports into any of them, older or newer, release
+candidates included (see [between releases](#between-releases)), without
+setting anything up again and without re-keying the user IDs services
+stored.
 
 ## Prerequisites
 
@@ -87,9 +88,9 @@ changes the export only when a kind's list does.
 
 ## Between releases
 
-An export of any Trellis release imports into any other release, older or
-newer, release candidates included. Exports stay readable in both directions
-by these rules, which every change to the format follows:
+Every release after 0.100.0-rc.56 reads the exports of every release, older
+or newer, release candidates included. Exports stay readable in both
+directions by these rules, which every change to the format follows:
 
 - **The envelope stays readable.** The passphrase envelope and the container
   framing never change in a way an earlier release cannot read. The
@@ -198,12 +199,17 @@ value is stored yet: a user's under the State resource the transaction
 recorded, a device's under its deployment's State resource once that is
 ready. A deployment whose data did not finish loading is reported under
 `pending` with what finishes it: one with no instance that can run here
-(the deployment or every instance is disabled, or it has none) has its
-resources prepared and its waiting jobs moved once the deployment and an
-instance are enabled, or one is provisioned, and the import runs again; one
-whose loading failed finishes when the import runs again. Records already
-there are found the same the second time and change nothing. The text
-output lists the pending items under "Not finished yet" with that step.
+(the deployment or every instance is disabled, or it has none) has its data
+loaded and its waiting jobs moved once the deployment and an instance are
+enabled, or one is provisioned, and the import runs again; one whose
+loading failed loads all of its data again when the import runs again. What
+loading would replace in NATS under the deployment's own names, such as
+the streams a failed load left, is listed in the item's `replaces`, and
+nothing of it changes without `--replace-existing`; on a terminal the
+command asks instead and runs the import again with the answer. Records
+already there are found the same the second time and change nothing. The
+text output lists the pending items under "Not finished yet" with that
+step, and `--check` reports the same items, `replaces` included.
 
 `--check` changes nothing here, the database's schema included. It copies
 the platform database into its working folder, migrates the copy as the

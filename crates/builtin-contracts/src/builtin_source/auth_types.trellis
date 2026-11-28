@@ -1216,12 +1216,26 @@ model AuthDeploymentImportRequest {
   acknowledgeSharedApis?: bool;
   /// Confirms importing webhook endpoints that check nothing (`verify none`).
   acknowledgeUnauthenticatedWebhooks?: bool;
+  /// Approves replacing what `replaces` lists with the bundle's data. Without
+  /// it, an import that finds any of it changes nothing.
+  replaceExisting?: bool;
+}
+/// Data already in this installation's NATS under the deployment's own names,
+/// which loading the bundle replaces: left behind by an earlier attempt of
+/// the import, or by the deployment's earlier life here.
+model AuthDeploymentImportReplacement {
+  /// The stream.
+  stream: string;
+  /// The subjects whose messages are replaced, when the stream is shared; absent when the whole stream is.
+  subjects?: string;
 }
 model AuthDeploymentImportResult {
-  /// Whether the import changed anything: false for a check.
+  /// Whether the import changed anything: false for a check, and for an import that found something to replace without `replaceExisting`.
   applied: bool;
-  /// Whether this run finished an earlier import of the same bundle that failed partway.
+  /// Whether this run went on with an earlier import of the same deployment that stopped before its data loaded.
   resumed: bool;
+  /// What loading the bundle replaces, or would replace.
+  replaces: list<AuthDeploymentImportReplacement>;
   report: AuthServiceBundleReport;
 }
 model AuthDeploymentApplyRequest {
