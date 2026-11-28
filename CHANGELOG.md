@@ -14,7 +14,29 @@ and this project adheres to
   release, older or newer. Importers read every earlier format, and leave out
   and report under `notUnderstood` what a newer Trellis wrote that they don't
   know. A service bundle from rc.55 or earlier imports without its roles and
-  grants and names them. A backup still restores only into its own release.
+  grants and names them, including directly granted capabilities. A backup
+  still restores only into its own release.
+- Generated IDs carry a type prefix of one or two letters before the ULID:
+  `U` user, `S`/`SI` service deployment and instance, `D`/`DI` device
+  deployment and instance, `R` role, `SE` session, `J` job, `O` operation,
+  among others. Existing bare IDs are kept and still accepted, so IDs survive a
+  move. rc.56 and earlier can't read prefixed IDs.
+- `trellis svc import` keeps no import record. A retry reloads everything, and
+  lists any existing stream or queued job it would replace; it replaces them
+  only with approval, typed at a prompt or given as `--replace-existing` (also
+  on `trellis-server import`).
+- `/readyz` answers ready only once the platform's built-in service serves Auth
+  and State.
+
+### Fixed
+
+- A job redelivered to the host that is still running it is left to that
+  attempt, in both the TypeScript and Rust runtimes, so a stalled host never
+  runs a handler twice.
+- A TypeScript request that picks up a connection closing underneath it waits
+  for the next connection instead of failing, when nothing was sent.
+- A malformed installation export or service bundle is refused before anything
+  changes, naming the entry and field.
 
 ## [0.100.0-rc.56] - 2026-11-27
 
