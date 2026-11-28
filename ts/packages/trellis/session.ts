@@ -4326,6 +4326,12 @@ export class Trellis<
               }),
             );
           }
+          // A connection that closed while signing has sent nothing: wait
+          // for the next admitted generation within the deadline, as below.
+          if (lease.nc.isClosed() || lease.nc.isDraining()) {
+            lease.release();
+            continue;
+          }
           authHeaders = signed;
           break;
         } catch (cause) {

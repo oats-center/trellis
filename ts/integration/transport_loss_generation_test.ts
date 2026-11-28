@@ -75,6 +75,10 @@ test(
             executed.push({ value: input.value, at: Date.now() });
             return Result.ok(input);
           });
+          // The client dials the next connection only after it has closed the
+          // lost one. A request sent before then could go out on the dead
+          // socket, and one that may have been sent is never sent again.
+          await stall.held;
           const expiringDeadline = Date.now() + 1_500;
           const expiring = caller.echo(
             { value: "expiring" },
@@ -84,7 +88,6 @@ test(
             { value: "waiting" },
             { timeout: 30_000 },
           );
-          await stall.held;
           assert((await gap).isErr());
           assert((await expiring).isErr());
           // Recovery resumes only once every deadline above has passed.
