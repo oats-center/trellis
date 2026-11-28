@@ -59,8 +59,7 @@ ack wait, as it does when the whole process stalls. A redelivery that reaches a
 host whose attempt still holds that work message goes no further there: the
 broker acknowledges by stream sequence, so the running attempt's progress ACKs
 and disposition cover the redelivery too, and the host neither runs the handler
-again nor hands the message back. The TypeScript runtime does this; the Rust
-runtime does not yet, and runs such a redelivery in its spare slot. Keyed lease
+again nor hands the message back. Both runtimes do this. Keyed lease
 renewal is a separate fence; failure cancels local work and prevents stale
 completion. Job execution and side effects are at least once.
 
